@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 14
+
+### What went well?
+
+- Rust 新增 `update_chat_message` / `truncate_chat_messages`，单测覆盖编辑内容与截断后续消息；`save_chat_message` 支持外部传入 id，前端发送时同步生成消息 id 落库。
+- user 消息 hover 提供 Edit（内联 textarea）与 Regenerate；重新生成截断旧回复后按当前模式重新流式输出并落库。
+- `verify:ui` 新增编辑 + 重新生成断言：编辑内容替换、旧文本消失、重新生成后新回复完整出现。
+- `cargo test --lib` 10/10、`cargo clippy --lib -D warnings`、`cargo fmt`、`npm run build`、`verify:ui` 全绿。
+
+### What went wrong?
+
+- 重构发送链路后 run index 与占位符位置不一致，导致流更新落到 user 消息上；修正为按实际 history 计算索引。
+- 重新生成时 `setMessages` 与流更新存在批次竞态，先注册 run 再更新消息状态后稳定。
+- 首轮验证在流未结束时点 Edit 被 busy 拦截，等待流空闲后再编辑。
+
+### Action Items
+
+- 下个 Sprint 候选：真实 Provider 端到端流式联调、Provider 周期心跳与状态告警、消息分叉/版本历史。
+- 编辑功能后续可支持 assistant 消息编辑与多轮分支对比。
+- 保留编辑/重新生成断言，改动消息流、chat_messages 或 AI Studio 交互时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 13
 
 ### What went well?

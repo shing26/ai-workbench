@@ -966,8 +966,9 @@ pub fn save_chat_message(
     session_id: &str,
     role: &str,
     content: &str,
+    id: Option<String>,
 ) -> Result<ChatMessage> {
-    let id = uid();
+    let id = id.unwrap_or_else(uid);
     let now = now_millis();
     conn.execute(
         "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -997,6 +998,34 @@ pub fn list_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<Cha
         })
     })?;
     rows.collect()
+}
+
+pub fn update_chat_message(conn: &Connection, id: &str, content: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE chat_messages SET content = ?1 WHERE id = ?2",
+        params![content, id],
+    )?;
+    Ok(())
+}
+
+pub fn truncate_chat_messages(
+    conn: &Connection,
+    session_id: &str,
+    keep_message_id: &str,
+) -> Result<()> {
+    let keep_created_at: Option<i64> = conn.query_row(
+        "SELECT created_at FROM chat_messages WHERE id = ?1 AND session_id = ?2",
+        params![keep_message_id, session_id],
+        |row| row.get(0),
+    )?;
+    if let Some(created_at) = keep_created_at {
+        conn.execute(
+            "DELETE FROM chat_messages
+             WHERE session_id = ?1 AND created_at > ?2 AND id <> ?3",
+            params![session_id, created_at, keep_message_id],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1041,8 +1070,8 @@ mod tests {
 
         let conn = init_connection(&db_path).unwrap();
         let session = create_session(&conn, "Sprint planning", "openai").unwrap();
-        save_chat_message(&conn, &session.id, "user", "Hello").unwrap();
-        save_chat_message(&conn, &session.id, "assistant", "Hi there").unwrap();
+        save_chat_message(&conn, &session.id, "user", "Hello", None).unwrap();
+        save_chat_message(&conn, &session.id, "assistant", "Hi there", None).unwrap();
         drop(conn);
 
         let conn = init_connection(&db_path).unwrap();
@@ -1063,7 +1092,7 @@ mod tests {
 
         let conn = init_connection(&db_path).unwrap();
         let session = create_session(&conn, "Old title", "openai").unwrap();
-        save_chat_message(&conn, &session.id, "user", "Hello").unwrap();
+        save_chat_message(&conn, &session.id, "user", "Hello", None).unwrap();
 
         rename_session(&conn, &session.id, "New title").unwrap();
         let sessions = list_sessions(&conn).unwrap();
@@ -1073,6 +1102,31 @@ mod tests {
         let sessions = list_sessions(&conn).unwrap();
         assert!(!sessions.iter().any(|s| s.id == session.id));
         assert!(list_chat_messages(&conn, &session.id).unwrap().is_empty());
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn chat_message_edit_and_truncate_tail() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-message-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Edit test", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "Old question", None).unwrap();
+        let first = save_chat_message(&conn, &session.id, "assistant", "Old answer", None).unwrap();
+        let tail =
+            save_chat_message(&conn, &session.id, "assistant", "Should be removed", None).unwrap();
+
+        update_chat_message(&conn, &user.id, "New question").unwrap();
+        truncate_chat_messages(&conn, &session.id, &user.id).unwrap();
+
+        let messages = list_chat_messages(&conn, &session.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "New question");
+        assert!(!messages.iter().any(|m| m.id == first.id || m.id == tail.id));
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

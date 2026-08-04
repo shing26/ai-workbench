@@ -384,11 +384,12 @@ export async function saveChatMessage(
   sessionId: string,
   role: string,
   content: string,
+  id?: string,
 ): Promise<ChatMessage> {
-  if (isTauri()) return invoke<ChatMessage>("save_chat_message", { sessionId, role, content });
+  if (isTauri()) return invoke<ChatMessage>("save_chat_message", { sessionId, role, content, id });
   const shape = readLocal();
   shape.chatMessages = shape.chatMessages ?? [];
-  const message: ChatMessage = { id: makeId(), sessionId, role, content, createdAt: Date.now() };
+  const message: ChatMessage = { id: id ?? makeId(), sessionId, role, content, createdAt: Date.now() };
   shape.chatMessages.push(message);
   writeLocal(shape);
   return message;
@@ -399,6 +400,32 @@ export async function listChatMessages(sessionId: string): Promise<ChatMessage[]
   return (readLocal().chatMessages ?? [])
     .filter((m) => m.sessionId === sessionId)
     .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function updateChatMessage(id: string, content: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("update_chat_message", { id, content });
+    return;
+  }
+  const shape = readLocal();
+  const message = shape.chatMessages.find((m) => m.id === id);
+  if (message) message.content = content;
+  writeLocal(shape);
+}
+
+export async function truncateChatMessages(sessionId: string, keepMessageId: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("truncate_chat_messages", { sessionId, keepMessageId });
+    return;
+  }
+  const shape = readLocal();
+  const keep = shape.chatMessages.find((m) => m.id === keepMessageId);
+  if (keep) {
+    shape.chatMessages = shape.chatMessages.filter(
+      (m) => m.sessionId !== sessionId || m.createdAt <= keep.createdAt || m.id === keepMessageId,
+    );
+  }
+  writeLocal(shape);
 }
 
 export async function listHabits(): Promise<Habit[]> {
