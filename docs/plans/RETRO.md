@@ -80,3 +80,24 @@
 - 下个 Sprint 优先做 AI Studio 真流式输出，接 Tauri Event 逐块推送。
 - 剪贴板轮询间隔与去重窗口写入 `docs/ARCHITECTURE.md`，后续如需 OS 原生监听再评估 `tauri-plugin-clipboard-manager`。
 - 系统采集相关断言保留在 `verify:ui`，改动 System 视图或 App 全局错误钩子后重跑。
+
+## Sprint 5
+
+### What went well?
+
+- AI Studio 升级为真流式输出：Rust 后台解析 OpenAI `data:` SSE 与 Ollama NDJSON，通过 `stream-chunk` 事件逐块推送，MOA 按序聚合为单流。
+- 前端监听事件后 assistant 消息增量追加，busy 状态驱动打字机光标与 thinking dots，结束后恢复输入。
+- 浏览器 fallback 用 60ms 分块模拟流，`verify:ui` / `verify:preview` 可稳定验证流式路径：进行中光标、最终回复、busy 结束。
+- `cargo test --lib`、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- `reqwest::blocking::Response` 没有 `.lines()`，改用 `.text()` 后按行解析。
+- `AppHandle` 被 move 进 `spawn_blocking` 后无法再 emit，改为克隆后引用。
+- clippy 捕获 `&line` 多余借用；流式验证首轮未捕获进行中光标，改为 30ms 轮询后稳定。
+
+### Action Items
+
+- 下个 Sprint 候选：Knowledge RAG 向量索引，或 Provider 流式取消/中断。
+- 真实 Provider 流式仍需配置 API Key 后做端到端联调；当前验证覆盖协议与 UI 渲染路径。
+- 保留流式断言，后续改动 AI Studio 或流式协议时重跑 `verify:ui`。

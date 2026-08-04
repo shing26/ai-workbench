@@ -47,6 +47,15 @@ Sprint 3 新增命令：`list_habits`、`create_habit`、`toggle_habit`、`list_
 
 Sprint 4 新增命令：`list_clipboard`、`list_error_logs`、`capture_clipboard`、`report_frontend_error`。
 
+Sprint 5 新增命令：`stream_ai_message`，事件 `stream-chunk`。
+
+## AI 流式输出
+
+- Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。
+- 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error }`，`id` 为前端生成的 `runId`。
+- MOA 模式按 Provider 顺序聚合为单流；无论成功失败，最终都会 emit `done` 事件收尾。
+- 前端 AI Studio 监听 `stream-chunk`，assistant 消息增量追加；浏览器 fallback 用分块模拟流，保证 UI 验证可运行。
+
 ## 系统采集
 
 - Rust 后台启动 `spawn_clipboard_monitor` 线程，每 1.5 秒轮询系统剪贴板。

@@ -209,6 +209,40 @@ try {
     };
   })()`);
 
+  await clickDock("AI Studio");
+  const streamStarted = await evaluate(`(async () => {
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "Streaming DoD check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 120));
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let earlyCaret = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".stream-caret") || document.querySelector(".thinking-dot")) {
+        earlyCaret = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    await new Promise((r) => setTimeout(r, 900));
+    const bodyText = document.body.innerText;
+    return {
+      ok: true,
+      earlyCaret,
+      replyVisible: bodyText.includes("Streaming fallback") || bodyText.includes("分块模拟"),
+      streamingCaretGone: !document.querySelector(".stream-caret"),
+      busyGone: !document.querySelector(".thinking-dot"),
+    };
+  })()`);
+  if (!streamStarted.ok || !streamStarted.earlyCaret || !streamStarted.replyVisible) {
+    throw new Error("AI Studio streaming assertion failed");
+  }
+  results.streaming = streamStarted;
+
   await clickDock("Projects");
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
   const inspectorOpened = await evaluate(`(() => {

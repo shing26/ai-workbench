@@ -20,6 +20,122 @@ fn chat_openai(messages_json: &str) -> Result<String, String> {
     chat_openai_compatible("https://api.openai.com/v1", &api_key, messages_json)
 }
 
+fn stream_openai_compatible(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    base_url: &str,
+    api_key: &str,
+    messages_json: &str,
+) -> Result<(), String> {
+    let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
+    let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": body,
+            "stream": true
+        }))
+        .send()
+        .map_err(|e| format!("AI stream request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().unwrap_or_default();
+        return Err(format!("AI {} : {}", status, err_body));
+    }
+
+    let body = resp
+        .text()
+        .map_err(|e| format!("Read stream failed: {}", e))?;
+    let mut finished = false;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data == "[DONE]" {
+                finished = true;
+                break;
+            }
+            if let Ok(json) = serde_json::from_str::<Value>(data) {
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    let _ = app.emit(
+                        "stream-chunk",
+                        StreamChunk {
+                            id: run_id.to_string(),
+                            delta: delta.to_string(),
+                            done: false,
+                            error: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    if !finished {
+        return Err("AI stream ended without [DONE]".into());
+    }
+    Ok(())
+}
+
+fn stream_ollama(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    messages_json: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post("http://localhost:11434/api/chat")
+        .json(&serde_json::json!({
+            "model": model_name,
+            "messages": messages,
+            "stream": true
+        }))
+        .send()
+        .map_err(|e| format!("Ollama stream request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Ollama {} : {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        ));
+    }
+
+    let body = resp
+        .text()
+        .map_err(|e| format!("Read stream failed: {}", e))?;
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<Value>(line) {
+            if let Some(delta) = json["message"]["content"].as_str() {
+                let _ = app.emit(
+                    "stream-chunk",
+                    StreamChunk {
+                        id: run_id.to_string(),
+                        delta: delta.to_string(),
+                        done: false,
+                        error: None,
+                    },
+                );
+            }
+            if json["done"].as_bool() == Some(true) {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn chat_openai_compatible(
     base_url: &str,
     api_key: &str,
@@ -521,6 +637,94 @@ fn spawn_clipboard_monitor(app: tauri::AppHandle) {
     });
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamChunk {
+    id: String,
+    delta: String,
+    done: bool,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn stream_ai_message(
+    app: tauri::AppHandle,
+    provider_ids: Vec<String>,
+    messages: Vec<Value>,
+    moa: bool,
+    run_id: String,
+) -> Result<(), String> {
+    let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
+    let run_id_clone = run_id.clone();
+    let app_clone = app.clone();
+
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        if moa {
+            for provider_id in &provider_ids {
+                let entry =
+                    keyring::Entry::new("ai-workbench", &format!("aiwb-stream-{}", provider_id))
+                        .map_err(|e| e.to_string())?;
+                let key = entry
+                    .get_password()
+                    .unwrap_or_else(|_| "OPENAI_API_KEY".to_string());
+                let api_key = get_api_key(&key)?;
+                stream_openai_compatible(
+                    &app_clone,
+                    &run_id_clone,
+                    "https://api.openai.com/v1",
+                    &api_key,
+                    &messages_json,
+                )?;
+            }
+            Ok::<(), String>(())
+        } else {
+            let state = app_clone.state::<db::Db>();
+            let conn = state.0.lock().map_err(|e| e.to_string())?;
+            let mut selected = Vec::new();
+            for id in provider_ids {
+                if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
+                    selected.push(p);
+                }
+            }
+            drop(conn);
+            if selected.is_empty() {
+                return Err("No providers configured".to_string());
+            }
+            let provider = selected[0].clone();
+            let name = provider.name.to_lowercase();
+            let url = provider.base_url.to_lowercase();
+            if name.contains("ollama") || url.contains("11434") {
+                stream_ollama(&app_clone, &run_id_clone, &messages_json, "qwen2.5:3b")
+            } else {
+                let key_ref = if provider.api_key.is_empty() {
+                    "OPENAI_API_KEY"
+                } else {
+                    &provider.api_key
+                };
+                let api_key = get_api_key(key_ref)?;
+                stream_openai_compatible(
+                    &app_clone,
+                    &run_id_clone,
+                    &provider.base_url,
+                    &api_key,
+                    &messages_json,
+                )
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let done_chunk = StreamChunk {
+        id: run_id,
+        delta: String::new(),
+        done: true,
+        error: done.err().map(|e| e.to_string()),
+    };
+    let _ = app.emit("stream-chunk", done_chunk);
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GitContext {
@@ -654,7 +858,8 @@ pub fn run() {
             report_frontend_error,
             capture_clipboard,
             get_project_git_context,
-            send_ai_message
+            send_ai_message,
+            stream_ai_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
