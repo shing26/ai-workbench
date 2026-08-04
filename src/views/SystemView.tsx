@@ -1,4 +1,4 @@
-import { Activity, Clipboard, Plus, Radio, Terminal } from "lucide-react";
+import { Activity, AlertTriangle, Clipboard, HeartPulse, Plus, Radio, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -20,6 +20,7 @@ export default function SystemView() {
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
+  const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
 
   const check = async (id: string) => {
     const result = await db.checkProviderHealth(id);
@@ -37,6 +38,26 @@ export default function SystemView() {
     void checkAll();
   }, [providers.length]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db.runProviderHeartbeat().then((snapshot) => {
+      if (!disposed) setHeartbeat(snapshot);
+    });
+    void db
+      .listenProviderHeartbeat((snapshot) => {
+        if (!disposed) setHeartbeat(snapshot);
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten();
+    };
+  }, []);
+
   const create = async () => {
     if (!name.trim() || !baseUrl.trim()) return;
     await addProvider(name.trim(), baseUrl.trim(), apiKey.trim());
@@ -48,42 +69,68 @@ export default function SystemView() {
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
       <BentoCard title="Providers" subtitle="AI 节点配置与健康度" icon={Activity} colSpan={12}>
+        {heartbeat && heartbeat.alerts.length > 0 && (
+          <div className="heartbeat-alert mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-[10px] text-red-300">
+            <AlertTriangle size={12} className="shrink-0" />
+            <span className="font-medium">Provider alerts</span>
+            {heartbeat.alerts.map((alert) => (
+              <span key={alert.id} className="rounded-md bg-red-500/15 px-1.5 py-0.5">
+                {alert.name}: {alert.message}
+              </span>
+            ))}
+            <span className="ml-auto text-red-400/70">
+              {heartbeat.checkedAt ? new Date(heartbeat.checkedAt).toLocaleTimeString("zh-CN") : ""}
+            </span>
+          </div>
+        )}
         <div className="mb-3 grid gap-3 md:grid-cols-3">
-          {providers.map((p) => (
-            <div
-              key={p.id}
-              className={`provider-card rounded-2xl border bg-white/[0.03] p-3 ${
-                p.isActive ? "active-provider border-emerald-500/20" : "border-white/10"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <ModelBadge
-                  label={p.name}
-                  tone={p.isActive ? "green" : "neutral"}
-                  status={p.isActive ? "active" : "idle"}
-                  pulse={p.isActive}
-                />
-                <button type="button" onClick={() => void toggleProvider(p.id, !p.isActive)} className="text-[10px] text-slate-500 hover:text-slate-300">
-                  {p.isActive ? "Disable" : "Enable"}
-                </button>
+          {providers.map((p) => {
+            const entry = heartbeat?.providers.find((h) => h.id === p.id) ?? null;
+            const state = entry ?? health[p.id];
+            const statusLabel = !state
+              ? "pending"
+              : state.ok
+                ? "ok"
+                : entry?.checked === false
+                  ? "pending"
+                  : "degraded";
+            return (
+              <div
+                key={p.id}
+                className={`provider-card rounded-2xl border bg-white/[0.03] p-3 ${
+                  p.isActive ? "active-provider border-emerald-500/20" : "border-white/10"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <ModelBadge
+                    label={p.name}
+                    tone={p.isActive ? "green" : "neutral"}
+                    status={p.isActive ? "active" : "idle"}
+                    pulse={p.isActive}
+                  />
+                  <button type="button" onClick={() => void toggleProvider(p.id, !p.isActive)} className="text-[10px] text-slate-500 hover:text-slate-300">
+                    {p.isActive ? "Disable" : "Enable"}
+                  </button>
+                </div>
+                <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
+                <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+                  <span className={`h-1.5 w-1.5 rounded-full ${state?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
+                  <span className={state?.ok ? "text-emerald-400" : "text-red-300"}>{statusLabel}</span>
+                  <span className="text-slate-500">{state ? `${state.latencyMs}ms` : "- ms"}</span>
+                  {entry?.alert && (
+                    <span className="rounded-md bg-red-500/15 px-1.5 py-0.5 text-red-300">alert</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void check(p.id)}
+                    className="ml-auto text-[10px] text-slate-500 hover:text-slate-300"
+                  >
+                    Check
+                  </button>
+                </div>
               </div>
-              <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
-              <div className="mt-1 flex items-center gap-1.5 text-[10px]">
-                <span className={`h-1.5 w-1.5 rounded-full ${health[p.id]?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
-                <span className={health[p.id]?.ok ? "text-emerald-400" : "text-red-300"}>
-                  {health[p.id]?.ok ? "ok" : "unreachable"}
-                </span>
-                <span className="text-slate-500">{health[p.id] ? `${health[p.id].latencyMs}ms` : "- ms"}</span>
-                <button
-                  type="button"
-                  onClick={() => void check(p.id)}
-                  className="ml-auto text-[10px] text-slate-500 hover:text-slate-300"
-                >
-                  Check
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="flex flex-wrap gap-2">
           <input
@@ -104,6 +151,13 @@ export default function SystemView() {
             placeholder="API key ref"
             className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
+          <button
+            type="button"
+            onClick={async () => setHeartbeat(await db.runProviderHeartbeat())}
+            className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/15 px-3 text-xs text-emerald-300 hover:bg-emerald-500/25"
+          >
+            <HeartPulse size={14} /> Heartbeat
+          </button>
           <button
             type="button"
             onClick={() => void checkAll()}
