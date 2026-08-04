@@ -1,4 +1,4 @@
-import { Send, Square } from "lucide-react";
+import { Plus, Send, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -20,7 +20,11 @@ export default function AIStudioView() {
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [sessions, setSessions] = useState<db.Session[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const runIdRef = useRef(0);
+  const sessionIdRef = useRef<string | null>(null);
+  const runsRef = useRef(new Map<string, { content: string; index: number }>());
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
   const activeProviders = providers.filter((p) => p.isActive);
   const moaProviders = activeProviders.slice(0, 3);
@@ -30,37 +34,46 @@ export default function AIStudioView() {
     let unlisten = () => {};
     void db.listenStreamChunks((chunk) => {
       if (disposed) return;
-      const runId = `ai-${runIdRef.current}`;
-      if (chunk.id !== runId) return;
-      setMessages((prev) => {
-        if (chunk.done) {
+      const run = runsRef.current.get(chunk.id);
+      if (!run) return;
+      if (chunk.done) {
+        setMessages((prev) => {
           const next = [...prev];
-          const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
-          if (idx >= 0) {
-            const partial = next[idx].content.slice("__stream__".length);
-            if (chunk.error) {
-              next[idx] = { ...next[idx], content: `请求失败: ${chunk.error}` };
-            } else if (chunk.cancelled) {
-              next[idx] = { ...next[idx], content: `${partial} [stopped]` };
-            } else {
-              next[idx] = { ...next[idx], content: partial };
-            }
+          const idx = run.index;
+          if (idx < next.length && next[idx].role === "assistant") {
+            const partial = next[idx].content.startsWith("__stream__")
+              ? next[idx].content.slice("__stream__".length)
+              : run.content;
+            next[idx] = {
+              ...next[idx],
+              content: chunk.error
+                ? `请求失败: ${chunk.error}`
+                : chunk.cancelled && !run.content.endsWith("[stopped]")
+                  ? `${partial} [stopped]`
+                  : partial,
+            };
           }
           return next;
+        });
+        runsRef.current.delete(chunk.id);
+        if (!chunk.error && sessionIdRef.current && run.content) {
+          void db.saveChatMessage(sessionIdRef.current, "assistant", run.content);
         }
+        setBusy(false);
+        return;
+      }
+      run.content += chunk.delta;
+      setMessages((prev) => {
         const next = [...prev];
-        const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
-        if (idx >= 0) {
+        const idx = run.index;
+        if (idx < next.length && next[idx].role === "assistant") {
           const base = next[idx].content.startsWith("__stream__")
             ? next[idx].content.slice("__stream__".length)
-            : next[idx].content;
-          next[idx] = { ...next[idx], content: `${base}${chunk.delta}` };
-        } else {
-          next.push({ role: "assistant", content: chunk.delta });
+            : run.content;
+          next[idx] = { ...next[idx], content: `__stream__${base}${chunk.delta}` };
         }
         return next;
       });
-      if (chunk.done) setBusy(false);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -71,18 +84,85 @@ export default function AIStudioView() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    void db.listSessions().then(async (list) => {
+      if (disposed) return;
+      setSessions(list);
+      const first = list[0];
+      if (first) {
+        sessionIdRef.current = first.id;
+        setSessionId(first.id);
+        const stored = await db.listChatMessages(first.id);
+        if (disposed) return;
+        if (stored.length > 0) {
+          setMessages(stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+        }
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   const stopStreaming = async () => {
     const runId = `ai-${runIdRef.current}`;
     runIdRef.current += 1;
+    const run = runsRef.current.get(runId);
+    const finalContent = `${run?.content ?? ""} [stopped]`;
+    if (run) runsRef.current.delete(runId);
     setBusy(false);
     setMessages((prev) =>
       prev.map((m) =>
         m.role === "assistant" && m.content.startsWith("__stream__")
-          ? { ...m, content: `${m.content.slice("__stream__".length)} [stopped]` }
+          ? { ...m, content: finalContent }
           : m,
       ),
     );
     await db.cancelAiStream(runId);
+    if (sessionIdRef.current) {
+      await db.saveChatMessage(sessionIdRef.current, "assistant", finalContent);
+    }
+  };
+
+  const newChat = () => {
+    if (busy) return;
+    sessionIdRef.current = null;
+    setSessionId(null);
+    setMessages([{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }]);
+    runsRef.current.clear();
+    setInput("");
+    setRagHits([]);
+  };
+
+  const selectSession = async (id: string) => {
+    if (busy) return;
+    sessionIdRef.current = id;
+    setSessionId(id);
+    const stored = await db.listChatMessages(id);
+    const loaded = stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    setMessages(
+      loaded.length > 0
+        ? loaded
+        : [{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }],
+    );
+    setInput("");
+    setRagHits([]);
+  };
+
+  const ensureSession = async (titleHint: string) => {
+    if (sessionIdRef.current) {
+      const existing = sessions.find((s) => s.id === sessionIdRef.current);
+      if (existing) return existing;
+    }
+    const session = await db.createSession(
+      titleHint.slice(0, 24) || "New chat",
+      activeProvider?.name ?? "default",
+    );
+    sessionIdRef.current = session.id;
+    setSessionId(session.id);
+    setSessions(await db.listSessions());
+    return session;
   };
 
   const send = async () => {
@@ -102,6 +182,9 @@ export default function AIStudioView() {
     const next: Message[] = [...messages, { role: "user", content: text }, { role: "assistant", content: "__stream__" }];
     setMessages(next);
     setInput("");
+    runsRef.current.set(runId, { content: "", index: next.length - 1 });
+    const session = await ensureSession(text);
+    await db.saveChatMessage(session.id, "user", text);
     const providerIds = moa
       ? providers.filter((p) => p.isActive).slice(0, 3).map((p) => p.id)
       : activeProvider
@@ -214,7 +297,38 @@ export default function AIStudioView() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl">
+      <div className="flex min-h-0 flex-1 gap-3">
+        <aside className="hidden w-44 shrink-0 flex-col gap-2 rounded-2xl border border-white/10 bg-[#18181C] p-2 md:flex">
+          <button
+            type="button"
+            onClick={newChat}
+            className="flex h-9 shrink-0 items-center justify-center gap-1 rounded-xl bg-emerald-500/20 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+          >
+            <Plus size={13} /> New chat
+          </button>
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+            {sessions.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                aria-label="Open session"
+                onClick={() => void selectSession(s.id)}
+                className={`w-full rounded-lg border px-2 py-1.5 text-left ${
+                  sessionId === s.id
+                    ? "border-emerald-500/30 bg-emerald-500/10"
+                    : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+                }`}
+              >
+                <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
+                <span className="mt-0.5 block text-[9px] text-slate-600">{s.model}</span>
+              </button>
+            ))}
+            {sessions.length === 0 && (
+              <div className="py-6 text-center text-[10px] text-slate-600">No sessions</div>
+            )}
+          </div>
+        </aside>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl">
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {messages.map((m, i) => (
             <div
@@ -288,6 +402,7 @@ export default function AIStudioView() {
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
     indexed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_files_path ON knowledge_files(path);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at INTEGER,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -138,6 +147,16 @@ pub struct Session {
     pub project_id: Option<String>,
     pub title: String,
     pub model: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
     pub created_at: i64,
 }
 
@@ -929,6 +948,44 @@ pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Ses
     })
 }
 
+pub fn save_chat_message(
+    conn: &Connection,
+    session_id: &str,
+    role: &str,
+    content: &str,
+) -> Result<ChatMessage> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, session_id, role, content, now],
+    )?;
+    Ok(ChatMessage {
+        id,
+        session_id: session_id.to_string(),
+        role: role.to_string(),
+        content: content.to_string(),
+        created_at: now,
+    })
+}
+
+pub fn list_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<ChatMessage>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, role, content, created_at FROM chat_messages
+         WHERE session_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id], |row| {
+        Ok(ChatMessage {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,6 +1015,28 @@ mod tests {
             .find(|t| t.id == task.id)
             .expect("created task should persist after update");
         assert_eq!(updated.status, "done");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn chat_messages_persist_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-chat-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Sprint planning", "openai").unwrap();
+        save_chat_message(&conn, &session.id, "user", "Hello").unwrap();
+        save_chat_message(&conn, &session.id, "assistant", "Hi there").unwrap();
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let messages = list_chat_messages(&conn, &session.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].content, "Hi there");
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

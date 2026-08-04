@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 11
+
+### What went well?
+
+- SQLite 新增 `chat_messages` 表，Rust `save_chat_message` / `list_chat_messages` 带单测；AI Studio 左侧新增会话栏，New chat、会话切换、历史恢复与刷新后自动恢复首个会话全部落地。
+- 发送时保存 user 消息，流式结束或取消后保存 assistant 消息；取消时立即落库 `[stopped]`，浏览器 fallback 用 localStorage 保持同等行为。
+- 重构流式监听为按 runId 维护独立内容与消息索引，修复多条 chunk 串入错误消息、取消内容丢失的问题；`verify:ui` / `verify:preview` 新增会话持久化断言并通过。
+- `cargo test --lib` 8/8、`cargo clippy --lib -D warnings`、`cargo fmt --check`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 会话栏 `<aside>` 与 Inspector `<aside>` 同标签，导致首轮验证脚本误取文本，改为按 `drawer-panel` 类定位。
+- 原流式监听在非 done chunk 时把普通 assistant 消息误当占位符，UI 出现逐 chunk 分裂消息且停止时内容为空；按 run 重构后稳定。
+
+### Action Items
+
+- 下个 Sprint 候选：会话重命名/删除/搜索、Provider 自动路由、真实 Provider 端到端流式联调。
+- 会话历史建议增加分页或虚拟列表，避免超长会话渲染压力。
+- 保留会话持久化断言，改动 AI Studio、chat_messages 或流式协议时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 1
 
 ### What went well?

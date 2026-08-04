@@ -234,7 +234,7 @@ try {
     let inspectorText = "";
     for (let i = 0; i < 20; i++) {
       ragBadge = document.querySelector(".rag-badge")?.textContent?.trim() ?? "";
-      inspectorText = document.querySelector("aside")?.innerText ?? "";
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
       if (ragBadge.includes("RAG +") && inspectorText.toLowerCase().includes("rag context")) break;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -546,6 +546,36 @@ try {
   if (results.motion.mobileOverflowX > 1) {
     throw new Error(`mobile horizontal overflow: ${results.motion.mobileOverflowX}px`);
   }
+
+  await setViewport(1440, 900);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("AI Studio");
+  const sessionPersistence = await evaluate(`(async () => {
+    let pill = 0;
+    for (let i = 0; i < 30; i++) {
+      pill = document.querySelectorAll('main button[aria-label="Open session"]').length;
+      const text = document.body.innerText;
+      if (pill > 0 && text.includes("sprint RAG check") && text.includes("Streaming fallback")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const finalText = document.body.innerText;
+    return {
+      hasSessionPill: pill > 0,
+      hasUserMessage: finalText.includes("sprint RAG check"),
+      hasAssistantReply: finalText.includes("Streaming fallback"),
+      hasStoppedMessage: finalText.includes("[stopped]"),
+    };
+  })()`);
+  if (
+    !sessionPersistence.hasSessionPill ||
+    !sessionPersistence.hasUserMessage ||
+    !sessionPersistence.hasAssistantReply ||
+    !sessionPersistence.hasStoppedMessage
+  ) {
+    throw new Error(`AI Studio session persistence assertion failed: ${JSON.stringify(sessionPersistence)}`);
+  }
+  results.sessionPersistence = sessionPersistence;
 
   console.log(JSON.stringify(results, null, 2));
 } finally {

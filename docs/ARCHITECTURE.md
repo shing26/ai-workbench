@@ -57,6 +57,8 @@ Sprint 9 新增命令：`index_vault`、`get_knowledge_index_status`。
 
 Sprint 10 新增命令：`check_provider_health`。
 
+Sprint 11 新增命令：`save_chat_message`、`list_chat_messages`。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -105,6 +107,13 @@ Sprint 10 新增命令：`check_provider_health`。
 - System Provider 卡片展示健康点、状态与延迟；进入视图自动检查，支持单个 Check 与 Check all。
 - 浏览器 fallback 模拟健康结果，保证 UI 验证可运行。
 
+## AI Studio 多会话持久化
+
+- SQLite 新增 `chat_messages` 表（id、session_id、role、content、created_at），`sessions` 复用为会话目录；`save_chat_message(session_id, role, content)` 写入消息，`list_chat_messages(session_id)` 按时间序返回历史。
+- AI Studio 左侧会话栏提供 New chat 与会话列表，点击会话加载对应历史；发送时自动创建会话并保存 user 消息，流式结束或取消后保存 assistant 消息。
+- 浏览器 fallback 用 localStorage 保存 sessions 与 chatMessages，刷新后自动恢复首个会话历史，保证 UI 验证可运行。
+- 前端按 runId 维护独立流内容与消息索引，多条流互不串扰；取消流时立即落库 `[stopped]` 消息。
+
 ## 数据流
 
 1. 前端通过 Zustand 维护视图状态。
@@ -112,6 +121,7 @@ Sprint 10 新增命令：`check_provider_health`。
 3. Rust 负责 SQLite 迁移、示例数据与事务。
 4. AI 流式响应通过 Tauri Event 推送到前端。
 5. AI Studio 发送前先检索本地 thoughts，把命中内容作为 system 上下文注入请求。
+6. AI Studio 每条消息写入 `chat_messages`，会话切换与重启后按 session 恢复历史。
 
 ## 环境隔离
 
