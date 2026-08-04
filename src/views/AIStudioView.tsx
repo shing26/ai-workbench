@@ -17,6 +17,8 @@ export default function AIStudioView() {
   const [input, setInput] = useState("");
   const [providerId, setProviderId] = useState("");
   const [moa, setMoa] = useState(false);
+  const [autoRoute, setAutoRoute] = useState(false);
+  const [routedProvider, setRoutedProvider] = useState<{ name: string; fallbackFrom: string | null } | null>(null);
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -32,6 +34,11 @@ export default function AIStudioView() {
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
   const activeProviders = providers.filter((p) => p.isActive);
   const moaProviders = activeProviders.slice(0, 3);
+
+  const setMode = (mode: "single" | "moa" | "auto") => {
+    setMoa(mode === "moa");
+    setAutoRoute(mode === "auto");
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -242,11 +249,29 @@ export default function AIStudioView() {
     runsRef.current.set(runId, { content: "", index: next.length - 1 });
     const session = await ensureSession(text);
     await db.saveChatMessage(session.id, "user", text);
-    const providerIds = moa
-      ? providers.filter((p) => p.isActive).slice(0, 3).map((p) => p.id)
-      : activeProvider
-        ? [activeProvider.id]
-        : [];
+    let providerIds: string[] = [];
+    let routedName: string | null = null;
+    let fallbackFrom: string | null = null;
+    if (moa) {
+      providerIds = providers.filter((p) => p.isActive).slice(0, 3).map((p) => p.id);
+    } else if (autoRoute) {
+      const routed = await db.routeProvider(providers.filter((p) => p.isActive).map((p) => p.id));
+      if (routed.provider) {
+        providerIds = [routed.provider.id];
+        routedName = routed.provider.name;
+        fallbackFrom = routed.fallbackFrom;
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.content === "__stream__" ? { ...m, content: "请求失败: no healthy provider available" } : m)),
+        );
+        setBusy(false);
+        setRoutedProvider(null);
+        return;
+      }
+    } else {
+      providerIds = activeProvider ? [activeProvider.id] : [];
+    }
+    setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
     const apiMessages: ApiMessage[] = next.filter((m) => m.content !== "__stream__");
     if (hits.length > 0) {
       apiMessages.unshift({
@@ -271,6 +296,9 @@ export default function AIStudioView() {
         { label: "Providers", value: providerIds.length ? providerIds.join(", ") : "none" },
         { label: "Status", value: "streaming consensus" },
       );
+    } else if (routedName) {
+      sections.push({ label: "Router", value: `auto → ${routedName}` });
+      sections.push({ label: "Fallback from", value: fallbackFrom || "none" });
     }
     if (hits.length > 0) {
       sections.push({ label: "RAG context", value: `${hits.length} local thought(s) injected` });
@@ -293,7 +321,9 @@ export default function AIStudioView() {
     <div className="view-enter flex h-full flex-col gap-4 p-4">
       <div className="flex shrink-0 items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          {moa ? (
+          {autoRoute && routedProvider ? (
+            <ModelBadge label={`auto → ${routedProvider.name}`} tone="green" status={routedProvider.fallbackFrom ? "fallback" : "active"} />
+          ) : moa ? (
             <div className="moa-stack">
               {moaProviders.map((p) => (
                 <ModelBadge key={p.id} label={p.name} tone="blue" status="active" />
@@ -308,17 +338,24 @@ export default function AIStudioView() {
           <div className="flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-0.5">
             <button
               type="button"
-              onClick={() => setMoa(false)}
+              onClick={() => setMode("single")}
               className={`rounded-[10px] px-3 py-1.5 text-[11px] ${!moa ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500 hover:text-slate-300"}`}
             >
               Single
             </button>
             <button
               type="button"
-              onClick={() => setMoa(true)}
+              onClick={() => setMode("moa")}
               className={`rounded-[10px] px-3 py-1.5 text-[11px] ${moa ? "bg-[#007AFF]/20 text-[#7FB4FF]" : "text-slate-500 hover:text-slate-300"}`}
             >
               MOA
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("auto")}
+              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${autoRoute ? "bg-amber-500/20 text-amber-300" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              Auto
             </button>
           </div>
           <button

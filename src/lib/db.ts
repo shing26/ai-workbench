@@ -312,6 +312,39 @@ export async function checkProviderHealth(providerId: string): Promise<ProviderH
   return { ok: true, latencyMs: 120, message: "ok" };
 }
 
+export type RouteResult = {
+  provider: Provider | null;
+  health: ProviderHealth | null;
+  candidates: { id: string; name: string; ok: boolean; latencyMs: number }[];
+  fallbackFrom: string | null;
+};
+
+export async function routeProvider(providerIds: string[]): Promise<RouteResult> {
+  const ids = [...new Set(providerIds)];
+  const providers = (await listProviders()).filter((p) => ids.includes(p.id));
+  const candidates = await Promise.all(
+    providers.map(async (p) => {
+      const health = await checkProviderHealth(p.id);
+      return { id: p.id, name: p.name, ok: health.ok, latencyMs: health.latencyMs };
+    }),
+  );
+  const healthy = providers.filter((p) => candidates.find((c) => c.id === p.id)?.ok);
+  if (healthy.length === 0) {
+    return { provider: null, health: null, candidates, fallbackFrom: null };
+  }
+  const chosen = healthy[0];
+  const fallbackFrom = providers
+    .filter((p) => p.id !== chosen.id && candidates.find((c) => c.id === p.id)?.ok === false)
+    .map((p) => p.name)
+    .join(", ") || null;
+  return {
+    provider: chosen,
+    health: { ok: true, latencyMs: candidates.find((c) => c.id === chosen.id)?.latencyMs ?? 0, message: "ok" },
+    candidates,
+    fallbackFrom,
+  };
+}
+
 export async function listSessions(): Promise<Session[]> {
   return isTauri() ? invoke<Session[]>("list_sessions") : readLocal().sessions;
 }

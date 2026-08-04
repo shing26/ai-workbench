@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 13
+
+### What went well?
+
+- AI Studio 新增 Auto 路由模式：发送前并行健康检查所有启用节点，过滤失败节点后选择首个健康 Provider，顶部徽标与 Inspector 展示实际路由与回退来源。
+- 无可用 Provider 时返回清晰错误消息，不再静默失败；浏览器 fallback 复用模拟健康检查，UI 验证可稳定断言禁用 OpenAI 后自动回退到 Ollama。
+- `npm run build`、`verify:ui`、`verify:preview` 全绿，`verify:ui` 新增 Auto 路由断言（徽标 + Router 轨迹）。
+
+### What went wrong?
+
+- Inspector 把 section label 渲染为大写（`ROUTER`），首轮断言按小写匹配失败，改为匹配实际渲染文本。
+- Auto 路由断言首轮用旧 Inspector 文本（残留 MOA Trace）判断，未等待新路由内容出现；改为等待 `auto → Ollama` 后再断言。
+
+### Action Items
+
+- 下个 Sprint 候选：消息编辑/重新生成、真实 Provider 端到端流式联调、Provider 周期心跳与状态告警。
+- 路由策略后续可扩展为按延迟加权、会话级固定 Provider 或失败自动重试一次。
+- 保留 Auto 路由断言，改动路由逻辑、Provider 健康检查或 AI Studio 模式切换时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 12
 
 ### What went well?

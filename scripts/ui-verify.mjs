@@ -654,6 +654,66 @@ try {
   }
   results.sessionManagement = sessionManagement;
 
+  await clickDock("System");
+  const providerToggled = await evaluate(`(async () => {
+    const card = [...document.querySelectorAll(".provider-card")].find((c) => c.textContent?.includes("OpenAI"));
+    if (!card) return { ok: false, reason: "openai card missing" };
+    const disable = [...card.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Disable");
+    if (!disable) return { ok: false, reason: "disable button missing" };
+    disable.click();
+    await new Promise((r) => setTimeout(r, 350));
+    return { ok: true, text: card.textContent };
+  })()`);
+  if (!providerToggled.ok || !providerToggled.text.includes("Enable")) {
+    throw new Error(`provider toggle assertion failed: ${JSON.stringify(providerToggled)}`);
+  }
+  await clickDock("AI Studio");
+  const autoRoute = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Auto");
+    if (!autoBtn) return { ok: false, reason: "auto button missing" };
+    autoBtn.click();
+    await sleep(150);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "auto route check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let routed = "";
+    let reply = false;
+    for (let i = 0; i < 40; i++) {
+      routed = document.querySelector(".model-badge, [class*='rounded-full']")?.textContent ?? document.body.innerText;
+      reply = document.body.innerText.includes("Streaming fallback") || document.body.innerText.includes("Browser fallback");
+      if (routed.includes("auto →") && reply) break;
+      await sleep(100);
+    }
+    const bodyText = document.body.innerText;
+    let inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+    for (let i = 0; i < 20 && !inspectorText.includes("auto → Ollama"); i++) {
+      await sleep(100);
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+    }
+    return {
+      ok: true,
+      routed,
+      reply,
+      autoBadgeVisible: bodyText.includes("auto → Ollama"),
+      inspectorShowsRouter: inspectorText.includes("ROUTER") && inspectorText.includes("auto → Ollama"),
+      inspectorText: inspectorText.slice(0, 200),
+    };
+  })()`);
+  if (
+    !autoRoute.ok ||
+    !autoRoute.autoBadgeVisible ||
+    !autoRoute.reply ||
+    !autoRoute.inspectorShowsRouter
+  ) {
+    throw new Error(`AI Studio auto route assertion failed: ${JSON.stringify(autoRoute)}`);
+  }
+  results.autoRoute = autoRoute;
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {
