@@ -371,10 +371,15 @@ mod tests {
 
     #[test]
     fn init_and_persist_task() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        seed_if_empty(&conn).unwrap();
+        let dir = std::env::temp_dir().join(format!("aiwb-db-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
         let task = create_task(&conn, "Today task", true).unwrap();
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
         let tasks = list_tasks(&conn).unwrap();
         let saved = tasks
             .iter()
@@ -389,5 +394,8 @@ mod tests {
             .find(|t| t.id == task.id)
             .expect("created task should persist after update");
         assert_eq!(updated.status, "done");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
