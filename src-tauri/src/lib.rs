@@ -608,6 +608,22 @@ fn capture_clipboard(
     db::capture_clipboard(&conn, &content, "system").map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn search_thoughts(
+    state: State<'_, db::Db>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<db::RagSearchResult>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::search_thoughts(&conn, &query, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::rag_index_status(&conn).map_err(|e| e.to_string())
+}
+
 fn spawn_clipboard_monitor(app: tauri::AppHandle) {
     thread::spawn(move || {
         let mut clipboard = match arboard::Clipboard::new() {
@@ -857,6 +873,8 @@ pub fn run() {
             list_error_logs,
             report_frontend_error,
             capture_clipboard,
+            search_thoughts,
+            get_rag_index_status,
             get_project_git_context,
             send_ai_message,
             stream_ai_message

@@ -79,6 +79,20 @@ export type ErrorLog = {
   timestamp: number;
 };
 
+export type RagSearchResult = {
+  id: string;
+  content: string;
+  tags: string;
+  type: ThoughtType;
+  score: number;
+};
+
+export type RagIndexStatus = {
+  documents: number;
+  indexed: boolean;
+  lastIndexedAt: number;
+};
+
 const LS_KEY = "ai-workbench:db:v1";
 
 type LocalShape = {
@@ -362,6 +376,44 @@ export async function listenClipboardUpdated(
     return listen<ClipboardItem>("clipboard-updated", (event) => handler(event.payload));
   }
   return () => {};
+}
+
+function tokenizeSearch(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .split(/[^a-z0-9\u4e00-\u9fa5]+/)
+        .filter((t) => t.length > 1),
+    ),
+  );
+}
+
+export async function searchThoughts(query: string, limit = 5): Promise<RagSearchResult[]> {
+  if (isTauri()) return invoke<RagSearchResult[]>("search_thoughts", { query, limit });
+  const shape = readLocal();
+  const tokens = tokenizeSearch(query);
+  if (tokens.length === 0) return [];
+  const scored = shape.thoughts
+    .map((t) => {
+      const hay = tokenizeSearch(t.content);
+      const score = tokens.reduce((sum, term) => sum + (hay.includes(term) ? 1 : 0), 0);
+      return { id: t.id, content: t.content, tags: t.tags, type: t.type, score };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  return scored;
+}
+
+export async function getRagIndexStatus(): Promise<RagIndexStatus> {
+  if (isTauri()) return invoke<RagIndexStatus>("get_rag_index_status");
+  const shape = readLocal();
+  return {
+    documents: shape.thoughts.length,
+    indexed: shape.thoughts.length > 0,
+    lastIndexedAt: shape.thoughts[0]?.createdAt ?? 0,
+  };
 }
 
 export async function sendAiMessage(args: {

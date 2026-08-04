@@ -185,6 +185,25 @@ pub struct ErrorLog {
     pub timestamp: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagSearchResult {
+    pub id: String,
+    pub content: String,
+    pub tags: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub score: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagIndexStatus {
+    pub documents: i64,
+    pub indexed: bool,
+    pub last_indexed_at: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -721,6 +740,89 @@ pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
     rows.collect()
 }
 
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c.is_ascii_digit()))
+        .filter(|t| !t.is_empty() && t.len() > 1)
+        .map(|t| t.to_string())
+        .collect()
+}
+
+pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
+    let documents: i64 = conn.query_row("SELECT COUNT(*) FROM thoughts", [], |row| row.get(0))?;
+    let last: Option<i64> =
+        conn.query_row("SELECT MAX(created_at) FROM thoughts", [], |row| row.get(0))?;
+    Ok(RagIndexStatus {
+        documents,
+        indexed: documents > 0,
+        last_indexed_at: last.unwrap_or(0),
+    })
+}
+
+pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<RagSearchResult>> {
+    let query_tokens = tokenize(query);
+    if query_tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare("SELECT id, content, tags, type FROM thoughts")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let docs: Vec<(String, String, String, String, Vec<String>)> = rows
+        .filter_map(Result::ok)
+        .map(|(id, content, tags, kind)| {
+            let tokens = tokenize(&content);
+            (id, content, tags, kind, tokens)
+        })
+        .collect();
+    if docs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let doc_count = docs.len() as f64;
+    let avg_len = docs.iter().map(|d| d.3.len() as f64).sum::<f64>() / doc_count;
+
+    let mut scored: Vec<(f64, RagSearchResult)> = Vec::new();
+    for (id, content, tags, kind, tokens) in &docs {
+        let doc_freq: f64 = docs
+            .iter()
+            .filter(|d| d.4.iter().any(|t| query_tokens.contains(t)))
+            .count() as f64;
+        let idf = ((doc_count - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
+        let mut score = 0.0;
+        for term in &query_tokens {
+            let tf = tokens.iter().filter(|t| *t == term).count() as f64;
+            if tf > 0.0 {
+                let norm = tokens.len() as f64;
+                score +=
+                    idf * (tf * 1.5) / (tf + 1.5 * (1.0 - 0.75 + 0.75 * (norm / avg_len.max(1.0))));
+            }
+        }
+        if score > 0.0 {
+            scored.push((
+                score,
+                RagSearchResult {
+                    id: id.clone(),
+                    content: content.clone(),
+                    tags: tags.clone(),
+                    kind: kind.clone(),
+                    score,
+                },
+            ));
+        }
+    }
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(scored
+        .into_iter()
+        .take(limit.max(1) as usize)
+        .map(|(_, r)| r)
+        .collect())
+}
+
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, title, model, created_at FROM sessions ORDER BY created_at DESC",
@@ -849,6 +951,35 @@ mod tests {
             logs.iter().find(|l| l.id == log.id).unwrap().message,
             "boom"
         );
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rag_search_ranks_relevant_thought_first() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-rag-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        create_thought(
+            &conn,
+            "Rust SQLite migration plan with tasks and sprints",
+            "#work",
+            "note",
+        )
+        .unwrap();
+        create_thought(&conn, "Dinner recipe for tomato pasta", "#life", "note").unwrap();
+
+        let results = search_thoughts(&conn, "sqlite migration", 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results[0].content.contains("SQLite"));
+        assert!(results[0].score > 0.0);
+
+        let status = rag_index_status(&conn).unwrap();
+        assert!(status.indexed);
+        assert!(status.documents >= 2);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
