@@ -49,6 +49,14 @@ Sprint 4 新增命令：`list_clipboard`、`list_error_logs`、`capture_clipboar
 
 Sprint 5 新增命令：`stream_ai_message`，事件 `stream-chunk`。
 
+Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
+
+## Knowledge RAG
+
+- Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
+- `search_thoughts(query, limit)` 返回相关笔记与 score；`get_rag_index_status` 返回文档数与 indexed 状态。
+- 前端 Knowledge 视图提供 RAG 搜索框，结果可点击进入 Markdown 预览；浏览器 fallback 使用关键词命中。
+
 ## AI 流式输出
 
 - Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。

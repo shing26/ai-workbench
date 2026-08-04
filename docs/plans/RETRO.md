@@ -101,3 +101,24 @@
 - 下个 Sprint 候选：Knowledge RAG 向量索引，或 Provider 流式取消/中断。
 - 真实 Provider 流式仍需配置 API Key 后做端到端联调；当前验证覆盖协议与 UI 渲染路径。
 - 保留流式断言，后续改动 AI Studio 或流式协议时重跑 `verify:ui`。
+
+## Sprint 6
+
+### What went well?
+
+- Knowledge 视图接入真实本地 RAG：Rust 实现 BM25 检索，`search_thoughts` 按 IDF 与文档长度归一化打分，`get_rag_index_status` 返回文档数与索引状态。
+- 前端搜索框、命中列表、score 展示与索引 badge 全部落地，点击结果可进入 Markdown 预览。
+- 浏览器 fallback 用关键词命中保证 UI 验证可运行，`verify:ui` 新增 RAG 断言并通过。
+- `cargo test --lib` 4/4、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- `RagSearchResult` 最初缺少 `type` 字段，预览类型报错，补齐后与 `Thought` 共用渲染路径。
+- BM25 分母缺少括号导致公式不标准，修正后重跑单测。
+- `visibleThoughts` 声明位置在 selected 计算之后，一度引用过早，调整顺序后通过 tsc。
+
+### Action Items
+
+- 下个 Sprint 候选：把 RAG 结果注入 AI Studio 上下文，形成检索增强对话。
+- 如需跨文件/Obsidian 检索，再评估文件扫描与增量索引。
+- 保留 RAG 断言，改动 Knowledge 或检索命令时重跑 `verify:ui`。

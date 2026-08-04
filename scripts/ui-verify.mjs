@@ -366,8 +366,31 @@ try {
     const code = preview?.querySelector("pre code")?.textContent ?? "";
     const list = preview?.querySelectorAll("li").length ?? 0;
     const rawText = preview?.textContent ?? "";
-    return { hasMarkdown: !!preview, heading, code, list, rawText };
+    const badgeText = [...document.querySelectorAll("main span")].map((s) => s.textContent ?? "").join(" | ");
+    return { hasMarkdown: !!preview, heading, code, list, rawText, badgeText };
   })()`);
+  const ragSearch = await evaluate(`(async () => {
+    const input = document.querySelector('input[placeholder="RAG search..."]');
+    if (!input) return { ok: false, reason: "no rag input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "sprint");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    return {
+      ok: true,
+      matches: document.body.innerText.includes("RAG matches"),
+      resultVisible: document.body.innerText.includes("Sprint 3"),
+      indexStatusVisible: document.body.innerText.includes("docs") || document.body.innerText.includes("pending"),
+    };
+  })()`);
+  if (!ragSearch.ok || !ragSearch.matches || !ragSearch.resultVisible || !ragSearch.indexStatusVisible) {
+    throw new Error("RAG search assertion failed");
+  }
+  results.ragSearch = ragSearch;
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }
