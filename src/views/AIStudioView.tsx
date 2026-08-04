@@ -1,5 +1,5 @@
 import { Send } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -16,15 +16,56 @@ export default function AIStudioView() {
   const [providerId, setProviderId] = useState("");
   const [moa, setMoa] = useState(false);
   const [busy, setBusy] = useState(false);
+  const runIdRef = useRef(0);
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
   const activeProviders = providers.filter((p) => p.isActive);
   const moaProviders = activeProviders.slice(0, 3);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db.listenStreamChunks((chunk) => {
+      if (disposed) return;
+      const runId = `ai-${runIdRef.current}`;
+      if (chunk.id !== runId) return;
+      setMessages((prev) => {
+        if (chunk.done) {
+          if (chunk.error) {
+            const next = [...prev];
+            const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
+            if (idx >= 0) {
+              next[idx] = { ...next[idx], content: `请求失败: ${chunk.error}` };
+            }
+            return next;
+          }
+          return prev;
+        }
+        const next = [...prev];
+        const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], content: `${next[idx].content}${chunk.delta}` };
+        } else {
+          next.push({ role: "assistant", content: chunk.delta });
+        }
+        return next;
+      });
+      if (chunk.done) setBusy(false);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten();
+    };
+  }, []);
 
   const send = async () => {
     const text = input.trim();
     if (!text || busy) return;
     setBusy(true);
-    const next: Message[] = [...messages, { role: "user", content: text }];
+    const runId = `ai-${++runIdRef.current}`;
+    const next: Message[] = [...messages, { role: "user", content: text }, { role: "assistant", content: "__stream__" }];
     setMessages(next);
     setInput("");
     const providerIds = moa
@@ -32,15 +73,23 @@ export default function AIStudioView() {
       : activeProvider
         ? [activeProvider.id]
         : [];
-    const reply = await db.sendAiMessage({ providerIds, messages: next, moa });
-    setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+    try {
+      await db.sendAiMessageStream({
+        providerIds,
+        messages: next.filter((m) => m.content !== "__stream__"),
+        moa,
+        runId,
+      });
+    } catch {
+      setMessages((prev) => prev.map((m) => (m.content === "__stream__" ? { ...m, content: "请求失败: stream unavailable" } : m)));
+      setBusy(false);
+    }
     if (moa) {
       openInspector("MOA Trace", [
         { label: "Providers", value: providerIds.length ? providerIds.join(", ") : "none" },
-        { label: "Consensus", value: reply },
+        { label: "Status", value: "streaming consensus" },
       ]);
     }
-    setBusy(false);
   };
 
   return (
@@ -101,7 +150,10 @@ export default function AIStudioView() {
                   : "self-start border border-white/10 bg-white/[0.04] text-slate-300"
               }`}
             >
-              {m.content}
+              {m.content === "__stream__" ? "" : m.content}
+              {m.content === "__stream__" && busy && (
+                <span className="stream-caret" />
+              )}
             </div>
           ))}
         </div>

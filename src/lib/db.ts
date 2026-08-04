@@ -380,6 +380,67 @@ export async function sendAiMessage(args: {
   return `[${label}] Browser fallback: the desktop app provides live model routing. Providers: ${args.providerIds.join(", ") || "none"}.`;
 }
 
+export type StreamChunk = {
+  id: string;
+  delta: string;
+  done: boolean;
+  error: string | null;
+};
+
+export async function sendAiMessageStream(args: {
+  providerIds: string[];
+  messages: { role: string; content: string }[];
+  moa: boolean;
+  runId: string;
+}): Promise<void> {
+  if (isTauri()) {
+    await invoke("stream_ai_message", {
+      providerIds: args.providerIds,
+      messages: args.messages,
+      moa: args.moa,
+      runId: args.runId,
+    });
+    return;
+  }
+
+  const reply =
+    "Streaming fallback: 这条回复由浏览器分块模拟，逐段到达。\n\n- 第一段已就绪\n- 第二段继续\n- 第三段完成";
+  const words = reply.split(" ");
+  let index = 0;
+  await new Promise<void>((resolve) => {
+    const timer = window.setInterval(() => {
+      if (index >= words.length) {
+        window.clearInterval(timer);
+        emitLocalStreamChunk({ id: args.runId, delta: "", done: true, error: null });
+        resolve();
+        return;
+      }
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: `${words[index]} `,
+        done: false,
+        error: null,
+      });
+      index += 1;
+    }, 60);
+  });
+}
+
+const localChunkHandlers = new Set<(chunk: StreamChunk) => void>();
+
+function emitLocalStreamChunk(chunk: StreamChunk) {
+  for (const handler of localChunkHandlers) handler(chunk);
+}
+
+export async function listenStreamChunks(handler: (chunk: StreamChunk) => void): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<StreamChunk>("stream-chunk", (event) => handler(event.payload));
+  }
+  localChunkHandlers.add(handler);
+  return () => localChunkHandlers.delete(handler);
+}
+
 export async function getProjectGitContext(path: string): Promise<{ head: string; changes: string[] }> {
   if (isTauri()) return invoke<{ head: string; changes: string[] }>("get_project_git_context", { path });
   return { head: "main", changes: ["docs/plans/sprint-1-plan.md", "src/App.tsx"] };
