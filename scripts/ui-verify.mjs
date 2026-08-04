@@ -93,7 +93,10 @@ async function evaluate(expression) {
     awaitPromise: true,
   });
   if (result.exceptionDetails) {
-    throw new Error(`evaluate failed: ${result.exceptionDetails.text}`);
+    const details = result.exceptionDetails.exception?.description
+      ?? result.exceptionDetails.exception?.value
+      ?? JSON.stringify(result.exceptionDetails);
+    throw new Error(`evaluate failed: ${details}`);
   }
   return result.result.value;
 }
@@ -839,6 +842,7 @@ try {
     }
     const restoreBtn = document.querySelector('button[aria-label="Restore version 1"]');
     if (!historySeen || !restoreBtn) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
       return {
         ok: false,
         reason: "version history missing",
@@ -846,8 +850,36 @@ try {
         editedVisible,
         oldTextGone,
         panel: document.querySelector(".version-panel")?.textContent ?? "",
+        messages: (shape.chatMessages ?? []).map((m) => ({ id: m.id, content: m.content })),
+        versions: (shape.messageVersions ?? []).map((v) => ({ id: v.id, messageId: v.messageId, content: v.content })),
       };
     }
+    document.querySelector('button[aria-label="Compare version 1 with current"]')?.click();
+    let diffSeen = false;
+    let diffCounts = "";
+    for (let i = 0; i < 20; i++) {
+      const diff = document.querySelector(".version-diff");
+      const text = diff?.textContent ?? "";
+      if (text.includes("sprint 14 edit check") && text.includes("sprint 14 edited text")) {
+        diffSeen = true;
+        diffCounts = text.includes("+1") && text.includes("-1") ? "+1 -1" : "";
+        break;
+      }
+      await sleep(100);
+    }
+    if (!diffSeen) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      return {
+        ok: false,
+        reason: "version diff missing",
+        historySeen,
+        panel: document.querySelector(".version-panel")?.textContent ?? "",
+        messages: (shape.chatMessages ?? []).map((m) => ({ id: m.id, content: m.content })),
+        versions: (shape.messageVersions ?? []).map((v) => ({ id: v.id, messageId: v.messageId, content: v.content })),
+      };
+    }
+    document.querySelector('button[aria-label="Compare version 1 with current"]')?.click();
+    await sleep(150);
     restoreBtn.click();
     let restoredVisible = false;
     for (let i = 0; i < 20; i++) {
@@ -915,6 +947,8 @@ try {
       editedVisible,
       oldTextGone,
       historySeen,
+      diffSeen,
+      diffCounts,
       restoredVisible,
       editedGoneAfterRestore,
       finalEditedVisible,
@@ -929,6 +963,8 @@ try {
     !messageEdit.editedVisible ||
     !messageEdit.oldTextGone ||
     !messageEdit.historySeen ||
+    !messageEdit.diffSeen ||
+    messageEdit.diffCounts !== "+1 -1" ||
     !messageEdit.restoredVisible ||
     !messageEdit.editedGoneAfterRestore ||
     !messageEdit.finalEditedVisible ||

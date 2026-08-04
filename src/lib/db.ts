@@ -51,6 +51,11 @@ export type MessageVersion = {
   createdAt: number;
 };
 
+export type MessageDiff = {
+  added: string[];
+  removed: string[];
+};
+
 export type Provider = {
   id: string;
   name: string;
@@ -554,6 +559,61 @@ export async function restoreMessageVersion(messageId: string, versionId: string
   if (!version) throw new Error("message version not found");
   await updateChatMessage(messageId, version.content);
   return version.content;
+}
+
+export async function diffMessageVersionWithCurrent(
+  messageId: string,
+  versionId: string,
+): Promise<MessageDiff> {
+  if (isTauri()) {
+    return invoke<MessageDiff>("diff_message_version_with_current", { messageId, versionId });
+  }
+  const shape = readLocal();
+  const version = (shape.messageVersions ?? []).find((v) => v.id === versionId && v.messageId === messageId);
+  const message = shape.chatMessages.find((m) => m.id === messageId);
+  if (!version || !message) throw new Error("message version not found");
+  return lineDiff(version.content, message.content);
+}
+
+function lineDiff(a: string, b: string): MessageDiff {
+  const aLines = a.split("\n");
+  const bLines = b.split("\n");
+  const width = bLines.length + 1;
+  const height = aLines.length + 1;
+  const dp = Array.from({ length: height }, () => new Int32Array(width));
+  for (let i = height - 2; i >= 0; i--) {
+    for (let j = width - 2; j >= 0; j--) {
+      dp[i][j] =
+        aLines[i] === bLines[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const added: string[] = [];
+  const removed: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < aLines.length && j < bLines.length) {
+    if (aLines[i] === bLines[j]) {
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      removed.push(aLines[i]);
+      i++;
+    } else {
+      added.push(bLines[j]);
+      j++;
+    }
+  }
+  while (i < aLines.length) {
+    removed.push(aLines[i]);
+    i++;
+  }
+  while (j < bLines.length) {
+    added.push(bLines[j]);
+    j++;
+  }
+  return { added, removed };
 }
 
 export async function listHabits(): Promise<Habit[]> {

@@ -177,6 +177,13 @@ pub struct MessageVersion {
     pub created_at: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {
@@ -1087,6 +1094,51 @@ pub fn restore_message_version(
     Ok(content)
 }
 
+pub fn diff_message_version_with_current(
+    conn: &Connection,
+    message_id: &str,
+    version_id: &str,
+) -> Result<MessageDiff> {
+    let version_content: Option<String> = conn
+        .query_row(
+            "SELECT content FROM message_versions WHERE id = ?1 AND message_id = ?2",
+            params![version_id, message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let current_content: Option<String> = conn
+        .query_row(
+            "SELECT content FROM chat_messages WHERE id = ?1",
+            params![message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let version = version_content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    let current = current_content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    Ok(line_diff(&version, &current))
+}
+
+fn line_diff(a: &str, b: &str) -> MessageDiff {
+    let diff = similar::TextDiff::from_lines(a, b);
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Delete => removed.push(strip_line_ending(change.value())),
+            similar::ChangeTag::Insert => added.push(strip_line_ending(change.value())),
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    MessageDiff { added, removed }
+}
+
+fn strip_line_ending(value: &str) -> String {
+    let trimmed = value.strip_suffix("\r\n").unwrap_or(value);
+    let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+    trimmed.to_string()
+}
+
 pub fn truncate_chat_messages(
     conn: &Connection,
     session_id: &str,
@@ -1244,6 +1296,35 @@ mod tests {
             "v1 original"
         );
         assert_eq!(list_message_versions(&conn, &user.id).unwrap().len(), 3);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn message_version_diff_with_current_reports_added_and_removed_lines() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-diff-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Diff test", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "current", None).unwrap();
+        save_message_version(&conn, &user.id, "alpha\nbeta\nold line").unwrap();
+        save_message_version(&conn, &user.id, "alpha\nbeta\nnew line").unwrap();
+        update_chat_message(&conn, &user.id, "alpha\nbeta\nnew line").unwrap();
+
+        let versions = list_message_versions(&conn, &user.id).unwrap();
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].content, "alpha\nbeta\nold line");
+        assert_eq!(versions[1].content, "alpha\nbeta\nnew line");
+        let diff = diff_message_version_with_current(&conn, &user.id, &versions[0].id).unwrap();
+        assert_eq!(diff.removed, vec!["old line"]);
+        assert_eq!(diff.added, vec!["new line"]);
+
+        let same = diff_message_version_with_current(&conn, &user.id, &versions[1].id).unwrap();
+        assert!(same.added.is_empty());
+        assert!(same.removed.is_empty());
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

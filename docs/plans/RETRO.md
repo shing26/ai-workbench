@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 18
+
+### What went well?
+
+- 版本差异对比闭环：`MessageDiff { added[], removed[] }` + Rust `diff_message_version_with_current`，版本面板 Compare 按钮展开 `vN → current` 增删行，红绿语义清晰。
+- 浏览器 fallback 与 Tauri 行为一致：TS LCS 逐行 diff 与 Rust `similar` 对齐，前端不依赖后端也能验证。
+- 验证覆盖：`verify:ui` / `verify:preview` 新增“编辑→对比 v1 与当前→恢复→再编辑→重新生成”完整断言，`cargo test --lib` 14/14，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 第一版 diff 接口错误地比较两个版本 ID，但当前内容并不是版本；改为 `版本 vs 当前消息内容` 后语义正确。
+- 单测首次因版本顺序理解偏差失败：`update_chat_message` 会先保存旧内容再更新，断言需按实际版本列表顺序对齐。
+- verify 脚本一次正则 `/+1\s+-1/` 写错导致 Uncaught，改成文本包含判断后稳定通过。
+
+### Action Items
+
+- 下一 Sprint 候选：剪贴板/日志跨设备同步、真实 Provider 端到端流式联调、多版本图谱与分支可视化。
+- 后续改动版本面板或编辑链路时，保留 diff 与恢复断言。
+
 ## Sprint 17
 
 ### What went well?

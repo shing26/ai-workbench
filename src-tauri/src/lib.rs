@@ -923,6 +923,17 @@ fn restore_message_version(
 }
 
 #[tauri::command]
+fn diff_message_version_with_current(
+    state: State<'_, db::Db>,
+    message_id: String,
+    version_id: String,
+) -> Result<db::MessageDiff, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::diff_message_version_with_current(&conn, &message_id, &version_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_clipboard(state: State<'_, db::Db>) -> Result<Vec<db::ClipboardItem>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_clipboard(&conn).map_err(|e| e.to_string())
@@ -1383,6 +1394,7 @@ pub fn run() {
             save_message_version,
             list_message_versions,
             restore_message_version,
+            diff_message_version_with_current,
             list_clipboard,
             list_error_logs,
             report_frontend_error,

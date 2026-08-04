@@ -1,4 +1,4 @@
-import { Check, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
+import { Check, GitCompare, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -34,6 +34,8 @@ export default function AIStudioView() {
   const [editDraft, setEditDraft] = useState("");
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
+  const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
+  const [versionDiff, setVersionDiff] = useState<db.MessageDiff | null>(null);
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number }>());
@@ -435,10 +437,25 @@ export default function AIStudioView() {
     if (historyOpen === message.id) {
       setHistoryOpen(null);
       setHistoryVersions([]);
+      setDiffVersionId(null);
+      setVersionDiff(null);
       return;
     }
     setHistoryOpen(message.id ?? null);
     setHistoryVersions(await db.listMessageVersions(message.id ?? ""));
+    setDiffVersionId(null);
+    setVersionDiff(null);
+  };
+
+  const toggleVersionDiff = async (message: Message, version: db.MessageVersion) => {
+    if (!message.id) return;
+    if (diffVersionId === version.id) {
+      setDiffVersionId(null);
+      setVersionDiff(null);
+      return;
+    }
+    setDiffVersionId(version.id);
+    setVersionDiff(await db.diffMessageVersionWithCurrent(message.id, version.id));
   };
 
   const restoreVersion = async (message: Message, version: db.MessageVersion) => {
@@ -715,7 +732,7 @@ export default function AIStudioView() {
                   </div>
               ) : null}
               {historyOpen === m.id && (
-                <div className="version-panel mt-1 w-[min(420px,90vw)] rounded-xl border border-white/10 bg-[#18181C] p-2 shadow-xl">
+                <div className="version-panel mt-1 w-[min(480px,90vw)] rounded-xl border border-white/10 bg-[#18181C] p-2 shadow-xl">
                   {historyVersions.length === 0 ? (
                     <div className="px-2 py-3 text-center text-[10px] text-slate-600">No versions yet</div>
                   ) : (
@@ -746,8 +763,47 @@ export default function AIStudioView() {
                           >
                             Restore
                           </button>
+                          <button
+                            type="button"
+                            aria-label={`Compare version ${i + 1} with current`}
+                            onClick={() => void toggleVersionDiff(m, v)}
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
+                              diffVersionId === v.id
+                                ? "bg-amber-500/20 text-amber-300"
+                                : "bg-white/5 text-slate-400 hover:text-amber-300"
+                            }`}
+                          >
+                            <GitCompare size={10} />
+                          </button>
                         </div>
                       ))}
+                      {diffVersionId && versionDiff && (
+                        <div className="version-diff rounded-lg border border-white/10 bg-black/20 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                              Diff · v{historyVersions.findIndex((v) => v.id === diffVersionId) + 1} → current
+                            </div>
+                            <div className="text-[9px] text-slate-500">
+                              <span className="text-emerald-400">+{versionDiff.added.length}</span>{" "}
+                              <span className="text-rose-400">-{versionDiff.removed.length}</span>
+                            </div>
+                          </div>
+                          <div className="mt-1.5 max-h-28 space-y-0.5 overflow-y-auto">
+                            {versionDiff.removed.map((line, idx) => (
+                              <div key={`r-${idx}`} className="flex items-start gap-1 rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] leading-relaxed text-rose-300">
+                                <span className="shrink-0 select-none text-rose-500">-</span>
+                                <span className="min-w-0 whitespace-pre-wrap break-words">{line}</span>
+                              </div>
+                            ))}
+                            {versionDiff.added.map((line, idx) => (
+                              <div key={`a-${idx}`} className="flex items-start gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] leading-relaxed text-emerald-300">
+                                <span className="shrink-0 select-none text-emerald-500">+</span>
+                                <span className="min-w-0 whitespace-pre-wrap break-words">{line}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
