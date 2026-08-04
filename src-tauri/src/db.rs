@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at);
+CREATE TABLE IF NOT EXISTS message_versions (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at INTEGER,
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_message_versions_message ON message_versions(message_id, created_at);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -156,6 +164,15 @@ pub struct ChatMessage {
     pub id: String,
     pub session_id: String,
     pub role: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageVersion {
+    pub id: String,
+    pub message_id: String,
     pub content: String,
     pub created_at: i64,
 }
@@ -1001,11 +1018,73 @@ pub fn list_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<Cha
 }
 
 pub fn update_chat_message(conn: &Connection, id: &str, content: &str) -> Result<()> {
+    let old: Option<String> = conn
+        .query_row(
+            "SELECT content FROM chat_messages WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(old_content) = old {
+        save_message_version(conn, id, &old_content)?;
+    }
     conn.execute(
         "UPDATE chat_messages SET content = ?1 WHERE id = ?2",
         params![content, id],
     )?;
     Ok(())
+}
+
+pub fn save_message_version(
+    conn: &Connection,
+    message_id: &str,
+    content: &str,
+) -> Result<MessageVersion> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO message_versions (id, message_id, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, message_id, content, now],
+    )?;
+    Ok(MessageVersion {
+        id,
+        message_id: message_id.to_string(),
+        content: content.to_string(),
+        created_at: now,
+    })
+}
+
+pub fn list_message_versions(conn: &Connection, message_id: &str) -> Result<Vec<MessageVersion>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, message_id, content, created_at FROM message_versions
+         WHERE message_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![message_id], |row| {
+        Ok(MessageVersion {
+            id: row.get(0)?,
+            message_id: row.get(1)?,
+            content: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn restore_message_version(
+    conn: &Connection,
+    message_id: &str,
+    version_id: &str,
+) -> Result<String> {
+    let content: Option<String> = conn
+        .query_row(
+            "SELECT content FROM message_versions WHERE id = ?1 AND message_id = ?2",
+            params![version_id, message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let content = content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    update_chat_message(conn, message_id, &content)?;
+    Ok(content)
 }
 
 pub fn truncate_chat_messages(
@@ -1127,6 +1206,44 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "New question");
         assert!(!messages.iter().any(|m| m.id == first.id || m.id == tail.id));
+        let versions = list_message_versions(&conn, &user.id).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].content, "Old question");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn message_versions_persist_and_restore() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-version-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Version test", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "v1 original", None).unwrap();
+        let assistant =
+            save_chat_message(&conn, &session.id, "assistant", "old answer", None).unwrap();
+        save_message_version(&conn, &assistant.id, "old answer").unwrap();
+        update_chat_message(&conn, &user.id, "v2 edited").unwrap();
+        update_chat_message(&conn, &user.id, "v3 edited again").unwrap();
+
+        let versions = list_message_versions(&conn, &user.id).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].content, "v1 original");
+        assert_eq!(versions[1].content, "v2 edited");
+        let assistant_versions = list_message_versions(&conn, &assistant.id).unwrap();
+        assert_eq!(assistant_versions.len(), 1);
+        assert_eq!(assistant_versions[0].content, "old answer");
+
+        let restored = restore_message_version(&conn, &user.id, &versions[0].id).unwrap();
+        assert_eq!(restored, "v1 original");
+        assert_eq!(
+            list_chat_messages(&conn, &session.id).unwrap()[0].content,
+            "v1 original"
+        );
+        assert_eq!(list_message_versions(&conn, &user.id).unwrap().len(), 3);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

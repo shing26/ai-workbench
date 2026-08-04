@@ -44,6 +44,13 @@ export type ChatMessage = {
   createdAt: number;
 };
 
+export type MessageVersion = {
+  id: string;
+  messageId: string;
+  content: string;
+  createdAt: number;
+};
+
 export type Provider = {
   id: string;
   name: string;
@@ -143,6 +150,7 @@ type LocalShape = {
   providers: Provider[];
   sessions: Session[];
   chatMessages: ChatMessage[];
+  messageVersions: MessageVersion[];
   habits: Habit[];
   scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
@@ -166,6 +174,7 @@ function emptyShape(): LocalShape {
     providers: [],
     sessions: [],
     chatMessages: [],
+    messageVersions: [],
     habits: [],
     scheduleEvents: [],
     clipboard: [],
@@ -199,6 +208,7 @@ function seedShape(): LocalShape {
       { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
     ],
     chatMessages: [],
+    messageVersions: [],
     habits: [
       { id: makeId(), name: "晨间阅读", weekGoal: 5, currentStreak: 3, color: "emerald", doneToday: false, createdAt: now - 86400000 },
       { id: makeId(), name: "深水工作", weekGoal: 4, currentStreak: 2, color: "blue", doneToday: false, createdAt: now - 172800000 },
@@ -451,6 +461,8 @@ export async function deleteSession(id: string): Promise<void> {
   const shape = readLocal();
   shape.sessions = shape.sessions.filter((s) => s.id !== id);
   shape.chatMessages = shape.chatMessages.filter((m) => m.sessionId !== id);
+  const remainingMessageIds = new Set(shape.chatMessages.map((m) => m.id));
+  shape.messageVersions = (shape.messageVersions ?? []).filter((v) => remainingMessageIds.has(v.messageId));
   writeLocal(shape);
 }
 
@@ -483,7 +495,16 @@ export async function updateChatMessage(id: string, content: string): Promise<vo
   }
   const shape = readLocal();
   const message = shape.chatMessages.find((m) => m.id === id);
-  if (message) message.content = content;
+  if (message && message.content !== content) {
+    shape.messageVersions = shape.messageVersions ?? [];
+    shape.messageVersions.push({
+      id: makeId(),
+      messageId: id,
+      content: message.content,
+      createdAt: Date.now(),
+    });
+    message.content = content;
+  }
   writeLocal(shape);
 }
 
@@ -498,8 +519,41 @@ export async function truncateChatMessages(sessionId: string, keepMessageId: str
     shape.chatMessages = shape.chatMessages.filter(
       (m) => m.sessionId !== sessionId || m.createdAt <= keep.createdAt || m.id === keepMessageId,
     );
+    const remainingMessageIds = new Set(shape.chatMessages.map((m) => m.id));
+    shape.messageVersions = (shape.messageVersions ?? []).filter((v) => remainingMessageIds.has(v.messageId));
   }
   writeLocal(shape);
+}
+
+export async function saveMessageVersion(messageId: string, content: string): Promise<MessageVersion> {
+  if (isTauri()) return invoke<MessageVersion>("save_message_version", { messageId, content });
+  const shape = readLocal();
+  shape.messageVersions = shape.messageVersions ?? [];
+  const version: MessageVersion = {
+    id: makeId(),
+    messageId,
+    content,
+    createdAt: Date.now(),
+  };
+  shape.messageVersions.push(version);
+  writeLocal(shape);
+  return version;
+}
+
+export async function listMessageVersions(messageId: string): Promise<MessageVersion[]> {
+  if (isTauri()) return invoke<MessageVersion[]>("list_message_versions", { messageId });
+  return (readLocal().messageVersions ?? [])
+    .filter((v) => v.messageId === messageId)
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function restoreMessageVersion(messageId: string, versionId: string): Promise<string> {
+  if (isTauri()) return invoke<string>("restore_message_version", { messageId, versionId });
+  const shape = readLocal();
+  const version = (shape.messageVersions ?? []).find((v) => v.id === versionId && v.messageId === messageId);
+  if (!version) throw new Error("message version not found");
+  await updateChatMessage(messageId, version.content);
+  return version.content;
 }
 
 export async function listHabits(): Promise<Habit[]> {

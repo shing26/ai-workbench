@@ -821,6 +821,71 @@ try {
     const editedVisible = document.body.innerText.includes("sprint 14 edited text");
     const oldTextGone = !document.body.innerText.includes("sprint 14 edit check");
 
+    const historyGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edited text"));
+    if (!historyGroup) {
+      return { ok: false, reason: "edited group missing before history", replySeen, editedVisible, oldTextGone };
+    }
+    historyGroup.querySelector('button[aria-label="Open message history"]')?.click();
+    let historySeen = false;
+    for (let i = 0; i < 20; i++) {
+      const panel = document.querySelector(".version-panel");
+      if (panel?.textContent?.includes("sprint 14 edit check")) {
+        historySeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const restoreBtn = document.querySelector('button[aria-label="Restore version 1"]');
+    if (!historySeen || !restoreBtn) {
+      return {
+        ok: false,
+        reason: "version history missing",
+        historySeen,
+        editedVisible,
+        oldTextGone,
+        panel: document.querySelector(".version-panel")?.textContent ?? "",
+      };
+    }
+    restoreBtn.click();
+    let restoredVisible = false;
+    for (let i = 0; i < 20; i++) {
+      if (
+        [...document.querySelectorAll(".message-in")].some((el) =>
+          el.textContent?.includes("sprint 14 edit check"),
+        )
+      ) {
+        restoredVisible = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const editedGoneAfterRestore = ![...document.querySelectorAll(".message-in")].some((el) =>
+      el.textContent?.includes("sprint 14 edited text"),
+    );
+
+    const restoredGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edit check"));
+    if (!restoredGroup) {
+      return { ok: false, reason: "restored group missing", restoredVisible, editedGoneAfterRestore };
+    }
+    restoredGroup.querySelector('button[aria-label="Edit message"]')?.click();
+    await sleep(200);
+    const reeditInput = document.querySelector('textarea[aria-label="Edit message input"]');
+    if (!reeditInput) {
+      return { ok: false, reason: "re-edit input missing", restoredVisible, editedGoneAfterRestore };
+    }
+    setValue(reeditInput, "sprint 14 edited text");
+    await sleep(120);
+    document.querySelector('button[aria-label="Save message edit"]')?.click();
+    await sleep(300);
+    const finalEditedVisible = document.body.innerText.includes("sprint 14 edited text");
+    const finalOldTextGone = ![...document.querySelectorAll(".message-in")].some((el) =>
+      el.textContent?.includes("sprint 14 edit check"),
+    );
+
     const editedGroup = [...document.querySelectorAll(".message-in")]
       .map((el) => el.parentElement)
       .find((el) => el?.textContent?.includes("sprint 14 edited text"));
@@ -849,6 +914,11 @@ try {
       replySeen,
       editedVisible,
       oldTextGone,
+      historySeen,
+      restoredVisible,
+      editedGoneAfterRestore,
+      finalEditedVisible,
+      finalOldTextGone,
       regenerated,
       messagesAfter,
     };
@@ -858,6 +928,11 @@ try {
     !messageEdit.replySeen ||
     !messageEdit.editedVisible ||
     !messageEdit.oldTextGone ||
+    !messageEdit.historySeen ||
+    !messageEdit.restoredVisible ||
+    !messageEdit.editedGoneAfterRestore ||
+    !messageEdit.finalEditedVisible ||
+    !messageEdit.finalOldTextGone ||
     !messageEdit.regenerated
   ) {
     throw new Error(`AI Studio message edit/regenerate assertion failed: ${JSON.stringify(messageEdit)}`);

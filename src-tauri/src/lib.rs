@@ -894,6 +894,35 @@ fn truncate_chat_messages(
 }
 
 #[tauri::command]
+fn save_message_version(
+    state: State<'_, db::Db>,
+    message_id: String,
+    content: String,
+) -> Result<db::MessageVersion, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::save_message_version(&conn, &message_id, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_message_versions(
+    state: State<'_, db::Db>,
+    message_id: String,
+) -> Result<Vec<db::MessageVersion>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_message_versions(&conn, &message_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_message_version(
+    state: State<'_, db::Db>,
+    message_id: String,
+    version_id: String,
+) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::restore_message_version(&conn, &message_id, &version_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_clipboard(state: State<'_, db::Db>) -> Result<Vec<db::ClipboardItem>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_clipboard(&conn).map_err(|e| e.to_string())
@@ -1351,6 +1380,9 @@ pub fn run() {
             list_chat_messages,
             update_chat_message,
             truncate_chat_messages,
+            save_message_version,
+            list_message_versions,
+            restore_message_version,
             list_clipboard,
             list_error_logs,
             report_frontend_error,

@@ -1,4 +1,4 @@
-import { Check, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
+import { Check, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -32,6 +32,8 @@ export default function AIStudioView() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [historyOpen, setHistoryOpen] = useState<string | null>(null);
+  const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number }>());
@@ -386,6 +388,9 @@ export default function AIStudioView() {
     setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, content } : m)));
     setEditingMessageId(null);
     setEditDraft("");
+    if (historyOpen === message.id) {
+      setHistoryVersions(await db.listMessageVersions(message.id));
+    }
   };
 
   const regenerateMessage = async (message: Message) => {
@@ -395,6 +400,12 @@ export default function AIStudioView() {
     setStreamError(null);
     retryTargetRef.current = message;
     setEditingMessageId(null);
+    const removedMessages = messages
+      .slice(messages.findIndex((m) => m.id === message.id) + 1)
+      .filter((m) => m.id && m.content !== "__stream__" && m.content.trim());
+    await Promise.all(
+      removedMessages.map((m) => db.saveMessageVersion(m.id as string, m.content)),
+    );
     await db.truncateChatMessages(sessionIdRef.current, message.id);
     const truncated = messages
       .map((m) => (m.id === message.id ? { ...m, content: editDraft.trim() || m.content } : m))
@@ -418,6 +429,24 @@ export default function AIStudioView() {
   const retryLast = () => {
     const target = retryTargetRef.current;
     if (target) void regenerateMessage(target);
+  };
+
+  const toggleHistory = async (message: Message) => {
+    if (historyOpen === message.id) {
+      setHistoryOpen(null);
+      setHistoryVersions([]);
+      return;
+    }
+    setHistoryOpen(message.id ?? null);
+    setHistoryVersions(await db.listMessageVersions(message.id ?? ""));
+  };
+
+  const restoreVersion = async (message: Message, version: db.MessageVersion) => {
+    const restored = await db.restoreMessageVersion(message.id ?? "", version.id);
+    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, content: restored } : m)));
+    if (historyOpen === message.id) {
+      setHistoryVersions(await db.listMessageVersions(message.id ?? ""));
+    }
   };
 
   return (
@@ -665,6 +694,14 @@ export default function AIStudioView() {
                     >
                       <RefreshCw size={11} />
                     </button>
+                    <button
+                      type="button"
+                      aria-label="Open message history"
+                      onClick={() => void toggleHistory(m)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md bg-white/5 text-slate-500 hover:text-blue-300"
+                    >
+                      <History size={11} />
+                    </button>
                     {m.role === "user" && (
                       <button
                         type="button"
@@ -677,6 +714,44 @@ export default function AIStudioView() {
                     )}
                   </div>
               ) : null}
+              {historyOpen === m.id && (
+                <div className="version-panel mt-1 w-[min(420px,90vw)] rounded-xl border border-white/10 bg-[#18181C] p-2 shadow-xl">
+                  {historyVersions.length === 0 ? (
+                    <div className="px-2 py-3 text-center text-[10px] text-slate-600">No versions yet</div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="px-1 text-[9px] uppercase tracking-wide text-slate-500">Version history</div>
+                      {historyVersions.map((v, i) => (
+                        <div
+                          key={v.id}
+                          className="flex items-start gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[9px] text-slate-600">
+                              v{i + 1} ·{" "}
+                              {new Date(v.createdAt).toLocaleTimeString("zh-CN", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </div>
+                            <p className="max-h-10 overflow-hidden whitespace-pre-wrap break-words text-[10px] leading-relaxed text-slate-300">
+                              {v.content}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Restore version ${i + 1}`}
+                            onClick={() => void restoreVersion(m, v)}
+                            className="shrink-0 rounded-md bg-blue-500/15 px-1.5 py-1 text-[9px] text-[#7FB4FF] hover:bg-blue-500/25"
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>

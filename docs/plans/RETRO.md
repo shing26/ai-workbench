@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 17
+
+### What went well?
+
+- 消息版本历史闭环：`message_versions` 表 + `save/list/restore` 三个 Tauri 命令，编辑与 regenerate 自动保留旧版本，Restore 可一键回到旧文本并保留分叉版本。
+- 前端版本面板：History 按钮展开版本列表，恢复后刷新版本视图；浏览器 fallback 与 Tauri 行为一致，清库时级联清理孤儿版本。
+- 验证覆盖：`verify:ui` / `verify:preview` 新增“编辑→查历史→恢复→再编辑→重新生成”完整断言，`cargo test --lib` 13/13，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- `verify:ui` 首轮失败：版本面板恢复后仍显示旧版本，用 `document.body.innerText` 断言“旧文本消失”会误判；改为只断言消息气泡内容，面板内容单独校验。
+- TS 首轮构建报 `message.id` 可能为 undefined，补充空值兜底后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：版本差异对比视图、真实 Provider 端到端流式联调、剪贴板/日志跨设备同步。
+- 后续改动消息编辑或版本面板时，保留版本历史与恢复断言。
+
 ## Sprint 16
 
 ### What went well?
