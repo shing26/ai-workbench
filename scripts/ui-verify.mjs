@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-const APP_URL = "http://localhost:1420";
+const APP_URL = process.env.AIWB_APP_URL || "http://localhost:1420";
 const OUT_DIR = "D:/ai-workbench/.screenshots";
+const SHOT_PREFIX = process.env.AIWB_SHOT_PREFIX || "sprint1";
+const APP_HOST = new URL(APP_URL).host;
 const VIEWS = [
   { id: "ai-studio", label: "AI Studio", header: "AI Studio" },
   { id: "projects", label: "Projects", header: "Projects" },
@@ -50,7 +52,7 @@ async function getPageTarget(port) {
   for (let i = 0; i < 60; i++) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = list.find((t) => t.type === "page" && t.url.includes("localhost:1420"));
+      const page = list.find((t) => t.type === "page" && t.url.includes(APP_HOST));
       if (page) return page;
     } catch {}
     await delay(250);
@@ -180,7 +182,7 @@ try {
       const headings = [...(main?.querySelectorAll('h2') ?? [])].slice(0, 4).map((h) => h.textContent);
       return { header, headings, bodyLength: main?.innerText.length ?? 0 };
     })()`);
-    const shot = await capture(`sprint1-${view.id}.png`);
+    const shot = await capture(`${SHOT_PREFIX}-${view.id}.png`);
     const tokens = await sampleTokens();
     results.views.push({ id: view.id, label: view.label, state, shot, tokens });
   }
@@ -215,7 +217,7 @@ try {
 
   await setViewport(390, 844);
   await clickDock("AI Studio");
-  results.mobileShot = await capture("sprint1-mobile-ai-studio.png");
+  results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
 
   console.log(JSON.stringify(results, null, 2));
 } finally {

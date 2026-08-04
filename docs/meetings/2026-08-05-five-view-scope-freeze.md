@@ -102,4 +102,4 @@ src/
 1. 前端实现栈：沿用当前 React + TypeScript（`.tsx`），会议草案中的 `.vue` 命名只作逻辑组件树参考。
 2. 数据层：采用 5 张核心表基线，不引入 15 表草案，复杂关系进入 Backlog。
 3. 右侧 Inspector 抽屉：Sprint 1 实现 App Shell 骨架与 Projects/AI Studio 触发入口，完整字段编辑进入下一个 Sprint。
-4. 质量门：Sprint 1 以 `cargo fmt --check`、`cargo clippy --lib -D warnings`、`cargo test --lib`、`npm run build` 与 `npm run verify:ui` 作为自动化验收；ESLint/Prettier 与 husky/lint-staged 接入列入 Backlog。
+4. 质量门：Sprint 1 以 `cargo fmt --check`、`cargo clippy --lib -D warnings`、`cargo test --lib`、`npm run build`、`npm run verify:ui` 与 `npm run verify:preview` 作为自动化验收；ESLint/Prettier 与 husky/lint-staged 接入列入 Backlog。

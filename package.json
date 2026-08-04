@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "verify:ui": "node scripts/ui-verify.mjs",
+    "verify:preview": "node scripts/preview-verify.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

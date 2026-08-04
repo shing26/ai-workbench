@@ -15,7 +15,7 @@
 | T7 | Knowledge & Inbox 视图 | 顶部 Command+N 闪念框、标签树、右侧 Markdown 预览、RAG 状态占位 |
 | T8 | Actions & Schedule 视图 | 今日 Focus 大卡片、Linear 风格任务列表、Enter 快速新建 |
 | T9 | System & Automation 视图 | Provider 节点卡片（Health/Latency）、剪贴板历史、错误日志列表 |
-| T10 | QA 与 DoD 验收 | `npm run verify:ui` 自动化测试 + 截图证据，覆盖 5 视图切换、视觉 Token、数据持久化、环境隔离 |
+| T10 | QA 与 DoD 验收 | `npm run verify:ui` + `npm run verify:preview` 自动化测试与截图证据，覆盖 5 视图切换、视觉 Token、数据持久化、环境隔离 |
 
 ## 范围外（进入 Backlog）
 
