@@ -214,7 +214,7 @@ try {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
-    setter.call(input, "Streaming DoD check");
+    setter.call(input, "sprint RAG check");
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 120));
     const send = document.querySelector('main button[aria-label="Send"]');
@@ -230,18 +230,35 @@ try {
     }
     await new Promise((r) => setTimeout(r, 900));
     const bodyText = document.body.innerText;
+    let ragBadge = "";
+    let inspectorText = "";
+    for (let i = 0; i < 20; i++) {
+      ragBadge = document.querySelector(".rag-badge")?.textContent?.trim() ?? "";
+      inspectorText = document.querySelector("aside")?.innerText ?? "";
+      if (ragBadge.includes("RAG +") && inspectorText.toLowerCase().includes("rag context")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
     return {
       ok: true,
       earlyCaret,
       replyVisible: bodyText.includes("Streaming fallback") || bodyText.includes("分块模拟"),
       streamingCaretGone: !document.querySelector(".stream-caret"),
       busyGone: !document.querySelector(".thinking-dot"),
+      ragBadge,
+      inspectorText,
     };
   })()`);
   if (!streamStarted.ok || !streamStarted.earlyCaret || !streamStarted.replyVisible) {
     throw new Error("AI Studio streaming assertion failed");
   }
+  if (!streamStarted.ragBadge.includes("RAG +") || !streamStarted.inspectorText.toLowerCase().includes("rag context")) {
+    throw new Error(
+      `AI Studio RAG injection assertion failed: badge=${JSON.stringify(streamStarted.ragBadge)} inspector=${JSON.stringify(streamStarted.inspectorText.slice(0, 160))}`,
+    );
+  }
   results.streaming = streamStarted;
+  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
+  await delay(250);
 
   await clickDock("Projects");
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
