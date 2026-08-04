@@ -1,5 +1,6 @@
 import { BookOpen, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -73,7 +74,9 @@ export default function KnowledgeView() {
           <button
             type="button"
             onClick={() => setFilter("all")}
-            className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${filter === "all" ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"}`}
+            className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${
+              filter === "all" ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"
+            }`}
           >
             All
           </button>
@@ -82,7 +85,9 @@ export default function KnowledgeView() {
               key={t}
               type="button"
               onClick={() => setFilter(t)}
-              className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${filter === t ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"}`}
+              className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${
+                filter === t ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"
+              }`}
             >
               {t}
             </button>
@@ -100,7 +105,7 @@ export default function KnowledgeView() {
                   : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
               }`}
             >
-              {t.content}
+              {t.content.split("\n")[0]}
             </button>
           ))}
           {filtered.length === 0 && <div className="py-10 text-center text-xs text-slate-600">No thoughts</div>}
@@ -117,7 +122,9 @@ export default function KnowledgeView() {
                 <span className="text-xs font-medium text-slate-200">{selected.type}</span>
                 <ModelBadge label={selected.tags} tone="green" />
               </div>
-              <p className="whitespace-pre-wrap text-xs leading-relaxed text-slate-300">{selected.content}</p>
+              <div className="markdown-body min-h-0 flex-1 overflow-y-auto text-xs leading-relaxed text-slate-300">
+                <ReactMarkdown>{selected.content}</ReactMarkdown>
+              </div>
             </>
           ) : (
             <div className="py-10 text-center text-xs text-slate-600">Select a thought</div>

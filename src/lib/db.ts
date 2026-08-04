@@ -44,6 +44,25 @@ export type Provider = {
   isActive: boolean;
 };
 
+export type Habit = {
+  id: string;
+  name: string;
+  weekGoal: number;
+  currentStreak: number;
+  color: "emerald" | "blue" | "amber" | "rose";
+  doneToday: boolean;
+  createdAt: number;
+};
+
+export type ScheduleEvent = {
+  id: string;
+  title: string;
+  startTime: string;
+  done: boolean;
+  tag: string;
+  createdAt: number;
+};
+
 export type ClipboardItem = {
   id: string;
   content: string;
@@ -68,6 +87,8 @@ type LocalShape = {
   thoughts: Thought[];
   providers: Provider[];
   sessions: Session[];
+  habits: Habit[];
+  scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
   logs: ErrorLog[];
 };
@@ -82,7 +103,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 const makeId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}`);
 
 function emptyShape(): LocalShape {
-  return { tasks: [], projects: [], thoughts: [], providers: [], sessions: [], clipboard: [], logs: [] };
+  return { tasks: [], projects: [], thoughts: [], providers: [], sessions: [], habits: [], scheduleEvents: [], clipboard: [], logs: [] };
 }
 
 function seedShape(): LocalShape {
@@ -99,7 +120,7 @@ function seedShape(): LocalShape {
     ],
     thoughts: [
       { id: makeId(), content: "Keep the dock at exactly 5 views.", tags: "#work", type: "inbox", createdAt: now - 4000 },
-      { id: makeId(), content: "Daily reading queue: 30 minutes.", tags: "#life", type: "note", createdAt: now - 3000 },
+      { id: makeId(), content: "# Sprint 3 笔记\n\n## 本周节奏\n\n- 早间：阅读 30 分钟\n- 下午：Sprint 验收\n\n```ts\nconst focus = tasks.filter(t => t.isToday);\n```\n\n> 先冻结范围，再写代码。", tags: "#work,#life", type: "note", createdAt: now - 3000 },
       { id: makeId(), content: "RAG index stays pending in Sprint 1.", tags: "#work,#life", type: "doc", createdAt: now - 2000 },
     ],
     providers: [
@@ -109,6 +130,15 @@ function seedShape(): LocalShape {
     ],
     sessions: [
       { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
+    ],
+    habits: [
+      { id: makeId(), name: "晨间阅读", weekGoal: 5, currentStreak: 3, color: "emerald", doneToday: false, createdAt: now - 86400000 },
+      { id: makeId(), name: "深水工作", weekGoal: 4, currentStreak: 2, color: "blue", doneToday: false, createdAt: now - 172800000 },
+      { id: makeId(), name: "运动 30 分钟", weekGoal: 3, currentStreak: 5, color: "amber", doneToday: false, createdAt: now - 259200000 },
+    ],
+    scheduleEvents: [
+      { id: makeId(), title: "每日复盘", startTime: "09:30", done: false, tag: "routine", createdAt: now - 3600000 },
+      { id: makeId(), title: "Sprint 3 验收", startTime: "14:00", done: false, tag: "work", createdAt: now - 1800000 },
     ],
     clipboard: [
       { id: makeId(), content: "pnpm run dev", source: "terminal", timestamp: now - 5000 },
@@ -236,6 +266,52 @@ export async function createSession(title: string, model: string): Promise<Sessi
   shape.sessions.unshift(session);
   writeLocal(shape);
   return session;
+}
+
+export async function listHabits(): Promise<Habit[]> {
+  return isTauri() ? invoke<Habit[]>("list_habits") : readLocal().habits;
+}
+
+export async function createHabit(name: string, weekGoal: number, color: Habit["color"]): Promise<Habit> {
+  if (isTauri()) return invoke<Habit>("create_habit", { name, weekGoal, color });
+  const shape = readLocal();
+  const habit: Habit = { id: makeId(), name, weekGoal, currentStreak: 0, color, doneToday: false, createdAt: Date.now() };
+  shape.habits.unshift(habit);
+  writeLocal(shape);
+  return habit;
+}
+
+export async function toggleHabit(id: string): Promise<Habit> {
+  if (isTauri()) return invoke<Habit>("toggle_habit", { id });
+  const shape = readLocal();
+  const habit = shape.habits.find((h) => h.id === id);
+  if (habit) habit.doneToday = !habit.doneToday;
+  writeLocal(shape);
+  return habit ?? shape.habits[0];
+}
+
+export async function listScheduleEvents(): Promise<ScheduleEvent[]> {
+  return isTauri() ? invoke<ScheduleEvent[]>("list_schedule_events") : readLocal().scheduleEvents;
+}
+
+export async function createScheduleEvent(title: string, startTime: string, tag: string): Promise<ScheduleEvent> {
+  if (isTauri()) return invoke<ScheduleEvent>("create_schedule_event", { title, startTime, tag });
+  const shape = readLocal();
+  const event: ScheduleEvent = { id: makeId(), title, startTime, done: false, tag, createdAt: Date.now() };
+  shape.scheduleEvents.push(event);
+  writeLocal(shape);
+  return event;
+}
+
+export async function toggleEventDone(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("toggle_event_done", { id });
+    return;
+  }
+  const shape = readLocal();
+  const event = shape.scheduleEvents.find((e) => e.id === id);
+  if (event) event.done = !event.done;
+  writeLocal(shape);
 }
 
 export async function listClipboard(): Promise<ClipboardItem[]> {

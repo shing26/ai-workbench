@@ -43,9 +43,34 @@ CREATE TABLE IF NOT EXISTS providers (
     api_key TEXT,
     is_active INTEGER DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS habits (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    week_goal INTEGER DEFAULT 5,
+    current_streak INTEGER DEFAULT 0,
+    color TEXT DEFAULT 'emerald',
+    created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    checked_at INTEGER,
+    FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS schedule_events (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    done INTEGER DEFAULT 0,
+    tag TEXT DEFAULT 'general',
+    created_at INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(is_today, status);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_date ON habit_logs(habit_id, date);
+CREATE INDEX IF NOT EXISTS idx_schedule_events_time ON schedule_events(start_time);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -101,11 +126,53 @@ pub struct Provider {
     pub is_active: bool,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Habit {
+    pub id: String,
+    pub name: String,
+    pub week_goal: i64,
+    pub current_streak: i64,
+    pub color: String,
+    pub done_today: bool,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleEvent {
+    pub id: String,
+    pub title: String,
+    pub start_time: String,
+    pub done: bool,
+    pub tag: String,
+    pub created_at: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn today_local() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    let days = secs.div_euclid(86_400);
+    let civil = days + 719_468;
+    let era = civil.div_euclid(146_097);
+    let doe = civil.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{:04}-{:02}-{:02}", year, month, day)
 }
 
 fn uid() -> String {
@@ -122,6 +189,8 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
 fn seed_if_empty(conn: &Connection) -> Result<()> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
     if count > 0 {
+        seed_habits_if_empty(conn)?;
+        seed_events_if_empty(conn)?;
         return Ok(());
     }
     let now = now_millis();
@@ -142,6 +211,10 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
         params![uid(), "Keep the dock at exactly 5 views.", now],
     )?;
     conn.execute(
+        "INSERT INTO thoughts (id, content, tags, type, created_at) VALUES (?1, ?2, '#work,#life', 'note', ?3)",
+        params![uid(), "# Sprint 3 笔记\n\n## 本周节奏\n\n- 早间：阅读 30 分钟\n- 下午：Sprint 验收\n\n```ts\nconst focus = tasks.filter(t => t.isToday);\n```\n\n> 先冻结范围，再写代码。", now],
+    )?;
+    conn.execute(
         "INSERT INTO providers (id, name, base_url, api_key, is_active) VALUES (?1, 'OpenAI', 'https://api.openai.com/v1', 'OPENAI_API_KEY', 1)",
         params![uid()],
     )?;
@@ -151,6 +224,47 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
     )?;
     conn.execute(
         "INSERT INTO sessions (id, project_id, title, model, created_at) VALUES (?1, NULL, 'Workbench planning', 'openai', ?2)",
+        params![uid(), now],
+    )?;
+    seed_habits_if_empty(conn)?;
+    seed_events_if_empty(conn)?;
+    Ok(())
+}
+
+fn seed_habits_if_empty(conn: &Connection) -> Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM habits", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(());
+    }
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '晨间阅读', 5, 3, 'emerald', ?2)",
+        params![uid(), now],
+    )?;
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '深水工作', 4, 2, 'blue', ?2)",
+        params![uid(), now],
+    )?;
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '运动 30 分钟', 3, 5, 'amber', ?2)",
+        params![uid(), now],
+    )?;
+    Ok(())
+}
+
+fn seed_events_if_empty(conn: &Connection) -> Result<()> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM schedule_events", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(());
+    }
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, '每日复盘', '09:30', 0, 'routine', ?2)",
+        params![uid(), now],
+    )?;
+    conn.execute(
+        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, 'Sprint 3 验收', '14:00', 0, 'work', ?2)",
         params![uid(), now],
     )?;
     Ok(())
@@ -333,6 +447,119 @@ pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Resu
     Ok(())
 }
 
+pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
+    let mut stmt = conn.prepare(
+        "SELECT h.id, h.name, h.week_goal, h.current_streak, h.color, h.created_at,
+                COALESCE(hl.id IS NOT NULL, 0)
+         FROM habits h
+         LEFT JOIN habit_logs hl ON hl.habit_id = h.id AND hl.date = ?1
+         ORDER BY h.created_at ASC",
+    )?;
+    let today = today_local();
+    let rows = stmt.query_map(params![today], |row| {
+        Ok(Habit {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            week_goal: row.get(2)?,
+            current_streak: row.get(3)?,
+            color: row.get(4)?,
+            created_at: row.get(5)?,
+            done_today: row.get::<_, i64>(6)? != 0,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn create_habit(conn: &Connection, name: &str, week_goal: i64, color: &str) -> Result<Habit> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+        params![id, name, week_goal, color, now],
+    )?;
+    Ok(Habit {
+        id,
+        name: name.to_string(),
+        week_goal,
+        current_streak: 0,
+        color: color.to_string(),
+        done_today: false,
+        created_at: now,
+    })
+}
+
+pub fn toggle_habit(conn: &Connection, id: &str) -> Result<Habit> {
+    let today = today_local();
+    let checked: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?1 AND date = ?2",
+        params![id, today],
+        |row| row.get(0),
+    )?;
+    if checked > 0 {
+        conn.execute(
+            "DELETE FROM habit_logs WHERE habit_id = ?1 AND date = ?2",
+            params![id, today],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO habit_logs (id, habit_id, date, checked_at) VALUES (?1, ?2, ?3, ?4)",
+            params![uid(), id, today, now_millis()],
+        )?;
+    }
+    let habit = list_habits(conn)?
+        .into_iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    Ok(habit)
+}
+
+pub fn list_schedule_events(conn: &Connection) -> Result<Vec<ScheduleEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, start_time, done, tag, created_at FROM schedule_events ORDER BY start_time ASC, created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ScheduleEvent {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            start_time: row.get(2)?,
+            done: row.get::<_, i64>(3)? != 0,
+            tag: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn create_schedule_event(
+    conn: &Connection,
+    title: &str,
+    start_time: &str,
+    tag: &str,
+) -> Result<ScheduleEvent> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+        params![id, title, start_time, tag, now],
+    )?;
+    Ok(ScheduleEvent {
+        id,
+        title: title.to_string(),
+        start_time: start_time.to_string(),
+        done: false,
+        tag: tag.to_string(),
+        created_at: now,
+    })
+}
+
+pub fn toggle_event_done(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE schedule_events SET done = CASE WHEN done = 1 THEN 0 ELSE 1 END WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, title, model, created_at FROM sessions ORDER BY created_at DESC",
@@ -394,6 +621,46 @@ mod tests {
             .find(|t| t.id == task.id)
             .expect("created task should persist after update");
         assert_eq!(updated.status, "done");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn habits_and_schedule_persist_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let habit = create_habit(&conn, "早睡", 5, "emerald").unwrap();
+        assert!(!habit.done_today);
+        let toggled = toggle_habit(&conn, &habit.id).unwrap();
+        assert!(toggled.done_today);
+        let event = create_schedule_event(&conn, "发布 Sprint 3", "20:00", "work").unwrap();
+        assert!(!event.done);
+        toggle_event_done(&conn, &event.id).unwrap();
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let habits = list_habits(&conn).unwrap();
+        let saved_habit = habits
+            .iter()
+            .find(|h| h.id == habit.id)
+            .expect("created habit should be listed");
+        assert!(saved_habit.done_today);
+        assert_eq!(saved_habit.name, "早睡");
+
+        let events = list_schedule_events(&conn).unwrap();
+        let saved_event = events
+            .iter()
+            .find(|e| e.id == event.id)
+            .expect("created event should be listed");
+        assert!(saved_event.done);
+        assert_eq!(saved_event.start_time, "20:00");
+
+        let untoggled = toggle_habit(&conn, &habit.id).unwrap();
+        assert!(!untoggled.done_today);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
