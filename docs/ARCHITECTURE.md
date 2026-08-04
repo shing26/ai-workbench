@@ -45,6 +45,15 @@ Rust 服务层（SQLite、Keyring、AI Gateway、Git 上下文）
 
 Sprint 3 新增命令：`list_habits`、`create_habit`、`toggle_habit`、`list_schedule_events`、`create_schedule_event`、`toggle_event_done`。
 
+Sprint 4 新增命令：`list_clipboard`、`list_error_logs`、`capture_clipboard`、`report_frontend_error`。
+
+## 系统采集
+
+- Rust 后台启动 `spawn_clipboard_monitor` 线程，每 1.5 秒轮询系统剪贴板。
+- 剪贴板内容变化时写入 `clipboard_history`，并 emit `clipboard-updated` 事件。
+- 前端全局监听 `error` 与 `unhandledrejection`，通过 `report_frontend_error` 写入 `error_logs`。
+- System 视图每 3 秒刷新剪贴板与日志，监听事件时立即刷新。
+
 ## 数据流
 
 1. 前端通过 Zustand 维护视图状态。

@@ -1,8 +1,13 @@
-import { Activity, Clipboard, Plus, Terminal } from "lucide-react";
+import { Activity, Clipboard, Plus, Radio, Terminal } from "lucide-react";
 import { useState } from "react";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
 import ModelBadge from "../components/ui/ModelBadge";
+
+function formatTime(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
 
 export default function SystemView() {
   const providers = useWorkbenchStore((s) => s.providers);
@@ -45,7 +50,7 @@ export default function SystemView() {
                 </button>
               </div>
               <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
-              <p className="mt-1 text-[10px] text-slate-600">Latency — ms</p>
+              <p className="mt-1 text-[10px] text-slate-600">Latency - ms</p>
             </div>
           ))}
         </div>
@@ -79,25 +84,48 @@ export default function SystemView() {
       </BentoCard>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <BentoCard title="Clipboard history" subtitle="最近复制内容" icon={Clipboard} colSpan={6}>
+        <BentoCard title="Clipboard history" subtitle="本地实时监听" icon={Clipboard} colSpan={6}>
+          <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-500">
+            <Radio size={11} className="text-emerald-400" />
+            <span>listening</span>
+            <span className="ml-auto">{clipboard.length} items</span>
+          </div>
           <div className="flex flex-col gap-1.5">
-            {clipboard.slice(0, 8).map((c) => (
-              <div key={c.id} className="truncate rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-slate-400">
-                {c.content}
+            {clipboard.slice(0, 10).map((c) => (
+              <div
+                key={c.id}
+                className="message-in flex items-start gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[11px] text-slate-300">{c.content}</div>
+                  <div className="mt-0.5 text-[10px] text-slate-600">
+                    {c.source} · {formatTime(c.timestamp)}
+                  </div>
+                </div>
               </div>
             ))}
             {clipboard.length === 0 && <div className="py-8 text-center text-xs text-slate-600">Empty</div>}
           </div>
         </BentoCard>
-        <BentoCard title="Error logs" subtitle="StackTrace 诊断" icon={Terminal} colSpan={6}>
+        <BentoCard title="Error logs" subtitle="前端与 Rust 实时诊断" icon={Terminal} colSpan={6}>
+          <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-500">
+            <span className={`health-dot h-1.5 w-1.5 rounded-full ${logs.some((l) => l.severity === "error") ? "bg-red-400" : "bg-emerald-400"}`} />
+            <span>{logs.some((l) => l.severity === "error") ? "has errors" : "healthy"}</span>
+            <span className="ml-auto">{logs.length} entries</span>
+          </div>
           <div className="flex flex-col gap-1.5">
-            {logs.slice(0, 8).map((l) => (
+            {logs.slice(0, 10).map((l) => (
               <div
                 key={l.id}
-                className="message-in rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300"
+                className="message-in rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2"
               >
-                <span className="mr-1 font-medium">{l.source}</span>
-                {l.message}
+                <div className="flex items-center gap-2 text-[11px] text-red-300">
+                  <span className="font-medium">{l.source}</span>
+                  <span className="text-[9px] uppercase text-red-400/70">{l.severity}</span>
+                  <span className="ml-auto text-[10px] text-red-400/60">{formatTime(l.timestamp)}</span>
+                </div>
+                <p className="mt-1 break-words text-[11px] leading-relaxed text-red-200/80">{l.message}</p>
+                {l.stack && <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-red-300/60">{l.stack}</pre>}
               </div>
             ))}
             {logs.length === 0 && <div className="py-8 text-center text-xs text-slate-600">No logs</div>}

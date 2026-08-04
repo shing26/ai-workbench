@@ -59,3 +59,24 @@
 - 下个 Sprint 优先做 AI Studio 真流式输出或 System 剪贴板/日志真实采集。
 - 新增表时必须同时评估 seed 兼容旧库，并在 DoD 中显式列出迁移场景。
 - 保留 Actions/Knowledge 断言，后续改动这两视图时重跑 `verify:ui`。
+
+## Sprint 4
+
+### What went well?
+
+- System 视图从示例数据升级为真实采集：SQLite 新增 `clipboard_history`、`error_logs`，Rust 后台剪贴板监听线程每 1.5 秒轮询并去重入库。
+- 前端全局监听 `error` / `unhandledrejection`，通过 `report_frontend_error` 写入日志；System 视图每 3 秒刷新并响应 `clipboard-updated` 事件。
+- `verify:ui` 新增 System 真实数据断言，并用轮询等待消除视图切换竞态，连续两遍稳定通过。
+- `cargo test --lib` 3/3、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首次接入 `try_state` 误用 `let Ok` 匹配 `Option`，编译失败，改为 `let Some`。
+- System 断言首跑因视图渲染竞态失败，改为点击后轮询等待 `Clipboard history` 标题出现。
+- 前端错误上报若自身失败会形成递归，补 try/catch 后直接返回。
+
+### Action Items
+
+- 下个 Sprint 优先做 AI Studio 真流式输出，接 Tauri Event 逐块推送。
+- 剪贴板轮询间隔与去重窗口写入 `docs/ARCHITECTURE.md`，后续如需 OS 原生监听再评估 `tauri-plugin-clipboard-manager`。
+- 系统采集相关断言保留在 `verify:ui`，改动 System 视图或 App 全局错误钩子后重跑。

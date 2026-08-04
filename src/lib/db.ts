@@ -322,6 +322,48 @@ export async function listErrorLogs(): Promise<ErrorLog[]> {
   return isTauri() ? invoke<ErrorLog[]>("list_error_logs") : readLocal().logs;
 }
 
+export async function reportFrontendError(input: {
+  source: string;
+  message: string;
+  stack: string | null;
+  severity: string;
+}): Promise<void> {
+  if (isTauri()) {
+    await invoke("report_frontend_error", input);
+    return;
+  }
+  const shape = readLocal();
+  const log: ErrorLog = {
+    id: makeId(),
+    source: input.source,
+    message: input.message,
+    stack: input.stack,
+    severity: input.severity,
+    timestamp: Date.now(),
+  };
+  shape.logs.unshift(log);
+  writeLocal(shape);
+}
+
+export async function captureClipboard(content: string): Promise<ClipboardItem> {
+  if (isTauri()) return invoke<ClipboardItem>("capture_clipboard", { content });
+  const shape = readLocal();
+  const item: ClipboardItem = { id: makeId(), content, source: "system", timestamp: Date.now() };
+  shape.clipboard.unshift(item);
+  writeLocal(shape);
+  return item;
+}
+
+export async function listenClipboardUpdated(
+  handler: (item: ClipboardItem) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<ClipboardItem>("clipboard-updated", (event) => handler(event.payload));
+  }
+  return () => {};
+}
+
 export async function sendAiMessage(args: {
   providerIds: string[];
   messages: { role: string; content: string }[];

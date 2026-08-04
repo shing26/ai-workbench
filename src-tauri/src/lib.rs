@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use tauri::{Manager, State};
+use std::thread;
+use std::time::Duration;
+use tauri::{Emitter, Manager, State};
 
 mod db;
 
@@ -456,62 +458,67 @@ fn create_session(
     db::create_session(&conn, &title, &model).map_err(|e| e.to_string())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ClipboardItem {
-    id: String,
-    content: String,
-    source: String,
-    timestamp: i64,
+#[tauri::command]
+fn list_clipboard(state: State<'_, db::Db>) -> Result<Vec<db::ClipboardItem>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_clipboard(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_clipboard() -> Vec<ClipboardItem> {
-    let now = now_millis();
-    vec![
-        ClipboardItem {
-            id: "clip-1".into(),
-            content: "pnpm run dev".into(),
-            source: "terminal".into(),
-            timestamp: now - 5000,
-        },
-        ClipboardItem {
-            id: "clip-2".into(),
-            content: "bg-[#18181C] border-white/10 rounded-2xl".into(),
-            source: "editor".into(),
-            timestamp: now - 4000,
-        },
-    ]
+fn list_error_logs(state: State<'_, db::Db>) -> Result<Vec<db::ErrorLog>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_error_logs(&conn).map_err(|e| e.to_string())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorLog {
-    id: String,
+#[tauri::command]
+fn report_frontend_error(
+    state: State<'_, db::Db>,
     source: String,
     message: String,
     stack: Option<String>,
     severity: String,
-    timestamp: i64,
+) -> Result<db::ErrorLog, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::report_frontend_error(&conn, &source, &message, stack.as_deref(), &severity)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_error_logs() -> Vec<ErrorLog> {
-    vec![ErrorLog {
-        id: "log-1".into(),
-        source: "tauri".into(),
-        message: "DB initialized".into(),
-        stack: None,
-        severity: "info".into(),
-        timestamp: now_millis() - 7000,
-    }]
+fn capture_clipboard(
+    state: State<'_, db::Db>,
+    content: String,
+) -> Result<db::ClipboardItem, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::capture_clipboard(&conn, &content, "system").map_err(|e| e.to_string())
 }
 
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+fn spawn_clipboard_monitor(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        let mut clipboard = match arboard::Clipboard::new() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        loop {
+            thread::sleep(Duration::from_millis(1500));
+            let Ok(text) = clipboard.get_text() else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let Some(state) = app.try_state::<db::Db>() else {
+                continue;
+            };
+            let Ok(conn) = state.0.lock() else {
+                continue;
+            };
+            let Ok(item) = db::capture_clipboard(&conn, &text, "system") else {
+                continue;
+            };
+            drop(conn);
+            let _ = app.emit("clipboard-updated", item);
+        }
+    });
 }
 
 #[derive(Serialize)]
@@ -608,6 +615,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir).expect("create app data dir");
             let conn = db::init_connection(&dir.join("workbench.db")).expect("init db");
             app.manage(db::Db(std::sync::Mutex::new(conn)));
+            spawn_clipboard_monitor(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -643,6 +651,8 @@ pub fn run() {
             create_session,
             list_clipboard,
             list_error_logs,
+            report_frontend_error,
+            capture_clipboard,
             get_project_git_context,
             send_ai_message
         ])

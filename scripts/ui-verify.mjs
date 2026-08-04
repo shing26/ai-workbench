@@ -352,6 +352,32 @@ try {
     devIssuesText: document.body.innerText.includes("Dev Issues") || document.body.innerText.includes("Internal server error"),
   }))()`);
 
+  await clickDock("System");
+  for (let i = 0; i < 20; i++) {
+    const ready = await evaluate(`[...document.querySelectorAll("main section h2")].some((h) => h.textContent.trim() === "Clipboard history")`);
+    if (ready) break;
+    await delay(150);
+  }
+  results.system = await evaluate(`(() => {
+    const cards = [...document.querySelectorAll("main section h2")].map((h) => h.textContent.trim());
+    const text = document.body.innerText;
+    const clipItems = [...document.querySelectorAll("main section")].find((s) => s.querySelector("h2")?.textContent === "Clipboard history");
+    const logItems = [...document.querySelectorAll("main section")].find((s) => s.querySelector("h2")?.textContent === "Error logs");
+    return {
+      cards,
+      listening: text.includes("listening"),
+      clipEntries: clipItems?.querySelectorAll(".message-in").length ?? 0,
+      logEntries: logItems?.querySelectorAll(".message-in").length ?? 0,
+      hasSampleClip: text.includes("pnpm run dev"),
+    };
+  })()`);
+  if (!results.system.cards.includes("Clipboard history") || !results.system.cards.includes("Error logs")) {
+    throw new Error("system view cards missing");
+  }
+  if (!results.system.listening || results.system.clipEntries < 1 || results.system.logEntries < 1) {
+    throw new Error("system capture assertions failed");
+  }
+
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);

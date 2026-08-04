@@ -1,6 +1,6 @@
 # DATABASE
 
-Local SQLite，路径与位置由 Rust 后台初始化时确定。Sprint 1 使用 5 张核心表，Sprint 3 新增习惯与日程 3 张表，共 8 张表。
+Local SQLite，路径与位置由 Rust 后台初始化时确定。Sprint 1 使用 5 张核心表，Sprint 3 新增习惯与日程 3 张表，Sprint 4 新增系统采集 2 张表，共 10 张表。
 
 ## 1. projects
 
@@ -116,6 +116,34 @@ CREATE TABLE IF NOT EXISTS schedule_events (
 
 `start_time` 为 `HH:MM`，前端按时间排序展示日程时间线。
 
+## 9. clipboard_history
+
+```sql
+CREATE TABLE IF NOT EXISTS clipboard_history (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    source TEXT DEFAULT 'system',
+    timestamp INTEGER
+);
+```
+
+Rust 后台每 1.5 秒轮询系统剪贴板，内容变化时写入，并通过 `clipboard-updated` 事件推送前端。
+
+## 10. error_logs
+
+```sql
+CREATE TABLE IF NOT EXISTS error_logs (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    message TEXT NOT NULL,
+    stack TEXT,
+    severity TEXT DEFAULT 'error',
+    timestamp INTEGER
+);
+```
+
+`source` 区分 `frontend` 与 `tauri`。前端 `error` / `unhandledrejection` 通过 `report_frontend_error` 入库。
+
 ## 索引
 
 - `tasks(is_today, status)`
@@ -123,7 +151,9 @@ CREATE TABLE IF NOT EXISTS schedule_events (
 - `sessions(project_id, created_at)`
 - `habit_logs(habit_id, date)`
 - `schedule_events(start_time)`
+- `clipboard_history(timestamp)`
+- `error_logs(timestamp)`
 
 ## 迁移
 
-启动时执行 `CREATE TABLE IF NOT EXISTS`，迁移脚本放在 Rust 后台初始化流程中。示例数据仅在各表为空时写入：`projects`、`tasks`、`thoughts`、`providers`、`sessions`、`habits`、`schedule_events` 独立判断，避免已有库跳过新表 seed。
+启动时执行 `CREATE TABLE IF NOT EXISTS`，迁移脚本放在 Rust 后台初始化流程中。示例数据仅在各表为空时写入：`projects`、`tasks`、`thoughts`、`providers`、`sessions`、`habits`、`schedule_events`、`clipboard_history`、`error_logs` 独立判断，避免已有库跳过新表 seed，也不覆盖真实采集记录。
