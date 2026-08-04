@@ -577,6 +577,83 @@ try {
   }
   results.sessionPersistence = sessionPersistence;
 
+  const sessionManagement = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector('input[placeholder="Search sessions..."]');
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    setValue(searchInput, "sprint RAG");
+    await sleep(250);
+    const searchPills = document.querySelectorAll('main button[aria-label="Open session"]').length;
+    const searchMatched = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .some((btn) => btn.textContent?.includes("sprint RAG check"));
+    setValue(searchInput, "zzz-no-match");
+    await sleep(250);
+    const emptyState = document.body.innerText.includes("No matching sessions");
+    setValue(searchInput, "");
+    await sleep(250);
+
+    const row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("sprint RAG check"));
+    if (!row) return { ok: false, reason: "target session row missing", searchPills, searchMatched, emptyState };
+    const renameBtn = row.querySelector('button[aria-label="Rename session"]');
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(200);
+    const renameInput = document.querySelector('input[aria-label="Rename session input"]');
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    setValue(renameInput, "Sprint 12 renamed");
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(300);
+    const renamedVisible = document.body.innerText.includes("Sprint 12 renamed");
+    const oldTitleGone = ![...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .some((btn) => btn.textContent?.includes("sprint RAG check"));
+
+    const renamedRow = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("Sprint 12 renamed"));
+    if (!renamedRow) return { ok: false, reason: "renamed row missing", renamedVisible, oldTitleGone };
+    renamedRow.querySelector('button[aria-label="Delete session"]')?.click();
+    await sleep(200);
+    const confirmBtn = renamedRow.querySelector('button[aria-label="Confirm delete session"]');
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing" };
+    confirmBtn.click();
+    await sleep(350);
+    const deletedGone = !document.body.innerText.includes("Sprint 12 renamed");
+    const persistedMessages = (() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1"));
+      return shape.chatMessages.filter((m) => m.content.includes("sprint RAG check") || m.content.includes("Streaming fallback")).length;
+    })();
+    return {
+      ok: true,
+      searchPills,
+      searchMatched,
+      emptyState,
+      renamedVisible,
+      oldTitleGone,
+      deletedGone,
+      persistedMessages,
+    };
+  })()`);
+  if (
+    !sessionManagement.ok ||
+    sessionManagement.searchPills < 1 ||
+    !sessionManagement.searchMatched ||
+    !sessionManagement.emptyState ||
+    !sessionManagement.renamedVisible ||
+    !sessionManagement.oldTitleGone ||
+    !sessionManagement.deletedGone ||
+    sessionManagement.persistedMessages !== 0
+  ) {
+    throw new Error(`AI Studio session management assertion failed: ${JSON.stringify(sessionManagement)}`);
+  }
+  results.sessionManagement = sessionManagement;
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {

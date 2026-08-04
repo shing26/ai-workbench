@@ -679,6 +679,18 @@ fn create_session(
 }
 
 #[tauri::command]
+fn rename_session(state: State<'_, db::Db>, id: String, title: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::rename_session(&conn, &id, &title).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_session(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_session(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn save_chat_message(
     state: State<'_, db::Db>,
     session_id: String,
@@ -1092,6 +1104,8 @@ pub fn run() {
             toggle_event_done,
             list_sessions,
             create_session,
+            rename_session,
+            delete_session,
             save_chat_message,
             list_chat_messages,
             list_clipboard,

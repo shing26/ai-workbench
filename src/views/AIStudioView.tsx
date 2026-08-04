@@ -1,4 +1,4 @@
-import { Plus, Send, Square } from "lucide-react";
+import { Check, Pencil, Plus, Search, Send, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -22,6 +22,10 @@ export default function AIStudioView() {
   const [busy, setBusy] = useState(false);
   const [sessions, setSessions] = useState<db.Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number }>());
@@ -150,10 +154,63 @@ export default function AIStudioView() {
     setRagHits([]);
   };
 
+  const startRename = (session: db.Session) => {
+    setConfirmDeleteId(null);
+    setRenamingId(session.id);
+    setRenameDraft(session.title);
+  };
+
+  const submitRename = async (id: string) => {
+    const title = renameDraft.trim();
+    if (title) {
+      await db.renameSession(id, title);
+      setSessions(await db.listSessions());
+    }
+    setRenamingId(null);
+    setRenameDraft("");
+  };
+
+  const confirmDelete = async (id: string) => {
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+      return;
+    }
+    await db.deleteSession(id);
+    const list = await db.listSessions();
+    setSessions(list);
+    setConfirmDeleteId(null);
+    if (sessionIdRef.current === id) {
+      sessionIdRef.current = null;
+      setSessionId(null);
+      const first = list[0];
+      if (first) {
+        sessionIdRef.current = first.id;
+        setSessionId(first.id);
+        const stored = await db.listChatMessages(first.id);
+        setMessages(
+          stored.length > 0
+            ? stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+            : [{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }],
+        );
+      } else {
+        setMessages([{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }]);
+      }
+    }
+  };
+
+  const filteredSessions = sessions.filter((s) => {
+    const q = sessionQuery.trim().toLowerCase();
+    if (!q) return true;
+    return `${s.title} ${s.model}`.toLowerCase().includes(q);
+  });
+
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
       const existing = sessions.find((s) => s.id === sessionIdRef.current);
-      if (existing) return existing;
+      if (existing) {
+        const stored = await db.listChatMessages(existing.id);
+        if (stored.length > 0) return existing;
+      }
     }
     const session = await db.createSession(
       titleHint.slice(0, 24) || "New chat",
@@ -306,25 +363,107 @@ export default function AIStudioView() {
           >
             <Plus size={13} /> New chat
           </button>
+          <label className="flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-2 focus-within:border-emerald-500/40">
+            <Search size={12} className="shrink-0 text-slate-600" />
+            <input
+              value={sessionQuery}
+              onChange={(e) => setSessionQuery(e.target.value)}
+              placeholder="Search sessions..."
+              className="min-w-0 flex-1 bg-transparent text-[11px] text-slate-300 outline-none placeholder:text-slate-600"
+            />
+          </label>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-            {sessions.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                aria-label="Open session"
-                onClick={() => void selectSession(s.id)}
-                className={`w-full rounded-lg border px-2 py-1.5 text-left ${
-                  sessionId === s.id
-                    ? "border-emerald-500/30 bg-emerald-500/10"
-                    : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
-                }`}
-              >
-                <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
-                <span className="mt-0.5 block text-[9px] text-slate-600">{s.model}</span>
-              </button>
-            ))}
-            {sessions.length === 0 && (
-              <div className="py-6 text-center text-[10px] text-slate-600">No sessions</div>
+            {filteredSessions.map((s) =>
+              renamingId === s.id ? (
+                <div
+                  key={s.id}
+                  className="flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-1"
+                >
+                  <input
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitRename(s.id);
+                      if (e.key === "Escape") {
+                        setRenamingId(null);
+                        setRenameDraft("");
+                      }
+                    }}
+                    autoFocus
+                    aria-label="Rename session input"
+                    className="min-w-0 flex-1 bg-transparent px-1 text-[11px] text-slate-200 outline-none"
+                  />
+                  <button
+                    type="button"
+                    aria-label="Save session rename"
+                    onClick={() => void submitRename(s.id)}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/20 text-emerald-400"
+                  >
+                    <Check size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Cancel session rename"
+                    onClick={() => {
+                      setRenamingId(null);
+                      setRenameDraft("");
+                    }}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/5 text-slate-500"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ) : (
+                <div key={s.id} className="group relative rounded-lg">
+                  <button
+                    type="button"
+                    aria-label="Open session"
+                    onClick={() => void selectSession(s.id)}
+                    className={`w-full rounded-lg border px-2 py-1.5 pr-12 text-left ${
+                      sessionId === s.id
+                        ? "border-emerald-500/30 bg-emerald-500/10"
+                        : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
+                    <span className="mt-0.5 block text-[9px] text-slate-600">{s.model}</span>
+                  </button>
+                  {confirmDeleteId === s.id ? (
+                    <button
+                      type="button"
+                      aria-label="Confirm delete session"
+                      onClick={() => void confirmDelete(s.id)}
+                      className="absolute right-1.5 top-1/2 flex h-5 -translate-y-1/2 items-center gap-1 rounded-md bg-rose-500/25 px-1.5 text-[9px] text-rose-300"
+                    >
+                      <Trash2 size={10} /> Sure?
+                    </button>
+                  ) : (
+                    <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex">
+                      <button
+                        type="button"
+                        aria-label="Rename session"
+                        onClick={() => startRename(s)}
+                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+                      >
+                        <Pencil size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Delete session"
+                        onClick={() => void confirmDelete(s.id)}
+                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-rose-300"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ),
+            )}
+            {filteredSessions.length === 0 && (
+              <div className="py-6 text-center text-[10px] text-slate-600">
+                {sessionQuery.trim() ? "No matching sessions" : "No sessions"}
+              </div>
             )}
           </div>
         </aside>

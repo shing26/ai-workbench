@@ -325,6 +325,28 @@ export async function createSession(title: string, model: string): Promise<Sessi
   return session;
 }
 
+export async function renameSession(id: string, title: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("rename_session", { id, title });
+    return;
+  }
+  const shape = readLocal();
+  const session = shape.sessions.find((s) => s.id === id);
+  if (session) session.title = title;
+  writeLocal(shape);
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("delete_session", { id });
+    return;
+  }
+  const shape = readLocal();
+  shape.sessions = shape.sessions.filter((s) => s.id !== id);
+  shape.chatMessages = shape.chatMessages.filter((m) => m.sessionId !== id);
+  writeLocal(shape);
+}
+
 export async function saveChatMessage(
   sessionId: string,
   role: string,
