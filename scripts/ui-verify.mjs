@@ -277,11 +277,75 @@ try {
   })()`);
   await delay(400);
   const beforeReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
+  const habitToggle = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button[aria-label]")]
+      .find((b) => (b.getAttribute("aria-label") || "").startsWith("Toggle ") && (b.getAttribute("aria-label") || "") !== "Toggle status");
+    if (!btn) return { ok: false, reason: "no habit toggle" };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 350));
+    const row = btn.parentElement;
+    const doneClass = row ? row.className.includes("border-emerald-500/30") : false;
+    return { ok: true, doneClass };
+  })()`);
+  const actionsSections = await evaluate(`(() => {
+    const titles = [...document.querySelectorAll("main section h2")].map((h) => h.textContent.trim());
+    const rects = [...document.querySelectorAll("main section")].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    });
+    let overlap = 0;
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) overlap += 1;
+      }
+    }
+    return { titles, overlap };
+  })()`);
+  results.actions = { habitToggle, sections: actionsSections };
   await send("Page.reload", { ignoreCache: true });
   await waitForApp();
   await clickDock("Actions");
   const afterReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
-  results.persistence = { created, beforeReload, afterReload };
+  const habitPersisted = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll("main button[aria-label]")]
+      .find((b) => (b.getAttribute("aria-label") || "").startsWith("Toggle ") && (b.getAttribute("aria-label") || "") !== "Toggle status");
+    if (!btn) return false;
+    const row = btn.parentElement;
+    return row ? row.className.includes("border-emerald-500/30") : false;
+  })()`);
+  results.persistence = { created, beforeReload, afterReload, habitPersisted };
+
+  await clickDock("Knowledge");
+  const selectedMarkdownThought = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!btn) return false;
+    btn.click();
+    await new Promise((r) => setTimeout(r, 300));
+    return true;
+  })()`);
+  results.knowledge = await evaluate(`(() => {
+    const preview = document.querySelector(".markdown-body");
+    const heading = preview?.querySelector("h1, h2")?.textContent ?? "";
+    const code = preview?.querySelector("pre code")?.textContent ?? "";
+    const list = preview?.querySelectorAll("li").length ?? 0;
+    const rawText = preview?.textContent ?? "";
+    return { hasMarkdown: !!preview, heading, code, list, rawText };
+  })()`);
+  if (!selectedMarkdownThought) {
+    throw new Error("markdown thought button missing");
+  }
+  if (!results.knowledge.hasMarkdown || results.knowledge.heading === "" || results.knowledge.code === "") {
+    throw new Error("Knowledge markdown preview assertion failed");
+  }
+  if (!results.actions.habitToggle.ok || !results.actions.habitToggle.doneClass) {
+    throw new Error("habit toggle assertion failed");
+  }
+  if (results.actions.sections.overlap > 0) {
+    throw new Error(`actions sections overlap: ${results.actions.sections.overlap}`);
+  }
 
   results.overlay = await evaluate(`(() => ({
     viteOverlay: !!document.querySelector("vite-error-overlay, .vite-error-overlay, [class*='error-overlay']"),

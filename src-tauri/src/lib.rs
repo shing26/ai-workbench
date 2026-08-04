@@ -395,6 +395,52 @@ fn set_provider_active(
 }
 
 #[tauri::command]
+fn list_habits(state: State<'_, db::Db>) -> Result<Vec<db::Habit>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_habits(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_habit(
+    state: State<'_, db::Db>,
+    name: String,
+    week_goal: i64,
+    color: String,
+) -> Result<db::Habit, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_habit(&conn, &name, week_goal, &color).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_habit(state: State<'_, db::Db>, id: String) -> Result<db::Habit, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::toggle_habit(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_schedule_events(state: State<'_, db::Db>) -> Result<Vec<db::ScheduleEvent>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_schedule_events(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_schedule_event(
+    state: State<'_, db::Db>,
+    title: String,
+    start_time: String,
+    tag: String,
+) -> Result<db::ScheduleEvent, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_schedule_event(&conn, &title, &start_time, &tag).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_event_done(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::toggle_event_done(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_sessions(state: State<'_, db::Db>) -> Result<Vec<db::Session>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_sessions(&conn).map_err(|e| e.to_string())
@@ -587,6 +633,12 @@ pub fn run() {
             list_providers,
             create_provider,
             set_provider_active,
+            list_habits,
+            create_habit,
+            toggle_habit,
+            list_schedule_events,
+            create_schedule_event,
+            toggle_event_done,
             list_sessions,
             create_session,
             list_clipboard,

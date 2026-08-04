@@ -124,6 +124,66 @@ input::placeholder, textarea::placeholder { color: var(--color-text-muted); }
   filter: brightness(1.06);
 }
 
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  margin: 14px 0 8px;
+  color: var(--color-text-primary);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.markdown-body h1:first-child,
+.markdown-body h2:first-child,
+.markdown-body h3:first-child {
+  margin-top: 0;
+}
+.markdown-body h1 { font-size: 18px; }
+.markdown-body h2 { font-size: 15px; }
+.markdown-body h3 { font-size: 13px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul,
+.markdown-body ol { margin: 8px 0; padding-left: 18px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-accent-green);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.markdown-body pre {
+  margin: 10px 0;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-left: 2px solid var(--color-accent-green);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 10px 12px;
+}
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+.markdown-body blockquote {
+  margin: 10px 0;
+  border-left: 2px solid var(--color-accent-blue);
+  padding: 2px 0 2px 10px;
+  color: var(--color-text-muted);
+}
+.markdown-body a {
+  color: var(--color-accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body strong { color: var(--color-text-primary); }
+.markdown-body hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
 .message-in { animation: message-in var(--duration-fast) var(--ease-out) both; }
 .detail-enter { animation: detail-enter var(--duration-fast) var(--ease-out) both; }
 .drawer-panel {

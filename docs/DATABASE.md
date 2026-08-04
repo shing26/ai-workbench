@@ -1,6 +1,6 @@
 # DATABASE
 
-Local SQLite，路径与位置由 Rust 后台初始化时确定。Sprint 1 使用 5 张核心表。
+Local SQLite，路径与位置由 Rust 后台初始化时确定。Sprint 1 使用 5 张核心表，Sprint 3 新增习惯与日程 3 张表，共 8 张表。
 
 ## 1. projects
 
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS thoughts (
 );
 ```
 
-`tags` 格式：`#work,#life`。`type`：`inbox`、`note`、`doc`。
+`tags` 格式：`#work,#life`。`type`：`inbox`、`note`、`doc`。`content` 支持 Markdown，前端用 react-markdown 渲染。
 
 ## 4. sessions
 
@@ -72,13 +72,58 @@ CREATE TABLE IF NOT EXISTS providers (
 
 `api_key` 仅保存 OS Keyring 引用名，不保存明文密钥。
 
+## 6. habits
+
+```sql
+CREATE TABLE IF NOT EXISTS habits (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    week_goal INTEGER DEFAULT 5,
+    current_streak INTEGER DEFAULT 0,
+    color TEXT DEFAULT 'emerald',
+    created_at INTEGER
+);
+```
+
+`color`：`emerald`、`blue`、`amber`、`rose`。`current_streak` 为连续打卡天数。
+
+## 7. habit_logs
+
+```sql
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    checked_at INTEGER,
+    FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+);
+```
+
+`date` 为本地日期 `YYYY-MM-DD`。当天有记录表示该习惯今日已打卡。
+
+## 8. schedule_events
+
+```sql
+CREATE TABLE IF NOT EXISTS schedule_events (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    done INTEGER DEFAULT 0,
+    tag TEXT DEFAULT 'general',
+    created_at INTEGER
+);
+```
+
+`start_time` 为 `HH:MM`，前端按时间排序展示日程时间线。
+
 ## 索引
 
 - `tasks(is_today, status)`
 - `thoughts(type, created_at)`
 - `sessions(project_id, created_at)`
+- `habit_logs(habit_id, date)`
+- `schedule_events(start_time)`
 
 ## 迁移
 
-启动时执行 `CREATE TABLE IF NOT EXISTS`，迁移脚本存放在 Rust 后台初始化流程中。示例数据仅在空库时写入。
-
+启动时执行 `CREATE TABLE IF NOT EXISTS`，迁移脚本放在 Rust 后台初始化流程中。示例数据仅在各表为空时写入：`projects`、`tasks`、`thoughts`、`providers`、`sessions`、`habits`、`schedule_events` 独立判断，避免已有库跳过新表 seed。

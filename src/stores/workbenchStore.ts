@@ -14,6 +14,8 @@ type WorkbenchState = {
   thoughts: db.Thought[];
   providers: db.Provider[];
   sessions: db.Session[];
+  habits: db.Habit[];
+  scheduleEvents: db.ScheduleEvent[];
   clipboard: db.ClipboardItem[];
   logs: db.ErrorLog[];
   inspector: InspectorState | null;
@@ -25,6 +27,10 @@ type WorkbenchState = {
   addThought: (content: string, tags: string, type: db.ThoughtType) => Promise<void>;
   addProvider: (name: string, baseUrl: string, apiKey: string) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
+  addHabit: (name: string, weekGoal: number, color: db.Habit["color"]) => Promise<void>;
+  toggleHabit: (id: string) => Promise<void>;
+  addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
+  toggleEventDone: (id: string) => Promise<void>;
   openInspector: (title: string, sections: InspectorSection[]) => void;
   closeInspector: () => void;
 };
@@ -38,22 +44,26 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   thoughts: [],
   providers: [],
   sessions: [],
+  habits: [],
+  scheduleEvents: [],
   clipboard: [],
   logs: [],
   inspector: null,
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
-    const [tasks, projects, thoughts, providers, sessions, clipboard, logs] = await Promise.all([
+    const [tasks, projects, thoughts, providers, sessions, habits, scheduleEvents, clipboard, logs] = await Promise.all([
       db.listTasks(),
       db.listProjects(),
       db.listThoughts(),
       db.listProviders(),
       db.listSessions(),
+      db.listHabits(),
+      db.listScheduleEvents(),
       db.listClipboard(),
       db.listErrorLogs(),
     ]);
-    set({ tasks, projects, thoughts, providers, sessions, clipboard, logs, loaded: true });
+    set({ tasks, projects, thoughts, providers, sessions, habits, scheduleEvents, clipboard, logs, loaded: true });
   },
   addTask: async (title, isToday) => {
     await db.createTask(title, isToday);
@@ -82,6 +92,22 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   toggleProvider: async (id, isActive) => {
     await db.setProviderActive(id, isActive);
     set({ providers: await db.listProviders() });
+  },
+  addHabit: async (name, weekGoal, color) => {
+    await db.createHabit(name, weekGoal, color);
+    set({ habits: await db.listHabits() });
+  },
+  toggleHabit: async (id) => {
+    await db.toggleHabit(id);
+    set({ habits: await db.listHabits() });
+  },
+  addScheduleEvent: async (title, startTime, tag) => {
+    await db.createScheduleEvent(title, startTime, tag);
+    set({ scheduleEvents: await db.listScheduleEvents() });
+  },
+  toggleEventDone: async (id) => {
+    await db.toggleEventDone(id);
+    set({ scheduleEvents: await db.listScheduleEvents() });
   },
   openInspector: (title, sections) => set({ inspector: { title, sections } }),
   closeInspector: () => set({ inspector: null }),
