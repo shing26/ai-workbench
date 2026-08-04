@@ -55,6 +55,8 @@ Sprint 8 新增命令：`cancel_ai_stream`；事件 `stream-chunk` 增加 `cance
 
 Sprint 9 新增命令：`index_vault`、`get_knowledge_index_status`。
 
+Sprint 10 新增命令：`check_provider_health`。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -95,6 +97,13 @@ Sprint 9 新增命令：`index_vault`、`get_knowledge_index_status`。
 - 剪贴板内容变化时写入 `clipboard_history`，并 emit `clipboard-updated` 事件。
 - 前端全局监听 `error` 与 `unhandledrejection`，通过 `report_frontend_error` 写入 `error_logs`。
 - System 视图每 3 秒刷新剪贴板与日志，监听事件时立即刷新。
+
+## Provider 健康度监控
+
+- Rust `check_provider_health(provider_id)` 按类型探测：Ollama 请求 `/api/tags`，OpenAI 兼容节点请求 `/models`，返回 `{ ok, latencyMs, message }`。
+- `is_ollama_provider(name, url)` 收敛 Ollama 判定，供健康检查与消息路由复用。
+- System Provider 卡片展示健康点、状态与延迟；进入视图自动检查，支持单个 Check 与 Check all。
+- 浏览器 fallback 模拟健康结果，保证 UI 验证可运行。
 
 ## 数据流
 

@@ -44,6 +44,12 @@ export type Provider = {
   isActive: boolean;
 };
 
+export type ProviderHealth = {
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+};
+
 export type Habit = {
   id: string;
   name: string;
@@ -277,6 +283,12 @@ export async function setProviderActive(id: string, isActive: boolean): Promise<
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.isActive = isActive;
   writeLocal(shape);
+}
+
+export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
+  if (isTauri()) return invoke<ProviderHealth>("check_provider_health", { providerId });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  return { ok: true, latencyMs: 120, message: "ok" };
 }
 
 export async function listSessions(): Promise<Session[]> {

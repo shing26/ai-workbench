@@ -524,6 +524,18 @@ try {
   if (!results.system.listening || results.system.clipEntries < 1 || results.system.logEntries < 1) {
     throw new Error("system capture assertions failed");
   }
+  const healthCheck = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Check");
+    if (!btn) return { ok: false, reason: "no health check button" };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const card = document.querySelector(".provider-card")?.innerText ?? "";
+    return { ok: true, cardText: card };
+  })()`);
+  if (!healthCheck.ok || !healthCheck.cardText.includes("ok") || !healthCheck.cardText.includes("ms")) {
+    throw new Error(`Provider health assertion failed: ${JSON.stringify(healthCheck)}`);
+  }
+  results.health = healthCheck;
 
   await setViewport(390, 844);
   await clickDock("AI Studio");
