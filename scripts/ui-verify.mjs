@@ -714,6 +714,132 @@ try {
   }
   results.autoRoute = autoRoute;
 
+  const singleBtn = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Single");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`);
+  if (!singleBtn) throw new Error("Single mode button missing before edit test");
+  const messageEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    setValue(input, "sprint 14 edit check");
+    await sleep(80);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let userSeen = false;
+    for (let i = 0; i < 40; i++) {
+      if (document.body.innerText.includes("sprint 14 edit check")) {
+        userSeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let replySeen = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        [...document.querySelectorAll(".message-in")].some(
+          (el) => el.classList.contains("message-in") && el.textContent?.includes("Streaming fallback") && !el.parentElement?.textContent?.includes("auto route check"),
+        )
+      ) {
+        replySeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let streamIdle = false;
+    for (let i = 0; i < 40; i++) {
+      const noBusy = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+      const noPlaceholder = ![...document.querySelectorAll(".message-in")].some((el) => el.textContent?.startsWith("__stream__"));
+      if (noBusy && noPlaceholder) {
+        streamIdle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const group = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edit check"));
+    if (!group || !userSeen) {
+      const dump = [...document.querySelectorAll(".message-in")].map((el) => el.textContent.slice(0, 80));
+      return { ok: false, reason: "user message group missing", userSeen, replySeen, streamIdle, dump };
+    }
+    const editBtn = group.querySelector('button[aria-label="Edit message"]');
+    if (!editBtn) {
+      return {
+        ok: false,
+        reason: "edit button missing",
+        replySeen,
+        groupText: group.textContent,
+        groupButtons: [...group.querySelectorAll("button[aria-label]")].map((b) => b.getAttribute("aria-label")),
+      };
+    }
+    editBtn.click();
+    await sleep(300);
+    const editInput = document.querySelector('textarea[aria-label="Edit message input"]');
+    if (!editInput) {
+      const editButtons = [...document.querySelectorAll('button[aria-label="Edit message"]')].length;
+      const groups = [...document.querySelectorAll(".message-in")].map((el) => ({
+        text: el.textContent.slice(0, 50),
+        buttons: [...(el.parentElement?.querySelectorAll("button[aria-label]") ?? [])].map((b) => b.getAttribute("aria-label")),
+      }));
+      return { ok: false, reason: "edit input missing", replySeen, editButtons, groups };
+    }
+    setValue(editInput, "sprint 14 edited text");
+    await sleep(120);
+    document.querySelector('button[aria-label="Save message edit"]')?.click();
+    await sleep(300);
+    const editedVisible = document.body.innerText.includes("sprint 14 edited text");
+    const oldTextGone = !document.body.innerText.includes("sprint 14 edit check");
+
+    const editedGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edited text"));
+    if (!editedGroup) return { ok: false, reason: "edited group missing", replySeen, editedVisible, oldTextGone };
+    editedGroup.querySelector('button[aria-label="Regenerate message"]')?.click();
+    let regenerated = false;
+    for (let i = 0; i < 40; i++) {
+      const lastAssistant = [...document.querySelectorAll(".message-in")]
+        .filter((el) => el.parentElement?.className.includes("self-start"))
+        .pop();
+      if (
+        lastAssistant?.textContent?.includes("Streaming fallback") &&
+        !lastAssistant.textContent.startsWith("__stream__") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector(".stream-caret")
+      ) {
+        regenerated = true;
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(500);
+    const messagesAfter = [...document.querySelectorAll(".message-in")].map((el) => el.textContent);
+    return {
+      ok: true,
+      replySeen,
+      editedVisible,
+      oldTextGone,
+      regenerated,
+      messagesAfter,
+    };
+  })()`);
+  if (
+    !messageEdit.ok ||
+    !messageEdit.replySeen ||
+    !messageEdit.editedVisible ||
+    !messageEdit.oldTextGone ||
+    !messageEdit.regenerated
+  ) {
+    throw new Error(`AI Studio message edit/regenerate assertion failed: ${JSON.stringify(messageEdit)}`);
+  }
+  results.messageEdit = messageEdit;
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {

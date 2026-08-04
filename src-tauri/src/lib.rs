@@ -696,9 +696,10 @@ fn save_chat_message(
     session_id: String,
     role: String,
     content: String,
+    id: Option<String>,
 ) -> Result<db::ChatMessage, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::save_chat_message(&conn, &session_id, &role, &content).map_err(|e| e.to_string())
+    db::save_chat_message(&conn, &session_id, &role, &content, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -708,6 +709,26 @@ fn list_chat_messages(
 ) -> Result<Vec<db::ChatMessage>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_chat_messages(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_chat_message(
+    state: State<'_, db::Db>,
+    id: String,
+    content: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_chat_message(&conn, &id, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn truncate_chat_messages(
+    state: State<'_, db::Db>,
+    session_id: String,
+    keep_message_id: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::truncate_chat_messages(&conn, &session_id, &keep_message_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1108,6 +1129,8 @@ pub fn run() {
             delete_session,
             save_chat_message,
             list_chat_messages,
+            update_chat_message,
+            truncate_chat_messages,
             list_clipboard,
             list_error_logs,
             report_frontend_error,

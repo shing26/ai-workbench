@@ -1,11 +1,11 @@
-import { Check, Pencil, Plus, Search, Send, Square, Trash2, X } from "lucide-react";
+import { Check, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import type { InspectorSection } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
 
-type Message = { role: "user" | "assistant"; content: string };
+type Message = { role: "user" | "assistant"; content: string; id?: string };
 type ApiMessage = { role: "user" | "assistant" | "system"; content: string };
 
 export default function AIStudioView() {
@@ -28,6 +28,8 @@ export default function AIStudioView() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number }>());
@@ -68,7 +70,15 @@ export default function AIStudioView() {
         });
         runsRef.current.delete(chunk.id);
         if (!chunk.error && sessionIdRef.current && run.content) {
-          void db.saveChatMessage(sessionIdRef.current, "assistant", run.content);
+          void db.saveChatMessage(sessionIdRef.current, "assistant", run.content).then((saved) => {
+            setMessages((prev) => {
+              const next = [...prev];
+              if (run.index < next.length && next[run.index].role === "assistant") {
+                next[run.index] = { ...next[run.index], id: saved.id };
+              }
+              return next;
+            });
+          });
         }
         setBusy(false);
         return;
@@ -107,7 +117,7 @@ export default function AIStudioView() {
         const stored = await db.listChatMessages(first.id);
         if (disposed) return;
         if (stored.length > 0) {
-          setMessages(stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+          setMessages(stored.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content })));
         }
       }
     });
@@ -151,7 +161,7 @@ export default function AIStudioView() {
     sessionIdRef.current = id;
     setSessionId(id);
     const stored = await db.listChatMessages(id);
-    const loaded = stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    const loaded = stored.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
     setMessages(
       loaded.length > 0
         ? loaded
@@ -196,7 +206,7 @@ export default function AIStudioView() {
         const stored = await db.listChatMessages(first.id);
         setMessages(
           stored.length > 0
-            ? stored.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+            ? stored.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }))
             : [{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }],
         );
       } else {
@@ -229,26 +239,10 @@ export default function AIStudioView() {
     return session;
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy) return;
-    setBusy(true);
-    let hits: db.RagSearchResult[] = [];
-    if (useRag) {
-      try {
-        hits = await db.searchThoughts(text, 5);
-      } catch {
-        hits = [];
-      }
+  const runStream = async (history: Message[], runId: string, hits: db.RagSearchResult[]) => {
+    if (!runsRef.current.has(runId)) {
+      runsRef.current.set(runId, { content: "", index: history.length });
     }
-    setRagHits(hits);
-    const runId = `ai-${++runIdRef.current}`;
-    const next: Message[] = [...messages, { role: "user", content: text }, { role: "assistant", content: "__stream__" }];
-    setMessages(next);
-    setInput("");
-    runsRef.current.set(runId, { content: "", index: next.length - 1 });
-    const session = await ensureSession(text);
-    await db.saveChatMessage(session.id, "user", text);
     let providerIds: string[] = [];
     let routedName: string | null = null;
     let fallbackFrom: string | null = null;
@@ -272,7 +266,7 @@ export default function AIStudioView() {
       providerIds = activeProvider ? [activeProvider.id] : [];
     }
     setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
-    const apiMessages: ApiMessage[] = next.filter((m) => m.content !== "__stream__");
+    const apiMessages: ApiMessage[] = history.filter((m) => m.content !== "__stream__");
     if (hits.length > 0) {
       apiMessages.unshift({
         role: "system",
@@ -315,6 +309,76 @@ export default function AIStudioView() {
         sections,
       );
     }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    let hits: db.RagSearchResult[] = [];
+    if (useRag) {
+      try {
+        hits = await db.searchThoughts(text, 5);
+      } catch {
+        hits = [];
+      }
+    }
+    setRagHits(hits);
+    const runId = `ai-${++runIdRef.current}`;
+    const messageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const next: Message[] = [
+      ...messages,
+      { id: messageId, role: "user", content: text },
+      { role: "assistant", content: "__stream__" },
+    ];
+    setMessages(next);
+    setInput("");
+    const session = await ensureSession(text);
+    await db.saveChatMessage(session.id, "user", text, messageId);
+    const history: Message[] = next.slice(0, next.length - 1);
+    await runStream(history, runId, hits);
+  };
+
+  const startEdit = (message: Message) => {
+    if (busy || !message.id) return;
+    setEditingMessageId(message.id);
+    setEditDraft(message.content);
+  };
+
+  const saveEdit = async (message: Message) => {
+    const content = editDraft.trim();
+    if (!message.id || !content || busy) {
+      setEditingMessageId(null);
+      return;
+    }
+    await db.updateChatMessage(message.id, content);
+    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, content } : m)));
+    setEditingMessageId(null);
+    setEditDraft("");
+  };
+
+  const regenerateMessage = async (message: Message) => {
+    if (busy || !message.id || !sessionIdRef.current) return;
+    setBusy(true);
+    setEditingMessageId(null);
+    await db.truncateChatMessages(sessionIdRef.current, message.id);
+    const truncated = messages
+      .map((m) => (m.id === message.id ? { ...m, content: editDraft.trim() || m.content } : m))
+      .slice(0, messages.findIndex((m) => m.id === message.id) + 1);
+    const history: Message[] = [...truncated, { role: "assistant", content: "__stream__" }];
+    let hits: db.RagSearchResult[] = [];
+    if (useRag) {
+      try {
+        hits = await db.searchThoughts(truncated[truncated.length - 1]?.content ?? "", 5);
+      } catch {
+        hits = [];
+      }
+    }
+    setRagHits(hits);
+    const runId = `ai-${++runIdRef.current}`;
+    runsRef.current.set(runId, { content: "", index: history.length - 1 });
+    setMessages(history);
+    await runStream(history, runId, hits);
   };
 
   return (
@@ -507,18 +571,73 @@ export default function AIStudioView() {
         <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl">
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`message-in max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
-                m.role === "user"
-                  ? "self-end bg-emerald-500/15 text-emerald-100"
-                  : "self-start border border-white/10 bg-white/[0.04] text-slate-300"
-              }`}
-            >
-              {m.content === "__stream__" ? "" : m.content}
-              {m.content === "__stream__" && busy && (
-                <span className="stream-caret" />
-              )}
+            <div key={i} className={`group relative ${m.role === "user" ? "self-end" : "self-start"}`}>
+              <div
+                className={`message-in max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
+                  m.role === "user"
+                    ? "bg-emerald-500/15 text-emerald-100"
+                    : "border border-white/10 bg-white/[0.04] text-slate-300"
+                }`}
+              >
+                {m.content === "__stream__" ? "" : m.content}
+                {m.content === "__stream__" && busy && (
+                  <span className="stream-caret" />
+                )}
+              </div>
+              {m.role === "user" && m.id && editingMessageId === m.id ? (
+                <div className="mt-1 flex items-start gap-1.5">
+                  <textarea
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void saveEdit(m);
+                      if (e.key === "Escape") setEditingMessageId(null);
+                    }}
+                    rows={2}
+                    aria-label="Edit message input"
+                    className="min-h-0 flex-1 resize-none rounded-lg border border-emerald-500/30 bg-white/[0.04] px-2 py-1.5 text-[11px] text-slate-200 outline-none"
+                  />
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      type="button"
+                      aria-label="Save message edit"
+                      onClick={() => void saveEdit(m)}
+                      className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400"
+                    >
+                      <Check size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Cancel message edit"
+                      onClick={() => setEditingMessageId(null)}
+                      className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/5 text-slate-500"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                </div>
+              ) : m.id && m.content !== "__stream__" ? (
+                  <div className="absolute -right-9 top-1 hidden items-center gap-0.5 group-hover:flex">
+                    <button
+                      type="button"
+                      aria-label="Regenerate message"
+                      onClick={() => void regenerateMessage(m)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md bg-white/5 text-slate-500 hover:text-amber-300"
+                    >
+                      <RefreshCw size={11} />
+                    </button>
+                    {m.role === "user" && (
+                      <button
+                        type="button"
+                        aria-label="Edit message"
+                        onClick={() => startEdit(m)}
+                        className="flex h-6 w-6 items-center justify-center rounded-md bg-white/5 text-slate-500 hover:text-emerald-300"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    )}
+                  </div>
+              ) : null}
             </div>
           ))}
         </div>
