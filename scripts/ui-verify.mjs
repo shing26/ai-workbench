@@ -229,6 +229,13 @@ try {
   const resolved = path.resolve(profile);
   const tempRoot = path.resolve(os.tmpdir());
   if (resolved.startsWith(tempRoot) && fs.existsSync(resolved)) {
-    fs.rmSync(resolved, { recursive: true, force: true });
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true });
+    } catch {
+      await delay(1000);
+      try {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      } catch {}
+    }
   }
 }
