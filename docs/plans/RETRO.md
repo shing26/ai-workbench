@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 19
+
+### What went well?
+
+- 剪贴板/日志跨设备同步闭环：`clipboard_history` / `error_logs` 增加 `updated_at`，`export_sync_snapshot` / `import_sync_snapshot` 按时间戳合并，冲突保留较新版本。
+- 双设备合并验证：Rust 单测覆盖 A 导出、B 导入并校验双方数据；浏览器 fallback 用同一快照 key 模拟远端设备，`verify:ui` / `verify:preview` 新增合并断言并通过。
+- System 新增 Sync snapshot 卡片：设备标识、导出/导入按钮、合并统计与远端来源展示，设计 Token 一致。
+
+### What went wrong?
+
+- 首轮 Rust 编译报 `Deserialize` 缺失与 `?` 错误类型不匹配；为 `ClipboardItem` / `ErrorLog` 补 derive，同步函数改为返回 `String` 错误后通过。
+- `verify` 首版误以为远端 deviceId 会显示在页面上，实际 UI 只显示本地设备；改为断言远端数据已合并进卡片与日志列表。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、自动文件监听同步、多版本图谱与分支可视化。
+- 后续改动同步逻辑时，保留双设备合并断言与 `updated_at` 冲突语义。
+
 ## Sprint 18
 
 ### What went well?

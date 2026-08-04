@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Clipboard, HeartPulse, Plus, Radio, Terminal } from "lucide-react";
+import { Activity, AlertTriangle, Clipboard, CloudUpload, HeartPulse, Plus, Radio, RefreshCw, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -16,11 +16,36 @@ export default function SystemView() {
   const toggleProvider = useWorkbenchStore((s) => s.toggleProvider);
   const clipboard = useWorkbenchStore((s) => s.clipboard);
   const logs = useWorkbenchStore((s) => s.logs);
+  const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
+  const [deviceId, setDeviceId] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [lastRemoteDevice, setLastRemoteDevice] = useState("");
+  const [syncMessage, setSyncMessage] = useState("");
+
+  useEffect(() => {
+    void db.getSyncStatus().then((status) => {
+      setDeviceId(status.deviceId);
+      setLastSyncedAt(status.lastSyncedAt);
+    });
+  }, []);
+
+  const exportSync = async () => {
+    const snapshot = await db.exportSyncSnapshot();
+    setSyncMessage(`Exported ${snapshot.clipboard.length} clips / ${snapshot.logs.length} logs`);
+  };
+
+  const importSync = async () => {
+    const result = await db.importSyncSnapshot();
+    await refreshSystem();
+    setLastSyncedAt(result.syncedAt);
+    setLastRemoteDevice(result.deviceId);
+    setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
+  };
 
   const check = async (id: string) => {
     const result = await db.checkProviderHealth(id);
@@ -172,6 +197,39 @@ export default function SystemView() {
           >
             <Plus size={14} /> Add
           </button>
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Sync snapshot" subtitle="剪贴板与日志跨设备同步" icon={CloudUpload} colSpan={12}>
+        <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+          <span className="rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5">
+            device {deviceId.slice(0, 8)}
+          </span>
+          <span>
+            {lastSyncedAt
+              ? `last sync ${new Date(lastSyncedAt).toLocaleTimeString("zh-CN")}`
+              : "not synced yet"}
+          </span>
+          {lastRemoteDevice && <span className="text-slate-400">from {lastRemoteDevice.slice(0, 8)}</span>}
+          {syncMessage && <span className="text-emerald-400">{syncMessage}</span>}
+          <span className="ml-auto flex gap-1.5">
+            <button
+              type="button"
+              aria-label="Export sync snapshot"
+              onClick={() => void exportSync()}
+              className="flex h-8 items-center gap-1 rounded-lg bg-blue-500/15 px-2.5 text-[11px] text-[#7FB4FF] hover:bg-blue-500/25"
+            >
+              <CloudUpload size={12} /> Export
+            </button>
+            <button
+              type="button"
+              aria-label="Import sync snapshot"
+              onClick={() => void importSync()}
+              className="flex h-8 items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/25"
+            >
+              <RefreshCw size={12} /> Import
+            </button>
+          </span>
         </div>
       </BentoCard>
 

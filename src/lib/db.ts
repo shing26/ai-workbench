@@ -111,6 +111,7 @@ export type ClipboardItem = {
   content: string;
   source: string;
   timestamp: number;
+  updatedAt: number;
 };
 
 export type ErrorLog = {
@@ -120,6 +121,28 @@ export type ErrorLog = {
   stack: string | null;
   severity: string;
   timestamp: number;
+  updatedAt: number;
+};
+
+export type SyncSnapshot = {
+  deviceId: string;
+  exportedAt: number;
+  clipboard: ClipboardItem[];
+  logs: ErrorLog[];
+};
+
+export type SyncResult = {
+  deviceId: string;
+  syncedAt: number;
+  clipboardAdded: number;
+  clipboardUpdated: number;
+  logsAdded: number;
+  logsUpdated: number;
+};
+
+export type SyncStatus = {
+  deviceId: string;
+  lastSyncedAt: number | null;
 };
 
 export type RagSearchResult = {
@@ -160,6 +183,8 @@ type LocalShape = {
   scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
   logs: ErrorLog[];
+  syncDeviceId: string;
+  lastSyncedAt: number;
 };
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -184,11 +209,14 @@ function emptyShape(): LocalShape {
     scheduleEvents: [],
     clipboard: [],
     logs: [],
+    syncDeviceId: "",
+    lastSyncedAt: 0,
   };
 }
 
 function seedShape(): LocalShape {
   const now = Date.now();
+  const existing = readLocal();
   return {
     tasks: [
       { id: makeId(), title: "Ship App Shell", status: "in_progress", isToday: true, dueDate: null, createdAt: now - 3000 },
@@ -224,12 +252,14 @@ function seedShape(): LocalShape {
       { id: makeId(), title: "Sprint 3 验收", startTime: "14:00", done: false, tag: "work", createdAt: now - 1800000 },
     ],
     clipboard: [
-      { id: makeId(), content: "pnpm run dev", source: "terminal", timestamp: now - 5000 },
-      { id: makeId(), content: "bg-[#18181C] border-white/10 rounded-2xl", source: "editor", timestamp: now - 4000 },
+      { id: makeId(), content: "pnpm run dev", source: "terminal", timestamp: now - 5000, updatedAt: now - 5000 },
+      { id: makeId(), content: "bg-[#18181C] border-white/10 rounded-2xl", source: "editor", timestamp: now - 4000, updatedAt: now - 4000 },
     ],
     logs: [
-      { id: makeId(), source: "tauri", message: "DB initialized", stack: null, severity: "info", timestamp: now - 7000 },
+      { id: makeId(), source: "tauri", message: "DB initialized", stack: null, severity: "info", timestamp: now - 7000, updatedAt: now - 7000 },
     ],
+    syncDeviceId: existing.syncDeviceId || makeId(),
+    lastSyncedAt: existing.lastSyncedAt ?? 0,
   };
 }
 
@@ -688,6 +718,7 @@ export async function reportFrontendError(input: {
     stack: input.stack,
     severity: input.severity,
     timestamp: Date.now(),
+    updatedAt: Date.now(),
   };
   shape.logs.unshift(log);
   writeLocal(shape);
@@ -696,7 +727,8 @@ export async function reportFrontendError(input: {
 export async function captureClipboard(content: string): Promise<ClipboardItem> {
   if (isTauri()) return invoke<ClipboardItem>("capture_clipboard", { content });
   const shape = readLocal();
-  const item: ClipboardItem = { id: makeId(), content, source: "system", timestamp: Date.now() };
+  const now = Date.now();
+  const item: ClipboardItem = { id: makeId(), content, source: "system", timestamp: now, updatedAt: now };
   shape.clipboard.unshift(item);
   writeLocal(shape);
   return item;
@@ -710,6 +742,75 @@ export async function listenClipboardUpdated(
     return listen<ClipboardItem>("clipboard-updated", (event) => handler(event.payload));
   }
   return () => {};
+}
+
+const SYNC_LS_KEY = "ai-workbench:sync-snapshot:v1";
+
+export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
+  if (isTauri()) return invoke<SyncSnapshot>("export_sync_snapshot");
+  const shape = readLocal();
+  const snapshot: SyncSnapshot = {
+    deviceId: shape.syncDeviceId || makeId(),
+    exportedAt: Date.now(),
+    clipboard: shape.clipboard,
+    logs: shape.logs,
+  };
+  localStorage.setItem(SYNC_LS_KEY, JSON.stringify(snapshot));
+  return snapshot;
+}
+
+export async function importSyncSnapshot(): Promise<SyncResult> {
+  if (isTauri()) return invoke<SyncResult>("import_sync_snapshot");
+  const raw = localStorage.getItem(SYNC_LS_KEY);
+  if (!raw) throw new Error("sync snapshot not found");
+  const remote = JSON.parse(raw) as SyncSnapshot;
+  const shape = readLocal();
+  let clipboardAdded = 0;
+  let clipboardUpdated = 0;
+  for (const item of remote.clipboard) {
+    const local = shape.clipboard.find((c) => c.id === item.id);
+    if (!local) {
+      shape.clipboard.push(item);
+      clipboardAdded++;
+    } else if (item.updatedAt > local.updatedAt) {
+      Object.assign(local, item);
+      clipboardUpdated++;
+    }
+  }
+  let logsAdded = 0;
+  let logsUpdated = 0;
+  for (const log of remote.logs) {
+    const local = shape.logs.find((l) => l.id === log.id);
+    if (!local) {
+      shape.logs.push(log);
+      logsAdded++;
+    } else if (log.updatedAt > local.updatedAt) {
+      Object.assign(local, log);
+      logsUpdated++;
+    }
+  }
+  shape.clipboard.sort((a, b) => b.updatedAt - a.updatedAt);
+  shape.logs.sort((a, b) => b.updatedAt - a.updatedAt);
+  const result: SyncResult = {
+    deviceId: remote.deviceId,
+    syncedAt: Date.now(),
+    clipboardAdded,
+    clipboardUpdated,
+    logsAdded,
+    logsUpdated,
+  };
+  shape.lastSyncedAt = result.syncedAt;
+  writeLocal(shape);
+  return result;
+}
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  if (isTauri()) {
+    const shape = readLocal();
+    return { deviceId: shape.syncDeviceId || "tauri-device", lastSyncedAt: shape.lastSyncedAt || null };
+  }
+  const shape = readLocal();
+  return { deviceId: shape.syncDeviceId || makeId(), lastSyncedAt: shape.lastSyncedAt || null };
 }
 
 function tokenizeSearch(text: string): string[] {

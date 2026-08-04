@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -70,7 +71,8 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     source TEXT DEFAULT 'system',
-    timestamp INTEGER
+    timestamp INTEGER,
+    updated_at INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS error_logs (
     id TEXT PRIMARY KEY,
@@ -78,7 +80,8 @@ CREATE TABLE IF NOT EXISTS error_logs (
     message TEXT NOT NULL,
     stack TEXT,
     severity TEXT DEFAULT 'error',
-    timestamp INTEGER
+    timestamp INTEGER,
+    updated_at INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(is_today, status);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(type, created_at);
@@ -217,16 +220,17 @@ pub struct ScheduleEvent {
     pub created_at: i64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipboardItem {
     pub id: String,
     pub content: String,
     pub source: String,
     pub timestamp: i64,
+    pub updated_at: i64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorLog {
     pub id: String,
@@ -235,6 +239,29 @@ pub struct ErrorLog {
     pub stack: Option<String>,
     pub severity: String,
     pub timestamp: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSnapshot {
+    pub device_id: String,
+    pub exported_at: i64,
+    #[serde(default)]
+    pub clipboard: Vec<ClipboardItem>,
+    #[serde(default)]
+    pub logs: Vec<ErrorLog>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    pub device_id: String,
+    pub synced_at: i64,
+    pub clipboard_added: usize,
+    pub clipboard_updated: usize,
+    pub logs_added: usize,
+    pub logs_updated: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -302,8 +329,34 @@ fn uid() -> String {
 pub fn init_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    migrate_updated_at(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
+}
+
+fn migrate_updated_at(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "clipboard_history", "updated_at")? {
+        conn.execute_batch(
+            "ALTER TABLE clipboard_history ADD COLUMN updated_at INTEGER DEFAULT 0;
+             UPDATE clipboard_history SET updated_at = timestamp WHERE updated_at = 0;",
+        )?;
+    }
+    if !column_exists(conn, "error_logs", "updated_at")? {
+        conn.execute_batch(
+            "ALTER TABLE error_logs ADD COLUMN updated_at INTEGER DEFAULT 0;
+             UPDATE error_logs SET updated_at = timestamp WHERE updated_at = 0;",
+        )?;
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
 }
 
 fn seed_if_empty(conn: &Connection) -> Result<()> {
@@ -407,12 +460,12 @@ fn seed_clipboard_if_empty(conn: &Connection) -> Result<()> {
     }
     let now = now_millis();
     conn.execute(
-        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, 'terminal', ?3)",
-        params![uid(), "pnpm run dev", now - 5000],
+        "INSERT INTO clipboard_history (id, content, source, timestamp, updated_at) VALUES (?1, ?2, 'terminal', ?3, ?4)",
+        params![uid(), "pnpm run dev", now - 5000, now - 5000],
     )?;
     conn.execute(
-        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, 'editor', ?3)",
-        params![uid(), "bg-[#18181C] border-white/10 rounded-2xl", now - 4000],
+        "INSERT INTO clipboard_history (id, content, source, timestamp, updated_at) VALUES (?1, ?2, 'editor', ?3, ?4)",
+        params![uid(), "bg-[#18181C] border-white/10 rounded-2xl", now - 4000, now - 4000],
     )?;
     Ok(())
 }
@@ -423,8 +476,8 @@ fn seed_logs_if_empty(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     conn.execute(
-        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2)",
-        params![uid(), now_millis() - 7000],
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2, ?3)",
+        params![uid(), now_millis() - 7000, now_millis() - 7000],
     )?;
     Ok(())
 }
@@ -727,7 +780,7 @@ pub fn capture_clipboard(conn: &Connection, content: &str, source: &str) -> Resu
         ));
     }
     let recent: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_history WHERE content = ?1 AND timestamp > ?2",
+        "SELECT COUNT(*) FROM clipboard_history WHERE content = ?1 AND updated_at > ?2",
         params![trimmed, now_millis() - 10_000],
         |row| row.get(0),
     )?;
@@ -739,20 +792,21 @@ pub fn capture_clipboard(conn: &Connection, content: &str, source: &str) -> Resu
     let id = uid();
     let timestamp = now_millis();
     conn.execute(
-        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, ?3, ?4)",
-        params![id, trimmed, source, timestamp],
+        "INSERT INTO clipboard_history (id, content, source, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, trimmed, source, timestamp, timestamp],
     )?;
     Ok(ClipboardItem {
         id,
         content: trimmed.to_string(),
         source: source.to_string(),
         timestamp,
+        updated_at: timestamp,
     })
 }
 
 pub fn list_clipboard(conn: &Connection) -> Result<Vec<ClipboardItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content, source, timestamp FROM clipboard_history ORDER BY timestamp DESC LIMIT 30",
+        "SELECT id, content, source, timestamp, updated_at FROM clipboard_history ORDER BY updated_at DESC LIMIT 30",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ClipboardItem {
@@ -760,6 +814,7 @@ pub fn list_clipboard(conn: &Connection) -> Result<Vec<ClipboardItem>> {
             content: row.get(1)?,
             source: row.get(2)?,
             timestamp: row.get(3)?,
+            updated_at: row.get(4)?,
         })
     })?;
     rows.collect()
@@ -775,8 +830,8 @@ pub fn report_frontend_error(
     let id = uid();
     let timestamp = now_millis();
     conn.execute(
-        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, source, message, stack, severity, timestamp],
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![id, source, message, stack, severity, timestamp, timestamp],
     )?;
     Ok(ErrorLog {
         id,
@@ -785,12 +840,13 @@ pub fn report_frontend_error(
         stack: stack.map(|s| s.to_string()),
         severity: severity.to_string(),
         timestamp,
+        updated_at: timestamp,
     })
 }
 
 pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
     let mut stmt = conn.prepare(
-        "SELECT id, source, message, stack, severity, timestamp FROM error_logs ORDER BY timestamp DESC LIMIT 30",
+        "SELECT id, source, message, stack, severity, timestamp, updated_at FROM error_logs ORDER BY updated_at DESC LIMIT 30",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ErrorLog {
@@ -800,9 +856,116 @@ pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
             stack: row.get(3)?,
             severity: row.get(4)?,
             timestamp: row.get(5)?,
+            updated_at: row.get(6)?,
         })
     })?;
     rows.collect()
+}
+
+pub fn export_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncSnapshot, String> {
+    let snapshot = SyncSnapshot {
+        device_id: uid(),
+        exported_at: now_millis(),
+        clipboard: list_clipboard(conn).map_err(|e| e.to_string())?,
+        logs: list_error_logs(conn).map_err(|e| e.to_string())?,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())?;
+    Ok(snapshot)
+}
+
+pub fn import_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncResult, String> {
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let snapshot: SyncSnapshot = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let mut clipboard_added = 0;
+    let mut clipboard_updated = 0;
+    for item in snapshot.clipboard {
+        match merge_clipboard_item(conn, &item).map_err(|e| e.to_string())? {
+            MergeOutcome::Added => clipboard_added += 1,
+            MergeOutcome::Updated => clipboard_updated += 1,
+            MergeOutcome::Skipped => {}
+        }
+    }
+    let mut logs_added = 0;
+    let mut logs_updated = 0;
+    for log in snapshot.logs {
+        match merge_error_log(conn, &log).map_err(|e| e.to_string())? {
+            MergeOutcome::Added => logs_added += 1,
+            MergeOutcome::Updated => logs_updated += 1,
+            MergeOutcome::Skipped => {}
+        }
+    }
+    Ok(SyncResult {
+        device_id: snapshot.device_id,
+        synced_at: now_millis(),
+        clipboard_added,
+        clipboard_updated,
+        logs_added,
+        logs_updated,
+    })
+}
+
+enum MergeOutcome {
+    Added,
+    Updated,
+    Skipped,
+}
+
+fn merge_clipboard_item(conn: &Connection, item: &ClipboardItem) -> Result<MergeOutcome> {
+    let local_updated: Option<i64> = conn
+        .query_row(
+            "SELECT updated_at FROM clipboard_history WHERE id = ?1",
+            params![item.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match local_updated {
+        Some(local) if local >= item.updated_at => Ok(MergeOutcome::Skipped),
+        Some(_) => {
+            conn.execute(
+                "UPDATE clipboard_history SET content = ?1, source = ?2, timestamp = ?3, updated_at = ?4 WHERE id = ?5",
+                params![item.content, item.source, item.timestamp, item.updated_at, item.id],
+            )?;
+            Ok(MergeOutcome::Updated)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO clipboard_history (id, content, source, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![item.id, item.content, item.source, item.timestamp, item.updated_at],
+            )?;
+            Ok(MergeOutcome::Added)
+        }
+    }
+}
+
+fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
+    let local_updated: Option<i64> = conn
+        .query_row(
+            "SELECT updated_at FROM error_logs WHERE id = ?1",
+            params![log.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match local_updated {
+        Some(local) if local >= log.updated_at => Ok(MergeOutcome::Skipped),
+        Some(_) => {
+            conn.execute(
+                "UPDATE error_logs SET source = ?1, message = ?2, stack = ?3, severity = ?4, timestamp = ?5, updated_at = ?6 WHERE id = ?7",
+                params![log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at, log.id],
+            )?;
+            Ok(MergeOutcome::Updated)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![log.id, log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at],
+            )?;
+            Ok(MergeOutcome::Added)
+        }
+    }
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -1393,6 +1556,38 @@ mod tests {
             "boom"
         );
         drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_snapshot_merges_clipboard_and_logs_between_devices() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let device_a = dir.join("device-a.db");
+        let device_b = dir.join("device-b.db");
+        let snapshot_path = dir.join("sync-snapshot.json");
+
+        let conn_a = init_connection(&device_a).unwrap();
+        capture_clipboard(&conn_a, "from device A", "test").unwrap();
+        report_frontend_error(&conn_a, "a", "log from A", None, "info").unwrap();
+        export_sync_snapshot(&conn_a, &snapshot_path).unwrap();
+
+        let conn_b = init_connection(&device_b).unwrap();
+        capture_clipboard(&conn_b, "from device B", "test").unwrap();
+        report_frontend_error(&conn_b, "b", "log from B", None, "error").unwrap();
+
+        let result = import_sync_snapshot(&conn_b, &snapshot_path).unwrap();
+        assert!(result.clipboard_added >= 1);
+        assert!(result.logs_added >= 1);
+        let clips = list_clipboard(&conn_b).unwrap();
+        assert!(clips.iter().any(|c| c.content == "from device A"));
+        assert!(clips.iter().any(|c| c.content == "from device B"));
+        let logs = list_error_logs(&conn_b).unwrap();
+        assert!(logs.iter().any(|l| l.message == "log from A"));
+        assert!(logs.iter().any(|l| l.message == "log from B"));
+        drop(conn_a);
+        drop(conn_b);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

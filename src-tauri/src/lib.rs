@@ -946,6 +946,28 @@ fn list_error_logs(state: State<'_, db::Db>) -> Result<Vec<db::ErrorLog>, String
 }
 
 #[tauri::command]
+fn export_sync_snapshot(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+) -> Result<db::SyncSnapshot, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("sync-snapshot.json");
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::export_sync_snapshot(&conn, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_sync_snapshot(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+) -> Result<db::SyncResult, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("sync-snapshot.json");
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::import_sync_snapshot(&conn, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn report_frontend_error(
     state: State<'_, db::Db>,
     source: String,
@@ -1397,6 +1419,8 @@ pub fn run() {
             diff_message_version_with_current,
             list_clipboard,
             list_error_logs,
+            export_sync_snapshot,
+            import_sync_snapshot,
             report_frontend_error,
             capture_clipboard,
             search_thoughts,

@@ -564,6 +564,53 @@ try {
   }
   results.heartbeat = heartbeatCheck;
 
+  const syncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');
+    if (!exportBtn) return { ok: false, reason: "export button missing" };
+    exportBtn.click();
+    await sleep(250);
+    const remote = {
+      deviceId: "device-b-verify",
+      exportedAt: Date.now() + 1000,
+      clipboard: [
+        {
+          id: "sync-clip-remote",
+          content: "sprint 19 remote clipboard",
+          source: "remote",
+          timestamp: Date.now() + 1000,
+          updatedAt: Date.now() + 1000,
+        },
+      ],
+      logs: [
+        {
+          id: "sync-log-remote",
+          source: "remote",
+          message: "sprint 19 remote error",
+          stack: null,
+          severity: "error",
+          timestamp: Date.now() + 1000,
+          updatedAt: Date.now() + 1000,
+        },
+      ],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(remote));
+    document.querySelector('button[aria-label="Import sync snapshot"]')?.click();
+    let merged = false;
+    for (let i = 0; i < 20; i++) {
+      const body = document.body.innerText;
+      merged =
+        body.includes("sprint 19 remote clipboard") && body.includes("sprint 19 remote error");
+      if (merged) break;
+      await sleep(100);
+    }
+    return { ok: merged, merged };
+  })()`);
+  if (!syncCheck.ok) {
+    throw new Error(`sync snapshot assertion failed: ${JSON.stringify(syncCheck)}`);
+  }
+  results.sync = syncCheck;
+
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
