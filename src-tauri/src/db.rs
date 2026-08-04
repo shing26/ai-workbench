@@ -87,6 +87,15 @@ CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_date ON habit_logs(habit_id, dat
 CREATE INDEX IF NOT EXISTS idx_schedule_events_time ON schedule_events(start_time);
 CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp ON clipboard_history(timestamp);
 CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp);
+CREATE TABLE IF NOT EXISTS knowledge_files (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    title TEXT,
+    tags TEXT,
+    content TEXT NOT NULL,
+    indexed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_files_path ON knowledge_files(path);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -202,6 +211,19 @@ pub struct RagIndexStatus {
     pub documents: i64,
     pub indexed: bool,
     pub last_indexed_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeIndexStatus {
+    pub files: i64,
+    pub indexed_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexResult {
+    pub files: i64,
 }
 
 fn now_millis() -> i64 {
@@ -750,12 +772,51 @@ fn tokenize(text: &str) -> Vec<String> {
 
 pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
     let documents: i64 = conn.query_row("SELECT COUNT(*) FROM thoughts", [], |row| row.get(0))?;
+    let files: i64 =
+        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
     let last: Option<i64> =
         conn.query_row("SELECT MAX(created_at) FROM thoughts", [], |row| row.get(0))?;
+    let file_last: Option<i64> =
+        conn.query_row("SELECT MAX(indexed_at) FROM knowledge_files", [], |row| {
+            row.get(0)
+        })?;
     Ok(RagIndexStatus {
-        documents,
-        indexed: documents > 0,
-        last_indexed_at: last.unwrap_or(0),
+        documents: documents + files,
+        indexed: documents + files > 0,
+        last_indexed_at: last.max(file_last).unwrap_or(0),
+    })
+}
+
+pub fn upsert_knowledge_file(
+    conn: &Connection,
+    path: &str,
+    title: &str,
+    tags: &str,
+    content: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO knowledge_files (id, path, title, tags, content, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(path) DO UPDATE SET
+           title = excluded.title,
+           tags = excluded.tags,
+           content = excluded.content,
+           indexed_at = excluded.indexed_at",
+        params![uid(), path, title, tags, content, now_millis()],
+    )?;
+    Ok(())
+}
+
+pub fn knowledge_index_status(conn: &Connection) -> Result<KnowledgeIndexStatus> {
+    let files: i64 =
+        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
+    let last: Option<i64> =
+        conn.query_row("SELECT MAX(indexed_at) FROM knowledge_files", [], |row| {
+            row.get(0)
+        })?;
+    Ok(KnowledgeIndexStatus {
+        files,
+        indexed_at: last.unwrap_or(0),
     })
 }
 
@@ -773,13 +834,26 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
             row.get::<_, String>(3)?,
         ))
     })?;
-    let docs: Vec<(String, String, String, String, Vec<String>)> = rows
+    let mut docs: Vec<(String, String, String, String, Vec<String>)> = rows
         .filter_map(Result::ok)
         .map(|(id, content, tags, kind)| {
             let tokens = tokenize(&content);
             (id, content, tags, kind, tokens)
         })
         .collect();
+    let mut file_stmt = conn.prepare("SELECT id, content, tags FROM knowledge_files")?;
+    let file_rows = file_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for file in file_rows.flatten() {
+        let (id, content, tags) = file;
+        let tokens = tokenize(&content);
+        docs.push((id, content, tags, "doc".to_string(), tokens));
+    }
     if docs.is_empty() {
         return Ok(Vec::new());
     }
