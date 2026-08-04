@@ -1,50 +1,56 @@
 use keyring::Entry;
+use serde::Serialize;
 use serde_json::Value;
-use std::process::Command;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
+use tauri::{Manager, State};
 
-// ─ helpers ──────────────────────────────────
+mod db;
 
 fn get_api_key(name: &str) -> Result<String, String> {
     let entry = Entry::new("ai-workbench", name).map_err(|e| e.to_string())?;
     entry.get_password().map_err(|e| e.to_string())
 }
 
-/// Ask OpenAI-compatible chat API. Expects key named "OPENAI_API_KEY".
 fn chat_openai(messages_json: &str) -> Result<String, String> {
     let api_key = get_api_key("OPENAI_API_KEY")?;
-    let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
+    chat_openai_compatible("https://api.openai.com/v1", &api_key, messages_json)
+}
 
+fn chat_openai_compatible(
+    base_url: &str,
+    api_key: &str,
+    messages_json: &str,
+) -> Result<String, String> {
+    let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
+    let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = reqwest::blocking::Client::new();
     let resp = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
         .json(&serde_json::json!({
             "model": "gpt-4o-mini",
             "messages": body
         }))
         .send()
-        .map_err(|e| format!("OpenAI request failed: {}", e))?;
+        .map_err(|e| format!("AI request failed: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let err_body = resp.text().unwrap_or_default();
-        return Err(format!("OpenAI {} : {}", status, err_body));
+        return Err(format!("AI {} : {}", status, err_body));
     }
 
     let json: Value = resp.json().map_err(|e| e.to_string())?;
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "OpenAI returned empty content".into())
+        .ok_or_else(|| "AI returned empty content".into())
 }
 
-/// Ask local Ollama. Uses model "qwen2.5:3b" by default.
 fn chat_ollama(messages_json: &str, model_name: &str) -> Result<String, String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
-
     let client = reqwest::blocking::Client::new();
     let resp = client
         .post("http://localhost:11434/api/chat")
@@ -57,7 +63,11 @@ fn chat_ollama(messages_json: &str, model_name: &str) -> Result<String, String> 
         .map_err(|e| format!("Ollama request failed: {}", e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("Ollama {} : {}", resp.status(), resp.text().unwrap_or_default()));
+        return Err(format!(
+            "Ollama {} : {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        ));
     }
 
     let json: Value = resp.json().map_err(|e| e.to_string())?;
@@ -67,7 +77,6 @@ fn chat_ollama(messages_json: &str, model_name: &str) -> Result<String, String> 
         .ok_or_else(|| "Ollama returned empty content".into())
 }
 
-/// Spawn `codex` CLI and capture stdout.
 fn chat_codex(prompt: &str) -> Result<String, String> {
     let output = Command::new("codex")
         .arg(prompt)
@@ -81,26 +90,48 @@ fn chat_codex(prompt: &str) -> Result<String, String> {
     }
 }
 
-
-// ─ Automation fetch commands ─────────────────
+fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String, String> {
+    let name = provider.name.to_lowercase();
+    let url = provider.base_url.to_lowercase();
+    if name.contains("ollama") || url.contains("11434") {
+        chat_ollama(messages_json, "qwen2.5:3b")
+    } else {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        let api_key = get_api_key(key_ref)?;
+        chat_openai_compatible(&provider.base_url, &api_key, messages_json)
+    }
+}
 
 #[tauri::command]
 fn fetch_url(url: String) -> Result<String, String> {
     let client = reqwest::blocking::Client::new();
-    let resp = client.get(&url).send().map_err(|e| format!("Fetch failed: {}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("Fetch failed: {}", e))?;
     resp.text().map_err(|e| format!("Read failed: {}", e))
 }
 
 #[tauri::command]
 fn fetch_rss(url: String) -> Result<String, String> {
     let client = reqwest::blocking::Client::new();
-    let body = client.get(&url).send().map_err(|e| format!("Fetch failed: {}", e))?
-        .text().map_err(|e| format!("Read failed: {}", e))?;
+    let body = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("Fetch failed: {}", e))?
+        .text()
+        .map_err(|e| format!("Read failed: {}", e))?;
     let mut items = Vec::new();
     let mut rest = body.as_str();
     while let Some(start) = rest.find("<item") {
         rest = &rest[start..];
-        let Some(end) = rest.find("</item>") else { break };
+        let Some(end) = rest.find("</item>") else {
+            break;
+        };
         let item = &rest[..end + 7];
         let title = extract_tag(item, "title");
         let link = extract_tag(item, "link");
@@ -109,7 +140,11 @@ fn fetch_rss(url: String) -> Result<String, String> {
         }
         rest = &rest[end + 7..];
     }
-    Ok(if items.is_empty() { body.chars().take(500).collect() } else { items.join("\n") })
+    Ok(if items.is_empty() {
+        body.chars().take(500).collect()
+    } else {
+        items.join("\n")
+    })
 }
 
 fn extract_tag(xml: &str, tag: &str) -> String {
@@ -127,28 +162,23 @@ fn extract_tag(xml: &str, tag: &str) -> String {
     String::new()
 }
 
-// ─ Knowledge Hub commands ───────────────────
-
 #[tauri::command]
 fn write_note(vault_path: String, file_name: String, content: String) -> Result<String, String> {
-    // Canonicalize vault path for prefix check
     let vault = Path::new(&vault_path);
-    let vault_canon = fs::canonicalize(vault)
-        .map_err(|e| format!("Vault path not accessible: {}", e))?;
-
-    // Reject file names that try to escape the vault directory
+    let vault_canon =
+        fs::canonicalize(vault).map_err(|e| format!("Vault path not accessible: {}", e))?;
     let name = Path::new(&file_name);
-    if name.components().any(|c| c == std::path::Component::ParentDir || c == std::path::Component::RootDir) {
+    if name
+        .components()
+        .any(|c| c == std::path::Component::ParentDir || c == std::path::Component::RootDir)
+    {
         return Err("Invalid file name: path traversal not allowed".into());
     }
-
-    // Construct and canonicalize the output path, verify it stays inside vault
     let full = vault.join(name);
     let full_canon = fs::canonicalize(&full).unwrap_or_else(|_| full.clone());
     if !full_canon.starts_with(&vault_canon) {
         return Err("Path escapes vault directory".into());
     }
-
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
     }
@@ -162,12 +192,12 @@ fn read_vault_notes(vault_path: String) -> Result<String, String> {
     if !dir.is_dir() {
         return Ok("[]".into());
     }
-    let mut notes: Vec<serde_json::Value> = Vec::new();
+    let mut notes: Vec<Value> = Vec::new();
     let entries = fs::read_dir(dir).map_err(|e| format!("Read dir failed: {}", e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
         let p = entry.path();
-        if p.extension().map_or(false, |e| e == "md") {
+        if p.extension().is_some_and(|e| e == "md") {
             let content = fs::read_to_string(&p).unwrap_or_default();
             let (frontmatter, body) = parse_frontmatter(&content);
             notes.push(serde_json::json!({
@@ -179,10 +209,10 @@ fn read_vault_notes(vault_path: String) -> Result<String, String> {
             }));
         }
     }
-    serde_json::to_string(&notes).map_err(|e| format!("Serialize error: {}", e))
+    serde_json::to_string(&notes).map_err(|e| e.to_string())
 }
 
-fn parse_frontmatter(content: &str) -> (serde_json::Map<String, serde_json::Value>, String) {
+fn parse_frontmatter(content: &str) -> (serde_json::Map<String, Value>, String) {
     let mut map = serde_json::Map::new();
     if !content.starts_with("---") {
         return (map, content.to_string());
@@ -192,7 +222,7 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, serde_json::Valu
             let fm = &rest[..end];
             for line in fm.lines() {
                 if let Some((k, v)) = line.split_once(':') {
-                    map.insert(k.trim().to_string(), serde_json::Value::String(v.trim().to_string()));
+                    map.insert(k.trim().to_string(), Value::String(v.trim().to_string()));
                 }
             }
             let body = rest[end + 3..].trim_start().to_string();
@@ -201,8 +231,6 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, serde_json::Valu
     }
     (map, content.to_string())
 }
-
-// - Tauri commands ─────────────────────────────
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -229,38 +257,37 @@ fn delete_secret(key: String) -> Result<String, String> {
     Ok(format!("Secret '{}' deleted", key))
 }
 
-/// Unified chat endpoint — model routes to the right backend.
 #[tauri::command]
-fn send_chat_message(model: String, messages_json: String, ollama_model: String) -> Result<String, String> {
+fn send_chat_message(
+    model: String,
+    messages_json: String,
+    ollama_model: String,
+) -> Result<String, String> {
     let model = model.to_lowercase();
-
     match model.as_str() {
         "cloud" => chat_openai(&messages_json),
         "ollama" => chat_ollama(&messages_json, &ollama_model),
         "codex" => {
             let msgs: Value = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
-            let last = msgs.as_array()
+            let last = msgs
+                .as_array()
                 .and_then(|a| a.last())
                 .and_then(|m| m["content"].as_str())
                 .unwrap_or("");
             chat_codex(last)
         }
         "auto" => {
-            chat_openai(&messages_json)
-                .or_else(|_| chat_ollama(&messages_json, &ollama_model))
+            chat_openai(&messages_json).or_else(|_| chat_ollama(&messages_json, &ollama_model))
         }
         _ => Err(format!("Unknown model: {}", model)),
     }
 }
 
-/// Spawn codex CLI for vibe-coding pipeline.
 #[tauri::command]
 fn run_codex(idea: String, clarifications_json: String) -> Result<String, String> {
-    let clarifications: Value = serde_json::from_str(&clarifications_json)
-        .map_err(|e| e.to_string())?;
-
+    let clarifications: Value =
+        serde_json::from_str(&clarifications_json).map_err(|e| e.to_string())?;
     let mut prompt = format!("**Task:** {}\n\n", idea);
-
     if let Some(arr) = clarifications.as_array() {
         for c in arr {
             if let (Some(q), Some(a)) = (c["question"].as_str(), c["selected"].as_str()) {
@@ -268,18 +295,275 @@ fn run_codex(idea: String, clarifications_json: String) -> Result<String, String
             }
         }
     }
-
     prompt.push_str("\nGenerate complete, runnable code. Output code only, no explanations.");
-
     chat_codex(&prompt)
 }
 
-// ─ Entry point ───────────────────────────────
+#[tauri::command]
+fn init_db(state: State<'_, db::Db>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute_batch(db::SCHEMA).map_err(|e| e.to_string())?;
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+fn list_tasks(state: State<'_, db::Db>) -> Result<Vec<db::Task>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_tasks(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_task(
+    state: State<'_, db::Db>,
+    title: String,
+    is_today: bool,
+) -> Result<db::Task, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_task(&conn, &title, is_today).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_task_status(state: State<'_, db::Db>, id: String, status: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_task_status(&conn, &id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_task_today(state: State<'_, db::Db>, id: String, is_today: bool) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_task_today(&conn, &id, is_today).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_projects(state: State<'_, db::Db>) -> Result<Vec<db::Project>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_projects(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_project(
+    state: State<'_, db::Db>,
+    name: String,
+    path: String,
+) -> Result<db::Project, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_project(&conn, &name, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_thoughts(state: State<'_, db::Db>) -> Result<Vec<db::Thought>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_thoughts(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_thought(
+    state: State<'_, db::Db>,
+    content: String,
+    tags: String,
+    kind: String,
+) -> Result<db::Thought, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_thought(&conn, &content, &tags, &kind).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_providers(state: State<'_, db::Db>) -> Result<Vec<db::Provider>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_providers(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_provider(
+    state: State<'_, db::Db>,
+    name: String,
+    base_url: String,
+    api_key: String,
+) -> Result<db::Provider, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_provider(&conn, &name, &base_url, &api_key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_provider_active(
+    state: State<'_, db::Db>,
+    id: String,
+    is_active: bool,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_provider_active(&conn, &id, is_active).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_sessions(state: State<'_, db::Db>) -> Result<Vec<db::Session>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_sessions(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_session(
+    state: State<'_, db::Db>,
+    title: String,
+    model: String,
+) -> Result<db::Session, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_session(&conn, &title, &model).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardItem {
+    id: String,
+    content: String,
+    source: String,
+    timestamp: i64,
+}
+
+#[tauri::command]
+fn list_clipboard() -> Vec<ClipboardItem> {
+    let now = now_millis();
+    vec![
+        ClipboardItem {
+            id: "clip-1".into(),
+            content: "pnpm run dev".into(),
+            source: "terminal".into(),
+            timestamp: now - 5000,
+        },
+        ClipboardItem {
+            id: "clip-2".into(),
+            content: "bg-[#18181C] border-white/10 rounded-2xl".into(),
+            source: "editor".into(),
+            timestamp: now - 4000,
+        },
+    ]
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorLog {
+    id: String,
+    source: String,
+    message: String,
+    stack: Option<String>,
+    severity: String,
+    timestamp: i64,
+}
+
+#[tauri::command]
+fn list_error_logs() -> Vec<ErrorLog> {
+    vec![ErrorLog {
+        id: "log-1".into(),
+        source: "tauri".into(),
+        message: "DB initialized".into(),
+        stack: None,
+        severity: "info".into(),
+        timestamp: now_millis() - 7000,
+    }]
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitContext {
+    head: String,
+    changes: Vec<String>,
+}
+
+#[tauri::command]
+fn get_project_git_context(path: String) -> Result<GitContext, String> {
+    let mut head = String::from("unknown");
+    let head_path = Path::new(&path).join(".git").join("HEAD");
+    if let Ok(content) = fs::read_to_string(&head_path) {
+        head = content.trim().to_string();
+    }
+    let mut changes = Vec::new();
+    if let Ok(entries) = fs::read_dir(&path) {
+        let mut files: Vec<(std::time::SystemTime, String)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let meta = entry.metadata().ok()?;
+                if !meta.is_file() {
+                    return None;
+                }
+                Some((
+                    meta.modified().ok()?,
+                    entry.file_name().to_string_lossy().to_string(),
+                ))
+            })
+            .collect();
+        files.sort_by_key(|b| std::cmp::Reverse(b.0));
+        changes = files.into_iter().take(5).map(|(_, name)| name).collect();
+    }
+    Ok(GitContext { head, changes })
+}
+
+#[tauri::command]
+async fn send_ai_message(
+    state: State<'_, db::Db>,
+    provider_ids: Vec<String>,
+    messages: Vec<Value>,
+    moa: bool,
+) -> Result<String, String> {
+    let mut selected = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let mut selected = Vec::new();
+        for id in provider_ids {
+            if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
+                selected.push(p);
+            }
+        }
+        selected
+    };
+
+    if selected.is_empty() {
+        return Err("No providers configured".to_string());
+    }
+
+    let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
+    if moa && selected.len() >= 3 {
+        let p0 = selected[0].clone();
+        let p1 = selected[1].clone();
+        let p2 = selected[2].clone();
+        let m0 = messages_json.clone();
+        let m1 = messages_json.clone();
+        let m2 = messages_json;
+        let a = tauri::async_runtime::spawn_blocking(move || call_provider(&p0, &m0));
+        let b = tauri::async_runtime::spawn_blocking(move || call_provider(&p1, &m1));
+        let c = tauri::async_runtime::spawn_blocking(move || call_provider(&p2, &m2));
+        let (r1, r2, r3) = tokio::join!(a, b, c);
+        let parts = [r1, r2, r3].map(|r| match r {
+            Ok(Ok(text)) => text,
+            Ok(Err(err)) => err,
+            Err(err) => err.to_string(),
+        });
+        Ok(format!("MOA consensus\n\n{}", parts.join("\n\n---\n\n")))
+    } else {
+        let provider = selected.remove(0);
+        let result =
+            tauri::async_runtime::spawn_blocking(move || call_provider(&provider, &messages_json))
+                .await
+                .map_err(|e| e.to_string())??;
+        Ok(result)
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let dir = app.path().app_data_dir().expect("app data dir");
+            std::fs::create_dir_all(&dir).expect("create app data dir");
+            let conn = db::init_connection(&dir.join("workbench.db")).expect("init db");
+            app.manage(db::Db(std::sync::Mutex::new(conn)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             set_secret,
@@ -290,7 +574,25 @@ pub fn run() {
             fetch_url,
             fetch_rss,
             write_note,
-            read_vault_notes
+            read_vault_notes,
+            init_db,
+            list_tasks,
+            create_task,
+            update_task_status,
+            set_task_today,
+            list_projects,
+            create_project,
+            list_thoughts,
+            create_thought,
+            list_providers,
+            create_provider,
+            set_provider_active,
+            list_sessions,
+            create_session,
+            list_clipboard,
+            list_error_logs,
+            get_project_git_context,
+            send_ai_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
