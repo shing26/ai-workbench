@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 16
+
+### What went well?
+
+- Rust 新增 `ProviderHeartbeat` 状态：记录最近结果与连续失败次数，失败 >=2 次进入 alert，恢复后清空；单测覆盖告警与恢复。
+- `run_provider_heartbeat` 返回快照并 emit `provider-heartbeat`，setup 启动 10s 周期后台检查；`ProviderHeartbeatSnapshot` 含 checkedAt。
+- System Provider 卡片展示 heartbeat 状态/延迟/alert 标记，顶部告警条列出告警 Provider；浏览器 fallback 可模拟健康与告警快照。
+- `verify:ui` / `verify:preview` 新增心跳告警断言并通过；`cargo test --lib` 12/12、clippy、fmt、build 全绿。
+
+### What went wrong?
+
+- `ProviderHeartbeatSnapshot` 首次编译缺 Clone，`app.emit` 要求 Serialize + Clone，补 derive 后通过。
+- `cargo fmt --check` 首轮报多处换行差异，运行 `cargo fmt` 后通过。
+
+### Action Items
+
+- 下个 Sprint 候选：真实 Provider 端到端流式联调、消息分叉/版本历史、剪贴板/日志跨设备同步。
+- 后续改动 Provider 心跳周期、告警阈值或 System 视图时，保留心跳告警断言。
+- 告警后续可扩展为全局通知与自动禁用失败 Provider。
+
 ## Sprint 15
 
 ### What went well?

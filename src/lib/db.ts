@@ -58,6 +58,23 @@ export type ProviderHealth = {
   message: string;
 };
 
+export type ProviderHeartbeatEntry = {
+  id: string;
+  name: string;
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+  checked: boolean;
+  consecutiveFailures: number;
+  alert: boolean;
+};
+
+export type ProviderHeartbeatSnapshot = {
+  providers: ProviderHeartbeatEntry[];
+  alerts: ProviderHeartbeatEntry[];
+  checkedAt: number;
+};
+
 export type Habit = {
   id: string;
   name: string;
@@ -310,6 +327,63 @@ export async function checkProviderHealth(providerId: string): Promise<ProviderH
   if (isTauri()) return invoke<ProviderHealth>("check_provider_health", { providerId });
   await new Promise((resolve) => setTimeout(resolve, 120));
   return { ok: true, latencyMs: 120, message: "ok" };
+}
+
+const localHeartbeatHandlers = new Set<(snapshot: ProviderHeartbeatSnapshot) => void>();
+
+function emitLocalHeartbeat(snapshot: ProviderHeartbeatSnapshot) {
+  for (const handler of localHeartbeatHandlers) handler(snapshot);
+}
+
+export async function runProviderHeartbeat(providerIds?: string[]): Promise<ProviderHeartbeatSnapshot> {
+  if (isTauri()) {
+    return invoke<ProviderHeartbeatSnapshot>("run_provider_heartbeat", {
+      providerIds: providerIds ?? [],
+    });
+  }
+  const providers = await listProviders();
+  const entries: ProviderHeartbeatEntry[] = providers.map((p) => {
+    if (p.name === "Ollama") {
+      return {
+        id: p.id,
+        name: p.name,
+        ok: false,
+        latencyMs: 0,
+        message: "Connection failed: provider unreachable",
+        checked: true,
+        consecutiveFailures: 2,
+        alert: true,
+      };
+    }
+    return {
+      id: p.id,
+      name: p.name,
+      ok: true,
+      latencyMs: 80 + p.name.length * 7,
+      message: "ok",
+      checked: true,
+      consecutiveFailures: 0,
+      alert: false,
+    };
+  });
+  const snapshot: ProviderHeartbeatSnapshot = {
+    providers: entries,
+    alerts: entries.filter((entry) => entry.alert),
+    checkedAt: Date.now(),
+  };
+  emitLocalHeartbeat(snapshot);
+  return snapshot;
+}
+
+export async function listenProviderHeartbeat(
+  handler: (snapshot: ProviderHeartbeatSnapshot) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<ProviderHeartbeatSnapshot>("provider-heartbeat", (event) => handler(event.payload));
+  }
+  localHeartbeatHandlers.add(handler);
+  return () => localHeartbeatHandlers.delete(handler);
 }
 
 export type RouteResult = {

@@ -537,6 +537,30 @@ try {
   }
   results.health = healthCheck;
 
+  const heartbeatCheck = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Heartbeat");
+    if (!btn) return { ok: false, reason: "no heartbeat button" };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 350));
+    const alertText = document.querySelector(".heartbeat-alert")?.textContent ?? "";
+    const cards = [...document.querySelectorAll(".provider-card")].map((c) => c.textContent).join(" | ");
+    return {
+      ok: true,
+      alertVisible: alertText.includes("Ollama") && alertText.includes("Connection failed"),
+      degradedVisible: cards.includes("degraded"),
+      okVisible: cards.includes("ok"),
+    };
+  })()`);
+  if (
+    !heartbeatCheck.ok ||
+    !heartbeatCheck.alertVisible ||
+    !heartbeatCheck.degradedVisible ||
+    !heartbeatCheck.okVisible
+  ) {
+    throw new Error(`Provider heartbeat assertion failed: ${JSON.stringify(heartbeatCheck)}`);
+  }
+  results.heartbeat = heartbeatCheck;
+
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);

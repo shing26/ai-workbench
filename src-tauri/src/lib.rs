@@ -1,7 +1,7 @@
 use keyring::Entry;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -36,6 +36,101 @@ impl StreamCancellation {
             set.remove(run_id);
         }
     }
+}
+
+#[derive(Default)]
+struct ProviderHeartbeat {
+    results: std::sync::Mutex<HashMap<String, ProviderHealth>>,
+    failures: std::sync::Mutex<HashMap<String, u32>>,
+}
+
+impl ProviderHeartbeat {
+    fn record(&self, provider_id: &str, health: ProviderHealth) {
+        if let (Ok(mut results), Ok(mut failures)) = (self.results.lock(), self.failures.lock()) {
+            let streak = if health.ok {
+                0
+            } else {
+                failures
+                    .get(provider_id)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1)
+            };
+            results.insert(provider_id.to_string(), health);
+            failures.insert(provider_id.to_string(), streak);
+        }
+    }
+
+    fn entries(&self, providers: &[db::Provider]) -> Vec<ProviderHeartbeatEntry> {
+        let results = self
+            .results
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let failures = self
+            .failures
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        providers
+            .iter()
+            .map(|provider| {
+                let health = results.get(&provider.id);
+                let streak = failures.get(&provider.id).copied().unwrap_or(0);
+                ProviderHeartbeatEntry {
+                    id: provider.id.clone(),
+                    name: provider.name.clone(),
+                    ok: health.map(|h| h.ok).unwrap_or(false),
+                    latency_ms: health.map(|h| h.latency_ms).unwrap_or(0),
+                    message: health
+                        .map(|h| h.message.clone())
+                        .unwrap_or_else(|| "pending".to_string()),
+                    checked: health.is_some(),
+                    consecutive_failures: streak,
+                    alert: health.map(|h| !h.ok).unwrap_or(false) && streak >= 2,
+                }
+            })
+            .collect()
+    }
+
+    fn snapshot(&self, providers: &[db::Provider]) -> ProviderHeartbeatSnapshot {
+        let checked_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let entries = self.entries(providers);
+        let alerts = entries
+            .iter()
+            .filter(|entry| entry.alert)
+            .cloned()
+            .collect();
+        ProviderHeartbeatSnapshot {
+            providers: entries,
+            alerts,
+            checked_at,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderHeartbeatEntry {
+    id: String,
+    name: String,
+    ok: bool,
+    latency_ms: u128,
+    message: String,
+    checked: bool,
+    consecutive_failures: u32,
+    alert: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderHeartbeatSnapshot {
+    providers: Vec<ProviderHeartbeatEntry>,
+    alerts: Vec<ProviderHeartbeatEntry>,
+    checked_at: u128,
 }
 
 fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
@@ -891,6 +986,35 @@ fn spawn_clipboard_monitor(app: tauri::AppHandle) {
     });
 }
 
+fn spawn_provider_heartbeat_monitor(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(10));
+        let Some(conn_state) = app.try_state::<db::Db>() else {
+            continue;
+        };
+        let Ok(conn) = conn_state.0.lock() else {
+            continue;
+        };
+        let Ok(all) = db::list_providers(&conn) else {
+            continue;
+        };
+        drop(conn);
+        let Some(heartbeat_state) = app.try_state::<ProviderHeartbeat>() else {
+            continue;
+        };
+        let active: Vec<db::Provider> = all.into_iter().filter(|p| p.is_active).collect();
+        if active.is_empty() {
+            continue;
+        }
+        for provider in &active {
+            let health = check_provider_health_state(provider);
+            heartbeat_state.record(&provider.id, health);
+        }
+        let snapshot = heartbeat_state.snapshot(&active);
+        let _ = app.emit("provider-heartbeat", snapshot);
+    });
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StreamChunk {
@@ -907,7 +1031,7 @@ fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Res
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderHealth {
     ok: bool,
@@ -977,6 +1101,33 @@ fn check_provider_health(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
     Ok(check_provider_health_state(&provider))
+}
+
+#[tauri::command]
+fn run_provider_heartbeat(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    heartbeat: State<'_, ProviderHeartbeat>,
+    provider_ids: Option<Vec<String>>,
+) -> Result<ProviderHeartbeatSnapshot, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let all = db::list_providers(&conn).map_err(|e| e.to_string())?;
+    drop(conn);
+    let targets: Vec<db::Provider> = match provider_ids {
+        Some(ids) => all
+            .iter()
+            .filter(|p| ids.contains(&p.id))
+            .cloned()
+            .collect(),
+        None => all.clone(),
+    };
+    for provider in &targets {
+        let health = check_provider_health_state(provider);
+        heartbeat.record(&provider.id, health);
+    }
+    let snapshot = heartbeat.snapshot(&all);
+    let _ = app.emit("provider-heartbeat", snapshot.clone());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1158,7 +1309,9 @@ pub fn run() {
             let conn = db::init_connection(&dir.join("workbench.db")).expect("init db");
             app.manage(db::Db(std::sync::Mutex::new(conn)));
             app.manage(StreamCancellation::default());
+            app.manage(ProviderHeartbeat::default());
             spawn_clipboard_monitor(app.handle().clone());
+            spawn_provider_heartbeat_monitor(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1210,7 +1363,8 @@ pub fn run() {
             send_ai_message,
             stream_ai_message,
             cancel_ai_stream,
-            check_provider_health
+            check_provider_health,
+            run_provider_heartbeat
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1249,6 +1403,67 @@ mod tests {
         assert!(short.ends_with("..."));
         assert!(short.len() <= 164);
         assert_eq!(truncate_error("ok"), "ok");
+    }
+
+    #[test]
+    fn provider_heartbeat_tracks_consecutive_failures_and_alerts() {
+        let heartbeat = ProviderHeartbeat::default();
+        let provider = |id: &str, name: &str| db::Provider {
+            id: id.to_string(),
+            name: name.to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            api_key: String::new(),
+            is_active: true,
+        };
+        heartbeat.record(
+            "p1",
+            ProviderHealth {
+                ok: false,
+                latency_ms: 1,
+                message: "down".to_string(),
+            },
+        );
+        heartbeat.record(
+            "p1",
+            ProviderHealth {
+                ok: false,
+                latency_ms: 1,
+                message: "down".to_string(),
+            },
+        );
+        heartbeat.record(
+            "p2",
+            ProviderHealth {
+                ok: true,
+                latency_ms: 12,
+                message: "ok".to_string(),
+            },
+        );
+
+        let entries = heartbeat.entries(&[provider("p1", "Local"), provider("p2", "Cloud")]);
+        let p1 = entries.iter().find(|entry| entry.id == "p1").unwrap();
+        let p2 = entries.iter().find(|entry| entry.id == "p2").unwrap();
+        assert_eq!(p1.consecutive_failures, 2);
+        assert!(p1.alert);
+        assert!(p1.checked);
+        assert_eq!(p2.consecutive_failures, 0);
+        assert!(!p2.alert);
+
+        heartbeat.record(
+            "p1",
+            ProviderHealth {
+                ok: true,
+                latency_ms: 5,
+                message: "ok".to_string(),
+            },
+        );
+        let entries = heartbeat.entries(&[provider("p1", "Local"), provider("p3", "Pending")]);
+        let p1 = entries.iter().find(|entry| entry.id == "p1").unwrap();
+        let p3 = entries.iter().find(|entry| entry.id == "p3").unwrap();
+        assert!(!p1.alert);
+        assert_eq!(p1.consecutive_failures, 0);
+        assert!(!p3.checked);
+        assert!(!p3.alert);
     }
 
     #[test]
