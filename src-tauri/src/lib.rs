@@ -679,6 +679,26 @@ fn create_session(
 }
 
 #[tauri::command]
+fn save_chat_message(
+    state: State<'_, db::Db>,
+    session_id: String,
+    role: String,
+    content: String,
+) -> Result<db::ChatMessage, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::save_chat_message(&conn, &session_id, &role, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_chat_messages(
+    state: State<'_, db::Db>,
+    session_id: String,
+) -> Result<Vec<db::ChatMessage>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_chat_messages(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_clipboard(state: State<'_, db::Db>) -> Result<Vec<db::ClipboardItem>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_clipboard(&conn).map_err(|e| e.to_string())
@@ -1072,6 +1092,8 @@ pub fn run() {
             toggle_event_done,
             list_sessions,
             create_session,
+            save_chat_message,
+            list_chat_messages,
             list_clipboard,
             list_error_logs,
             report_frontend_error,

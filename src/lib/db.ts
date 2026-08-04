@@ -36,6 +36,14 @@ export type Session = {
   createdAt: number;
 };
 
+export type ChatMessage = {
+  id: string;
+  sessionId: string;
+  role: string;
+  content: string;
+  createdAt: number;
+};
+
 export type Provider = {
   id: string;
   name: string;
@@ -117,6 +125,7 @@ type LocalShape = {
   thoughts: Thought[];
   providers: Provider[];
   sessions: Session[];
+  chatMessages: ChatMessage[];
   habits: Habit[];
   scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
@@ -133,7 +142,18 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 const makeId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}`);
 
 function emptyShape(): LocalShape {
-  return { tasks: [], projects: [], thoughts: [], providers: [], sessions: [], habits: [], scheduleEvents: [], clipboard: [], logs: [] };
+  return {
+    tasks: [],
+    projects: [],
+    thoughts: [],
+    providers: [],
+    sessions: [],
+    chatMessages: [],
+    habits: [],
+    scheduleEvents: [],
+    clipboard: [],
+    logs: [],
+  };
 }
 
 function seedShape(): LocalShape {
@@ -161,6 +181,7 @@ function seedShape(): LocalShape {
     sessions: [
       { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
     ],
+    chatMessages: [],
     habits: [
       { id: makeId(), name: "晨间阅读", weekGoal: 5, currentStreak: 3, color: "emerald", doneToday: false, createdAt: now - 86400000 },
       { id: makeId(), name: "深水工作", weekGoal: 4, currentStreak: 2, color: "blue", doneToday: false, createdAt: now - 172800000 },
@@ -302,6 +323,27 @@ export async function createSession(title: string, model: string): Promise<Sessi
   shape.sessions.unshift(session);
   writeLocal(shape);
   return session;
+}
+
+export async function saveChatMessage(
+  sessionId: string,
+  role: string,
+  content: string,
+): Promise<ChatMessage> {
+  if (isTauri()) return invoke<ChatMessage>("save_chat_message", { sessionId, role, content });
+  const shape = readLocal();
+  shape.chatMessages = shape.chatMessages ?? [];
+  const message: ChatMessage = { id: makeId(), sessionId, role, content, createdAt: Date.now() };
+  shape.chatMessages.push(message);
+  writeLocal(shape);
+  return message;
+}
+
+export async function listChatMessages(sessionId: string): Promise<ChatMessage[]> {
+  if (isTauri()) return invoke<ChatMessage[]>("list_chat_messages", { sessionId });
+  return (readLocal().chatMessages ?? [])
+    .filter((m) => m.sessionId === sessionId)
+    .sort((a, b) => a.createdAt - b.createdAt);
 }
 
 export async function listHabits(): Promise<Habit[]> {
