@@ -1,9 +1,10 @@
 import { FolderKanban, GitBranch, Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
 import StatPill from "../components/ui/StatPill";
+import ModelBadge from "../components/ui/ModelBadge";
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
@@ -11,6 +12,21 @@ export default function ProjectsView() {
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
+  const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
+
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all(
+      projects
+        .filter((p) => p.path)
+        .map(async (p) => [p.id, await db.getProjectGitContext(p.path ?? "")] as const),
+    ).then((entries) => {
+      if (!disposed) setGitCtx(Object.fromEntries(entries));
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [projects.map((p) => `${p.id}:${p.path}`).join("|")]);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -79,6 +95,32 @@ export default function ProjectsView() {
             <StatPill label="Status" value={p.status} />
           </div>
           <p className="mb-3 truncate text-[11px] text-slate-500">{p.path || "No local path"}</p>
+          {gitCtx[p.id] && (
+            <div className="project-git-graph mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <ModelBadge label={gitCtx[p.id].branch} tone="blue" />
+                <span className="text-[10px] text-slate-500">{gitCtx[p.id].commitCount} commits</span>
+                <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-500">
+                  <GitBranch size={9} /> {gitCtx[p.id].head}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-[#7FB4FF] ring-2 ring-[#7FB4FF]/20" />
+                  <span className="h-px w-3 bg-white/15" />
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/20" />
+                </div>
+                <span className="truncate text-[10px] text-slate-400">{gitCtx[p.id].latestCommit}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {gitCtx[p.id].changes.slice(0, 3).map((file) => (
+                  <span key={file} className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
+                    {file}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => void aiCoding(p)}

@@ -1280,15 +1280,40 @@ async fn stream_ai_message(
 #[serde(rename_all = "camelCase")]
 struct GitContext {
     head: String,
+    branch: String,
+    commit_count: usize,
+    latest_commit: String,
     changes: Vec<String>,
 }
 
 #[tauri::command]
 fn get_project_git_context(path: String) -> Result<GitContext, String> {
     let mut head = String::from("unknown");
+    let mut branch = String::from("unknown");
+    let mut commit_count = 0usize;
+    let mut latest_commit = String::from("no commits");
     let head_path = Path::new(&path).join(".git").join("HEAD");
     if let Ok(content) = fs::read_to_string(&head_path) {
-        head = content.trim().to_string();
+        let trimmed = content.trim();
+        head = trimmed.to_string();
+        if let Some(ref_name) = trimmed.strip_prefix("ref: refs/heads/") {
+            branch = ref_name.to_string();
+        } else if !trimmed.is_empty() {
+            branch = format!("detached {}", &trimmed[..trimmed.len().min(8)]);
+        }
+    }
+    let reflog_path = Path::new(&path).join(".git").join("logs").join("HEAD");
+    if let Ok(content) = fs::read_to_string(&reflog_path) {
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        commit_count = lines.len();
+        if let Some(last) = lines.last() {
+            let hash: String = last.split_whitespace().take(1).collect();
+            latest_commit = format!(
+                "{} {}",
+                if hash.len() >= 8 { &hash[..8] } else { &hash },
+                last.split(": ").nth(1).unwrap_or("")
+            );
+        }
     }
     let mut changes = Vec::new();
     if let Ok(entries) = fs::read_dir(&path) {
@@ -1308,7 +1333,13 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         files.sort_by_key(|b| std::cmp::Reverse(b.0));
         changes = files.into_iter().take(5).map(|(_, name)| name).collect();
     }
-    Ok(GitContext { head, changes })
+    Ok(GitContext {
+        head,
+        branch,
+        commit_count,
+        latest_commit,
+        changes,
+    })
 }
 
 #[tauri::command]
@@ -1471,6 +1502,29 @@ mod tests {
         assert!(short.ends_with("..."));
         assert!(short.len() <= 164);
         assert_eq!(truncate_error("ok"), "ok");
+    }
+
+    #[test]
+    fn git_context_parses_branch_and_reflog() {
+        let dir = std::env::temp_dir().join(format!("aiwb-git-ctx-test-{}", uuid::Uuid::new_v4()));
+        let git_dir = dir.join(".git");
+        std::fs::create_dir_all(git_dir.join("logs")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/sprint-21\n").unwrap();
+        std::fs::write(
+            git_dir.join("logs").join("HEAD"),
+            "aaaa0001 0000000000000000000000000000000000000000 Alice <a@x> 1720000000 +0800\tcommit: first\n\
+             bbbb0002 aaaa00010000000000000000000000000000000000 Bob <b@x> 1720000100 +0800\tcommit: second\n",
+        )
+        .unwrap();
+
+        let ctx = get_project_git_context(dir.to_string_lossy().to_string()).unwrap();
+        assert_eq!(ctx.branch, "feature/sprint-21");
+        assert_eq!(ctx.commit_count, 2);
+        assert!(ctx.latest_commit.starts_with("bbbb0002"));
+        assert!(ctx.latest_commit.contains("second"));
+        assert!(ctx.changes.is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

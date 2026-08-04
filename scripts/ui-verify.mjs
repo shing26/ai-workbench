@@ -308,6 +308,27 @@ try {
   results.streamStop = streamStop;
 
   await clickDock("Projects");
+  const gitGraph = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const graph = document.querySelector(".project-git-graph");
+      if (graph?.textContent?.includes("develop") && graph.textContent.includes("21 commits")) {
+        return {
+          ok: true,
+          branch: graph.textContent.includes("develop"),
+          commits: graph.textContent.includes("21 commits"),
+          latest: graph.textContent.includes("sprint-20"),
+          changes: graph.textContent.includes("ProjectsView.tsx"),
+        };
+      }
+      await sleep(100);
+    }
+    return { ok: false, text: document.body.innerText.slice(0, 300) };
+  })()`);
+  if (!gitGraph.ok) {
+    throw new Error(`project git graph assertion failed: ${JSON.stringify(gitGraph)}`);
+  }
+  results.gitGraph = gitGraph;
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
   const inspectorOpened = await evaluate(`(() => {
     const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");

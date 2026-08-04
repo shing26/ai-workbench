@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 21
+
+### What went well?
+
+- 项目级 Git 图谱闭环：`get_project_git_context` 解析 `.git/HEAD` 与 reflog，返回分支、提交数、最新提交；项目卡片新增图谱区展示分支徽章、提交计数与最近文件变更。
+- 可测试性：Rust 单测用临时 `.git` 目录验证 HEAD/reflog 解析；浏览器 fallback 提供确定数据，`verify:ui` / `verify:preview` 新增图谱断言并全部通过。
+- `cargo test --lib` 17/17，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 首轮实现容易在 detached HEAD 或超大 hash 上误伤，补充 `ref: refs/heads/` 前缀解析与 hash 截断处理。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、自动文件监听同步、自动生成 Commit/PR 草稿。
+- 后续改动 Git 上下文或 Projects 视图时，保留图谱断言。
+
 ## Sprint 20
 
 ### What went well?

@@ -146,6 +146,14 @@ export type SyncStatus = {
   lastSyncedAt: number | null;
 };
 
+export type GitContext = {
+  head: string;
+  branch: string;
+  commitCount: number;
+  latestCommit: string;
+  changes: string[];
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -1023,7 +1031,13 @@ export async function listenStreamChunks(handler: (chunk: StreamChunk) => void):
   return () => localChunkHandlers.delete(handler);
 }
 
-export async function getProjectGitContext(path: string): Promise<{ head: string; changes: string[] }> {
-  if (isTauri()) return invoke<{ head: string; changes: string[] }>("get_project_git_context", { path });
-  return { head: "main", changes: ["docs/plans/sprint-1-plan.md", "src/App.tsx"] };
+export async function getProjectGitContext(path: string): Promise<GitContext> {
+  if (isTauri()) return invoke<GitContext>("get_project_git_context", { path });
+  return {
+    head: "main",
+    branch: "develop",
+    commitCount: 21,
+    latestCommit: "d676ced feat(sprint-20): message version graph with parent lineage",
+    changes: ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
+  };
 }
