@@ -437,7 +437,10 @@ export type StreamChunk = {
   delta: string;
   done: boolean;
   error: string | null;
+  cancelled: boolean;
 };
+
+const localCancelledRuns = new Set<string>();
 
 export async function sendAiMessageStream(args: {
   providerIds: string[];
@@ -461,9 +464,17 @@ export async function sendAiMessageStream(args: {
   let index = 0;
   await new Promise<void>((resolve) => {
     const timer = window.setInterval(() => {
-      if (index >= words.length) {
+      const wasCancelled = localCancelledRuns.has(args.runId);
+      if (index >= words.length || wasCancelled) {
         window.clearInterval(timer);
-        emitLocalStreamChunk({ id: args.runId, delta: "", done: true, error: null });
+        localCancelledRuns.delete(args.runId);
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: "",
+          done: true,
+          error: null,
+          cancelled: wasCancelled,
+        });
         resolve();
         return;
       }
@@ -472,10 +483,19 @@ export async function sendAiMessageStream(args: {
         delta: `${words[index]} `,
         done: false,
         error: null,
+        cancelled: false,
       });
       index += 1;
     }, 60);
   });
+}
+
+export async function cancelAiStream(runId: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("cancel_ai_stream", { runId });
+    return;
+  }
+  localCancelledRuns.add(runId);
 }
 
 const localChunkHandlers = new Set<(chunk: StreamChunk) => void>();

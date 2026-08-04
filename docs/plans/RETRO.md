@@ -142,3 +142,23 @@
 - 下个 Sprint 候选：跨文件 / Obsidian Vault 索引、Provider 流式取消，或真实 Provider 端到端流式联调。
 - RAG 注入默认开启，后续可加“命中结果人工确认后再发送”选项。
 - 保留 RAG 注入断言，改动 AI Studio 或检索命令时重跑 `verify:ui`。
+
+## Sprint 8
+
+### What went well?
+
+- Rust 新增 `StreamCancellation` 状态与 `cancel_ai_stream(run_id)` 命令，流式函数逐块检查取消标记，`stream-chunk` 的 done 事件新增 `cancelled` 字段。
+- AI Studio busy 时输入区切换为 Stop 按钮，点击后立即标记消息 `[stopped]` 并忽略旧 run 后续块；浏览器 fallback 用本地取消集合中断分块模拟流。
+- 顺带修复了流式消息 `__stream__` 占位前缀残留的显示问题：正常完成、出错与取消都会清理前缀。
+- `cargo test --lib` 5/5（新增取消生命周期单测）、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮取消断言只检查 body 文本，可能被其他 UI 文本干扰，改为定位 `[stopped]` 消息并比较前后文本稳定性。
+- Rust 当前是整段读取响应 body 后逐块 emit，取消只能停止渲染，不能真正中断网络读取；已写入范围外。
+
+### Action Items
+
+- 下个 Sprint 候选：跨文件 / Obsidian Vault 索引，或真实 Provider 端到端流式联调。
+- 若需要真取消网络请求，评估 `reqwest` 流式读取或 `tauri-plugin-http`。
+- 保留流式与取消断言，改动 AI Studio、流式协议或取消命令时重跑 `verify:ui`。

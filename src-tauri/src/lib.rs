@@ -1,6 +1,7 @@
 use keyring::Entry;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -9,6 +10,44 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 
 mod db;
+
+#[derive(Default)]
+struct StreamCancellation {
+    cancelled: std::sync::Mutex<HashSet<String>>,
+}
+
+impl StreamCancellation {
+    fn mark(&self, run_id: &str) {
+        if let Ok(mut set) = self.cancelled.lock() {
+            set.insert(run_id.to_string());
+        }
+    }
+
+    fn is_cancelled(&self, run_id: &str) -> bool {
+        self.cancelled
+            .lock()
+            .map(|set| set.contains(run_id))
+            .unwrap_or(false)
+    }
+
+    fn clear(&self, run_id: &str) {
+        if let Ok(mut set) = self.cancelled.lock() {
+            set.remove(run_id);
+        }
+    }
+}
+
+fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
+    app.try_state::<StreamCancellation>()
+        .map(|state| state.is_cancelled(run_id))
+        .unwrap_or(false)
+}
+
+fn clear_stream_cancel(app: &tauri::AppHandle, run_id: &str) {
+    if let Some(state) = app.try_state::<StreamCancellation>() {
+        state.clear(run_id);
+    }
+}
 
 fn get_api_key(name: &str) -> Result<String, String> {
     let entry = Entry::new("ai-workbench", name).map_err(|e| e.to_string())?;
@@ -64,6 +103,9 @@ fn stream_openai_compatible(
             }
             if let Ok(json) = serde_json::from_str::<Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    if is_stream_cancelled(app, run_id) {
+                        break;
+                    }
                     let _ = app.emit(
                         "stream-chunk",
                         StreamChunk {
@@ -71,6 +113,7 @@ fn stream_openai_compatible(
                             delta: delta.to_string(),
                             done: false,
                             error: None,
+                            cancelled: false,
                         },
                     );
                 }
@@ -118,6 +161,9 @@ fn stream_ollama(
         }
         if let Ok(json) = serde_json::from_str::<Value>(line) {
             if let Some(delta) = json["message"]["content"].as_str() {
+                if is_stream_cancelled(app, run_id) {
+                    break;
+                }
                 let _ = app.emit(
                     "stream-chunk",
                     StreamChunk {
@@ -125,6 +171,7 @@ fn stream_ollama(
                         delta: delta.to_string(),
                         done: false,
                         error: None,
+                        cancelled: false,
                     },
                 );
             }
@@ -660,6 +707,13 @@ struct StreamChunk {
     delta: String,
     done: bool,
     error: Option<String>,
+    cancelled: bool,
+}
+
+#[tauri::command]
+fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Result<(), String> {
+    state.mark(&run_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -677,6 +731,9 @@ async fn stream_ai_message(
     let done = tauri::async_runtime::spawn_blocking(move || {
         if moa {
             for provider_id in &provider_ids {
+                if is_stream_cancelled(&app_clone, &run_id_clone) {
+                    return Ok(());
+                }
                 let entry =
                     keyring::Entry::new("ai-workbench", &format!("aiwb-stream-{}", provider_id))
                         .map_err(|e| e.to_string())?;
@@ -731,11 +788,15 @@ async fn stream_ai_message(
     .await
     .map_err(|e| e.to_string())?;
 
+    let error = done.err().map(|e| e.to_string());
+    let cancelled = is_stream_cancelled(&app, &run_id);
+    clear_stream_cancel(&app, &run_id);
     let done_chunk = StreamChunk {
         id: run_id,
         delta: String::new(),
         done: true,
-        error: done.err().map(|e| e.to_string()),
+        error,
+        cancelled,
     };
     let _ = app.emit("stream-chunk", done_chunk);
     Ok(())
@@ -835,6 +896,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir).expect("create app data dir");
             let conn = db::init_connection(&dir.join("workbench.db")).expect("init db");
             app.manage(db::Db(std::sync::Mutex::new(conn)));
+            app.manage(StreamCancellation::default());
             spawn_clipboard_monitor(app.handle().clone());
             Ok(())
         })
@@ -877,8 +939,25 @@ pub fn run() {
             get_rag_index_status,
             get_project_git_context,
             send_ai_message,
-            stream_ai_message
+            stream_ai_message,
+            cancel_ai_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_cancellation_flags_follow_lifecycle() {
+        let state = StreamCancellation::default();
+        assert!(!state.is_cancelled("run-1"));
+        state.mark("run-1");
+        assert!(state.is_cancelled("run-1"));
+        assert!(!state.is_cancelled("run-2"));
+        state.clear("run-1");
+        assert!(!state.is_cancelled("run-1"));
+    }
 }

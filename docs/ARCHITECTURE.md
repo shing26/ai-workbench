@@ -51,6 +51,8 @@ Sprint 5 新增命令：`stream_ai_message`，事件 `stream-chunk`。
 
 Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
 
+Sprint 8 新增命令：`cancel_ai_stream`；事件 `stream-chunk` 增加 `cancelled` 字段。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -67,9 +69,16 @@ Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
 ## AI 流式输出
 
 - Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。
-- 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error }`，`id` 为前端生成的 `runId`。
+- 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error, cancelled }`，`id` 为前端生成的 `runId`。
 - MOA 模式按 Provider 顺序聚合为单流；无论成功失败，最终都会 emit `done` 事件收尾。
 - 前端 AI Studio 监听 `stream-chunk`，assistant 消息增量追加；浏览器 fallback 用分块模拟流，保证 UI 验证可运行。
+
+## AI 流式取消 / 中断
+
+- Rust 后台维护 `StreamCancellation` 状态，`cancel_ai_stream(run_id)` 命令登记取消标记；流式函数逐块检查标记，命中后停止 emit。
+- `stream-chunk` 的 done 事件在取消时带 `cancelled: true`，结束后清理该 run 的取消标记。
+- AI Studio busy 时输入区显示 Stop 按钮，点击后调用取消命令、立即标记消息 `[stopped]`，并忽略旧 run 的后续块。
+- 浏览器 fallback 使用本地取消集合中断分块模拟流，保证 UI 验证可运行。
 
 ## 系统采集
 

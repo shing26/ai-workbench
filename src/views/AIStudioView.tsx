@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -34,20 +34,27 @@ export default function AIStudioView() {
       if (chunk.id !== runId) return;
       setMessages((prev) => {
         if (chunk.done) {
-          if (chunk.error) {
-            const next = [...prev];
-            const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
-            if (idx >= 0) {
+          const next = [...prev];
+          const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
+          if (idx >= 0) {
+            const partial = next[idx].content.slice("__stream__".length);
+            if (chunk.error) {
               next[idx] = { ...next[idx], content: `请求失败: ${chunk.error}` };
+            } else if (chunk.cancelled) {
+              next[idx] = { ...next[idx], content: `${partial} [stopped]` };
+            } else {
+              next[idx] = { ...next[idx], content: partial };
             }
-            return next;
           }
-          return prev;
+          return next;
         }
         const next = [...prev];
         const idx = next.findIndex((m) => m.role === "assistant" && m.content.startsWith("__stream__"));
         if (idx >= 0) {
-          next[idx] = { ...next[idx], content: `${next[idx].content}${chunk.delta}` };
+          const base = next[idx].content.startsWith("__stream__")
+            ? next[idx].content.slice("__stream__".length)
+            : next[idx].content;
+          next[idx] = { ...next[idx], content: `${base}${chunk.delta}` };
         } else {
           next.push({ role: "assistant", content: chunk.delta });
         }
@@ -63,6 +70,20 @@ export default function AIStudioView() {
       unlisten();
     };
   }, []);
+
+  const stopStreaming = async () => {
+    const runId = `ai-${runIdRef.current}`;
+    runIdRef.current += 1;
+    setBusy(false);
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.role === "assistant" && m.content.startsWith("__stream__")
+          ? { ...m, content: `${m.content.slice("__stream__".length)} [stopped]` }
+          : m,
+      ),
+    );
+    await db.cancelAiStream(runId);
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -247,15 +268,25 @@ export default function AIStudioView() {
             placeholder="Ask anything..."
             className="min-h-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs text-slate-200 outline-none placeholder:text-slate-600"
           />
-          <button
-            type="button"
-            onClick={() => void send()}
-            disabled={busy}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 transition-colors hover:bg-emerald-500/30 disabled:opacity-40"
-            aria-label="Send"
-          >
-            <Send size={15} />
-          </button>
+          {busy ? (
+            <button
+              type="button"
+              onClick={() => void stopStreaming()}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-rose-500/20 text-rose-400 transition-colors hover:bg-rose-500/30"
+              aria-label="Stop streaming"
+            >
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void send()}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 transition-colors hover:bg-emerald-500/30"
+              aria-label="Send"
+            >
+              <Send size={15} />
+            </button>
+          )}
         </div>
       </div>
     </div>
