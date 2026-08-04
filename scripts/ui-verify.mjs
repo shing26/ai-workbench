@@ -260,6 +260,50 @@ try {
   await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
   await delay(250);
 
+  const streamStop = await evaluate(`(async () => {
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "stop check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let caretSeen = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".stream-caret") || document.querySelector(".thinking-dot")) {
+        caretSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    if (!caretSeen) return { ok: false, reason: "no caret before stop" };
+    const stopBtn = document.querySelector('main button[aria-label="Stop streaming"]');
+    if (!stopBtn) return { ok: false, reason: "no stop button" };
+    stopBtn.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const stoppedMessage = () => {
+      const el = [...document.querySelectorAll(".message-in")].find((n) => n.textContent.includes("[stopped]"));
+      return el ? el.textContent : "";
+    };
+    const beforeWait = stoppedMessage();
+    const busyGone = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+    await new Promise((r) => setTimeout(r, 500));
+    const afterWait = stoppedMessage();
+    return {
+      ok: true,
+      caretSeen,
+      stopped: beforeWait.endsWith("[stopped]"),
+      stable: beforeWait.length > 0 && beforeWait === afterWait,
+      busyGone,
+    };
+  })()`);
+  if (!streamStop.ok || !streamStop.stopped || !streamStop.stable || !streamStop.busyGone) {
+    throw new Error(`AI Studio stream stop assertion failed: ${JSON.stringify(streamStop)}`);
+  }
+  results.streamStop = streamStop;
+
   await clickDock("Projects");
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
   const inspectorOpened = await evaluate(`(() => {
