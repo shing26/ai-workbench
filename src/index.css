@@ -19,6 +19,9 @@
   --font-mono: "Geist Mono", "Cascadia Code", "Consolas", monospace;
   --font-sans: "Geist", "Segoe UI", system-ui, -apple-system, sans-serif;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-micro: 120ms;
+  --duration-press: 70ms;
   color-scheme: dark;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -58,6 +61,126 @@ input::placeholder, textarea::placeholder { color: var(--color-text-muted); }
 }
 
 .view-enter { animation: view-enter 150ms var(--ease-out) both; }
+
+.canvas-ambient {
+  background-color: var(--color-bg-primary);
+  background-image: linear-gradient(115deg, rgba(16, 185, 129, 0.045), transparent 38%, rgba(0, 122, 255, 0.035) 74%);
+}
+
+.dock-item {
+  transition: transform var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+}
+.dock-item:hover { transform: translateY(-1px); filter: brightness(1.12); }
+.dock-item:active { transform: scale(0.95); }
+.dock-item-active { position: relative; }
+.dock-item-active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-accent-green);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
+  transform: translateX(-50%);
+  transform-origin: left;
+  animation: dock-indicator var(--duration-fast) var(--ease-out) both;
+}
+
+.bento-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  transition: transform var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}
+.bento-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(140deg, rgba(16, 185, 129, 0.07), transparent 34%, rgba(0, 122, 255, 0.05) 68%, transparent);
+  opacity: 0.85;
+}
+.bento-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 42%);
+}
+.bento-card:hover { transform: translateY(-2px); filter: brightness(1.05); }
+.bento-card:active { transform: scale(0.985); }
+
+.tilt-card {
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-2px);
+  transition: transform var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+  will-change: transform;
+}
+.tilt-card:hover {
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-2px);
+  filter: brightness(1.06);
+}
+
+.message-in { animation: message-in var(--duration-fast) var(--ease-out) both; }
+.detail-enter { animation: detail-enter var(--duration-fast) var(--ease-out) both; }
+.drawer-panel {
+  transition: transform var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+}
+.drawer-section { animation: drawer-section 90ms var(--ease-out) both; }
+.check-pop { animation: check-pop 100ms var(--ease-out) both; }
+.progress-strip-inner { transform-origin: left; transition: transform var(--duration-fast) var(--ease-out); }
+.provider-card {
+  transition: transform var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}
+.provider-card.active-provider { filter: brightness(1.08); }
+.health-dot { animation: health-pulse 1200ms ease-in-out infinite; }
+.thinking-dot { animation: thinking-dot 900ms ease-in-out infinite; }
+.moa-stack { display: inline-flex; align-items: center; }
+.moa-stack > * + * { margin-left: -6px; transition: transform var(--duration-fast) var(--ease-out); }
+.moa-stack:hover > * + * { transform: translateX(6px); }
+.search-pop { animation: search-pop 120ms var(--ease-out) both; transform-origin: top right; }
+.focus-glow:focus-visible,
+.focus-glow:focus-within {
+  outline: 1.5px solid var(--color-accent-green);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px var(--color-accent-green-soft);
+}
+
+@keyframes dock-indicator {
+  from { transform: translateX(-50%) scaleX(0.4); opacity: 0; }
+  to { transform: translateX(-50%) scaleX(1); opacity: 1; }
+}
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes detail-enter {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes drawer-section {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes check-pop {
+  from { opacity: 0; transform: scale(0.5); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes search-pop {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes health-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+@keyframes thinking-dot {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

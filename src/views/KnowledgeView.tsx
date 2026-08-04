@@ -10,6 +10,7 @@ export default function KnowledgeView() {
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("#work");
   const [filter, setFilter] = useState("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -25,7 +26,7 @@ export default function KnowledgeView() {
 
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
   const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
-  const selected = filtered[0] ?? null;
+  const selected = filtered.find((t) => t.id === selectedId) ?? filtered[0] ?? null;
 
   const add = async () => {
     if (!content.trim()) return;
@@ -89,13 +90,27 @@ export default function KnowledgeView() {
         </div>
         <div className="col-span-5 flex min-h-0 flex-col gap-2 overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-3 shadow-xl">
           {filtered.map((t) => (
-            <div key={t.id} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setSelectedId(t.id)}
+              className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
+                selected?.id === t.id
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+                  : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
+              }`}
+            >
               {t.content}
-            </div>
+            </button>
           ))}
           {filtered.length === 0 && <div className="py-10 text-center text-xs text-slate-600">No thoughts</div>}
         </div>
-        <div className="col-span-5 flex min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl">
+        <div
+          key={selected?.id ?? "empty"}
+          className={`col-span-5 flex min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${
+            selected ? "detail-enter" : ""
+          }`}
+        >
           {selected ? (
             <>
               <div className="mb-2 flex items-center justify-between">

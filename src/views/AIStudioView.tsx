@@ -17,6 +17,8 @@ export default function AIStudioView() {
   const [moa, setMoa] = useState(false);
   const [busy, setBusy] = useState(false);
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
+  const activeProviders = providers.filter((p) => p.isActive);
+  const moaProviders = activeProviders.slice(0, 3);
 
   const send = async () => {
     const text = input.trim();
@@ -45,7 +47,15 @@ export default function AIStudioView() {
     <div className="view-enter flex h-full flex-col gap-4 p-4">
       <div className="flex shrink-0 items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <ModelBadge label={activeProvider?.name ?? "No provider"} tone="green" />
+          {moa ? (
+            <div className="moa-stack">
+              {moaProviders.map((p) => (
+                <ModelBadge key={p.id} label={p.name} tone="blue" status="active" />
+              ))}
+            </div>
+          ) : (
+            <ModelBadge label={activeProvider?.name ?? "No provider"} tone="green" />
+          )}
           {moa && <ModelBadge label="MOA" tone="blue" status="3-way" />}
         </div>
         <div className="flex items-center gap-2">
@@ -85,7 +95,7 @@ export default function AIStudioView() {
           {messages.map((m, i) => (
             <div
               key={i}
-              className={`max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
+              className={`message-in max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
                 m.role === "user"
                   ? "self-end bg-emerald-500/15 text-emerald-100"
                   : "self-start border border-white/10 bg-white/[0.04] text-slate-300"
@@ -95,6 +105,13 @@ export default function AIStudioView() {
             </div>
           ))}
         </div>
+        {busy && (
+          <div className="flex items-center gap-1.5 px-1 pb-2">
+            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "150ms" }} />
+            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "300ms" }} />
+          </div>
+        )}
         <div className="flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
           <textarea
             value={input}

@@ -27,9 +27,19 @@ export default function SystemView() {
       <BentoCard title="Providers" subtitle="AI 节点配置与健康度" icon={Activity} colSpan={12}>
         <div className="mb-3 grid gap-3 md:grid-cols-3">
           {providers.map((p) => (
-            <div key={p.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+            <div
+              key={p.id}
+              className={`provider-card rounded-2xl border bg-white/[0.03] p-3 ${
+                p.isActive ? "active-provider border-emerald-500/20" : "border-white/10"
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
-                <ModelBadge label={p.name} tone={p.isActive ? "green" : "neutral"} status={p.isActive ? "active" : "idle"} />
+                <ModelBadge
+                  label={p.name}
+                  tone={p.isActive ? "green" : "neutral"}
+                  status={p.isActive ? "active" : "idle"}
+                  pulse={p.isActive}
+                />
                 <button type="button" onClick={() => void toggleProvider(p.id, !p.isActive)} className="text-[10px] text-slate-500 hover:text-slate-300">
                   {p.isActive ? "Disable" : "Enable"}
                 </button>
@@ -82,7 +92,10 @@ export default function SystemView() {
         <BentoCard title="Error logs" subtitle="StackTrace 诊断" icon={Terminal} colSpan={6}>
           <div className="flex flex-col gap-1.5">
             {logs.slice(0, 8).map((l) => (
-              <div key={l.id} className="rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+              <div
+                key={l.id}
+                className="message-in rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300"
+              >
                 <span className="mr-1 font-medium">{l.source}</span>
                 {l.message}
               </div>

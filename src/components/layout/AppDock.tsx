@@ -27,10 +27,11 @@ export default function AppDock() {
             type="button"
             title={item.label}
             aria-label={item.label}
+            aria-current={active ? "page" : undefined}
             onClick={() => setActiveView(item.id)}
-            className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-all duration-150 active:scale-95 ${
+            className={`dock-item flex h-10 w-10 items-center justify-center rounded-xl border ${
               active
-                ? "border-emerald-500/30 bg-emerald-500/20 text-emerald-400"
+                ? "dock-item-active border-emerald-500/30 bg-emerald-500/20 text-emerald-400"
                 : "border-transparent text-slate-500 hover:border-white/10 hover:bg-white/[0.06] hover:text-slate-200"
             }`}
           >

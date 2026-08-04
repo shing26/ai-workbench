@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { PointerEventHandler, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
 type Props = {
@@ -8,12 +8,25 @@ type Props = {
   colSpan?: number;
   className?: string;
   children?: ReactNode;
+  onPointerMove?: PointerEventHandler<HTMLElement>;
+  onPointerLeave?: PointerEventHandler<HTMLElement>;
 };
 
-export default function BentoCard({ title, subtitle, icon: Icon, colSpan = 12, className = "", children }: Props) {
+export default function BentoCard({
+  title,
+  subtitle,
+  icon: Icon,
+  colSpan = 12,
+  className = "",
+  children,
+  onPointerMove,
+  onPointerLeave,
+}: Props) {
   return (
     <section
-      className={`flex min-w-0 flex-col rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${className}`}
+      onPointerMove={onPointerMove}
+      onPointerLeave={onPointerLeave}
+      className={`bento-card flex min-w-0 flex-col rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${className}`}
       style={{ gridColumn: `span ${colSpan} / span ${colSpan}` }}
     >
       <header className="mb-3 flex items-start justify-between gap-2">

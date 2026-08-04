@@ -57,6 +57,7 @@ export default function AppHeader() {
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
             className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
           >
             <Search size={14} />
@@ -64,7 +65,7 @@ export default function AppHeader() {
             <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">Ctrl K</kbd>
           </button>
           {open && (
-            <div className="absolute right-0 top-11 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[#18181C] shadow-xl">
+            <div className="search-pop absolute right-0 top-11 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[#18181C] shadow-xl">
               <input
                 ref={inputRef}
                 value={query}

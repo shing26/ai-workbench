@@ -18,7 +18,7 @@ export default function ViewRouter() {
   const View = views[activeView];
 
   return (
-    <main className="min-w-0 flex-1 overflow-hidden bg-[#101014]">
+    <main data-view={activeView} className="canvas-ambient min-w-0 flex-1 overflow-hidden">
       <div key={activeView} className="view-enter h-full w-full">
         <View />
       </div>
