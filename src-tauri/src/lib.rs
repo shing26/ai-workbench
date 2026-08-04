@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -49,6 +50,54 @@ fn clear_stream_cancel(app: &tauri::AppHandle, run_id: &str) {
     }
 }
 
+const STREAM_CONNECT_TIMEOUT_SECS: u64 = 8;
+const STREAM_TOTAL_TIMEOUT_SECS: u64 = 30;
+
+fn stream_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(STREAM_TOTAL_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+}
+
+fn summarize_status(status: reqwest::StatusCode) -> String {
+    let code = status.as_u16();
+    let hint = match code {
+        401 => "unauthorized",
+        403 => "forbidden",
+        404 => "not found",
+        429 => "rate limited",
+        500..=599 => "server error",
+        _ => "request rejected",
+    };
+    format!("Provider returned {} ({})", code, hint)
+}
+
+fn sanitize_stream_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "Request timeout: provider did not respond in time".to_string()
+    } else if error.is_connect() {
+        "Connection failed: provider unreachable".to_string()
+    } else if error.is_body() || error.is_decode() {
+        "Response read failed".to_string()
+    } else {
+        truncate_error(&error.to_string())
+    }
+}
+
+fn truncate_error(message: &str) -> String {
+    let trimmed = message.trim();
+    if trimmed.len() <= 160 {
+        return trimmed.to_string();
+    }
+    let mut end = 160;
+    while !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &trimmed[..end])
+}
+
 fn get_api_key(name: &str) -> Result<String, String> {
     let entry = Entry::new("ai-workbench", name).map_err(|e| e.to_string())?;
     entry.get_password().map_err(|e| e.to_string())
@@ -68,7 +117,7 @@ fn stream_openai_compatible(
 ) -> Result<(), String> {
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::new();
+    let client = stream_client();
     let resp = client
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -78,19 +127,26 @@ fn stream_openai_compatible(
             "stream": true
         }))
         .send()
-        .map_err(|e| format!("AI stream request failed: {}", e))?;
+        .map_err(|e| sanitize_stream_error(&e))?;
 
     if !resp.status().is_success() {
-        let status = resp.status();
-        let err_body = resp.text().unwrap_or_default();
-        return Err(format!("AI {} : {}", status, err_body));
+        return Err(summarize_status(resp.status()));
     }
 
-    let body = resp
-        .text()
-        .map_err(|e| format!("Read stream failed: {}", e))?;
+    let mut reader = BufReader::new(resp);
     let mut finished = false;
-    for line in body.lines() {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Response read failed: {}", truncate_error(&e.to_string())))?;
+        if read == 0 {
+            break;
+        }
+        if is_stream_cancelled(app, run_id) {
+            return Ok(());
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -103,9 +159,6 @@ fn stream_openai_compatible(
             }
             if let Ok(json) = serde_json::from_str::<Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                    if is_stream_cancelled(app, run_id) {
-                        break;
-                    }
                     let _ = app.emit(
                         "stream-chunk",
                         StreamChunk {
@@ -120,6 +173,9 @@ fn stream_openai_compatible(
             }
         }
     }
+    if is_stream_cancelled(app, run_id) {
+        return Ok(());
+    }
     if !finished {
         return Err("AI stream ended without [DONE]".into());
     }
@@ -133,7 +189,7 @@ fn stream_ollama(
     model_name: &str,
 ) -> Result<(), String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
-    let client = reqwest::blocking::Client::new();
+    let client = stream_client();
     let resp = client
         .post("http://localhost:11434/api/chat")
         .json(&serde_json::json!({
@@ -142,28 +198,32 @@ fn stream_ollama(
             "stream": true
         }))
         .send()
-        .map_err(|e| format!("Ollama stream request failed: {}", e))?;
+        .map_err(|e| sanitize_stream_error(&e))?;
 
     if !resp.status().is_success() {
-        return Err(format!(
-            "Ollama {} : {}",
-            resp.status(),
-            resp.text().unwrap_or_default()
-        ));
+        return Err(summarize_status(resp.status()));
     }
 
-    let body = resp
-        .text()
-        .map_err(|e| format!("Read stream failed: {}", e))?;
-    for line in body.lines() {
-        if line.trim().is_empty() {
+    let mut reader = BufReader::new(resp);
+    let mut finished = false;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Response read failed: {}", truncate_error(&e.to_string())))?;
+        if read == 0 {
+            break;
+        }
+        if is_stream_cancelled(app, run_id) {
+            return Ok(());
+        }
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
         if let Ok(json) = serde_json::from_str::<Value>(line) {
             if let Some(delta) = json["message"]["content"].as_str() {
-                if is_stream_cancelled(app, run_id) {
-                    break;
-                }
                 let _ = app.emit(
                     "stream-chunk",
                     StreamChunk {
@@ -176,9 +236,16 @@ fn stream_ollama(
                 );
             }
             if json["done"].as_bool() == Some(true) {
+                finished = true;
                 break;
             }
         }
+    }
+    if is_stream_cancelled(app, run_id) {
+        return Ok(());
+    }
+    if !finished {
+        return Err("Ollama stream ended without done: true".into());
     }
     Ok(())
 }
@@ -1162,6 +1229,26 @@ mod tests {
         assert!(!state.is_cancelled("run-2"));
         state.clear("run-1");
         assert!(!state.is_cancelled("run-1"));
+    }
+
+    #[test]
+    fn stream_error_messages_are_concise_and_safe() {
+        assert_eq!(
+            summarize_status(reqwest::StatusCode::UNAUTHORIZED),
+            "Provider returned 401 (unauthorized)"
+        );
+        assert_eq!(
+            summarize_status(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            "Provider returned 429 (rate limited)"
+        );
+        assert!(
+            summarize_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR).contains("server error")
+        );
+        let long = "x".repeat(300);
+        let short = truncate_error(&long);
+        assert!(short.ends_with("..."));
+        assert!(short.len() <= 164);
+        assert_eq!(truncate_error("ok"), "ok");
     }
 
     #[test]

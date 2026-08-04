@@ -840,6 +840,51 @@ try {
   }
   results.messageEdit = messageEdit;
 
+  const streamError = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    setValue(input, "sprint 15 timeout check");
+    await sleep(80);
+    const sendBtn = document.querySelector('main button[aria-label="Send"]');
+    if (!sendBtn) return { ok: false, reason: "no send button" };
+    sendBtn.click();
+    let statusSeen = false;
+    for (let i = 0; i < 30; i++) {
+      const status = document.querySelector(".stream-status");
+      const caret = document.querySelector(".stream-caret") || document.querySelector(".thinking-dot");
+      if (status || caret) statusSeen = true;
+      if (document.querySelector('button[aria-label="Retry failed message"]')) break;
+      await sleep(100);
+    }
+    const errorText = [...document.querySelectorAll(".message-in")].map((el) => el.textContent).join(" | ");
+    const retryBtn = document.querySelector('button[aria-label="Retry failed message"]');
+    return {
+      ok: true,
+      statusSeen,
+      errorMapped: document.body.innerText.includes("Request timeout: provider did not respond in time"),
+      errorMessageVisible: errorText.includes("Request timeout"),
+      placeholderGone: ![...document.querySelectorAll(".message-in")].some((el) => el.textContent?.startsWith("__stream__")),
+      hasRetry: !!retryBtn,
+    };
+  })()`);
+  if (
+    !streamError.ok ||
+    !streamError.statusSeen ||
+    !streamError.errorMapped ||
+    !streamError.errorMessageVisible ||
+    !streamError.placeholderGone ||
+    !streamError.hasRetry
+  ) {
+    throw new Error(`AI Studio stream error mapping assertion failed: ${JSON.stringify(streamError)}`);
+  }
+  results.streamError = streamError;
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {

@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 15
+
+### What went well?
+
+- Rust 流式链路加固：`stream_client()` 统一 connect timeout 8s + total timeout 30s；openai/ollama 改为 `BufReader.read_line` 增量读取，取消后立即停止读取。
+- 错误短映射：超时/连接失败/HTTP 状态码映射为简短错误，不再把完整 body/密钥抛给 UI；Ollama 缺失 `done:true` 会明确报错；单测覆盖映射与截断。
+- 前端新增 connecting/streaming/error/stopped 状态条与 Retry 按钮；浏览器 fallback 可模拟超时失败，`verify:ui` / `verify:preview` 新增错误映射断言并通过。
+- `cargo test --lib` 11/11、`cargo clippy --lib -D warnings`、`cargo fmt --check`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首次补丁试图用控制台乱码文本匹配 UTF-8 中文，patch 匹配失败；改用真实中文字符后通过。
+- `reqwest::blocking::Response` 的 `lines()` 不可用，仍需手写 `read_line` 循环；取消语义需在循环后再次检查，避免把取消误报为“缺少 [DONE]”。
+
+### Action Items
+
+- 下个 Sprint 候选：真实 Provider 端到端流式联调、Provider 周期心跳与状态告警、消息分叉/版本历史。
+- 后续改动流式协议、Provider 路由或 AI Studio 交互时，保留 `verify:ui` 的流式错误映射断言。
+- 若需要真正中断网络读取，可评估 `reqwest` 非阻塞流或 `tauri-plugin-http`。
+
 ## Sprint 14
 
 ### What went well?
