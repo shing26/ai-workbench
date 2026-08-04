@@ -31,6 +31,8 @@ type WorkbenchState = {
   toggleHabit: (id: string) => Promise<void>;
   addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
   toggleEventDone: (id: string) => Promise<void>;
+  refreshSystem: () => Promise<void>;
+  reportError: (source: string, message: string, stack: string | null, severity: string) => Promise<void>;
   openInspector: (title: string, sections: InspectorSection[]) => void;
   closeInspector: () => void;
 };
@@ -108,6 +110,18 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   toggleEventDone: async (id) => {
     await db.toggleEventDone(id);
     set({ scheduleEvents: await db.listScheduleEvents() });
+  },
+  refreshSystem: async () => {
+    const [clipboard, logs] = await Promise.all([db.listClipboard(), db.listErrorLogs()]);
+    set({ clipboard, logs });
+  },
+  reportError: async (source, message, stack, severity) => {
+    try {
+      await db.reportFrontendError({ source, message, stack, severity });
+    } catch {
+      return;
+    }
+    set({ logs: await db.listErrorLogs() });
   },
   openInspector: (title, sections) => set({ inspector: { title, sections } }),
   closeInspector: () => set({ inspector: null }),

@@ -66,11 +66,27 @@ CREATE TABLE IF NOT EXISTS schedule_events (
     tag TEXT DEFAULT 'general',
     created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS clipboard_history (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    source TEXT DEFAULT 'system',
+    timestamp INTEGER
+);
+CREATE TABLE IF NOT EXISTS error_logs (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    message TEXT NOT NULL,
+    stack TEXT,
+    severity TEXT DEFAULT 'error',
+    timestamp INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(is_today, status);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_date ON habit_logs(habit_id, date);
 CREATE INDEX IF NOT EXISTS idx_schedule_events_time ON schedule_events(start_time);
+CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp ON clipboard_history(timestamp);
+CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -149,6 +165,26 @@ pub struct ScheduleEvent {
     pub created_at: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardItem {
+    pub id: String,
+    pub content: String,
+    pub source: String,
+    pub timestamp: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorLog {
+    pub id: String,
+    pub source: String,
+    pub message: String,
+    pub stack: Option<String>,
+    pub severity: String,
+    pub timestamp: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -191,6 +227,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
     if count > 0 {
         seed_habits_if_empty(conn)?;
         seed_events_if_empty(conn)?;
+        seed_system_if_empty(conn)?;
         return Ok(());
     }
     let now = now_millis();
@@ -228,6 +265,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
     )?;
     seed_habits_if_empty(conn)?;
     seed_events_if_empty(conn)?;
+    seed_system_if_empty(conn)?;
     Ok(())
 }
 
@@ -266,6 +304,43 @@ fn seed_events_if_empty(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, 'Sprint 3 验收', '14:00', 0, 'work', ?2)",
         params![uid(), now],
+    )?;
+    Ok(())
+}
+
+fn seed_system_if_empty(conn: &Connection) -> Result<()> {
+    seed_clipboard_if_empty(conn)?;
+    seed_logs_if_empty(conn)?;
+    Ok(())
+}
+
+fn seed_clipboard_if_empty(conn: &Connection) -> Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+        row.get(0)
+    })?;
+    if count > 0 {
+        return Ok(());
+    }
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, 'terminal', ?3)",
+        params![uid(), "pnpm run dev", now - 5000],
+    )?;
+    conn.execute(
+        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, 'editor', ?3)",
+        params![uid(), "bg-[#18181C] border-white/10 rounded-2xl", now - 4000],
+    )?;
+    Ok(())
+}
+
+fn seed_logs_if_empty(conn: &Connection) -> Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM error_logs", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2)",
+        params![uid(), now_millis() - 7000],
     )?;
     Ok(())
 }
@@ -560,6 +635,92 @@ pub fn toggle_event_done(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn capture_clipboard(conn: &Connection, content: &str, source: &str) -> Result<ClipboardItem> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "empty clipboard".into(),
+        ));
+    }
+    let recent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clipboard_history WHERE content = ?1 AND timestamp > ?2",
+        params![trimmed, now_millis() - 10_000],
+        |row| row.get(0),
+    )?;
+    if recent > 0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "duplicate clipboard".into(),
+        ));
+    }
+    let id = uid();
+    let timestamp = now_millis();
+    conn.execute(
+        "INSERT INTO clipboard_history (id, content, source, timestamp) VALUES (?1, ?2, ?3, ?4)",
+        params![id, trimmed, source, timestamp],
+    )?;
+    Ok(ClipboardItem {
+        id,
+        content: trimmed.to_string(),
+        source: source.to_string(),
+        timestamp,
+    })
+}
+
+pub fn list_clipboard(conn: &Connection) -> Result<Vec<ClipboardItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, content, source, timestamp FROM clipboard_history ORDER BY timestamp DESC LIMIT 30",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ClipboardItem {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            source: row.get(2)?,
+            timestamp: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn report_frontend_error(
+    conn: &Connection,
+    source: &str,
+    message: &str,
+    stack: Option<&str>,
+    severity: &str,
+) -> Result<ErrorLog> {
+    let id = uid();
+    let timestamp = now_millis();
+    conn.execute(
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, source, message, stack, severity, timestamp],
+    )?;
+    Ok(ErrorLog {
+        id,
+        source: source.to_string(),
+        message: message.to_string(),
+        stack: stack.map(|s| s.to_string()),
+        severity: severity.to_string(),
+        timestamp,
+    })
+}
+
+pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source, message, stack, severity, timestamp FROM error_logs ORDER BY timestamp DESC LIMIT 30",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ErrorLog {
+            id: row.get(0)?,
+            source: row.get(1)?,
+            message: row.get(2)?,
+            stack: row.get(3)?,
+            severity: row.get(4)?,
+            timestamp: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, title, model, created_at FROM sessions ORDER BY created_at DESC",
@@ -661,6 +822,33 @@ mod tests {
 
         let untoggled = toggle_habit(&conn, &habit.id).unwrap();
         assert!(!untoggled.done_today);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clipboard_and_errors_persist_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-system-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let item = capture_clipboard(&conn, "Sprint 4 clipboard", "test").unwrap();
+        assert!(capture_clipboard(&conn, "Sprint 4 clipboard", "test").is_err());
+        let log =
+            report_frontend_error(&conn, "frontend", "boom", Some("at line 1"), "error").unwrap();
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let items = list_clipboard(&conn).unwrap();
+        assert!(items.iter().any(|i| i.id == item.id));
+        let logs = list_error_logs(&conn).unwrap();
+        assert!(logs.iter().any(|l| l.id == log.id));
+        assert_eq!(
+            logs.iter().find(|l| l.id == log.id).unwrap().message,
+            "boom"
+        );
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
