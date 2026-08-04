@@ -22,6 +22,8 @@ export default function AIStudioView() {
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<"idle" | "connecting" | "streaming" | "error" | "stopped">("idle");
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<db.Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionQuery, setSessionQuery] = useState("");
@@ -33,6 +35,7 @@ export default function AIStudioView() {
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number }>());
+  const retryTargetRef = useRef<Message | null>(null);
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
   const activeProviders = providers.filter((p) => p.isActive);
   const moaProviders = activeProviders.slice(0, 3);
@@ -69,6 +72,17 @@ export default function AIStudioView() {
           return next;
         });
         runsRef.current.delete(chunk.id);
+        if (chunk.error) {
+          setStreamStatus("error");
+          setStreamError(chunk.error);
+        } else if (chunk.cancelled) {
+          setStreamStatus("stopped");
+          setStreamError(null);
+        } else {
+          setStreamStatus("idle");
+          setStreamError(null);
+          retryTargetRef.current = null;
+        }
         if (!chunk.error && sessionIdRef.current && run.content) {
           void db.saveChatMessage(sessionIdRef.current, "assistant", run.content).then((saved) => {
             setMessages((prev) => {
@@ -83,6 +97,7 @@ export default function AIStudioView() {
         setBusy(false);
         return;
       }
+      setStreamStatus("streaming");
       run.content += chunk.delta;
       setMessages((prev) => {
         const next = [...prev];
@@ -133,6 +148,8 @@ export default function AIStudioView() {
     const finalContent = `${run?.content ?? ""} [stopped]`;
     if (run) runsRef.current.delete(runId);
     setBusy(false);
+    setStreamStatus("stopped");
+    setStreamError(null);
     setMessages((prev) =>
       prev.map((m) =>
         m.role === "assistant" && m.content.startsWith("__stream__")
@@ -152,6 +169,9 @@ export default function AIStudioView() {
     setSessionId(null);
     setMessages([{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }]);
     runsRef.current.clear();
+    retryTargetRef.current = null;
+    setStreamStatus("idle");
+    setStreamError(null);
     setInput("");
     setRagHits([]);
   };
@@ -167,6 +187,9 @@ export default function AIStudioView() {
         ? loaded
         : [{ role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." }],
     );
+    retryTargetRef.current = null;
+    setStreamStatus("idle");
+    setStreamError(null);
     setInput("");
     setRagHits([]);
   };
@@ -259,6 +282,8 @@ export default function AIStudioView() {
           prev.map((m) => (m.content === "__stream__" ? { ...m, content: "请求失败: no healthy provider available" } : m)),
         );
         setBusy(false);
+        setStreamStatus("error");
+        setStreamError("no healthy provider available");
         setRoutedProvider(null);
         return;
       }
@@ -283,6 +308,8 @@ export default function AIStudioView() {
     } catch {
       setMessages((prev) => prev.map((m) => (m.content === "__stream__" ? { ...m, content: "请求失败: stream unavailable" } : m)));
       setBusy(false);
+      setStreamStatus("error");
+      setStreamError("stream unavailable");
     }
     const sections: InspectorSection[] = [];
     if (moa) {
@@ -326,12 +353,16 @@ export default function AIStudioView() {
     setRagHits(hits);
     const runId = `ai-${++runIdRef.current}`;
     const messageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const userMessage: Message = { id: messageId, role: "user", content: text };
     const next: Message[] = [
       ...messages,
-      { id: messageId, role: "user", content: text },
+      userMessage,
       { role: "assistant", content: "__stream__" },
     ];
     setMessages(next);
+    retryTargetRef.current = userMessage;
+    setStreamStatus("connecting");
+    setStreamError(null);
     setInput("");
     const session = await ensureSession(text);
     await db.saveChatMessage(session.id, "user", text, messageId);
@@ -360,6 +391,9 @@ export default function AIStudioView() {
   const regenerateMessage = async (message: Message) => {
     if (busy || !message.id || !sessionIdRef.current) return;
     setBusy(true);
+    setStreamStatus("connecting");
+    setStreamError(null);
+    retryTargetRef.current = message;
     setEditingMessageId(null);
     await db.truncateChatMessages(sessionIdRef.current, message.id);
     const truncated = messages
@@ -379,6 +413,11 @@ export default function AIStudioView() {
     runsRef.current.set(runId, { content: "", index: history.length - 1 });
     setMessages(history);
     await runStream(history, runId, hits);
+  };
+
+  const retryLast = () => {
+    const target = retryTargetRef.current;
+    if (target) void regenerateMessage(target);
   };
 
   return (
@@ -641,11 +680,34 @@ export default function AIStudioView() {
             </div>
           ))}
         </div>
-        {busy && (
-          <div className="flex items-center gap-1.5 px-1 pb-2">
-            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "150ms" }} />
-            <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "300ms" }} />
+        {(busy || streamStatus === "error" || streamStatus === "stopped") && (
+          <div className="stream-status flex shrink-0 items-center gap-2 px-1 pb-2">
+            {busy ? (
+              <span className="flex items-center gap-1.5">
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "150ms" }} />
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "300ms" }} />
+                <span className="text-[10px] text-slate-500">
+                  {streamStatus === "connecting" ? "Connecting" : "Streaming"}
+                </span>
+              </span>
+            ) : streamStatus === "error" ? (
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate rounded-md border border-rose-500/25 bg-rose-500/10 px-1.5 py-0.5 text-[10px] text-rose-300">
+                  Failed: {streamError}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Retry failed message"
+                  onClick={retryLast}
+                  className="flex h-6 shrink-0 items-center gap-1 rounded-md bg-amber-500/15 px-2 text-[10px] text-amber-300 transition-colors hover:bg-amber-500/25"
+                >
+                  <RefreshCw size={10} /> Retry
+                </button>
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-500">Stopped</span>
+            )}
           </div>
         )}
         {ragHits.length > 0 && (

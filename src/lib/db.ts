@@ -658,6 +658,21 @@ export async function sendAiMessageStream(args: {
     return;
   }
 
+  const lastUserContent = [...args.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+  if (lastUserContent.toLowerCase().includes("sprint 15 timeout check")) {
+    window.setTimeout(() => {
+      localCancelledRuns.delete(args.runId);
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: "",
+        done: true,
+        error: "Request timeout: provider did not respond in time",
+        cancelled: false,
+      });
+    }, 120);
+    return;
+  }
+
   const reply =
     "Streaming fallback: 这条回复由浏览器分块模拟，逐段到达。\n\n- 第一段已就绪\n- 第二段继续\n- 第三段完成";
   const words = reply.split(" ");

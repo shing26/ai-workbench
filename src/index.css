@@ -209,6 +209,9 @@ input::placeholder, textarea::placeholder { color: var(--color-text-muted); }
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
   animation: stream-blink 900ms ease-in-out infinite;
 }
+.stream-status {
+  transition: transform var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}
 .moa-stack { display: inline-flex; align-items: center; }
 .moa-stack > * + * { margin-left: -6px; transition: transform var(--duration-fast) var(--ease-out); }
 .moa-stack:hover > * + * { transform: translateX(6px); }
