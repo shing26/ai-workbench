@@ -900,7 +900,7 @@ fn save_message_version(
     content: String,
 ) -> Result<db::MessageVersion, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::save_message_version(&conn, &message_id, &content).map_err(|e| e.to_string())
+    db::save_message_version(&conn, &message_id, &content, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

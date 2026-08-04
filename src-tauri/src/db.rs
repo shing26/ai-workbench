@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS message_versions (
     message_id TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at INTEGER,
+    parent_version_id TEXT,
     FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_message_versions_message ON message_versions(message_id, created_at);
@@ -178,6 +179,7 @@ pub struct MessageVersion {
     pub message_id: String,
     pub content: String,
     pub created_at: i64,
+    pub parent_version_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -330,6 +332,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
     migrate_updated_at(&conn)?;
+    migrate_version_parent(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -346,6 +349,13 @@ fn migrate_updated_at(conn: &Connection) -> Result<()> {
             "ALTER TABLE error_logs ADD COLUMN updated_at INTEGER DEFAULT 0;
              UPDATE error_logs SET updated_at = timestamp WHERE updated_at = 0;",
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_version_parent(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "message_versions", "parent_version_id")? {
+        conn.execute_batch("ALTER TABLE message_versions ADD COLUMN parent_version_id TEXT;")?;
     }
     Ok(())
 }
@@ -1188,15 +1198,17 @@ pub fn list_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<Cha
 }
 
 pub fn update_chat_message(conn: &Connection, id: &str, content: &str) -> Result<()> {
-    let old: Option<String> = conn
+    let old: Option<(String, Option<String>)> = conn
         .query_row(
-            "SELECT content FROM chat_messages WHERE id = ?1",
+            "SELECT m.content, v.id FROM chat_messages m
+             LEFT JOIN message_versions v ON v.message_id = m.id
+             WHERE m.id = ?1 ORDER BY v.created_at DESC LIMIT 1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if let Some(old_content) = old {
-        save_message_version(conn, id, &old_content)?;
+    if let Some((old_content, parent)) = old {
+        save_message_version(conn, id, &old_content, parent.as_deref())?;
     }
     conn.execute(
         "UPDATE chat_messages SET content = ?1 WHERE id = ?2",
@@ -1209,24 +1221,26 @@ pub fn save_message_version(
     conn: &Connection,
     message_id: &str,
     content: &str,
+    parent_version_id: Option<&str>,
 ) -> Result<MessageVersion> {
     let id = uid();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO message_versions (id, message_id, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![id, message_id, content, now],
+        "INSERT INTO message_versions (id, message_id, content, created_at, parent_version_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, message_id, content, now, parent_version_id],
     )?;
     Ok(MessageVersion {
         id,
         message_id: message_id.to_string(),
         content: content.to_string(),
         created_at: now,
+        parent_version_id: parent_version_id.map(|p| p.to_string()),
     })
 }
 
 pub fn list_message_versions(conn: &Connection, message_id: &str) -> Result<Vec<MessageVersion>> {
     let mut stmt = conn.prepare(
-        "SELECT id, message_id, content, created_at FROM message_versions
+        "SELECT id, message_id, content, created_at, parent_version_id FROM message_versions
          WHERE message_id = ?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map(params![message_id], |row| {
@@ -1235,6 +1249,7 @@ pub fn list_message_versions(conn: &Connection, message_id: &str) -> Result<Vec<
             message_id: row.get(1)?,
             content: row.get(2)?,
             created_at: row.get(3)?,
+            parent_version_id: row.get(4)?,
         })
     })?;
     rows.collect()
@@ -1440,7 +1455,7 @@ mod tests {
         let user = save_chat_message(&conn, &session.id, "user", "v1 original", None).unwrap();
         let assistant =
             save_chat_message(&conn, &session.id, "assistant", "old answer", None).unwrap();
-        save_message_version(&conn, &assistant.id, "old answer").unwrap();
+        save_message_version(&conn, &assistant.id, "old answer", None).unwrap();
         update_chat_message(&conn, &user.id, "v2 edited").unwrap();
         update_chat_message(&conn, &user.id, "v3 edited again").unwrap();
 
@@ -1448,6 +1463,11 @@ mod tests {
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].content, "v1 original");
         assert_eq!(versions[1].content, "v2 edited");
+        assert!(versions[0].parent_version_id.is_none());
+        assert_eq!(
+            versions[1].parent_version_id.as_deref(),
+            Some(versions[0].id.as_str())
+        );
         let assistant_versions = list_message_versions(&conn, &assistant.id).unwrap();
         assert_eq!(assistant_versions.len(), 1);
         assert_eq!(assistant_versions[0].content, "old answer");
@@ -1473,8 +1493,8 @@ mod tests {
         let conn = init_connection(&db_path).unwrap();
         let session = create_session(&conn, "Diff test", "openai").unwrap();
         let user = save_chat_message(&conn, &session.id, "user", "current", None).unwrap();
-        save_message_version(&conn, &user.id, "alpha\nbeta\nold line").unwrap();
-        save_message_version(&conn, &user.id, "alpha\nbeta\nnew line").unwrap();
+        save_message_version(&conn, &user.id, "alpha\nbeta\nold line", None).unwrap();
+        save_message_version(&conn, &user.id, "alpha\nbeta\nnew line", None).unwrap();
         update_chat_message(&conn, &user.id, "alpha\nbeta\nnew line").unwrap();
 
         let versions = list_message_versions(&conn, &user.id).unwrap();
@@ -1588,6 +1608,44 @@ mod tests {
         assert!(logs.iter().any(|l| l.message == "log from B"));
         drop(conn_a);
         drop(conn_b);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn message_version_parent_lineage_tracks_edit_chain() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-lineage-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Lineage test", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "v1 original", None).unwrap();
+        update_chat_message(&conn, &user.id, "v2 edited").unwrap();
+        update_chat_message(&conn, &user.id, "v3 edited again").unwrap();
+        restore_message_version(
+            &conn,
+            &user.id,
+            &list_message_versions(&conn, &user.id).unwrap()[0].id,
+        )
+        .unwrap();
+
+        let versions = list_message_versions(&conn, &user.id).unwrap();
+        assert_eq!(versions.len(), 3);
+        assert!(versions[0].parent_version_id.is_none());
+        assert_eq!(
+            versions[1].parent_version_id.as_deref(),
+            Some(versions[0].id.as_str())
+        );
+        assert_eq!(
+            versions[2].parent_version_id.as_deref(),
+            Some(versions[1].id.as_str())
+        );
+        assert_eq!(
+            list_chat_messages(&conn, &session.id).unwrap()[0].content,
+            "v1 original"
+        );
+        drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

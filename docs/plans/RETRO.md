@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 20
+
+### What went well?
+
+- 版本图谱闭环：`message_versions` 增加 `parent_version_id`，编辑/恢复保存版本时自动记录父版本；旧库迁移兼容。
+- 图谱 UI：版本面板展示 `root → v2 → current` 节点连线，点击节点可直接切换 diff 对比，视觉与现有 Design Token 一致。
+- 验证覆盖：Rust 单测覆盖编辑链血缘与恢复路径，`verify:ui` / `verify:preview` 新增图谱节点与 current 标记断言，`cargo test --lib` 16/16，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 血缘单测首轮预期恢复会新增 4 个版本，实际恢复为相同内容时不产生新版本，按 3 个版本修正断言。
+- `save_message_version` 新增父版本参数后，Tauri 命令调用点漏传参数导致编译失败，补 `None` 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、自动文件监听同步、项目级 Git 图谱。
+- 后续改动版本表或图谱时，保留血缘与 diff 断言。
+
 ## Sprint 19
 
 ### What went well?

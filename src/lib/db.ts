@@ -49,6 +49,7 @@ export type MessageVersion = {
   messageId: string;
   content: string;
   createdAt: number;
+  parentVersionId: string | null;
 };
 
 export type MessageDiff = {
@@ -532,11 +533,15 @@ export async function updateChatMessage(id: string, content: string): Promise<vo
   const message = shape.chatMessages.find((m) => m.id === id);
   if (message && message.content !== content) {
     shape.messageVersions = shape.messageVersions ?? [];
+    const parent = shape.messageVersions
+      .filter((v) => v.messageId === id)
+      .sort((a, b) => b.createdAt - a.createdAt)[0]?.id ?? null;
     shape.messageVersions.push({
       id: makeId(),
       messageId: id,
       content: message.content,
       createdAt: Date.now(),
+      parentVersionId: parent,
     });
     message.content = content;
   }
@@ -569,6 +574,7 @@ export async function saveMessageVersion(messageId: string, content: string): Pr
     messageId,
     content,
     createdAt: Date.now(),
+    parentVersionId: null,
   };
   shape.messageVersions.push(version);
   writeLocal(shape);

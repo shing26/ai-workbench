@@ -1,4 +1,4 @@
-import { Check, GitCompare, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
+import { Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -738,6 +738,49 @@ export default function AIStudioView() {
                   ) : (
                     <div className="space-y-1.5">
                       <div className="px-1 text-[9px] uppercase tracking-wide text-slate-500">Version history</div>
+                      <div className="version-graph rounded-lg border border-white/10 bg-black/20 p-2">
+                        <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-500">
+                          <GitFork size={10} className="text-slate-400" />
+                          Version graph
+                        </div>
+                        <div className="mt-1.5 space-y-0">
+                          {historyVersions.map((v, i) => (
+                            <div key={v.id} className="flex items-stretch gap-2">
+                              <div className="flex w-4 shrink-0 flex-col items-center">
+                                <button
+                                  type="button"
+                                  aria-label={`Graph node version ${i + 1}`}
+                                  onClick={() => void toggleVersionDiff(m, v)}
+                                  className={`version-node h-2.5 w-2.5 shrink-0 rounded-full transition-colors ${
+                                    diffVersionId === v.id
+                                      ? "bg-amber-400 ring-2 ring-amber-400/30"
+                                      : "bg-[#7FB4FF]"
+                                  }`}
+                                />
+                                {i < historyVersions.length - 1 && (
+                                  <span className="w-px flex-1 bg-white/10" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1 pb-1.5">
+                                <div className="text-[9px] text-slate-500">
+                                  v{i + 1}
+                                  {v.parentVersionId
+                                    ? ` · child of v${historyVersions.findIndex((p) => p.id === v.parentVersionId) + 1}`
+                                    : " · root"}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex items-stretch gap-2">
+                            <div className="flex w-4 shrink-0 flex-col items-center">
+                              <span className="version-node h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400 ring-2 ring-emerald-400/30" />
+                            </div>
+                            <div className="min-w-0 flex-1 pb-0.5">
+                              <div className="text-[9px] text-emerald-400">current</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                       {historyVersions.map((v, i) => (
                         <div
                           key={v.id}

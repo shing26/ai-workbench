@@ -218,6 +218,7 @@ input::placeholder, textarea::placeholder { color: var(--color-text-muted); }
 .search-pop { animation: search-pop 120ms var(--ease-out) both; transform-origin: top right; }
 .version-panel { animation: search-pop 120ms var(--ease-out) both; transform-origin: top left; }
 .version-diff { animation: search-pop 120ms var(--ease-out) both; transform-origin: top left; }
+.version-graph { animation: search-pop 120ms var(--ease-out) both; transform-origin: top left; }
 .focus-glow:focus-visible,
 .focus-glow:focus-within {
   outline: 1.5px solid var(--color-accent-green);

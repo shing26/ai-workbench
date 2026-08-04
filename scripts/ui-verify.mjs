@@ -901,6 +901,13 @@ try {
         versions: (shape.messageVersions ?? []).map((v) => ({ id: v.id, messageId: v.messageId, content: v.content })),
       };
     }
+    const graph = document.querySelector(".version-graph");
+    const graphOk =
+      !!graph &&
+      graph.textContent?.includes("Version graph") &&
+      graph.querySelectorAll(".version-node").length >= 2 &&
+      graph.textContent.includes("current") &&
+      graph.textContent.includes("root");
     document.querySelector('button[aria-label="Compare version 1 with current"]')?.click();
     let diffSeen = false;
     let diffCounts = "";
@@ -994,6 +1001,7 @@ try {
       editedVisible,
       oldTextGone,
       historySeen,
+      graphOk,
       diffSeen,
       diffCounts,
       restoredVisible,
@@ -1010,6 +1018,7 @@ try {
     !messageEdit.editedVisible ||
     !messageEdit.oldTextGone ||
     !messageEdit.historySeen ||
+    !messageEdit.graphOk ||
     !messageEdit.diffSeen ||
     messageEdit.diffCounts !== "+1 -1" ||
     !messageEdit.restoredVisible ||
