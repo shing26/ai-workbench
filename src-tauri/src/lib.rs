@@ -397,6 +397,59 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, Value>, String) 
     (map, content.to_string())
 }
 
+fn collect_markdown_files(
+    dir: &Path,
+    out: &mut Vec<(String, String, String, String)>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 10 {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| format!("Read dir failed: {}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_markdown_files(&path, out, depth + 1)?;
+        } else if path.extension().is_some_and(|e| e == "md") {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            let (frontmatter, body) = parse_frontmatter(&content);
+            let path_str = path.to_string_lossy().to_string();
+            let title = frontmatter
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Untitled")
+                .to_string();
+            let tags = frontmatter
+                .get("tags")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            out.push((path_str, title, tags, body));
+        }
+    }
+    Ok(())
+}
+
+fn index_vault_files(
+    conn: &rusqlite::Connection,
+    vault_path: &str,
+) -> Result<db::IndexResult, String> {
+    let dir = Path::new(vault_path);
+    if !dir.is_dir() {
+        return Err("Vault path not a directory".into());
+    }
+    let mut files = Vec::new();
+    collect_markdown_files(dir, &mut files, 0)?;
+    let mut indexed = 0i64;
+    for (path, title, tags, content) in files {
+        db::upsert_knowledge_file(conn, &path, &title, &tags, &content)
+            .map_err(|e| e.to_string())?;
+        indexed += 1;
+    }
+    Ok(db::IndexResult { files: indexed })
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -671,6 +724,20 @@ fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, 
     db::rag_index_status(&conn).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    index_vault_files(&conn, &vault_path)
+}
+
+#[tauri::command]
+fn get_knowledge_index_status(
+    state: State<'_, db::Db>,
+) -> Result<db::KnowledgeIndexStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::knowledge_index_status(&conn).map_err(|e| e.to_string())
+}
+
 fn spawn_clipboard_monitor(app: tauri::AppHandle) {
     thread::spawn(move || {
         let mut clipboard = match arboard::Clipboard::new() {
@@ -937,6 +1004,8 @@ pub fn run() {
             capture_clipboard,
             search_thoughts,
             get_rag_index_status,
+            index_vault,
+            get_knowledge_index_status,
             get_project_git_context,
             send_ai_message,
             stream_ai_message,
@@ -959,5 +1028,32 @@ mod tests {
         assert!(!state.is_cancelled("run-2"));
         state.clear("run-1");
         assert!(!state.is_cancelled("run-1"));
+    }
+
+    #[test]
+    fn vault_index_scans_and_searches_markdown() {
+        let temp = std::env::temp_dir().join(format!("aiwb-vault-test-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(vault.join("notes")).unwrap();
+        std::fs::write(
+            vault.join("notes").join("obsidian.md"),
+            "---\ntitle: Obsidian Notes\ntags: #work,#vault\n---\n# Obsidian Notes\n\nVault sync roadmap for local RAG",
+        )
+        .unwrap();
+        std::fs::write(
+            vault.join("README.md"),
+            "# Project Notes\n\nLocal knowledge indexing",
+        )
+        .unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let result = index_vault_files(&conn, vault.to_str().unwrap()).unwrap();
+        assert_eq!(result.files, 2);
+        let status = db::knowledge_index_status(&conn).unwrap();
+        assert_eq!(status.files, 2);
+        let results = db::search_thoughts(&conn, "obsidian vault", 5).unwrap();
+        assert!(results.iter().any(|r| r.content.contains("Obsidian")));
+        assert!(results.iter().any(|r| r.kind == "doc"));
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 }

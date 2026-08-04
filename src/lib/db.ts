@@ -93,7 +93,17 @@ export type RagIndexStatus = {
   lastIndexedAt: number;
 };
 
+export type KnowledgeIndexStatus = {
+  files: number;
+  indexedAt: number;
+};
+
+export type IndexResult = {
+  files: number;
+};
+
 const LS_KEY = "ai-workbench:db:v1";
+const VAULT_LS_KEY = "ai-workbench:vault:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -389,12 +399,64 @@ function tokenizeSearch(text: string): string[] {
   );
 }
 
+type VaultFileRecord = {
+  path: string;
+  title: string;
+  tags: string;
+  content: string;
+};
+
+function readVaultFiles(): VaultFileRecord[] {
+  try {
+    return JSON.parse(localStorage.getItem(VAULT_LS_KEY) ?? "[]") as VaultFileRecord[];
+  } catch {
+    return [];
+  }
+}
+
+export async function indexVault(vaultPath: string): Promise<IndexResult> {
+  if (isTauri()) return invoke<IndexResult>("index_vault", { vaultPath });
+  const existing = readVaultFiles();
+  const sample: VaultFileRecord[] = [
+    {
+      path: `${vaultPath}\\Obsidian Roadmap.md`,
+      title: "Obsidian Roadmap",
+      tags: "#work,#vault",
+      content: "# Obsidian Roadmap\n\n## Vault sync\n\n- 把本地 Markdown 纳入 RAG\n- 支持 frontmatter 标题与标签",
+    },
+    {
+      path: `${vaultPath}\\Daily Notes\\2026-08-05.md`,
+      title: "Daily Note",
+      tags: "#life",
+      content: "# 每日闪念\n\n- vault 索引让 AI 能引用本地文件",
+    },
+  ];
+  const merged = existing.length > 0 ? existing : sample;
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(merged));
+  return { files: merged.length };
+}
+
+export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
+  if (isTauri()) return invoke<KnowledgeIndexStatus>("get_knowledge_index_status");
+  const files = readVaultFiles();
+  return { files: files.length, indexedAt: files.length ? Date.now() : 0 };
+}
+
 export async function searchThoughts(query: string, limit = 5): Promise<RagSearchResult[]> {
   if (isTauri()) return invoke<RagSearchResult[]>("search_thoughts", { query, limit });
   const shape = readLocal();
   const tokens = tokenizeSearch(query);
   if (tokens.length === 0) return [];
-  const scored = shape.thoughts
+  const docs = [
+    ...shape.thoughts.map((t) => ({ id: t.id, content: t.content, tags: t.tags, type: t.type })),
+    ...readVaultFiles().map((f) => ({
+      id: f.path,
+      content: f.content,
+      tags: f.tags,
+      type: "doc" as ThoughtType,
+    })),
+  ];
+  const scored = docs
     .map((t) => {
       const hay = tokenizeSearch(t.content);
       const score = tokens.reduce((sum, term) => sum + (hay.includes(term) ? 1 : 0), 0);
@@ -409,10 +471,12 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
 export async function getRagIndexStatus(): Promise<RagIndexStatus> {
   if (isTauri()) return invoke<RagIndexStatus>("get_rag_index_status");
   const shape = readLocal();
+  const vaultFiles = readVaultFiles();
+  const total = shape.thoughts.length + vaultFiles.length;
   return {
-    documents: shape.thoughts.length,
-    indexed: shape.thoughts.length > 0,
-    lastIndexedAt: shape.thoughts[0]?.createdAt ?? 0,
+    documents: total,
+    indexed: total > 0,
+    lastIndexedAt: shape.thoughts[0]?.createdAt ?? (vaultFiles.length ? Date.now() : 0),
   };
 }
 

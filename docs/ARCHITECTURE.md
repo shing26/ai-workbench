@@ -53,11 +53,20 @@ Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
 
 Sprint 8 新增命令：`cancel_ai_stream`；事件 `stream-chunk` 增加 `cancelled` 字段。
 
+Sprint 9 新增命令：`index_vault`、`get_knowledge_index_status`。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
 - `search_thoughts(query, limit)` 返回相关笔记与 score；`get_rag_index_status` 返回文档数与 indexed 状态。
 - 前端 Knowledge 视图提供 RAG 搜索框，结果可点击进入 Markdown 预览；浏览器 fallback 使用关键词命中。
+
+## Vault 跨文件索引
+
+- SQLite 新增 `knowledge_files` 表（path 唯一、title、tags、content、indexed_at），`index_vault(vault_path)` 递归扫描 `.md` 文件并解析 frontmatter，按 path upsert。
+- `get_knowledge_index_status` 返回已索引文件数；`search_thoughts` 同时检索 thoughts 与 knowledge_files，文件命中以 `type: doc` 返回。
+- Knowledge 视图提供 Vault 路径输入与 Index 按钮，文件数 badge 展示索引状态；AI Studio RAG 注入自动覆盖本地 Markdown 文件。
+- 浏览器 fallback 用 localStorage 模拟 Vault 文件，保证 UI 验证可运行。
 
 ## AI Studio RAG 上下文注入
 

@@ -1,4 +1,4 @@
-import { BookOpen, Plus, Search } from "lucide-react";
+import { BookOpen, FolderOpen, Plus, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import * as db from "../lib/db";
@@ -16,6 +16,8 @@ export default function KnowledgeView() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
+  const [vaultPath, setVaultPath] = useState("");
+  const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -32,6 +34,10 @@ export default function KnowledgeView() {
   useEffect(() => {
     void db.getRagIndexStatus().then(setIndexStatus);
   }, [thoughts.length]);
+
+  useEffect(() => {
+    void db.getKnowledgeIndexStatus().then(setVaultStatus);
+  }, []);
 
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
   const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
@@ -50,6 +56,13 @@ export default function KnowledgeView() {
       return;
     }
     setResults(await db.searchThoughts(query.trim(), 5));
+  };
+
+  const runIndex = async () => {
+    if (!vaultPath.trim()) return;
+    await db.indexVault(vaultPath.trim());
+    setVaultStatus(await db.getKnowledgeIndexStatus());
+    setIndexStatus(await db.getRagIndexStatus());
   };
 
   return (
@@ -83,6 +96,35 @@ export default function KnowledgeView() {
           >
             <Plus size={14} /> Add
           </button>
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Vault Index" subtitle="Obsidian / Markdown 文件夹纳入 RAG" icon={FolderOpen} colSpan={12}>
+        <div className="flex items-end gap-2">
+          <input
+            value={vaultPath}
+            onChange={(e) => setVaultPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void runIndex();
+              }
+            }}
+            placeholder="Vault path..."
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <button
+            type="button"
+            onClick={() => void runIndex()}
+            className="flex h-9 items-center rounded-xl bg-blue-500/20 px-3 text-xs text-[#7FB4FF] hover:bg-blue-500/30"
+          >
+            Index vault
+          </button>
+          <ModelBadge
+            label="Vault"
+            tone="blue"
+            status={vaultStatus ? `${vaultStatus.files} files` : "pending"}
+          />
         </div>
       </BentoCard>
 

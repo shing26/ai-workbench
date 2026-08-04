@@ -162,3 +162,23 @@
 - 下个 Sprint 候选：跨文件 / Obsidian Vault 索引，或真实 Provider 端到端流式联调。
 - 若需要真取消网络请求，评估 `reqwest` 流式读取或 `tauri-plugin-http`。
 - 保留流式与取消断言，改动 AI Studio、流式协议或取消命令时重跑 `verify:ui`。
+
+## Sprint 9
+
+### What went well?
+
+- SQLite 新增 `knowledge_files` 表，Rust `index_vault` 递归扫描 `.md`、解析 frontmatter 并按 path upsert，`search_thoughts` 同时覆盖 thoughts 与本地文件。
+- Knowledge 视图新增 Vault Index 卡片：路径输入、Index 按钮与文件数 badge；RAG 文档数汇总包含文件，AI Studio RAG 注入自动引用本地 Markdown。
+- 浏览器 fallback 用 localStorage 模拟 Vault 文件，`verify:ui` 新增文件数 badge 与文件命中断言并通过。
+- `cargo test --lib` 6/6（新增 Vault 扫描/检索单测）、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首次 `cargo fmt --check` 报多处换行格式差异，运行 `cargo fmt` 后通过。
+- 当前 Vault 索引为全量扫描 upsert，尚无文件监听与增量更新。
+
+### Action Items
+
+- 下个 Sprint 候选：文件监听与增量索引、Provider 健康度监控，或真实 Provider 端到端流式联调。
+- 若索引文件夹很大，需要加忽略目录与并行扫描。
+- 保留 Vault 断言，改动索引命令或 Knowledge 视图时重跑 `verify:ui`。

@@ -452,6 +452,35 @@ try {
     throw new Error("RAG search assertion failed");
   }
   results.ragSearch = ragSearch;
+  const vaultIndex = await evaluate(`(async () => {
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (!input) return { ok: false, reason: "no vault input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "C:/vault");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    await new Promise((r) => setTimeout(r, 300));
+    const filesVisible = document.body.innerText.includes(" files");
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const fileResultVisible =
+      document.body.innerText.includes("Obsidian Roadmap") || document.body.innerText.includes("Obsidian");
+    return { ok: true, filesVisible, fileResultVisible };
+  })()`);
+  if (!vaultIndex.ok || !vaultIndex.filesVisible || !vaultIndex.fileResultVisible) {
+    throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
+  }
+  results.vaultIndex = vaultIndex;
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }
