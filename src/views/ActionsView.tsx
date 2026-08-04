@@ -13,6 +13,8 @@ export default function ActionsView() {
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
+  const todayDone = todayTasks.filter((t) => t.status === "done").length;
+  const focusProgress = Math.min(todayDone / 3, 1);
 
   const add = async () => {
     if (!title.trim()) return;
@@ -23,6 +25,12 @@ export default function ActionsView() {
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
       <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={12}>
+        <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
+            style={{ transform: `scaleX(${focusProgress})` }}
+          />
+        </div>
         <div className="grid gap-2 md:grid-cols-3">
           {todayTasks.map((t) => (
             <button
@@ -37,7 +45,7 @@ export default function ActionsView() {
             >
               <span
                 className={`flex h-4 w-4 items-center justify-center rounded-md border ${
-                  t.status === "done" ? "border-emerald-500/40 bg-emerald-500/20" : "border-white/20"
+                  t.status === "done" ? "check-pop border-emerald-500/40 bg-emerald-500/20" : "border-white/20"
                 }`}
               >
                 {t.status === "done" && <Check size={11} />}
@@ -86,12 +94,14 @@ export default function ActionsView() {
         </div>
         <div className="flex flex-col gap-1.5">
           {list.map((t) => (
-            <div key={t.id} className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+            <div key={t.id} className="message-in flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
               <button
                 type="button"
                 onClick={() => void setTaskStatus(t.id, t.status === "done" ? "todo" : "done")}
                 className={`flex h-5 w-5 items-center justify-center rounded-lg border ${
-                  t.status === "done" ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-400" : "border-white/20 text-transparent"
+                  t.status === "done"
+                    ? "check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400"
+                    : "border-white/20 text-transparent"
                 }`}
                 aria-label="Toggle status"
               >

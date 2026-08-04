@@ -36,6 +36,16 @@ const edge = spawn(
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = { views: [], tokens: {}, persistence: {}, overlay: {} };
 
+function durationSeconds(value) {
+  const parts = String(value || "").split(",").map((s) => s.trim());
+  const nums = parts.map((part) => {
+    if (part.endsWith("ms")) return Number(part.slice(0, -2)) / 1000;
+    if (part.endsWith("s")) return Number(part.slice(0, -1));
+    return 0;
+  });
+  return Math.max(0, ...nums);
+}
+
 async function waitForDevToolsPort() {
   const portFile = path.join(profile, "DevToolsActivePort");
   for (let i = 0; i < 60; i++) {
@@ -187,6 +197,69 @@ try {
     results.views.push({ id: view.id, label: view.label, state, shot, tokens });
   }
 
+  results.motion = await evaluate(`(() => {
+    const main = document.querySelector('main');
+    const navBtn = document.querySelector('nav button');
+    const viewEl = document.querySelector('.view-enter');
+    return {
+      ambientBackground: main ? getComputedStyle(main).backgroundImage : "",
+      navTransitionDuration: navBtn ? getComputedStyle(navBtn).transitionDuration : "",
+      viewAnimationDuration: viewEl ? getComputedStyle(viewEl).animationDuration : "",
+      bodyOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  })()`);
+
+  await clickDock("Projects");
+  const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
+  const inspectorOpened = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`);
+  if (!inspectorOpened) throw new Error("AI Coding button missing for inspector layout check");
+  await delay(300);
+  const inspectorInfo = await evaluate(`(() => {
+    const aside = document.querySelector('aside');
+    const main = document.querySelector('main');
+    return {
+      asideWidth: aside ? getComputedStyle(aside).width : "",
+      mainWidth: main?.getBoundingClientRect().width ?? 0,
+      asideTransform: aside ? getComputedStyle(aside).transform : "",
+    };
+  })()`);
+  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
+  await delay(250);
+  const widthAfterClose = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
+  const layoutStable =
+    widthBefore === inspectorInfo.mainWidth &&
+    widthAfterClose === inspectorInfo.mainWidth &&
+    inspectorInfo.asideWidth === "240px";
+  results.motion.inspector = { widthBefore, inspectorInfo, widthAfterClose, layoutStable };
+
+  await send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  await delay(150);
+  results.motion.reducedMotion = await evaluate(`(() => ({
+    viewAnimationDuration: getComputedStyle(document.querySelector('.view-enter')).animationDuration,
+    dockTransitionDuration: getComputedStyle(document.querySelector('nav button')).transitionDuration,
+  }))()`);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+
+  const maxNav = durationSeconds(results.motion.navTransitionDuration);
+  const maxView = durationSeconds(results.motion.viewAnimationDuration);
+  const reducedView = durationSeconds(results.motion.reducedMotion.viewAnimationDuration);
+  const reducedDock = durationSeconds(results.motion.reducedMotion.dockTransitionDuration);
+  results.motion.pass =
+    maxNav <= 0.16 &&
+    maxView <= 0.16 &&
+    results.motion.bodyOverflowX <= 1 &&
+    layoutStable &&
+    reducedView <= 0.02 &&
+    reducedDock <= 0.02;
+  if (!results.motion.pass) throw new Error("UI motion DoD assertion failed");
+
   await clickDock("Actions");
   const created = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="New task..."]');
@@ -218,6 +291,12 @@ try {
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
+  results.motion.mobileOverflowX = await evaluate(
+    `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
+  );
+  if (results.motion.mobileOverflowX > 1) {
+    throw new Error(`mobile horizontal overflow: ${results.motion.mobileOverflowX}px`);
+  }
 
   console.log(JSON.stringify(results, null, 2));
 } finally {

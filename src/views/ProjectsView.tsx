@@ -55,7 +55,25 @@ export default function ProjectsView() {
       </BentoCard>
 
       {projects.map((p, i) => (
-        <BentoCard key={p.id} title={p.name} subtitle={p.status} icon={GitBranch} colSpan={i % 2 === 0 ? 7 : 5}>
+        <BentoCard
+          key={p.id}
+          title={p.name}
+          subtitle={p.status}
+          icon={GitBranch}
+          colSpan={i % 2 === 0 ? 7 : 5}
+          className="tilt-card"
+          onPointerMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width - 0.5;
+            const y = (e.clientY - rect.top) / rect.height - 0.5;
+            e.currentTarget.style.setProperty("--rx", `${(-y * 6).toFixed(2)}deg`);
+            e.currentTarget.style.setProperty("--ry", `${(x * 8).toFixed(2)}deg`);
+          }}
+          onPointerLeave={(e) => {
+            e.currentTarget.style.setProperty("--rx", "0deg");
+            e.currentTarget.style.setProperty("--ry", "0deg");
+          }}
+        >
           <div className="mb-3 grid grid-cols-2 gap-2">
             <StatPill label="Revenue" value={`$${p.revenue.toFixed(2)}`} tone="green" />
             <StatPill label="Status" value={p.status} />

@@ -27,6 +27,14 @@ Rust 服务层（SQLite、Keyring、AI Gateway、Git 上下文）
 - Actions & Schedule：今日 Focus、任务、习惯、日程。
 - System & Automation：Provider、剪贴板、日志、自动化。
 
+## UI 动态效果层
+
+- 主切换与交互反馈上限 150ms，只使用 `transform`、`opacity`、`filter`。
+- `AppInspector` 为固定宽度右侧浮层，使用 `translateX` 滑入，不做宽度动画。
+- BentoCard 使用流体材质伪层与 hover lift，尺寸稳定，无布局抖动。
+- 所有连续动画遵守 `prefers-reduced-motion`，JS 动效使用 `matchMedia` 主动降级。
+- UI 改造必须走 `docs/meetings/*-ui-dynamics-design-review.md` 设计评审与 `docs/plans/sprint-*-ui-dynamics.md` 验收清单。
+
 ## Tauri IPC 协议
 
 - 命令命名：`snake_case`，例如 `list_tasks`、`create_task`、`list_providers`。
@@ -45,4 +53,3 @@ Rust 服务层（SQLite、Keyring、AI Gateway、Git 上下文）
 
 - 开发模式：允许 Dev overlay 与调试面板。
 - 生产模式：禁止 Dev Issues 浮标与任何开发遮罩。
-

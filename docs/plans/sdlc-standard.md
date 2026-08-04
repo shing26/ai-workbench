@@ -12,6 +12,17 @@
 
 原则：严禁开发中途临时加项。任何新想法先写入 Backlog，排期到下一个 Sprint。
 
+### 阶段 1.5：UI 设计与动效规范
+
+开发任何 UI 改造前，必须先完成设计评审并产出可验收的设计契约：
+
+- `docs/meetings/*-ui-dynamics-design-review.md`：参考模板、视觉语言映射、设计部决议与风险清单。
+- `docs/plans/sprint-*-ui-dynamics.md`：动效任务、验收标准与 DoD。
+- 动效硬约束：主切换 <=150ms，只用 `transform`/`opacity`/`filter`，遵守 `prefers-reduced-motion`，不改动冻结 Design Token。
+- 自动化验收：UI 改造必须扩展 `verify:ui` / `verify:preview`，覆盖动效时长、固定尺寸、reduced-motion 与布局稳定。
+
+原则：任何“临时加动画”必须先写 Backlog，排入 Sprint 后再开发，禁止绕过设计评审直接堆效果。
+
 ## 阶段二：敏捷 Sprint 迭代与任务拆解
 
 以 1 到 2 周为周期运行 Sprint，看板固定 4 列：
@@ -83,4 +94,3 @@ DoD 检查单：
 1. What went well？
 2. What went wrong？
 3. Action Items？
-
