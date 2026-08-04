@@ -2,9 +2,11 @@ import { Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
+import type { InspectorSection } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
 
 type Message = { role: "user" | "assistant"; content: string };
+type ApiMessage = { role: "user" | "assistant" | "system"; content: string };
 
 export default function AIStudioView() {
   const providers = useWorkbenchStore((s) => s.providers);
@@ -15,6 +17,8 @@ export default function AIStudioView() {
   const [input, setInput] = useState("");
   const [providerId, setProviderId] = useState("");
   const [moa, setMoa] = useState(false);
+  const [useRag, setUseRag] = useState(true);
+  const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
   const runIdRef = useRef(0);
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
@@ -64,6 +68,15 @@ export default function AIStudioView() {
     const text = input.trim();
     if (!text || busy) return;
     setBusy(true);
+    let hits: db.RagSearchResult[] = [];
+    if (useRag) {
+      try {
+        hits = await db.searchThoughts(text, 5);
+      } catch {
+        hits = [];
+      }
+    }
+    setRagHits(hits);
     const runId = `ai-${++runIdRef.current}`;
     const next: Message[] = [...messages, { role: "user", content: text }, { role: "assistant", content: "__stream__" }];
     setMessages(next);
@@ -73,10 +86,17 @@ export default function AIStudioView() {
       : activeProvider
         ? [activeProvider.id]
         : [];
+    const apiMessages: ApiMessage[] = next.filter((m) => m.content !== "__stream__");
+    if (hits.length > 0) {
+      apiMessages.unshift({
+        role: "system",
+        content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join("\n")}`,
+      });
+    }
     try {
       await db.sendAiMessageStream({
         providerIds,
-        messages: next.filter((m) => m.content !== "__stream__"),
+        messages: apiMessages,
         moa,
         runId,
       });
@@ -84,11 +104,27 @@ export default function AIStudioView() {
       setMessages((prev) => prev.map((m) => (m.content === "__stream__" ? { ...m, content: "请求失败: stream unavailable" } : m)));
       setBusy(false);
     }
+    const sections: InspectorSection[] = [];
     if (moa) {
-      openInspector("MOA Trace", [
+      sections.push(
         { label: "Providers", value: providerIds.length ? providerIds.join(", ") : "none" },
         { label: "Status", value: "streaming consensus" },
-      ]);
+      );
+    }
+    if (hits.length > 0) {
+      sections.push({ label: "RAG context", value: `${hits.length} local thought(s) injected` });
+      hits.slice(0, 5).forEach((hit, index) => {
+        sections.push({
+          label: `Source ${index + 1}`,
+          value: hit.content.replace(/\s+/g, " ").slice(0, 90),
+        });
+      });
+    }
+    if (sections.length > 0) {
+      openInspector(
+        moa && hits.length > 0 ? "MOA Trace + RAG" : hits.length > 0 ? "RAG Context" : "MOA Trace",
+        sections,
+      );
     }
   };
 
@@ -124,6 +160,24 @@ export default function AIStudioView() {
               MOA
             </button>
           </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={useRag}
+            aria-label="Toggle RAG context"
+            onClick={() => {
+              setUseRag((value) => !value);
+              if (useRag) setRagHits([]);
+            }}
+            className={`flex h-8 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-[11px] transition-colors ${
+              useRag
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                : "border-white/10 bg-white/[0.03] text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${useRag ? "bg-amber-400" : "bg-slate-600"}`} />
+            RAG
+          </button>
           <select
             value={providerId}
             onChange={(e) => setProviderId(e.target.value)}
@@ -162,6 +216,21 @@ export default function AIStudioView() {
             <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
             <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "150ms" }} />
             <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-emerald-400" style={{ animationDelay: "300ms" }} />
+          </div>
+        )}
+        {ragHits.length > 0 && (
+          <div className="rag-badge flex shrink-0 flex-wrap items-center gap-1.5 px-1 pb-1 text-[10px]">
+            <span className="rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-300">
+              RAG +{ragHits.length}
+            </span>
+            {ragHits.slice(0, 3).map((hit) => (
+              <span
+                key={hit.id}
+                className="max-w-[260px] truncate rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-slate-500"
+              >
+                {hit.content.replace(/\s+/g, " ").slice(0, 44)}
+              </span>
+            ))}
           </div>
         )}
         <div className="flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">

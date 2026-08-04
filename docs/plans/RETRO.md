@@ -122,3 +122,23 @@
 - 下个 Sprint 候选：把 RAG 结果注入 AI Studio 上下文，形成检索增强对话。
 - 如需跨文件/Obsidian 检索，再评估文件扫描与增量索引。
 - 保留 RAG 断言，改动 Knowledge 或检索命令时重跑 `verify:ui`。
+
+## Sprint 7
+
+### What went well?
+
+- AI Studio 发送前自动检索本地 thoughts：命中时在 API messages 前注入 `system` 上下文，回复可直接引用个人知识库。
+- 模型切换条旁新增 RAG 开关（默认开启），消息区显示 `RAG +N` badge 与来源摘要，Inspector 展示 RAG context 与 Source 列表。
+- 注入为纯前端实现，复用 `search_thoughts` 命令，无新增 Rust 命令；`verify:ui` 新增 RAG 注入断言并稳定通过。
+- `cargo test --lib`、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 RAG 注入断言依赖 Inspector 打开时机，改为轮询 badge 与 Inspector 文本后稳定。
+- AI Studio 发送前检索是串行 await，检索极快，但后续可评估与 Provider 请求并行。
+
+### Action Items
+
+- 下个 Sprint 候选：跨文件 / Obsidian Vault 索引、Provider 流式取消，或真实 Provider 端到端流式联调。
+- RAG 注入默认开启，后续可加“命中结果人工确认后再发送”选项。
+- 保留 RAG 注入断言，改动 AI Studio 或检索命令时重跑 `verify:ui`。

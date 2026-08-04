@@ -57,6 +57,13 @@ Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
 - `search_thoughts(query, limit)` 返回相关笔记与 score；`get_rag_index_status` 返回文档数与 indexed 状态。
 - 前端 Knowledge 视图提供 RAG 搜索框，结果可点击进入 Markdown 预览；浏览器 fallback 使用关键词命中。
 
+## AI Studio RAG 上下文注入
+
+- AI Studio 发送消息前调用 `search_thoughts(text, 5)`，命中时在 API messages 前注入一条 `system` 上下文（`Knowledge context:\n- <content>`）。
+- 模型切换条附近提供 RAG 开关，默认开启；关闭时跳过检索，不注入上下文。
+- 命中后消息输入区上方显示 `RAG +N` badge 与来源摘要；发送结束后 Inspector 展示 RAG context 与 Source 列表。
+- 注入逻辑为纯前端实现，复用 Sprint 6 的 `search_thoughts` 命令，无新增 Rust 命令。
+
 ## AI 流式输出
 
 - Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。
@@ -77,6 +84,7 @@ Sprint 6 新增命令：`search_thoughts`、`get_rag_index_status`。
 2. 持久化数据通过 IPC 调用 Rust 命令。
 3. Rust 负责 SQLite 迁移、示例数据与事务。
 4. AI 流式响应通过 Tauri Event 推送到前端。
+5. AI Studio 发送前先检索本地 thoughts，把命中内容作为 system 上下文注入请求。
 
 ## 环境隔离
 
