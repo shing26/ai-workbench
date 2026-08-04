@@ -97,9 +97,9 @@ src/
 - 5 视图切换测试 + 数据库持久化测试有自动化证据。
 - Reality Checker 默认结论为 NEEDS WORK，直到截图与测试证据覆盖上述 DoD。
 
-## 遗留决策（需用户确认）
+## 决策记录（Sprint 1 已确认）
 
-1. 前端实现栈：沿用当前 React/.tsx，还是按会议草案改为 Vue/.vue。
-2. 数据层：采用 5 表基线 + JSON 扩展字段，还是采用更完整的 15 表草案。
-3. 右侧 Inspector 抽屉在 Sprint 1 内完整实现，还是仅实现 App Shell 骨架。
-
+1. 前端实现栈：沿用当前 React + TypeScript（`.tsx`），会议草案中的 `.vue` 命名只作逻辑组件树参考。
+2. 数据层：采用 5 张核心表基线，不引入 15 表草案，复杂关系进入 Backlog。
+3. 右侧 Inspector 抽屉：Sprint 1 实现 App Shell 骨架与 Projects/AI Studio 触发入口，完整字段编辑进入下一个 Sprint。
+4. 质量门：Sprint 1 以 `cargo fmt --check`、`cargo clippy --lib -D warnings`、`cargo test --lib`、`npm run build` 与 `npm run verify:ui` 作为自动化验收；ESLint/Prettier 与 husky/lint-staged 接入列入 Backlog。
