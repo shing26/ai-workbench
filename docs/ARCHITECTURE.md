@@ -59,6 +59,8 @@ Sprint 10 新增命令：`check_provider_health`。
 
 Sprint 11 新增命令：`save_chat_message`、`list_chat_messages`。
 
+Sprint 12 新增命令：`rename_session`、`delete_session`。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -113,6 +115,13 @@ Sprint 11 新增命令：`save_chat_message`、`list_chat_messages`。
 - AI Studio 左侧会话栏提供 New chat 与会话列表，点击会话加载对应历史；发送时自动创建会话并保存 user 消息，流式结束或取消后保存 assistant 消息。
 - 浏览器 fallback 用 localStorage 保存 sessions 与 chatMessages，刷新后自动恢复首个会话历史，保证 UI 验证可运行。
 - 前端按 runId 维护独立流内容与消息索引，多条流互不串扰；取消流时立即落库 `[stopped]` 消息。
+
+## AI Studio 会话管理
+
+- `rename_session(id, title)` 更新会话标题；`delete_session(id)` 删除会话，`chat_messages` 通过外键级联清理。
+- 会话栏顶部提供搜索框，按标题与模型过滤；会话项 hover 显示重命名与删除，重命名使用内联编辑，删除需二次确认。
+- 空会话不再被自动复用为消息容器：发送新消息时若当前会话无历史，则新建会话并以首条消息命名。
+- 浏览器 fallback 同步维护 localStorage 中的 sessions 与 chatMessages，保证 UI 验证可运行。
 
 ## 数据流
 

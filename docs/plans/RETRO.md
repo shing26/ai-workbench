@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 12
+
+### What went well?
+
+- Rust 新增 `rename_session` / `delete_session`，`chat_messages` 外键级联删除生效，单测覆盖重命名与删除后消息清空。
+- 会话栏新增搜索框、hover 重命名/删除与二次确认；删除当前会话后自动切换到下一个会话。
+- 修复空会话被自动复用的问题：发送新消息时若当前会话无历史，新建会话并以首条消息命名，会话标题与内容保持一致。
+- `cargo test --lib` 9/9、`cargo clippy --lib -D warnings`、`cargo fmt --check`、`npm run build`、`verify:ui`、`verify:preview` 全绿，`verify:ui` 新增会话管理断言。
+
+### What went wrong?
+
+- 会话管理断言首轮误用 body 全文判断旧标题，聊天内容仍包含旧文本导致误报，改为只检查会话列表按钮。
+- `verify:preview` 在未重新 build 时用旧 dist 验证失败，先 `npm run build` 再验证即通过。
+
+### Action Items
+
+- 下个 Sprint 候选：Provider 自动路由、消息编辑/重新生成、真实 Provider 端到端流式联调。
+- 会话搜索后续可升级为模糊拼音/全文匹配，并支持按时间范围过滤。
+- 保留会话管理断言，改动会话栏、sessions 或 chat_messages 时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 11
 
 ### What went well?

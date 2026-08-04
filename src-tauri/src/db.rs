@@ -948,6 +948,19 @@ pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Ses
     })
 }
 
+pub fn rename_session(conn: &Connection, id: &str, title: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE sessions SET title = ?1 WHERE id = ?2",
+        params![title, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn save_chat_message(
     conn: &Connection,
     session_id: &str,
@@ -1037,6 +1050,29 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].content, "Hi there");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn session_rename_and_delete_cascade_messages() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-session-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let session = create_session(&conn, "Old title", "openai").unwrap();
+        save_chat_message(&conn, &session.id, "user", "Hello").unwrap();
+
+        rename_session(&conn, &session.id, "New title").unwrap();
+        let sessions = list_sessions(&conn).unwrap();
+        assert_eq!(sessions[0].title, "New title");
+
+        delete_session(&conn, &session.id).unwrap();
+        let sessions = list_sessions(&conn).unwrap();
+        assert!(!sessions.iter().any(|s| s.id == session.id));
+        assert!(list_chat_messages(&conn, &session.id).unwrap().is_empty());
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
