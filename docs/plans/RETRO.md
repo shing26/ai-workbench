@@ -182,3 +182,23 @@
 - 下个 Sprint 候选：文件监听与增量索引、Provider 健康度监控，或真实 Provider 端到端流式联调。
 - 若索引文件夹很大，需要加忽略目录与并行扫描。
 - 保留 Vault 断言，改动索引命令或 Knowledge 视图时重跑 `verify:ui`。
+
+## Sprint 10
+
+### What went well?
+
+- Rust 新增 `check_provider_health(provider_id)`：Ollama 探测 `/api/tags`，OpenAI 兼容节点带 Bearer 探测 `/models`，返回 `{ ok, latencyMs, message }`。
+- `is_ollama_provider(name, url)` 收敛 Ollama 判定并复用到健康检查、单次对话与流式路由，新增单测。
+- System Provider 卡片从占位 `Latency - ms` 升级为健康点、ok/unreachable、延迟与 Check 按钮；进入视图自动检查，支持 Check all。
+- `cargo test --lib` 7/7、`cargo clippy --lib -D warnings`、`npm run build`、`verify:ui`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- SystemView 初次补健康检查逻辑时漏引 `db` 模块，tsc 报 3 处错误，补导入后通过。
+- 健康检查对真实 Provider 是网络探测，单测只覆盖 Ollama 判定；端到端仍需配置 API Key。
+
+### Action Items
+
+- 下个 Sprint 候选：文件监听与增量索引、Provider 自动路由，或真实 Provider 端到端流式联调。
+- 健康检查可扩展为周期心跳与状态告警。
+- 保留健康断言，改动 System 视图或健康命令时重跑 `verify:ui`。

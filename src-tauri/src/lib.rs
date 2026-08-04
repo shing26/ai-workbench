@@ -255,10 +255,14 @@ fn chat_codex(prompt: &str) -> Result<String, String> {
     }
 }
 
+fn is_ollama_provider(name: &str, url: &str) -> bool {
+    let name = name.to_lowercase();
+    let url = url.to_lowercase();
+    name.contains("ollama") || url.contains("11434")
+}
+
 fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String, String> {
-    let name = provider.name.to_lowercase();
-    let url = provider.base_url.to_lowercase();
-    if name.contains("ollama") || url.contains("11434") {
+    if is_ollama_provider(&provider.name, &provider.base_url) {
         chat_ollama(messages_json, "qwen2.5:3b")
     } else {
         let key_ref = if provider.api_key.is_empty() {
@@ -783,6 +787,78 @@ fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Res
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderHealth {
+    ok: bool,
+    latency_ms: u128,
+    message: String,
+}
+
+fn check_provider_health_state(provider: &db::Provider) -> ProviderHealth {
+    let started = std::time::Instant::now();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+    let endpoint = if is_ollama_provider(&provider.name, &provider.base_url) {
+        format!("{}/api/tags", provider.base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/models", provider.base_url.trim_end_matches('/'))
+    };
+    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+        client.get(&endpoint).send()
+    } else {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        match get_api_key(key_ref) {
+            Ok(key) => client
+                .get(&endpoint)
+                .header("Authorization", format!("Bearer {}", key))
+                .send(),
+            Err(err) => {
+                return ProviderHealth {
+                    ok: false,
+                    latency_ms: started.elapsed().as_millis(),
+                    message: err,
+                };
+            }
+        }
+    };
+    match result {
+        Ok(resp) if resp.status().is_success() => ProviderHealth {
+            ok: true,
+            latency_ms: started.elapsed().as_millis(),
+            message: "ok".to_string(),
+        },
+        Ok(resp) => ProviderHealth {
+            ok: false,
+            latency_ms: started.elapsed().as_millis(),
+            message: format!("HTTP {}", resp.status()),
+        },
+        Err(err) => ProviderHealth {
+            ok: false,
+            latency_ms: started.elapsed().as_millis(),
+            message: err.to_string(),
+        },
+    }
+}
+
+#[tauri::command]
+fn check_provider_health(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<ProviderHealth, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let provider = db::get_provider(&conn, &provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Provider not found".to_string())?;
+    Ok(check_provider_health_state(&provider))
+}
+
 #[tauri::command]
 async fn stream_ai_message(
     app: tauri::AppHandle,
@@ -831,9 +907,7 @@ async fn stream_ai_message(
                 return Err("No providers configured".to_string());
             }
             let provider = selected[0].clone();
-            let name = provider.name.to_lowercase();
-            let url = provider.base_url.to_lowercase();
-            if name.contains("ollama") || url.contains("11434") {
+            if is_ollama_provider(&provider.name, &provider.base_url) {
                 stream_ollama(&app_clone, &run_id_clone, &messages_json, "qwen2.5:3b")
             } else {
                 let key_ref = if provider.api_key.is_empty() {
@@ -1009,7 +1083,8 @@ pub fn run() {
             get_project_git_context,
             send_ai_message,
             stream_ai_message,
-            cancel_ai_stream
+            cancel_ai_stream,
+            check_provider_health
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1028,6 +1103,13 @@ mod tests {
         assert!(!state.is_cancelled("run-2"));
         state.clear("run-1");
         assert!(!state.is_cancelled("run-1"));
+    }
+
+    #[test]
+    fn provider_health_kind_detects_ollama() {
+        assert!(is_ollama_provider("Ollama", "http://localhost:11434"));
+        assert!(is_ollama_provider("My Local", "http://127.0.0.1:11434"));
+        assert!(!is_ollama_provider("OpenAI", "https://api.openai.com/v1"));
     }
 
     #[test]

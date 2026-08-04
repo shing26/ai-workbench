@@ -1,5 +1,6 @@
 import { Activity, Clipboard, Plus, Radio, Terminal } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -18,6 +19,23 @@ export default function SystemView() {
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
+
+  const check = async (id: string) => {
+    const result = await db.checkProviderHealth(id);
+    setHealth((prev) => ({ ...prev, [id]: result }));
+  };
+
+  const checkAll = async () => {
+    const entries = await Promise.all(
+      providers.map(async (p) => [p.id, await db.checkProviderHealth(p.id)] as const),
+    );
+    setHealth(Object.fromEntries(entries));
+  };
+
+  useEffect(() => {
+    void checkAll();
+  }, [providers.length]);
 
   const create = async () => {
     if (!name.trim() || !baseUrl.trim()) return;
@@ -50,7 +68,20 @@ export default function SystemView() {
                 </button>
               </div>
               <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
-              <p className="mt-1 text-[10px] text-slate-600">Latency - ms</p>
+              <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+                <span className={`h-1.5 w-1.5 rounded-full ${health[p.id]?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
+                <span className={health[p.id]?.ok ? "text-emerald-400" : "text-red-300"}>
+                  {health[p.id]?.ok ? "ok" : "unreachable"}
+                </span>
+                <span className="text-slate-500">{health[p.id] ? `${health[p.id].latencyMs}ms` : "- ms"}</span>
+                <button
+                  type="button"
+                  onClick={() => void check(p.id)}
+                  className="ml-auto text-[10px] text-slate-500 hover:text-slate-300"
+                >
+                  Check
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -73,6 +104,13 @@ export default function SystemView() {
             placeholder="API key ref"
             className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
+          <button
+            type="button"
+            onClick={() => void checkAll()}
+            className="flex h-9 items-center gap-1 rounded-xl bg-blue-500/20 px-3 text-xs text-[#7FB4FF] hover:bg-blue-500/30"
+          >
+            Check all
+          </button>
           <button
             type="button"
             onClick={() => void create()}
