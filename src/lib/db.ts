@@ -176,6 +176,14 @@ export type GitContext = {
   changes: string[];
 };
 
+export type CommitPrDraft = {
+  branch: string;
+  commitMessage: string;
+  prTitle: string;
+  prBody: string;
+  changes: string[];
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -1179,4 +1187,48 @@ export async function getProjectGitContext(path: string): Promise<GitContext> {
     latestCommit: "d676ced feat(sprint-20): message version graph with parent lineage",
     changes: ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
   };
+}
+
+export async function generateCommitPrDraft(path: string, projectName: string): Promise<CommitPrDraft> {
+  if (isTauri()) {
+    return invoke<CommitPrDraft>("generate_commit_pr_draft", { path, projectName });
+  }
+  const ctx = await getProjectGitContext(path);
+  const changes = ctx.changes.length ? ctx.changes : ["no changed files detected"];
+  const commitType = changes.some((c) => c.toLowerCase().includes("docs/") || c.toLowerCase().endsWith(".md"))
+    ? "docs"
+    : changes.some((c) => {
+        const lower = c.toLowerCase();
+        return lower.includes("test") || lower.includes("verify") || lower.includes("spec");
+      })
+      ? "test"
+      : ctx.branch.startsWith("fix/")
+        ? "fix"
+        : ctx.branch.startsWith("feature/") || ctx.branch.startsWith("feat/")
+          ? "feat"
+          : "chore";
+  const scope = ctx.branch
+    .replace(/^feature\//, "")
+    .replace(/^feat\//, "")
+    .replace(/^fix\//, "")
+    .replace(/[/_]/g, "-");
+  const first = changes[0] ?? "";
+  const stem = first.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "workbench";
+  const summaryTokens = stem
+    .split(/[-_.\s]+/)
+    .filter(
+      (t) =>
+        t &&
+        !/^\d+$/.test(t) &&
+        !["sprint", "and", "with", "for", "the", "a", "an"].includes(t.toLowerCase()),
+    );
+  const summary = (summaryTokens.slice(0, 4).join(" ") || "workbench changes").replace(/^\w/, (c) =>
+    c.toUpperCase(),
+  );
+  const commitMessage = `${commitType}(${scope}): ${summary.toLowerCase()}`;
+  const prTitle = `${commitType}(${scope}): ${summary}`;
+  const prBody = `## Summary\n\n${projectName}\n\nBranch: \`${ctx.branch}\`\n\n## Changes\n\n${changes
+    .map((c) => `- ${c}`)
+    .join("\n")}\n\n## DoD\n\n- [ ] Code compiles and tests pass.\n- [ ] UI follows design tokens and stays stable.\n- [ ] Database changes include migrations if needed.\n- [ ] PR description matches the actual diff.\n`;
+  return { branch: ctx.branch, commitMessage, prTitle, prBody, changes };
 }

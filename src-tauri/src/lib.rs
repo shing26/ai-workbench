@@ -1372,22 +1372,38 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         }
     }
     let mut changes = Vec::new();
-    if let Ok(entries) = fs::read_dir(&path) {
-        let mut files: Vec<(std::time::SystemTime, String)> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let meta = entry.metadata().ok()?;
-                if !meta.is_file() {
-                    return None;
-                }
-                Some((
-                    meta.modified().ok()?,
-                    entry.file_name().to_string_lossy().to_string(),
-                ))
-            })
-            .collect();
-        files.sort_by_key(|b| std::cmp::Reverse(b.0));
-        changes = files.into_iter().take(5).map(|(_, name)| name).collect();
+    if let Ok(output) = Command::new("git")
+        .args(["status", "--short", "--untracked-files=normal"])
+        .current_dir(&path)
+        .output()
+    {
+        if output.status.success() {
+            changes = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .take(8)
+                .collect();
+        }
+    }
+    if changes.is_empty() {
+        if let Ok(entries) = fs::read_dir(&path) {
+            let mut files: Vec<(std::time::SystemTime, String)> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let meta = entry.metadata().ok()?;
+                    if !meta.is_file() {
+                        return None;
+                    }
+                    Some((
+                        meta.modified().ok()?,
+                        entry.file_name().to_string_lossy().to_string(),
+                    ))
+                })
+                .collect();
+            files.sort_by_key(|b| std::cmp::Reverse(b.0));
+            changes = files.into_iter().take(5).map(|(_, name)| name).collect();
+        }
     }
     Ok(GitContext {
         head,
@@ -1395,6 +1411,120 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         commit_count,
         latest_commit,
         changes,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitPrDraft {
+    branch: String,
+    commit_message: String,
+    pr_title: String,
+    pr_body: String,
+    changes: Vec<String>,
+}
+
+fn commit_type_for(changes: &[String], branch: &str) -> &'static str {
+    let has_docs = changes
+        .iter()
+        .any(|c| c.to_lowercase().contains("docs/") || c.to_lowercase().ends_with(".md"));
+    let has_test = changes.iter().any(|c| {
+        let lower = c.to_lowercase();
+        lower.contains("test") || lower.contains("verify") || lower.contains("spec")
+    });
+    if has_docs {
+        return "docs";
+    }
+    if has_test {
+        return "test";
+    }
+    if branch.starts_with("fix/") || changes.iter().any(|c| c.to_lowercase().contains("fix")) {
+        return "fix";
+    }
+    if branch.starts_with("feature/") || branch.starts_with("feat/") {
+        return "feat";
+    }
+    "chore"
+}
+
+fn scope_for(branch: &str) -> String {
+    let lower = branch.to_lowercase();
+    for prefix in ["feature/", "feat/", "fix/"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            return rest.replace(['/', '_'], "-");
+        }
+    }
+    branch.replace(['/', '_'], "-")
+}
+
+fn summary_for(changes: &[String]) -> String {
+    let first = changes.first().map(|s| s.as_str()).unwrap_or("changes");
+    let stem = Path::new(first)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| first.to_string());
+    let tokens: Vec<String> = stem
+        .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
+        .filter(|t| {
+            let lower = t.to_lowercase();
+            !lower.is_empty()
+                && !matches!(
+                    lower.as_str(),
+                    "sprint" | "and" | "with" | "for" | "the" | "a" | "an"
+                )
+                && !t.chars().all(|c| c.is_ascii_digit())
+        })
+        .map(|t| t.to_string())
+        .collect();
+    let joined = if tokens.is_empty() {
+        "workbench changes".to_string()
+    } else {
+        tokens[..tokens.len().min(4)].join(" ")
+    };
+    let mut chars = joined.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Workbench changes".to_string(),
+    }
+}
+
+fn build_pr_body(project_name: &str, branch: &str, changes: &[String]) -> String {
+    let mut body = String::from("## Summary\n\n");
+    body.push_str(&format!("{project_name}\n\n"));
+    body.push_str(&format!("Branch: `{branch}`\n\n"));
+    body.push_str("## Changes\n\n");
+    if changes.is_empty() {
+        body.push_str("- No changed files detected.\n");
+    } else {
+        for change in changes.iter().take(12) {
+            body.push_str(&format!("- {change}\n"));
+        }
+    }
+    body.push_str(
+        "\n## DoD\n\n\
+         - [ ] Code compiles and tests pass.\n\
+         - [ ] UI follows design tokens and stays stable.\n\
+         - [ ] Database changes include migrations if needed.\n\
+         - [ ] PR description matches the actual diff.\n",
+    );
+    body
+}
+
+#[tauri::command]
+fn generate_commit_pr_draft(path: String, project_name: String) -> Result<CommitPrDraft, String> {
+    let ctx = get_project_git_context(path)?;
+    let commit_type = commit_type_for(&ctx.changes, &ctx.branch);
+    let scope = scope_for(&ctx.branch);
+    let summary = summary_for(&ctx.changes);
+    let commit_message = format!("{commit_type}({scope}): {}", summary.to_lowercase());
+    let pr_title = format!("{commit_type}({scope}): {summary}");
+    let pr_body = build_pr_body(&project_name, &ctx.branch, &ctx.changes);
+    Ok(CommitPrDraft {
+        branch: ctx.branch,
+        commit_message,
+        pr_title,
+        pr_body,
+        changes: ctx.changes,
     })
 }
 
@@ -1520,6 +1650,7 @@ pub fn run() {
             index_vault,
             get_knowledge_index_status,
             get_project_git_context,
+            generate_commit_pr_draft,
             send_ai_message,
             stream_ai_message,
             cancel_ai_stream,
@@ -1584,6 +1715,34 @@ mod tests {
         assert!(ctx.latest_commit.starts_with("bbbb0002"));
         assert!(ctx.latest_commit.contains("second"));
         assert!(ctx.changes.is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn commit_pr_draft_follows_conventional_format() {
+        let dir = std::env::temp_dir().join(format!("aiwb-pr-draft-test-{}", uuid::Uuid::new_v4()));
+        let git_dir = dir.join(".git");
+        std::fs::create_dir_all(git_dir.join("logs")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/sprint-25\n").unwrap();
+        std::fs::write(
+            git_dir.join("logs").join("HEAD"),
+            "aaaa0001 0000000000000000000000000000000000000000 Alice <a@x> 1720000000 +0800\tcommit: first\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "draft notes").unwrap();
+
+        let draft = generate_commit_pr_draft(
+            dir.to_string_lossy().to_string(),
+            "AI Workbench".to_string(),
+        )
+        .unwrap();
+        assert_eq!(draft.commit_message, "docs(sprint-25): notes");
+        assert_eq!(draft.pr_title, "docs(sprint-25): Notes");
+        assert!(draft.pr_body.contains("AI Workbench"));
+        assert!(draft.pr_body.contains("DoD"));
+        assert!(draft.pr_body.contains("- notes.md"));
+        assert_eq!(draft.branch, "feature/sprint-25");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

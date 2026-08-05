@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 25
+
+### What went well?
+
+- Commit/PR 草稿闭环：Projects 卡片一键生成 Conventional Commit（`type(scope): summary`）、PR Title 与含 DoD 的 PR Body；Rust `generate_commit_pr_draft` 与浏览器 fallback 共用同一套推断规则。
+- Git 状态升级：`get_project_git_context` 优先读 `git status --short`，无 git 环境回退最近修改文件，项目图谱与草稿都受益。
+- 验证覆盖：`cargo test --lib` 20/20，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增草稿面板、Conventional Commit、Changes 与 DoD 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- Rust `summary_for` 先收集 `&str` 再声明 `Vec<String>`，补 `.map(|t| t.to_string())` 后通过。
+- `verify` 正则写在模板字符串里，`\\(` 与 `\\n` 需要按外层转义处理，首轮出现语法错误；改为双反斜杠后通过。
+- 草稿断言最初把整块面板文本拿去匹配 commit 前缀，改为按行匹配后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调与 Team 结果汇总、自动文件监听同步、自动执行 commit/PR。
+- 后续改动 Git 上下文或 Projects 时，保留草稿与图谱断言。
+
 ## Sprint 24
 
 ### What went well?
