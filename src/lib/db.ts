@@ -3201,6 +3201,22 @@ export async function applyCommit(path: string, message: string): Promise<GitCom
   };
 }
 
+export async function commitGitFiles(
+  path: string,
+  files: string[],
+  message: string,
+): Promise<GitCommitResult> {
+  if (isTauri()) {
+    return invoke<GitCommitResult>("commit_git_files", { path, files, message });
+  }
+  return {
+    committed: true,
+    hash: `local-${makeId().slice(0, 8)}`,
+    branch: "develop",
+    message,
+  };
+}
+
 export async function createRemotePr(
   path: string,
   title: string,

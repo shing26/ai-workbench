@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 82
+
+### What went well?
+
+- Rust 新增 `commit_git_files(path, files, message)`：空 message / 空 files 明确报错，`git add -- <files>` 只暂存选中文件后提交，与 `apply_commit` 共用 `finalize_commit`。
+- Projects dirty 预览支持逐文件勾选与 Commit selected：自动生成或复用 draft message，提交后清空勾选、收起批量预览并刷新 Git activity；`cargo test --lib` 86/86，fmt、clippy、build 全绿。
+- `verify:ui` / `verify:preview` 的 `gitCommitSelected` 均为 true，断言结果可见且勾选清空。
+
+### What went wrong?
+
+- 提交入口放在批量预览面板内，面板 filesText 会包含 “Commit selected (n)” 文字；路径断言仍按实际文件名判定，未影响验证。
+- 浏览器 fallback 只模拟提交结果，不真正改变 dirty 状态；Tauri 分支由 Rust 单测在真实仓库验证选中语义。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Webhook 真实投递。
+- 暂存 / 未暂存分组与提交前 lint 门禁继续留在 Backlog。
+
 ## Sprint 81
 
 ### What went well?

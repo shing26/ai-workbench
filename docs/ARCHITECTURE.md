@@ -380,6 +380,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - dirty 预览顶部新增 Preview all 按钮（`data-git-batch-preview`），展开后以 `<pre>` 展示 `data-git-batch-preview-content`，再次点击收起；加载中重复点击由 `batchLoading` 守卫拦截。
 - `verify:ui` / `verify:preview` 新增 `gitBatchPreview` lane：断言至少 2 块 `diff --git`、两个 dirty 文件均可见，收起后内容消失。
 
+## Sprint 82：一键提交选中文件
+
+- Rust 新增 `commit_git_files(path, files, message)`：空 message / 空 files 报错，`git add -- <files>` 只暂存选中文件后 `git commit -m`，返回 `GitCommitResult`；已注册 Tauri 命令，`apply_commit` 与它共用 `finalize_commit`。
+- ProjectsView 新增 `selectedFiles` 状态与 `toggleSelectFile`，dirty 文件前有 checkbox（`data-git-select-file`）；Commit selected 按钮（`data-git-commit-selected`）自动生成或复用 draft message，提交后清空勾选并刷新 Git activity。
+- `verify:ui` / `verify:preview` 新增 `gitCommitSelected` lane；Rust 单测覆盖只提交选中文件与空选择报错。
+
 ## Sprint 78：Git dirty 逐文件 diff 预览
 
 - Rust 新增 `GitFileDiff { path, status, diff }` 与 `get_git_file_diff(path, file)`：未跟踪文件用 `git status --porcelain` 判定后读磁盘转成 `+` 新增行；已跟踪文件优先 `git diff --unified=3`，为空再走 `git diff --cached` 覆盖暂存改动。

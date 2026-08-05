@@ -41,6 +41,7 @@ export default function ProjectsView() {
     content: string;
   } | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, string[]>>({});
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -90,6 +91,44 @@ export default function ProjectsView() {
     }
     setBatchDiff({ projectId, content: parts.join("\n\n") });
     setBatchLoading(false);
+  };
+
+  const toggleSelectFile = (projectId: string, file: string) => {
+    setSelectedFiles((prev) => {
+      const current = prev[projectId] ?? [];
+      const next = current.includes(file)
+        ? current.filter((f) => f !== file)
+        : [...current, file];
+      return { ...prev, [projectId]: next };
+    });
+  };
+
+  const commitSelected = async (item: db.GitActivityItem) => {
+    const files = selectedFiles[item.projectId] ?? [];
+    if (files.length === 0) return;
+    try {
+      let draft = drafts[item.projectId];
+      if (!draft) {
+        draft = await db.generateCommitPrDraft(item.path, item.projectName);
+        setDrafts((prev) => ({ ...prev, [item.projectId]: draft }));
+      }
+      const result = await db.commitGitFiles(item.path, files, draft.commitMessage);
+      setCommitResults((prev) => ({ ...prev, [item.projectId]: result }));
+      setCommitErrors((prev) => {
+        const next = { ...prev };
+        delete next[item.projectId];
+        return next;
+      });
+      setSelectedFiles((prev) => ({ ...prev, [item.projectId]: [] }));
+      setBatchDiff((prev) => (prev?.projectId === item.projectId ? null : prev));
+      const board = await db.getGitActivity({});
+      setGitActivity(board);
+    } catch (error) {
+      setCommitErrors((prev) => ({
+        ...prev,
+        [item.projectId]: error instanceof Error ? error.message : String(error),
+      }));
+    }
   };
 
   useEffect(() => {
@@ -425,10 +464,45 @@ export default function ProjectsView() {
                           {batchDiff.content}
                         </pre>
                       )}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          data-git-commit-selected={item.projectId}
+                          onClick={() => void commitSelected(item)}
+                          disabled={(selectedFiles[item.projectId] ?? []).length === 0}
+                          className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Commit selected ({selectedFiles[item.projectId]?.length ?? 0})
+                        </button>
+                        {(commitResults[item.projectId] || commitErrors[item.projectId]) && (
+                          <span
+                            data-git-commit-selected-result={item.projectId}
+                            className={`min-w-0 truncate rounded px-1.5 py-0.5 text-[9px] ${
+                              commitErrors[item.projectId]
+                                ? "bg-rose-500/10 text-rose-300"
+                                : "bg-emerald-500/10 text-emerald-300"
+                            }`}
+                          >
+                            {commitErrors[item.projectId]
+                              ? commitErrors[item.projectId]
+                              : commitResults[item.projectId]?.committed
+                                ? `Committed ${commitResults[item.projectId]?.hash} on ${commitResults[item.projectId]?.branch}`
+                                : "Nothing to commit"}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {item.changedPaths.map((file) => (
                       <div key={file} className="flex min-w-0 flex-col gap-1">
                         <div className="flex min-w-0 items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            data-git-select-file={file}
+                            checked={(selectedFiles[item.projectId] ?? []).includes(file)}
+                            onChange={() => toggleSelectFile(item.projectId, file)}
+                            aria-label={`Select ${file}`}
+                            className="h-3 w-3 shrink-0 accent-emerald-500"
+                          />
                           <span className="min-w-0 flex-1 truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
                             {file}
                           </span>

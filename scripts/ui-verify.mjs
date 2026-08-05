@@ -1050,6 +1050,56 @@ try {
   if (!results.gitBatchPreview.ok) {
     throw new Error(`Git batch preview assertion failed: ${JSON.stringify(results.gitBatchPreview)}`);
   }
+  results.gitCommitSelected = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const checkbox = dirty.querySelector(
+        '[data-git-select-file="src/views/ProjectsView.tsx"]',
+      );
+      if (!checkbox) return { ok: false, reason: "no select checkbox" };
+      checkbox.click();
+      await sleep(80);
+      const commitBtn = dirty.querySelector("[data-git-commit-selected]");
+      if (!commitBtn) return { ok: false, reason: "no commit selected button" };
+      commitBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const result =
+          dirty.querySelector('[data-git-commit-selected-result="' + projectId + '"]')
+            ?.textContent ?? "";
+        if (result.includes("Committed")) {
+          const stillChecked = dirty.querySelector(
+            '[data-git-select-file="src/views/ProjectsView.tsx"]',
+          )?.checked;
+          return {
+            ok: stillChecked === false,
+            projectId,
+            result: result.slice(0, 60),
+            selectionCleared: stillChecked === false,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "commit result missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitCommitSelected.ok) {
+    throw new Error(`Git commit selected assertion failed: ${JSON.stringify(results.gitCommitSelected)}`);
+  }
   results.gitCommitTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
