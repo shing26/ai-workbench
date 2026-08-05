@@ -473,7 +473,7 @@ export default function AIStudioView() {
           {autoRoute && routedProvider ? (
             <ModelBadge label={`auto → ${routedProvider.name}`} tone="green" status={routedProvider.fallbackFrom ? "fallback" : "active"} />
           ) : moa ? (
-            <div className="moa-stack">
+            <div className="moa-stack provider-stack">
               {moaProviders.map((p) => (
                 <ModelBadge key={p.id} label={p.name} tone="blue" status="active" />
               ))}
@@ -653,7 +653,10 @@ export default function AIStudioView() {
             )}
           </div>
         </aside>
-        <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl">
+        <div
+          data-streaming={busy ? "true" : "false"}
+          className="conversation-stage flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl"
+        >
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {messages.map((m, i) => (
             <div key={i} className={`group relative ${m.role === "user" ? "self-end" : "self-start"}`}>
@@ -899,7 +902,7 @@ export default function AIStudioView() {
             ))}
           </div>
         )}
-        <div className="flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
+        <div className="composer flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

@@ -2,6 +2,7 @@ import { CalendarDays, Check, Flame, Plus, Target } from "lucide-react";
 import { useState } from "react";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
+import { resetTilt, tiltCard } from "../lib/tilt";
 
 const HABIT_COLORS = ["emerald", "blue", "amber", "rose"] as const;
 
@@ -254,17 +255,8 @@ export default function ActionsView() {
           icon={CalendarDays}
           colSpan={7}
           className="tilt-card"
-          onPointerMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = (e.clientX - rect.left) / rect.width - 0.5;
-            const y = (e.clientY - rect.top) / rect.height - 0.5;
-            e.currentTarget.style.setProperty("--rx", `${(-y * 3).toFixed(2)}deg`);
-            e.currentTarget.style.setProperty("--ry", `${(x * 4).toFixed(2)}deg`);
-          }}
-          onPointerLeave={(e) => {
-            e.currentTarget.style.setProperty("--rx", "0deg");
-            e.currentTarget.style.setProperty("--ry", "0deg");
-          }}
+          onPointerMove={tiltCard}
+          onPointerLeave={resetTilt}
         >
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <input

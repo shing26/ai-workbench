@@ -213,6 +213,100 @@ try {
   })()`);
 
   await clickDock("AI Studio");
+  results.uiDynamics = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const click = (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return false;
+      el.click();
+      return true;
+    };
+    const themeBtn = document.querySelector('button[aria-label="Theme and accent"]');
+    if (!themeBtn) return { ok: false, reason: "theme button missing" };
+    themeBtn.click();
+    await sleep(120);
+    if (!click('[data-theme-option="light"]')) return { ok: false, reason: "light option missing" };
+    await sleep(120);
+    const themeLight = document.documentElement.dataset.theme === "light";
+    const storedLight = localStorage.getItem("ai-workbench:theme") === "light";
+    if (!click('[data-accent-option="ocean"]')) return { ok: false, reason: "ocean swatch missing" };
+    await sleep(120);
+    const accentOcean = document.documentElement.dataset.accent === "ocean";
+    const storedAccent = localStorage.getItem("ai-workbench:accent") === "ocean";
+    const pressed = document.querySelector('[data-accent-option="ocean"]')?.getAttribute("aria-pressed") === "true";
+    const accentVar = getComputedStyle(document.documentElement).getPropertyValue("--color-accent").trim();
+    if (!click('[data-theme-option="system"]')) return { ok: false, reason: "system option missing" };
+    await sleep(100);
+    const systemPending = document.documentElement.dataset.theme === "system";
+    const stage = document.querySelector(".conversation-stage");
+    const composer = document.querySelector(".composer");
+    return {
+      ok: themeLight && storedLight && accentOcean && storedAccent && pressed && systemPending,
+      themeLight,
+      storedLight,
+      accentOcean,
+      storedAccent,
+      pressed,
+      accentVar,
+      systemPending,
+      stagePresent: !!stage,
+      composerPresent: !!composer,
+      composerTransition: composer ? getComputedStyle(composer).transitionDuration : "",
+      stageStreamingOff: stage ? stage.dataset.streaming === "false" : false,
+    };
+  })()`);
+  if (!results.uiDynamics.ok || !results.uiDynamics.stagePresent || !results.uiDynamics.composerPresent) {
+    throw new Error(`UI theme/stage assertion failed: ${JSON.stringify(results.uiDynamics)}`);
+  }
+
+  await send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-color-scheme", value: "light" }],
+  });
+  await delay(200);
+  const systemResolved = await evaluate(`document.documentElement.dataset.themeResolved === "light"`);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+  const restored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector('[data-theme-option="dark"]')?.click();
+    await sleep(120);
+    document.querySelector('[data-accent-option="emerald"]')?.click();
+    await sleep(120);
+    document.querySelector('button[aria-label="Theme and accent"]')?.click();
+    await sleep(100);
+    return document.documentElement.dataset.theme === "dark" && document.documentElement.dataset.accent === "emerald";
+  })()`);
+  if (!systemResolved || !restored) {
+    throw new Error(`UI system theme assertion failed: systemResolved=${systemResolved} restored=${restored}`);
+  }
+
+  await clickDock("Actions");
+  results.uiDynamics.material = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const card = document.querySelector(".material-card[data-material]");
+    if (!card) return { ok: false, reason: "no material card" };
+    const presets = ["cyan", "original", "rain", "chrome"];
+    const valid = presets.includes(card.dataset.material);
+    const before = [card.offsetWidth, card.offsetHeight];
+    card.classList.add("hovering");
+    await sleep(180);
+    const pseudo = getComputedStyle(card, "::before").animationDuration;
+    const after = [card.offsetWidth, card.offsetHeight];
+    card.classList.remove("hovering");
+    const fixed = before[0] === after[0] && before[1] === after[1];
+    const overflow = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    const transition = getComputedStyle(card).transitionDuration;
+    return { ok: valid && fixed && overflow <= 1, valid, fixed, overflow, transition, pseudo };
+  })()`);
+  if (
+    !results.uiDynamics.material.ok ||
+    durationSeconds(results.uiDynamics.material.transition) > 0.16 ||
+    durationSeconds(results.uiDynamics.material.pseudo) > 0.16 ||
+    durationSeconds(results.uiDynamics.composerTransition) > 0.16
+  ) {
+    throw new Error(`UI material assertion failed: ${JSON.stringify(results.uiDynamics.material)}`);
+  }
+
+  await clickDock("AI Studio");
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };
@@ -360,23 +454,33 @@ try {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
   await delay(150);
-  results.motion.reducedMotion = await evaluate(`(() => ({
-    viewAnimationDuration: getComputedStyle(document.querySelector('.view-enter')).animationDuration,
-    dockTransitionDuration: getComputedStyle(document.querySelector('nav button')).transitionDuration,
-  }))()`);
+  results.motion.reducedMotion = await evaluate(`(() => {
+    const material = document.querySelector('.material-card[data-material]');
+    const tilt = document.querySelector('.tilt-card');
+    return {
+      viewAnimationDuration: getComputedStyle(document.querySelector('.view-enter')).animationDuration,
+      dockTransitionDuration: getComputedStyle(document.querySelector('nav button')).transitionDuration,
+      materialAnimationDuration: material ? getComputedStyle(material, '::before').animationDuration : "",
+      tiltTransform: tilt ? getComputedStyle(tilt).transform : "",
+    };
+  })()`);
   await send("Emulation.setEmulatedMedia", { features: [] });
 
   const maxNav = durationSeconds(results.motion.navTransitionDuration);
   const maxView = durationSeconds(results.motion.viewAnimationDuration);
   const reducedView = durationSeconds(results.motion.reducedMotion.viewAnimationDuration);
   const reducedDock = durationSeconds(results.motion.reducedMotion.dockTransitionDuration);
+  const reducedMaterial = durationSeconds(results.motion.reducedMotion.materialAnimationDuration);
+  const reducedTilt = results.motion.reducedMotion.tiltTransform;
   results.motion.pass =
     maxNav <= 0.16 &&
     maxView <= 0.16 &&
     results.motion.bodyOverflowX <= 1 &&
     layoutStable &&
     reducedView <= 0.02 &&
-    reducedDock <= 0.02;
+    reducedDock <= 0.02 &&
+    reducedMaterial <= 0.02 &&
+    reducedTilt === "none";
   if (!results.motion.pass) throw new Error("UI motion DoD assertion failed");
 
   await clickDock("Actions");
