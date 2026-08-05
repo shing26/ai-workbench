@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 34
+
+### What went well?
+
+- 冲突解决从“检测 + abort”升级为可执行策略：`ours` / `theirs` 直接写入 Git 索引中的目标 stage，`union` 用 `git merge-file -p --union` 合并 base / ours / theirs 三方内容，解决后自动续跑 rebase。
+- 端到端单测覆盖真实仓库：`theirs` 保留目标分支版本并完成 rebase，`union` 同时保留双方新增行且无冲突标记，未知策略明确报错。
+- Projects Git 图谱新增 Take feature / Take main / Union merge 三键，浏览器 fallback 对 Hermes 项目稳定模拟冲突；`verify:ui` / `verify:preview` 新增冲突出现与 union 解决断言，两条 lane 全绿。
+- 验证覆盖：`cargo test --lib` 35/35，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- `git merge-file` 不支持 `--output` 长选项（Git 用法里只有 `-p`/`--stdout`），改为 `-p` 从 stdout 取合并结果后通过。
+- rebase 冲突的 stage 编号与产品直觉相反：stage 2 是目标分支、stage 3 是被 rebase 分支；直接用 stage 内容写回，规避 `git checkout --ours/--theirs` 在 rebase 下的反直觉语义。
+- 单侧策略解决后若结果与目标分支相同，Git 会 drop 该空提交，测试不再要求 `feature edit` 留在 log，改为断言 rebase 已结束。
+
+### Action Items
+
+- 下一 Sprint 候选：Vault 大目录并行扫描与 ignore 列表、同步快照定时自动同步与冲突 UI。
+- 后续改动 Git 工作流时，保留干净 rebase、冲突检测、abort、ours/theirs/union 解决五条单测。
+
 ## Sprint 33
 
 ### What went well?

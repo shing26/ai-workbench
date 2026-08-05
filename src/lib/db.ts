@@ -220,6 +220,16 @@ export type GitRebaseResult = {
   head: string;
 };
 
+export type ConflictResolutionResult = {
+  resolved: boolean;
+  strategy: string;
+  files: string[];
+  rebased: boolean;
+  branch: string;
+  head: string;
+  message: string;
+};
+
 export type StreamSmokeResult = {
   ok: boolean;
   chunks: number;
@@ -1464,19 +1474,38 @@ export async function createRemotePr(
 
 export async function rebaseBranch(path: string, base: string): Promise<GitRebaseResult> {
   if (isTauri()) return invoke<GitRebaseResult>("rebase_branch", { path, baseBranch: base });
+  const conflictDemo = path.includes("Hermes");
   return {
-    rebased: true,
-    conflict: false,
-    files: [],
+    rebased: !conflictDemo,
+    conflict: conflictDemo,
+    files: conflictDemo ? ["docs/conflict.md", "src/views/ProjectsView.tsx"] : [],
     base,
-    branch: "feature/sprint-31",
-    head: `local-rebase-${makeId().slice(0, 8)}`,
+    branch: conflictDemo ? "feature/hermes" : "feature/sprint-31",
+    head: conflictDemo ? "local-conflict" : `local-rebase-${makeId().slice(0, 8)}`,
   };
 }
 
 export async function abortRebase(path: string): Promise<string> {
   if (isTauri()) return invoke<string>("abort_rebase", { path });
   return "Rebase aborted on feature/sprint-31";
+}
+
+export async function resolveRebaseConflicts(
+  path: string,
+  strategy: string,
+): Promise<ConflictResolutionResult> {
+  if (isTauri()) {
+    return invoke<ConflictResolutionResult>("resolve_rebase_conflicts", { path, strategy });
+  }
+  return {
+    resolved: true,
+    strategy,
+    files: ["docs/conflict.md", "src/views/ProjectsView.tsx"],
+    rebased: true,
+    branch: "feature/hermes",
+    head: `local-resolve-${makeId().slice(0, 8)}`,
+    message: `Resolved 2 conflicted file(s) with ${strategy} and continued rebase`,
+  };
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {

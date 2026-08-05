@@ -1,4 +1,4 @@
-import { Check, Copy, ExternalLink, FolderKanban, GitBranch, Plus, RefreshCw, Undo2 } from "lucide-react";
+import { Check, Copy, ExternalLink, FolderKanban, GitBranch, GitMerge, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -23,6 +23,7 @@ export default function ProjectsView() {
   const [prErrors, setPrErrors] = useState<Record<string, string>>({});
   const [rebaseResults, setRebaseResults] = useState<Record<string, db.GitRebaseResult>>({});
   const [rebaseErrors, setRebaseErrors] = useState<Record<string, string>>({});
+  const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>({});
 
   useEffect(() => {
     let disposed = false;
@@ -141,6 +142,30 @@ export default function ProjectsView() {
     }
   };
 
+  const resolveConflicts = async (project: db.Project, strategy: string) => {
+    try {
+      const result = await db.resolveRebaseConflicts(project.path ?? "", strategy);
+      setResolveResults((prev) => ({ ...prev, [project.id]: result }));
+      setRebaseResults((prev) => {
+        const next = { ...prev };
+        delete next[project.id];
+        return next;
+      });
+      setRebaseErrors((prev) => {
+        const next = { ...prev };
+        delete next[project.id];
+        return next;
+      });
+      const ctx = await db.getProjectGitContext(project.path ?? "");
+      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
+    } catch (error) {
+      setRebaseErrors((prev) => ({
+        ...prev,
+        [project.id]: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
+
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
       <BentoCard title="New project" subtitle="从想法到代码落地" icon={FolderKanban} colSpan={12}>
@@ -233,15 +258,56 @@ export default function ProjectsView() {
                   </span>
                 )}
                 {rebaseResults[p.id]?.conflict && (
-                  <button
-                    type="button"
-                    aria-label="Abort rebase"
-                    data-abort-rebase
-                    onClick={() => void abortProjectRebase(p)}
-                    className="flex h-6 items-center gap-1 rounded-md bg-rose-500/15 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/25"
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Resolve conflicts with ours"
+                      data-resolve-conflicts="ours"
+                      onClick={() => void resolveConflicts(p, "ours")}
+                      className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
+                    >
+                      <GitBranch size={9} /> Take feature
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Resolve conflicts with theirs"
+                      data-resolve-conflicts="theirs"
+                      onClick={() => void resolveConflicts(p, "theirs")}
+                      className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
+                    >
+                      <RefreshCw size={9} /> Take main
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Resolve conflicts with union"
+                      data-resolve-conflicts="union"
+                      onClick={() => void resolveConflicts(p, "union")}
+                      className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                    >
+                      <GitMerge size={9} /> Union merge
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Abort rebase"
+                      data-abort-rebase
+                      onClick={() => void abortProjectRebase(p)}
+                      className="flex h-6 items-center gap-1 rounded-md bg-rose-500/15 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/25"
+                    >
+                      <Undo2 size={9} /> Abort rebase
+                    </button>
+                  </>
+                )}
+                {resolveResults[p.id] && (
+                  <span
+                    data-resolve-result
+                    className={`rounded-md border px-1.5 py-0.5 text-[9px] ${
+                      resolveResults[p.id].rebased
+                        ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                        : "border-amber-500/25 bg-amber-500/10 text-amber-300"
+                    }`}
                   >
-                    <Undo2 size={9} /> Abort rebase
-                  </button>
+                    {resolveResults[p.id].message}
+                  </span>
                 )}
                 {rebaseErrors[p.id] && (
                   <span data-rebase-error className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-0.5 text-[9px] text-rose-300/90">
