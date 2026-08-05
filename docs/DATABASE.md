@@ -375,6 +375,16 @@ ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
 
 无表结构变更。`list_sync_audit` 新增 `since` / `device_id` 参数，与既有 `event` 组合过滤；`export_sync_audit` 透传相同条件，确保导出与列表一致。
 
+## Sprint 52：watch 目标级事件统计
+
+```sql
+ALTER TABLE vault_watch_targets ADD COLUMN last_event_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 0;
+```
+
+- `migrate_vault_watch_event_stats` 幂等执行两列迁移；`touch_vault_watch_event` UPSERT 累加 `event_count` 并更新 `last_event_at`。
+- watch 事件写回成功后埋点；`vault_target_stats` 通过 `LEFT JOIN vault_watch_targets` 返回 `last_event_at` / `event_count`。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

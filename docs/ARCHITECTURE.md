@@ -111,6 +111,8 @@ Sprint 50 新增命令：`resolve_sync_conflict_union` / `resolve_sync_conflicts
 
 Sprint 51 扩展 `list_sync_audit` / `export_sync_audit`：新增 `since` / `device_id` 组合筛选；System Sync audit 提供时间范围与设备下拉框，列表与导出共用过滤条件。
 
+Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 事件统计；watch 写回成功后埋点，Knowledge 每个目标显示累计事件数。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

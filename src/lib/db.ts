@@ -294,12 +294,16 @@ export type VaultWatchTarget = {
   ignorePatterns: string[];
   enabled: boolean;
   updatedAt: number;
+  lastEventAt: number;
+  eventCount: number;
 };
 
 export type VaultTargetStats = {
   path: string;
   files: number;
   lastIndexedAt: number;
+  lastEventAt: number;
+  eventCount: number;
 };
 
 export type VaultWatchConfig = {
@@ -1575,7 +1579,13 @@ type VaultWatchRecord = {
 function readVaultWatchTargets(): VaultWatchTarget[] {
   try {
     const raw = localStorage.getItem(VAULT_WATCH_TARGETS_LS_KEY);
-    if (raw) return JSON.parse(raw) as VaultWatchTarget[];
+    if (raw) {
+      return (JSON.parse(raw) as VaultWatchTarget[]).map((target) => ({
+        ...target,
+        lastEventAt: target.lastEventAt ?? 0,
+        eventCount: target.eventCount ?? 0,
+      }));
+    }
   } catch {
     // fall through to legacy migration
   }
@@ -1587,6 +1597,8 @@ function readVaultWatchTargets(): VaultWatchTarget[] {
         ignorePatterns: legacy.ignorePatterns ?? [],
         enabled: legacy.watching,
         updatedAt: legacy.updatedAt,
+        lastEventAt: 0,
+        eventCount: 0,
       },
     ];
   }
@@ -1664,6 +1676,8 @@ export async function upsertVaultWatchTarget(
   const next: VaultWatchTarget = {
     ...target,
     updatedAt: target.updatedAt || Date.now(),
+    lastEventAt: target.lastEventAt ?? 0,
+    eventCount: target.eventCount ?? 0,
   };
   if (index >= 0) {
     targets[index] = next;
@@ -1694,6 +1708,8 @@ export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
       (file) => file.path === target.path || file.path.startsWith(`${target.path}\\`),
     ).length,
     lastIndexedAt: 0,
+    lastEventAt: target.lastEventAt ?? 0,
+    eventCount: target.eventCount ?? 0,
   }));
 }
 
@@ -1766,7 +1782,15 @@ export async function startVaultWatch(
     ignorePatterns,
     enabled: true,
     updatedAt: Date.now(),
+    lastEventAt: 0,
+    eventCount: 0,
   });
+  const targets = readVaultWatchTargets().map((target) =>
+    target.path === vaultPath
+      ? { ...target, lastEventAt: Date.now(), eventCount: target.eventCount + 1 }
+      : target,
+  );
+  writeVaultWatchTargets(targets);
   return getVaultWatchStatus();
 }
 
