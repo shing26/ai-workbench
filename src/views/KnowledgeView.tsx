@@ -26,6 +26,7 @@ export default function KnowledgeView() {
   const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
   const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
   const [lastIgnored, setLastIgnored] = useState(0);
+  const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -127,9 +128,10 @@ export default function KnowledgeView() {
   const runIndex = async () => {
     if (!vaultPath.trim()) return;
     const concurrency = useAutoConcurrency
-      ? Math.max(1, Math.min(16, recommendedConcurrency))
+      ? 0
       : Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
     const result = await db.indexVault(vaultPath.trim(), parseIgnore(), concurrency);
+    setLastConcurrencyUsed(result.concurrencyUsed);
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
@@ -313,6 +315,12 @@ export default function KnowledgeView() {
             }`}
           >
             Skipped {lastIgnored}
+          </span>
+          <span
+            data-index-result-workers={lastConcurrencyUsed}
+            className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-400"
+          >
+            {lastConcurrencyUsed > 0 ? `${lastConcurrencyUsed} workers` : "auto pending"}
           </span>
         </div>
         {vaultTargets.length > 0 && (

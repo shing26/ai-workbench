@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 49
+
+### What went well?
+
+- Auto 并发从“前端按核数推荐”升级为“后端按文件规模动态规划”：≤32 文件顺序执行、中等规模或大文件密集时封顶 4、大规模普通文件按核数 1~16。
+- `concurrency = 0` 成为 Auto 协议，`IndexResult.concurrency_used` 回传实际值，Knowledge UI 显示真实工作线程数，浏览器 fallback 按同规则模拟。
+- 验证覆盖：`cargo test --lib` 50/50，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言手动 clamp 与 Auto 实际并发，两条 lane 全绿。
+
+### What went wrong?
+
+- UI 验证首版把手动并发断言写死为 2，但测试 vault 只有 1 个文件会被后端 clamp 到 1；改为断言实际值在 1~2 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：三方合并策略、watch 目标级事件隔离、审计时间/设备组合筛选、索引进度与取消队列。
+- 后续索引协议变更时，保留 `concurrency = 0` Auto 语义与 `concurrency_used` 回传。
+
 ## Sprint 48
 
 ### What went well?

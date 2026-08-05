@@ -312,6 +312,7 @@ export type VaultWatchConfig = {
 export type IndexResult = {
   files: number;
   ignored: number;
+  concurrencyUsed: number;
 };
 
 export type RecommendedConcurrency = {
@@ -1635,7 +1636,13 @@ export async function indexVault(
     (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
   );
   localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
-  return { files: filtered.length, ignored: merged.length - filtered.length };
+  const cores = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
+  const concurrencyUsed = Math.min(filtered.length || 1, filtered.length <= 32 ? 1 : Math.min(4, cores));
+  return {
+    files: filtered.length,
+    ignored: merged.length - filtered.length,
+    concurrencyUsed,
+  };
 }
 
 export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {

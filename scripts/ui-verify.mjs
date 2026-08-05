@@ -857,7 +857,13 @@ try {
     const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
     if (!indexBtn) return { ok: false, reason: "no index button" };
     indexBtn.click();
-    await new Promise((r) => setTimeout(r, 300));
+    let workersAttr = "";
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      workersAttr =
+        document.querySelector("[data-index-result-workers]")?.getAttribute("data-index-result-workers") ?? "";
+      if (workersAttr && Number(workersAttr) >= 1) break;
+    }
     const filesVisible = document.body.innerText.includes(" files");
     const search = document.querySelector('input[placeholder="RAG search..."]');
     if (!search) return { ok: false, reason: "no rag search input" };
@@ -875,13 +881,15 @@ try {
       filesVisible,
       fileResultVisible,
       concurrencyVisible: concurrencyInput.getAttribute("data-index-concurrency") === "2",
+      concurrencyUsed: Number(workersAttr) >= 1 && Number(workersAttr) <= 2,
     };
   })()`);
   if (
     !vaultIndex.ok ||
     !vaultIndex.filesVisible ||
     !vaultIndex.fileResultVisible ||
-    !vaultIndex.concurrencyVisible
+    !vaultIndex.concurrencyVisible ||
+    !vaultIndex.concurrencyUsed
   ) {
     throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
   }
@@ -918,6 +926,35 @@ try {
     throw new Error(`Concurrency auto assertion failed: ${JSON.stringify(concurrencyAuto)}`);
   }
   results.concurrencyAuto = concurrencyAuto;
+
+  const autoScaleIndex = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = document.querySelector("[data-index-concurrency-auto]");
+    if (!autoBtn) return { ok: false, reason: "no auto concurrency control" };
+    if (autoBtn.getAttribute("data-index-concurrency-auto") !== "on") {
+      autoBtn.click();
+      await sleep(150);
+    }
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let workers = 0;
+    for (let i = 0; i < 30; i++) {
+      await sleep(100);
+      workers = Number(
+        document.querySelector("[data-index-result-workers]")?.getAttribute("data-index-result-workers") ?? 0,
+      );
+      if (workers > 0) break;
+    }
+    const ok = workers >= 1 && workers <= 16;
+    return { ok, workers, autoOn: autoBtn.getAttribute("data-index-concurrency-auto") === "on" };
+  })()`);
+  if (!autoScaleIndex.ok) {
+    throw new Error(`Auto scale index assertion failed: ${JSON.stringify(autoScaleIndex)}`);
+  }
+  results.autoScaleIndex = autoScaleIndex;
 
   const vaultIgnore = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
