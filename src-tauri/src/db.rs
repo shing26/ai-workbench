@@ -549,6 +549,8 @@ pub struct KnowledgeFileRecord {
     pub tags: String,
     pub vault_path: String,
     pub indexed_at: i64,
+    pub exists: bool,
+    pub stale: bool,
 }
 
 fn now_millis() -> i64 {
@@ -2955,18 +2957,41 @@ pub fn list_knowledge_files(
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![vault_path, limit], |row| {
+            let id: String = row.get(0)?;
+            let path: String = row.get(1)?;
+            let title: String = row.get(2)?;
+            let tags: String = row.get(3)?;
+            let vault_path: String = row.get(4)?;
+            let indexed_at: i64 = row.get(5)?;
+            let exists = std::path::Path::new(&path).exists();
+            let stale = exists && knowledge_file_stale(&path, indexed_at);
             Ok(KnowledgeFileRecord {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                title: row.get(2)?,
-                tags: row.get(3)?,
-                vault_path: row.get(4)?,
-                indexed_at: row.get(5)?,
+                id,
+                path,
+                title,
+                tags,
+                vault_path,
+                indexed_at,
+                exists,
+                stale,
             })
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<KnowledgeFileRecord>, _>>()
         .map_err(|e| e.to_string())
+}
+
+fn knowledge_file_stale(path: &str, indexed_at: i64) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let Ok(modified_ms) = modified.duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    (modified_ms.as_millis() as i64).saturating_sub(indexed_at) > 1_000
 }
 
 pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<RagSearchResult>> {
@@ -4554,6 +4579,39 @@ mod tests {
         let legacy = list_knowledge_files(&conn, Some(""), None).unwrap();
         assert_eq!(legacy.len(), 1);
         assert_eq!(legacy[0].path, "E:/legacy.md");
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn knowledge_files_list_reports_missing_and_stale() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-status-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("note.md");
+        std::fs::write(&file_path, "# note").unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let path_str = file_path.to_string_lossy().to_string();
+        upsert_knowledge_file(&conn, &path_str, "Note", "", "note", "C:/vault").unwrap();
+
+        let fresh = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
+        assert_eq!(fresh.len(), 1);
+        assert!(fresh[0].exists);
+        assert!(!fresh[0].stale);
+
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = 0 WHERE path = ?1",
+            params![path_str],
+        )
+        .unwrap();
+        let stale = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
+        assert!(stale[0].exists);
+        assert!(stale[0].stale);
+
+        std::fs::remove_file(&file_path).unwrap();
+        let missing = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
+        assert!(!missing[0].exists);
+        assert!(!missing[0].stale);
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

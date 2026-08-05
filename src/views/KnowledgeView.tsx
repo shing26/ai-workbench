@@ -276,6 +276,8 @@ export default function KnowledgeView() {
 
   const currentWatching =
     watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
+  const missingDocCount = knowledgeDocs.filter((doc) => !doc.exists).length;
+  const staleDocCount = knowledgeDocs.filter((doc) => doc.exists && doc.stale).length;
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 p-4">
@@ -675,6 +677,18 @@ export default function KnowledgeView() {
             >
               {knowledgeDocs.length} docs
             </span>
+            <span
+              data-knowledge-docs-missing={missingDocCount}
+              className="rounded-md bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-300"
+            >
+              {missingDocCount} missing
+            </span>
+            <span
+              data-knowledge-docs-stale={staleDocCount}
+              className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-300"
+            >
+              {staleDocCount} stale
+            </span>
             <select
               data-knowledge-doc-filter
               value={docVaultFilter}
@@ -712,6 +726,20 @@ export default function KnowledgeView() {
                   <span className="block truncate text-[8px] text-slate-600">
                     {doc.path}
                   </span>
+                </span>
+                <span
+                  data-knowledge-doc-status={
+                    !doc.exists ? "missing" : doc.stale ? "stale" : "ok"
+                  }
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[8px] ${
+                    !doc.exists
+                      ? "bg-rose-500/10 text-rose-300"
+                      : doc.stale
+                        ? "bg-amber-500/10 text-amber-300"
+                        : "bg-emerald-500/10 text-emerald-300"
+                  }`}
+                >
+                  {!doc.exists ? "missing" : doc.stale ? "stale" : "ok"}
                 </span>
                 {doc.vaultPath && (
                   <span className="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[8px] text-sky-300">

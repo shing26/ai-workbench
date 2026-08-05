@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 64
+
+### What went well?
+
+- Document status 从纯索引信息升级为健康检测：`exists` 用 `Path::exists` 判定，`stale` 用 mtime 与 `indexed_at` 的 1 秒容差比较，三态在单测中全部覆盖。
+- UI 新增 ok / stale / missing 徽标与计数，用户能一眼看出哪些文档需要重新索引或清理；fallback 语义与 Web 环境一致。
+- 验证覆盖：`cargo test --lib` 71/71，fmt、clippy、build 全绿；两条 lane 的 `knowledgeDocStatus` 均断言 3 份 ok、missing 0、stale 0。
+
+### What went wrong?
+
+- UI 验证第一次在行 div 上直接读 `data-knowledge-doc-status`，但该属性挂在行内徽标 span 上，一直拿到 null；改为 `doc.querySelector("[data-knowledge-doc-status]")` 后通过。
+- 重载后的验证曾抢在新文档提交前读到旧 DOM，等待条件从“3 行存在”收紧为“3 行且每行都带状态徽标”后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列持久化、git 活动看板、missing / stale 一键清理或重新索引、错误日志来源 / 设备组合筛选。
+- 后续扩展文档健康检测时，保持 missing / stale 判定与 fallback 语义同步。
+
 ## Sprint 63
 
 ### What went well?

@@ -1355,7 +1355,14 @@ try {
     let docs = [];
     for (let i = 0; i < 30; i++) {
       docs = [...document.querySelectorAll("[data-knowledge-doc]")];
-      if (docs.length >= 3) break;
+      if (
+        docs.length >= 3 &&
+        docs.every(
+          (doc) => doc.querySelector("[data-knowledge-doc-status]") !== null,
+        )
+      ) {
+        break;
+      }
       await sleep(100);
     }
     if (docs.length < 3) {
@@ -1377,6 +1384,25 @@ try {
     const hasD = docs.some((doc) =>
       (doc.getAttribute("data-knowledge-doc-path") ?? "").includes("D:/vault"),
     );
+    const statuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    const missingCount = Number(
+      document
+        .querySelector("[data-knowledge-docs-missing]")
+        ?.getAttribute("data-knowledge-docs-missing") ?? 0,
+    );
+    const staleCount = Number(
+      document
+        .querySelector("[data-knowledge-docs-stale]")
+        ?.getAttribute("data-knowledge-docs-stale") ?? 0,
+    );
+    const statusOk =
+      statuses.every((status) => status === "ok") &&
+      missingCount === 0 &&
+      staleCount === 0;
     const select = document.querySelector("[data-knowledge-doc-filter]");
     let filterOk = false;
     let filteredCount = 0;
@@ -1413,9 +1439,14 @@ try {
         vaults.includes("D:/vault") &&
         hasC &&
         hasD &&
+        statusOk &&
         filterOk,
       count,
       vaults,
+      statuses,
+      missingCount,
+      staleCount,
+      statusOk,
       filterOk,
       filteredCount,
       targetsRaw,

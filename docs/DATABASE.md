@@ -457,3 +457,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
+
+## Sprint 64：文档存在性与过期检测
+
+无表结构变更。`exists` / `stale` 为运行时计算字段：`exists` 由 `Path::exists` 判定，`stale` 在文件存在且 mtime 比 `indexed_at` 晚超过 1 秒时为 true；不写入数据库。
