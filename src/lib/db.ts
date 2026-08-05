@@ -4066,6 +4066,12 @@ export type StreamChunk = {
   cancelled: boolean;
 };
 
+export type MoaConsensus = {
+  summary: string;
+  common: string[];
+  viewpoints: string[];
+};
+
 const localCancelledRuns = new Set<string>();
 
 function isOllamaProvider(name: string, baseUrl: string): boolean {
@@ -4086,7 +4092,7 @@ async function streamProviderLive(
     runId: string;
   },
   opts: { final?: boolean; manageCancel?: boolean } = {},
-): Promise<void> {
+): Promise<string> {
   const final = opts.final !== false;
   const manageCancel = opts.manageCancel !== false;
   const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
@@ -4116,12 +4122,14 @@ async function streamProviderLive(
   const decoder = new TextDecoder();
   let buffer = '';
   let finished = false;
+  let collected = '';
   const flush = async (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     if (isOllama) {
       const json = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
       if (json.message?.content) {
+        collected += json.message.content;
         emitLocalStreamChunk({
           id: args.runId,
           delta: json.message.content,
@@ -4142,6 +4150,7 @@ async function streamProviderLive(
     const json = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
     const delta = json.choices?.[0]?.delta?.content ?? '';
     if (delta) {
+      collected += delta;
       emitLocalStreamChunk({
         id: args.runId,
         delta,
@@ -4178,7 +4187,7 @@ async function streamProviderLive(
           cancelled: true,
         });
       }
-      return;
+      return collected;
     }
     throw err;
   }
@@ -4194,7 +4203,7 @@ async function streamProviderLive(
         cancelled: true,
       });
     }
-    return;
+    return collected;
   }
   if (!finished) {
     throw new Error(
@@ -4210,6 +4219,7 @@ async function streamProviderLive(
       cancelled: false,
     });
   }
+  return collected;
 }
 
 export async function sendAiMessageStream(args: {
@@ -4249,6 +4259,7 @@ export async function sendAiMessageStream(args: {
   const providers = candidates.slice(0, args.moa ? 3 : 1);
   const realProviders = providers.filter(canRealStream);
   if (args.moa && realProviders.length > 0) {
+    const outputs = new Map<string, string>();
     await Promise.allSettled(
       realProviders.map(async (provider) => {
         emitLocalStreamChunk({
@@ -4259,11 +4270,12 @@ export async function sendAiMessageStream(args: {
           cancelled: false,
         });
         try {
-          await streamProviderLive(
+          const output = await streamProviderLive(
             provider,
             { ...args, providerIds: [provider.id] },
             { final: false, manageCancel: false },
           );
+          outputs.set(provider.id, output);
         } catch (err) {
           emitLocalStreamChunk({
             id: args.runId,
@@ -4279,6 +4291,18 @@ export async function sendAiMessageStream(args: {
     );
     const wasCancelled = localCancelledRuns.has(args.runId);
     localCancelledRuns.delete(args.runId);
+    if (!wasCancelled) {
+      const consensus = buildMoaConsensusLocal(
+        realProviders.map((provider) => outputs.get(provider.id) ?? ''),
+      );
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: `\n\n## MOA Consensus\n\n${consensus.summary}`,
+        done: false,
+        error: null,
+        cancelled: false,
+      });
+    }
     emitLocalStreamChunk({
       id: args.runId,
       delta: '',
@@ -4928,4 +4952,123 @@ export async function buildTeamSummary(contents: string[]): Promise<string> {
     return (line || 'No output').slice(0, 120);
   });
   return lines.length ? lines.join('\n') : 'No agent output collected.';
+}
+
+const MOA_STOPWORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'and',
+  'or',
+  'of',
+  'to',
+  'in',
+  'on',
+  'for',
+  'with',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'it',
+  'this',
+  'that',
+  'you',
+  'your',
+  'we',
+  'our',
+  'i',
+  'as',
+  'at',
+  'by',
+  'from',
+  'not',
+  'but',
+  'if',
+  'then',
+  'can',
+  'will',
+  'should',
+  'would',
+  'please',
+  'output',
+  'outputs',
+  'streaming',
+  'fallback',
+]);
+
+function moaFirstLine(content: string): string {
+  const line = content
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find(
+      (value) =>
+        value &&
+        !value.startsWith('**') &&
+        !value.startsWith('-') &&
+        !value.startsWith('[') &&
+        !value.startsWith('## '),
+    );
+  return (line || 'No output').slice(0, 140);
+}
+
+function moaKeywords(contents: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const content of contents) {
+    const seen = new Set<string>();
+    for (const raw of content.match(/[\p{L}\p{N}]+/gu) ?? []) {
+      if (raw.length < 2) continue;
+      const lower = raw.toLowerCase();
+      if (MOA_STOPWORDS.has(lower) || /^[0-9]+$/.test(lower)) continue;
+      seen.add(lower);
+    }
+    for (const token of seen) counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, 3)
+    .map(([token]) => token);
+}
+
+function moaViewpoints(contents: string[]): string[] {
+  const lines = contents.map(moaFirstLine);
+  const viewpoints: string[] = [];
+  for (const line of lines) {
+    const shared = lines.every((other) => other === line);
+    if (!shared && !viewpoints.includes(line)) viewpoints.push(line);
+  }
+  if (!viewpoints.length && lines.length) viewpoints.push(lines[0]);
+  return viewpoints.slice(0, 3);
+}
+
+function buildMoaConsensusLocal(contents: string[]): MoaConsensus {
+  const firstLines = contents.map(moaFirstLine);
+  const common = moaKeywords(contents);
+  const viewpoints = moaViewpoints(contents);
+  let summary = '';
+  if (!contents.length || firstLines.every((line) => line === 'No output')) {
+    summary = 'No agent output collected.';
+  } else {
+    summary += '共识点：\n';
+    if (!common.length) {
+      summary += '- 各输出均有有效回答\n';
+    } else {
+      for (const keyword of common) summary += `- ${keyword}\n`;
+    }
+    summary += '\n分歧/独特观点：\n';
+    for (const viewpoint of viewpoints) summary += `- ${viewpoint}\n`;
+    summary += '\n结论：\n';
+    firstLines.forEach((line, index) => {
+      summary += `- Output ${index + 1}: ${line}\n`;
+    });
+  }
+  return { summary, common, viewpoints };
+}
+
+export async function buildMoaConsensus(contents: string[]): Promise<MoaConsensus> {
+  if (isTauri()) return invoke<MoaConsensus>('build_moa_consensus', { contents });
+  return buildMoaConsensusLocal(contents);
 }

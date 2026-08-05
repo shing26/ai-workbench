@@ -791,6 +791,14 @@ export default function AIStudioView() {
       setStreamStatus('error');
       setStreamError('stream unavailable');
     }
+    let moaOutput = runsRef.current.get(runId)?.content ?? '';
+    if (moa && !moaOutput.includes('## MOA Consensus')) {
+      for (let i = 0; i < 30 && runsRef.current.has(runId); i += 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
+        moaOutput = runsRef.current.get(runId)?.content ?? '';
+        if (moaOutput.includes('## MOA Consensus')) break;
+      }
+    }
     const sections: InspectorSection[] = [];
     if (selectedAgent) {
       sections.push(
@@ -801,10 +809,18 @@ export default function AIStudioView() {
       );
     }
     if (moa) {
-      sections.push(
-        { label: 'Providers', value: providerIds.length ? providerIds.join(', ') : 'none' },
-        { label: 'Status', value: 'streaming consensus' },
-      );
+      sections.push({
+        label: 'Providers',
+        value: providerIds.length ? providerIds.join(', ') : 'none',
+      });
+      sections.push({ label: 'Status', value: '3-way consensus' });
+      const consensusStart = moaOutput.indexOf('## MOA Consensus');
+      if (consensusStart >= 0) {
+        sections.push({
+          label: 'Consensus',
+          value: moaOutput.slice(consensusStart).replace(/\s+/g, ' ').slice(0, 140),
+        });
+      }
     } else if (routedName) {
       sections.push({ label: 'Router', value: `auto → ${routedName}` });
       sections.push({ label: 'Fallback from', value: fallbackFrom || 'none' });
@@ -1156,7 +1172,7 @@ export default function AIStudioView() {
             <ModelBadge label={activeProvider?.name ?? 'No provider'} tone="green" />
           )}
           {teamMode && <ModelBadge label="Team" tone="blue" status="parallel" />}
-          {moa && <ModelBadge label="MOA" tone="blue" status="3-way" />}
+          {moa && <ModelBadge label="MOA" tone="blue" status="3-way+summary" />}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-0.5">

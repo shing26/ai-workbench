@@ -6096,6 +6096,8 @@ try {
       let allSeen = false;
       let busySeen = false;
       let userSeen = false;
+      let consensusSeen = false;
+      let summaryText = false;
       let text = "";
       for (let i = 0; i < 60; i++) {
         text = document.body.innerText;
@@ -6111,8 +6113,12 @@ try {
           text.includes("Beta answer") &&
           text.includes("## Gamma AI") &&
           text.includes("Gamma answer");
+        consensusSeen = consensusSeen || text.includes("## MOA Consensus");
+        summaryText = consensusSeen && (text.includes("共识点") || text.includes("结论"));
         if (
           allSeen &&
+          consensusSeen &&
+          summaryText &&
           !document.querySelector(".stream-caret") &&
           !document.querySelector(".thinking-dot")
         ) {
@@ -6128,6 +6134,8 @@ try {
           !!document.querySelector(".thinking-dot"),
         busySeen,
         userSeen,
+        consensusSeen,
+        summaryText,
         sendTag,
         inputValue,
         storedProviders,
@@ -6139,7 +6147,12 @@ try {
       ...moaUi,
       maxActive,
     };
-    if (!moaParallel.ok || moaParallel.maxActive < 3) {
+    if (
+      !moaParallel.ok ||
+      moaParallel.maxActive < 3 ||
+      !moaParallel.consensusSeen ||
+      !moaParallel.summaryText
+    ) {
       throw new Error(`MOA parallel assertion failed: ${JSON.stringify(moaParallel)}`);
     }
     results.moaParallel = moaParallel;

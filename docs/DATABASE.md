@@ -737,3 +737,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 103：会话搜索增强
 
 无表结构变更。`search_sessions` 是运行时查询：复用 `sessions` 与 `chat_messages` 表，在内存中按标题 / 模型 / 消息内容评分并过滤时间范围，不新增表、索引或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。
+
+## Sprint 104：MOA 三路共识摘要
+
+无表结构变更。`MoaConsensus` 是运行时派生数据：由三路流式输出在内存中计算共识关键词、分歧首行与结论，随 `chat_messages` 主消息一起落库，不新增表、索引或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` / `chatMessages`，不新增 localStorage key。
