@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 26
+
+### What went well?
+
+- Team 汇总闭环：部门 Agent 并行结束后自动追加 `Team Summary` 消息并保存会话，Inspector 升级为 `Team Trace + Summary`，新增 Summary 区块。
+- 双路径一致：Rust `build_team_summary` 与前端 `buildTeamSummary` 共用“首条有效行拼接”规则，Rust 单测覆盖过滤逻辑。
+- 验证覆盖：`cargo test --lib` 21/21，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 `.team-summary` 气泡与摘要行数断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 首轮验收断言把 `.team-summary` 的换行统计写在模板字符串里，`\\n` 需要按外层转义处理；改为正则 `/\\n/` 后通过。
+- Team 汇总消息在全部 Agent 结束与 Inspector 更新之间有一小段异步窗口，验收循环同时等待气泡、busy 消失与 Team Trace。
+
+### Action Items
+
+- 下一 Sprint 候选：自动文件监听同步、真实 Provider 端到端流式联调、Prompt 版本管理。
+- 后续改动 Team 编排时，保留汇总气泡与 Team Trace 断言。
+
 ## Sprint 25
 
 ### What went well?

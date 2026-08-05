@@ -462,16 +462,23 @@ try {
     for (let i = 0; i < 60; i++) {
       const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
       inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      const summaryBubble = document.querySelector(".team-summary");
       const allThree =
         bubbles.some((t) => t.includes("UI Designer")) &&
         bubbles.some((t) => t.includes("Frontend Developer")) &&
         bubbles.some((t) => t.includes("UI Finish-Gate Reviewer"));
-      if (allThree && !document.querySelector(".thinking-dot") && inspectorText.toLowerCase().includes("team trace")) {
+      if (
+        allThree &&
+        summaryBubble &&
+        !document.querySelector(".thinking-dot") &&
+        inspectorText.toLowerCase().includes("team trace")
+      ) {
         break;
       }
       await sleep(120);
     }
     const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+    const summaryBubble = document.querySelector(".team-summary");
     return {
       ok: true,
       busySeen,
@@ -481,6 +488,10 @@ try {
       ).length,
       teamVisible: inspectorText.toLowerCase().includes("team trace"),
       hasAgents: inspectorText.includes("UI Designer") && inspectorText.includes("Frontend Developer"),
+      summaryOk:
+        !!summaryBubble &&
+        summaryBubble.textContent.includes("Team Summary") &&
+        summaryBubble.textContent.split(/\\n/).length >= 2,
       inspectorText: inspectorText.slice(0, 160),
     };
   })()`);
@@ -490,7 +501,8 @@ try {
     !results.teamDispatch.busyGone ||
     results.teamDispatch.designBubbles < 3 ||
     !results.teamDispatch.teamVisible ||
-    !results.teamDispatch.hasAgents
+    !results.teamDispatch.hasAgents ||
+    !results.teamDispatch.summaryOk
   ) {
     throw new Error(`AI Studio team dispatch assertion failed: ${JSON.stringify(results.teamDispatch)}`);
   }
