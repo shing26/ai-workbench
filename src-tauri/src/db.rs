@@ -1677,6 +1677,19 @@ pub fn resolve_conflict(
     Ok(())
 }
 
+pub fn resolve_conflicts(
+    conn: &Connection,
+    conflicts: &[SyncConflictItem],
+    choice: &str,
+) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for conflict in conflicts {
+        resolve_conflict(&tx, conflict, choice)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(conflicts.len())
+}
+
 fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !(c.is_alphanumeric() || c.is_ascii_digit()))
@@ -2507,6 +2520,51 @@ mod tests {
         resolve_conflict(&conn, &conflict, "remote").unwrap();
         let clips = list_clipboard(&conn).unwrap();
         assert_eq!(clips[0].content, "remote content");
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_conflicts_batch_writes_both_sides() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-batch-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "local clip", "test").unwrap();
+        let log = report_frontend_error(&conn, "test", "local log", None, "error").unwrap();
+        let clip_updated = clip.updated_at;
+        let log_updated = log.updated_at;
+        let remote = SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 1,
+            clipboard: vec![ClipboardItem {
+                id: clip.id.clone(),
+                content: "remote clip".to_string(),
+                source: "remote".to_string(),
+                timestamp: clip_updated + 1000,
+                updated_at: clip_updated + 1000,
+            }],
+            logs: vec![ErrorLog {
+                id: log.id.clone(),
+                source: "remote".to_string(),
+                message: "remote log".to_string(),
+                stack: None,
+                severity: "error".to_string(),
+                timestamp: log_updated + 1000,
+                updated_at: log_updated + 1000,
+            }],
+        };
+        let merged = merge_sync_snapshot(&conn, remote).unwrap();
+        assert_eq!(merged.conflicts.len(), 2);
+
+        let resolved = resolve_conflicts(&conn, &merged.conflicts, "local").unwrap();
+        assert_eq!(resolved, 2);
+        let clips = list_clipboard(&conn).unwrap();
+        assert_eq!(clips[0].content, "local clip");
+        let logs = list_error_logs(&conn).unwrap();
+        assert_eq!(logs[0].message, "local log");
+        assert!(list_sync_conflicts(&conn, "unresolved").unwrap().is_empty());
+        assert_eq!(list_sync_conflicts(&conn, "resolved").unwrap().len(), 2);
+
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }

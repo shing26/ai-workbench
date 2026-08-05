@@ -1316,6 +1316,36 @@ try {
   }
   results.syncResolve = syncResolveCheck;
 
+  const batchResolveCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let conflictSeen = false;
+    for (let i = 0; i < 20; i++) {
+      conflictSeen = !!document.querySelector("[data-sync-conflict-item]");
+      if (conflictSeen) break;
+      await sleep(100);
+    }
+    if (!conflictSeen) return { ok: false, reason: "no conflict after second pull" };
+    const batchBtn = document.querySelector('[data-batch-resolve="remote"]');
+    if (!batchBtn) return { ok: false, reason: "no batch resolve button" };
+    batchBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      resolved = msg.includes("Resolved") && badgeGone;
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: resolved, resolved };
+  })()`);
+  if (!batchResolveCheck.ok) {
+    throw new Error(
+      `batch sync resolve assertion failed: ${JSON.stringify(batchResolveCheck)}`,
+    );
+  }
+  results.batchResolve = batchResolveCheck;
+
   const syncHistoryCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const toggle = document.querySelector("[data-sync-history-toggle]");
@@ -1323,12 +1353,11 @@ try {
     toggle.click();
     let historySeen = false;
     for (let i = 0; i < 20; i++) {
-      const item = document.querySelector("[data-sync-resolved-item]");
-      const choice = document.querySelector('[data-resolved-choice="remote"]');
+      const item = [...document.querySelectorAll("[data-sync-resolved-item]")].find((el) =>
+        (el.textContent ?? "").includes("sprint 38 conflict override"),
+      );
       historySeen =
-        !!item &&
-        !!choice &&
-        (item.textContent ?? "").includes("sprint 38 conflict override");
+        !!item && item.querySelector('[data-resolved-choice="remote"]') !== null;
       if (historySeen) break;
       await sleep(100);
     }
@@ -1354,12 +1383,11 @@ try {
     toggle.click();
     let seen = false;
     for (let i = 0; i < 20; i++) {
-      const item = document.querySelector("[data-sync-resolved-item]");
-      const choice = document.querySelector('[data-resolved-choice="remote"]');
+      const item = [...document.querySelectorAll("[data-sync-resolved-item]")].find((el) =>
+        (el.textContent ?? "").includes("sprint 38 conflict override"),
+      );
       seen =
-        !!item &&
-        !!choice &&
-        (item.textContent ?? "").includes("sprint 38 conflict override");
+        !!item && item.querySelector('[data-resolved-choice="remote"]') !== null;
       if (seen) break;
       await sleep(100);
     }

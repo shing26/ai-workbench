@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 43
+
+### What went well?
+
+- 冲突仲裁从逐条升级为批量：`resolve_conflicts` 用 `unchecked_transaction` 单事务批量写回，未知 choice 报错即回滚，返回解决数量；System Sync card 新增 Keep all local / Keep all remote 一键裁决。
+- Tauri 命令 `resolve_sync_conflicts` 注册到 invoke handler，前端 `resolveSyncConflicts` Tauri / fallback 双分支透传；单测覆盖剪贴板 + 日志两条冲突批量 Keep local 的内容恢复、清空与历史记录。
+- 验证覆盖：`cargo test --lib` 43/43，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增第二次 Pull → 批量 Keep remote → badge 消失与历史保留断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 第二次 Pull 会因重复导入条目额外产生冲突，原历史断言取首条记录导致偶发失败；改为按 `sprint 38 conflict override` 定位具体记录并校验其 remote choice 后稳定通过。
+- headless 冷启动 motion 断言仍偶发抖动，重跑后全绿，未进入代码修复。
+
+### Action Items
+
+- 下一 Sprint 候选：多 vault 并行 watch、并发数随设备配置自动调优、批量仲裁加入同步审计/事件日志、三方合并策略。
+- 后续改动同步仲裁时，保留批量裁决 UI 断言与历史记录按具体条目定位的验证方式。
+
 ## Sprint 42
 
 ### What went well?
