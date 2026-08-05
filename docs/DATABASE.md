@@ -404,3 +404,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 
 ## Sprint 55：结构化字段级合并
 
 无表结构变更。`sync_conflicts.resolved_choice` 新增 `structured` 取值；合并逻辑为纯函数，不新增字段或迁移。
+
+## Sprint 56：自定义审计日期范围
+
+无表结构变更。`sync_audit_log` 查询新增 `until` 条件，仅使用已有 `created_at` 列。
