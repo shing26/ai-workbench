@@ -956,6 +956,34 @@ try {
   }
   results.autoScaleIndex = autoScaleIndex;
 
+  const cancelIndex = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let cancelBtn = null;
+    for (let i = 0; i < 30; i++) {
+      cancelBtn = document.querySelector("[data-index-cancel]");
+      if (cancelBtn) break;
+      await sleep(10);
+    }
+    if (!cancelBtn) return { ok: false, reason: "no cancel button" };
+    cancelBtn.click();
+    let status = "";
+    for (let i = 0; i < 40; i++) {
+      status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      if (status.includes("Cancelled") || status.includes("Indexed")) break;
+      await sleep(25);
+    }
+    return { ok: status.includes("Cancelled"), status };
+  })()`);
+  if (!cancelIndex.ok) {
+    throw new Error(`Index cancel assertion failed: ${JSON.stringify(cancelIndex)}`);
+  }
+  results.cancelIndex = cancelIndex;
+
   const indexProgressCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let status = "";

@@ -380,8 +380,21 @@ export default function KnowledgeView() {
                     ? `Indexed ${indexProgress.files} files`
                     : indexProgress.status === "running"
                       ? `Indexing ${indexProgress.done}/${indexProgress.total}`
-                      : indexProgress.status}
+                      : indexProgress.status === "cancelled"
+                        ? "Cancelled"
+                        : indexProgress.status}
                 </span>
+                {indexProgress.status === "running" && (
+                  <button
+                    type="button"
+                    data-index-cancel
+                    aria-label="Cancel vault index"
+                    onClick={() => void db.cancelVaultIndex(indexProgress.runId)}
+                    className="h-5 shrink-0 rounded-md border border-red-500/25 bg-red-500/10 px-2 text-[9px] text-red-300 hover:bg-red-500/20"
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
             );
           })()}
