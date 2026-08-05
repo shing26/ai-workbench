@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 30
+
+### What went well?
+
+- 字面量 Blue Token 清零：`#007AFF` / `#7FB4FF` / `blue-*` 全部收敛为 `.accent-*` 语义类，组件层扫描零残留；`emerald-*` 确认本就是 accent 别名，未做无意义替换。
+- 动态验收闭环：Knowledge Index vault 按钮带 `data-accent-token`，切换 ocean / emerald 后 computed color 从 `rgb(77,163,255)` 变为 `rgb(52,211,153)`。
+- 验证覆盖：`cargo test --lib` 27/27，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 accent token 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- `text-blue-300 hover:text-[#7FB4FF]` 需要“基础 strong、hover 回到 accent 原色”两个状态，初版只定义了 hover 到 strong 的类；补 `.accent-hover-base` 后通过。
+- `ring-[#7FB4FF]/20` 替换为 `accent-dot-ring` 时保留 `ring-2` 宽度类，避免 box-shadow 与 ring 语义混用。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、PR 冲突解决与自动 rebase。
+- 后续新增 UI 颜色时优先使用 `.accent-*` 或 `emerald-*` accent 别名，禁止写蓝色字面量。
+
 ## Sprint 29
 
 ### What went well?

@@ -240,7 +240,7 @@ export default function SystemView() {
           <button
             type="button"
             onClick={() => void checkAll()}
-            className="flex h-9 items-center gap-1 rounded-xl bg-blue-500/20 px-3 text-xs text-[#7FB4FF] hover:bg-blue-500/30"
+            className="flex h-9 items-center gap-1 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30"
           >
             Check all
           </button>
@@ -271,7 +271,7 @@ export default function SystemView() {
               type="button"
               aria-label="Export sync snapshot"
               onClick={() => void exportSync()}
-              className="flex h-8 items-center gap-1 rounded-lg bg-blue-500/15 px-2.5 text-[11px] text-[#7FB4FF] hover:bg-blue-500/25"
+              className="flex h-8 items-center gap-1 rounded-lg accent-bg-15 px-2.5 text-[11px] accent-text-strong accent-hover-bg-25"
             >
               <CloudUpload size={12} /> Export
             </button>
@@ -335,7 +335,7 @@ export default function SystemView() {
                               type="button"
                               aria-label="Show prompt versions"
                               onClick={() => void togglePromptVersions(a.id)}
-                              className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-400 hover:text-blue-300"
+                              className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-400 accent-hover-text"
                             >
                               <History size={10} /> Versions
                             </button>
@@ -377,7 +377,7 @@ export default function SystemView() {
                                     type="button"
                                     aria-label={`Restore prompt version ${index + 1}`}
                                     onClick={() => void restorePromptVersion(a.id, v.id)}
-                                    className="shrink-0 text-[9px] text-blue-300 hover:text-[#7FB4FF]"
+                                    className="shrink-0 text-[9px] accent-text-strong accent-hover-base"
                                   >
                                     Restore
                                   </button>

@@ -295,6 +295,39 @@ try {
     throw new Error(`UI system theme assertion failed: systemResolved=${systemResolved} restored=${restored}`);
   }
 
+  await clickDock("Knowledge");
+  results.accentTokens = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let btn = null;
+    for (let i = 0; i < 20; i++) {
+      btn = document.querySelector('[data-accent-token="index-vault"]');
+      if (btn) break;
+      await sleep(100);
+    }
+    if (!btn) return { ok: false, reason: "no accent token element" };
+    const themeBtn = document.querySelector('button[aria-label="Theme and accent"]');
+    if (!themeBtn) return { ok: false, reason: "no theme button" };
+    themeBtn.click();
+    await sleep(100);
+    const ocean = document.querySelector('[data-accent-option="ocean"]');
+    if (!ocean) return { ok: false, reason: "no ocean swatch" };
+    ocean.click();
+    await sleep(150);
+    const oceanColor = getComputedStyle(btn).color;
+    const emerald = document.querySelector('[data-accent-option="emerald"]');
+    if (!emerald) return { ok: false, reason: "no emerald swatch" };
+    emerald.click();
+    await sleep(150);
+    const emeraldColor = getComputedStyle(btn).color;
+    themeBtn.click();
+    await sleep(80);
+    const accentReset = document.documentElement.dataset.accent === "emerald";
+    return { ok: oceanColor !== emeraldColor && accentReset, oceanColor, emeraldColor, accentReset };
+  })()`);
+  if (!results.accentTokens.ok) {
+    throw new Error(`Accent token assertion failed: ${JSON.stringify(results.accentTokens)}`);
+  }
+
   await clickDock("Actions");
   results.uiDynamics.material = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

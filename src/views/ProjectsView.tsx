@@ -151,7 +151,7 @@ export default function ProjectsView() {
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <div className="flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-[#7FB4FF] ring-2 ring-[#7FB4FF]/20" />
+                  <span className="accent-dot accent-dot-ring h-2 w-2 rounded-full ring-2" />
                   <span className="h-px w-3 bg-white/15" />
                   <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/20" />
                 </div>
@@ -213,7 +213,7 @@ export default function ProjectsView() {
                   aria-label="Create remote PR"
                   data-create-pr
                   onClick={() => void createPr(p)}
-                  className="flex h-6 items-center gap-1 rounded-md bg-blue-500/15 px-1.5 text-[9px] text-[#7FB4FF] hover:bg-blue-500/25"
+                  className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
                 >
                   <ExternalLink size={9} /> Create PR
                 </button>
@@ -236,7 +236,7 @@ export default function ProjectsView() {
               {prResults[p.id] && (
                 <div
                   data-pr-result
-                  className="mt-1.5 truncate rounded-md border border-blue-500/20 bg-blue-500/[0.06] px-1.5 py-1 text-[9px] text-[#7FB4FF]"
+                  className="mt-1.5 truncate rounded-md accent-border-20 accent-bg-6 px-1.5 py-1 text-[9px] accent-text-strong"
                 >
                   {prResults[p.id].url ? (
                     <a href={prResults[p.id].url ?? undefined} target="_blank" rel="noreferrer">
