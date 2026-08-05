@@ -1522,14 +1522,72 @@ try {
     const text = items.map((el) => el.textContent ?? "").join(" | ");
     const mergeSeen = text.includes("sync.merge");
     const resolveSeen = text.includes("sync.resolve");
+    const filter = document.querySelector("[data-sync-audit-filter]");
+    const jsonBtn = document.querySelector("[data-sync-audit-export-json]");
+    if (!filter || !jsonBtn) {
+      return {
+        ok: false,
+        reason: "no sync audit filter or export",
+        mergeSeen,
+        resolveSeen,
+        count: items.length,
+      };
+    }
+    filter.value = "sync.resolve";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    let filteredItems = [];
+    for (let i = 0; i < 30; i++) {
+      await sleep(100);
+      filteredItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+      const allResolve =
+        filteredItems.length > 0 &&
+        filteredItems.every(
+          (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+        );
+      if (allResolve) break;
+    }
+    const filterOk =
+      filteredItems.length > 0 &&
+      filteredItems.every(
+        (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+      );
+    jsonBtn.click();
+    let exportedText = "";
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      exportedText = document.querySelector("[data-sync-audit-exported]")?.textContent ?? "";
+      if (exportedText) break;
+    }
+    const exportOk = /Exported [1-9]\\d* sync audit event\\(s\\)/.test(exportedText);
+    filter.value = "all";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(250);
     const clearBtn = document.querySelector("[data-sync-audit-clear]");
     if (!clearBtn) {
-      return { ok: false, reason: "no sync audit clear button", mergeSeen, resolveSeen, count: items.length };
+      return {
+        ok: false,
+        reason: "no sync audit clear button",
+        mergeSeen,
+        resolveSeen,
+        filterOk,
+        exportOk,
+        count: items.length,
+      };
     }
     clearBtn.click();
     await sleep(300);
     const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
-    return { ok: mergeSeen && resolveSeen && cleared, mergeSeen, resolveSeen, cleared, count: items.length };
+    return {
+      ok: mergeSeen && resolveSeen && filterOk && exportOk && cleared,
+      mergeSeen,
+      resolveSeen,
+      filterOk,
+      exportOk,
+      cleared,
+      count: items.length,
+      filteredCount: filteredItems.length,
+      exportedText,
+    };
   })()`);
   if (!syncAuditCheck.ok) {
     throw new Error(`Sync audit assertion failed: ${JSON.stringify(syncAuditCheck)}`);

@@ -1393,9 +1393,35 @@ export async function clearResolvedSyncConflicts(): Promise<number> {
   return cleared;
 }
 
-export async function listSyncAudit(limit = 50): Promise<SyncAuditEntry[]> {
-  if (isTauri()) return invoke<SyncAuditEntry[]>("list_sync_audit", { limit });
-  return readSyncAudit().slice(0, Math.max(1, Math.min(200, limit)));
+export async function listSyncAudit(limit = 50, event?: string): Promise<SyncAuditEntry[]> {
+  if (isTauri()) {
+    return invoke<SyncAuditEntry[]>("list_sync_audit", { limit, event: event ?? null });
+  }
+  return readSyncAudit()
+    .filter((entry) => !event || entry.event === event)
+    .slice(0, Math.max(1, Math.min(200, limit)));
+}
+
+export async function exportSyncAudit(
+  format: "json" | "csv" = "json",
+  event?: string,
+): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("export_sync_audit", { format, event: event ?? null });
+  }
+  const entries = readSyncAudit().filter((entry) => !event || entry.event === event);
+  if (format === "json") return JSON.stringify(entries, null, 2);
+  const escapeCsv = (value: string) =>
+    /[,"\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  const lines = ["id,event,detail,device_id,created_at"];
+  for (const entry of entries) {
+    lines.push(
+      [entry.id, entry.event, entry.detail, entry.deviceId, entry.createdAt]
+        .map((value) => escapeCsv(String(value)))
+        .join(","),
+    );
+  }
+  return lines.join("\n");
 }
 
 export async function clearSyncAudit(): Promise<number> {

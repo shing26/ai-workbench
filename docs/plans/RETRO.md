@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 48
+
+### What went well?
+
+- 同步审计闭环补全：`list_sync_audit` 支持按事件筛选，`export_sync_audit` 输出 JSON / CSV，CSV 对逗号、引号与换行做标准转义。
+- System Sync audit 面板提供筛选下拉框与 JSON / CSV 导出按钮，导出数量提示让用户确认数据范围；浏览器 fallback 与 Rust 语义一致。
+- 验证覆盖：`cargo test --lib` 49/49，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言筛选、导出与清空全链路，两条 lane 全绿。
+
+### What went wrong?
+
+- CSV 首版转义检查误用 `contains` 数组 pattern，改为按字符匹配 `,` / `"` / CR / LF 后通过 clippy 与单测。
+
+### Action Items
+
+- 下一 Sprint 候选：按文件规模动态并发、三方合并策略、watch 目标级事件隔离、审计时间/设备组合筛选。
+- 后续扩展同步链路时，保留筛选参数与导出格式单测。
+
 ## Sprint 47
 
 ### What went well?

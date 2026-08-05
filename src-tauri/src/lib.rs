@@ -2666,9 +2666,26 @@ fn clear_resolved_sync_conflicts(state: State<'_, db::Db>) -> Result<usize, Stri
 fn list_sync_audit(
     state: State<'_, db::Db>,
     limit: Option<i64>,
+    event: Option<String>,
 ) -> Result<Vec<db::SyncAuditEntry>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_sync_audit(&conn, limit.unwrap_or(50).clamp(1, 200)).map_err(|e| e.to_string())
+    db::list_sync_audit(&conn, limit.unwrap_or(50).clamp(1, 200), event.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_sync_audit(
+    state: State<'_, db::Db>,
+    format: Option<String>,
+    event: Option<String>,
+) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::export_sync_audit(
+        &conn,
+        &format.unwrap_or_else(|| "json".to_string()),
+        event.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2829,6 +2846,7 @@ pub fn run() {
             clear_resolved_sync_conflicts,
             list_sync_audit,
             clear_sync_audit,
+            export_sync_audit,
             report_frontend_error,
             capture_clipboard,
             search_thoughts,
