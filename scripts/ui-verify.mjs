@@ -470,6 +470,76 @@ try {
   if (!results.quickPromptPersist.ok) {
     throw new Error(`Quick prompt persistence assertion failed: ${JSON.stringify(results.quickPromptPersist)}`);
   }
+  await evaluate(`(async () => {
+    localStorage.removeItem("ai-workbench:quick-prompt-usage:v1");
+    return { ok: true };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("AI Studio");
+  results.quickPromptUsage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
+    const firstLabel = () => chips()[0]?.getAttribute("data-quick-prompt-label") ?? "";
+    const first = firstLabel();
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    const afterTwo = firstLabel();
+    const dailyUsage = chips()
+      .find((el) => el.getAttribute("data-quick-prompt") === "daily-recap")
+      ?.getAttribute("data-quick-prompt-usage");
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    const afterWindDown = firstLabel();
+    const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      first === "Daily recap" &&
+      afterTwo === "Daily recap" &&
+      dailyUsage === "2" &&
+      afterWindDown === "Wind down" &&
+      order[0] === "wind-down" &&
+      order[1] === "daily-recap" &&
+      stored["daily-recap"] === 2 &&
+      stored["wind-down"] === 3;
+    return {
+      ok,
+      first,
+      afterTwo,
+      dailyUsage,
+      afterWindDown,
+      order: order.slice(0, 4),
+      stored,
+    };
+  })()`);
+  if (!results.quickPromptUsage.ok) {
+    throw new Error(`Quick prompt usage assertion failed: ${JSON.stringify(results.quickPromptUsage)}`);
+  }
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("AI Studio");
+  results.quickPromptUsagePersist = await evaluate(`(async () => {
+    const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
+    const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      order[0] === "wind-down" &&
+      order[1] === "daily-recap" &&
+      stored["wind-down"] === 3 &&
+      stored["daily-recap"] === 2;
+    return { ok, order: order.slice(0, 4), stored };
+  })()`);
+  if (!results.quickPromptUsagePersist.ok) {
+    throw new Error(
+      `Quick prompt usage persistence assertion failed: ${JSON.stringify(results.quickPromptUsagePersist)}`,
+    );
+  }
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };

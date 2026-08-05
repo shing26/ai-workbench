@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 79
+
+### What went well?
+
+- Quick Prompt 从“固定顺序”升级为“常用优先”：`quickPrompts.ts` 新增使用次数读写与 `loadQuickPromptsByUsage`，按次数降序、同次数按默认顺序稳定排序，计数持久化到 `ai-workbench:quick-prompt-usage:v1`。
+- 点击芯片即累计并重排，芯片带次数角标与 `data-quick-prompt-usage`；`verify:ui` / `verify:preview` 新增 `quickPromptUsage` / `quickPromptUsagePersist` lane，均为 true，`npm run build` 全绿。
+
+### What went wrong?
+
+- 验证 lane 首次把芯片 label 当成 id 断言（`daily-recap` vs `Daily recap`），首轮失败后改为按 label 判首个芯片、按 id 判 DOM 顺序。
+- 点击 2 次 daily-recap 后 wind-down 需要 3 次才能靠次数越过它；这暴露了同次数按默认顺序稳定排序的语义，验证 lane 已按此固化。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、批量提交内容预览、AI 生成式复盘。
+- 多端同步自定义 prompt 与使用次数继续留在 Backlog。
+
 ## Sprint 78
 
 ### What went well?

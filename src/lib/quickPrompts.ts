@@ -10,6 +10,7 @@ export type CustomQuickPrompt = QuickPrompt & {
 };
 
 const QUICK_PROMPT_LS_KEY = "ai-workbench:quick-prompts:v1";
+const QUICK_PROMPT_USAGE_LS_KEY = "ai-workbench:quick-prompt-usage:v1";
 
 export const QUICK_PROMPTS: QuickPrompt[] = [
   {
@@ -56,6 +57,36 @@ export function isCustomQuickPrompt(prompt: QuickPrompt): prompt is CustomQuickP
 
 export function loadQuickPrompts(): QuickPrompt[] {
   return [...QUICK_PROMPTS, ...listCustomQuickPrompts()];
+}
+
+export function getQuickPromptUsage(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(QUICK_PROMPT_USAGE_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === "number" && value > 0),
+    ) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+export function recordQuickPromptUsage(id: string): number {
+  const usage = getQuickPromptUsage();
+  const next = (usage[id] ?? 0) + 1;
+  usage[id] = next;
+  localStorage.setItem(QUICK_PROMPT_USAGE_LS_KEY, JSON.stringify(usage));
+  return next;
+}
+
+export function loadQuickPromptsByUsage(): QuickPrompt[] {
+  const usage = getQuickPromptUsage();
+  return loadQuickPrompts()
+    .map((prompt, index) => ({ prompt, index, count: usage[prompt.id] ?? 0 }))
+    .sort((a, b) => b.count - a.count || a.index - b.index)
+    .map((entry) => entry.prompt);
 }
 
 export function listCustomQuickPrompts(): CustomQuickPrompt[] {
