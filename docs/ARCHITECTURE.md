@@ -115,6 +115,8 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 
 Sprint 61 新增命令：`list_vault_watch_events` / `clear_vault_watch_events`；watch 事件写入 `vault_watch_events` 时间线，Knowledge 每个 vault 目标可展开查看真实文件路径与事件类型。
 
+Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周聚合 error / warning / info，System 错误日志卡片新增趋势图与严重度过滤。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -259,3 +261,9 @@ Sprint 61 新增命令：`list_vault_watch_events` / `clear_vault_watch_events`�
 - `sync_vault_event` 返回实际变更的绝对路径数组；watcher 对每条路径调用 `touch_vault_watch_event(vault_path, file_path, event_kind)`，created / modified / removed 写入 `+` / `~` / `-` 时间线。
 - 新增 Tauri 命令 `list_vault_watch_events(vault_path?, limit)` / `clear_vault_watch_events(vault_path?)`；`delete_vault_watch_target` 级联清理该 vault 的事件。
 - Knowledge 每个 vault 目标新增 Timeline 按钮与可展开事件列表，提供 Clear 动作；浏览器 fallback 用 `ai-workbench:vault-watch-events:v1` 保存同一时间线。
+
+## Sprint 62：错误日志趋势与聚合
+
+- 新增 `error_log_summary` 聚合：按 `updated_at` 的 UTC 日 / 周分组 `error_logs`，支持可选 source / severity 过滤，bucket 内拆分 error / warning / info，缺失区间补零。
+- 新增 Tauri 命令 `get_error_log_summary(granularity, source?, severity?)`，返回 `ErrorLogSummary { granularity, total, buckets }`。
+- System Error logs 卡片新增 Day / Week 分段切换、严重度下拉与分层柱状图；浏览器 fallback 用 `summarizeErrorLogs` 镜像同一语义。

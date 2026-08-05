@@ -66,6 +66,9 @@ export default function SystemView() {
   const [auditExportMessage, setAuditExportMessage] = useState("");
   const [auditSummary, setAuditSummary] = useState<db.SyncAuditSummary | null>(null);
   const [auditGranularity, setAuditGranularity] = useState<"day" | "week">("day");
+  const [errorLogSummary, setErrorLogSummary] = useState<db.ErrorLogSummary | null>(null);
+  const [errorLogGranularity, setErrorLogGranularity] = useState<"day" | "week">("day");
+  const [errorSeverityFilter, setErrorSeverityFilter] = useState("all");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -84,6 +87,7 @@ export default function SystemView() {
     void db.listSyncConflicts("unresolved").then(setSyncConflicts);
     void db.listSyncAudit(50).then(setSyncAudit);
     void db.getSyncAuditSummary("day").then(setAuditSummary);
+    void db.getErrorLogSummary("day").then(setErrorLogSummary);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -253,6 +257,28 @@ export default function SystemView() {
         auditDevice === "current" ? deviceId : undefined,
       )
       .then(setAuditSummary);
+  };
+
+  const changeErrorLogGranularity = (granularity: "day" | "week") => {
+    setErrorLogGranularity(granularity);
+    void db
+      .getErrorLogSummary(
+        granularity,
+        undefined,
+        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
+      )
+      .then(setErrorLogSummary);
+  };
+
+  const changeErrorSeverityFilter = (severity: string) => {
+    setErrorSeverityFilter(severity);
+    void db
+      .getErrorLogSummary(
+        errorLogGranularity,
+        undefined,
+        severity === "all" ? undefined : severity,
+      )
+      .then(setErrorLogSummary);
   };
 
   const changeAuditFilter = (filter: string) => {
@@ -1282,6 +1308,110 @@ export default function SystemView() {
             <span className={`health-dot h-1.5 w-1.5 rounded-full ${logs.some((l) => l.severity === "error") ? "bg-red-400" : "bg-emerald-400"}`} />
             <span>{logs.some((l) => l.severity === "error") ? "has errors" : "healthy"}</span>
             <span className="ml-auto">{logs.length} entries</span>
+          </div>
+          <div className="mb-2 flex items-center gap-1.5">
+            <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+              <button
+                type="button"
+                data-error-granularity-day
+                aria-pressed={errorLogGranularity === "day"}
+                onClick={() => changeErrorLogGranularity("day")}
+                className={`h-5 rounded px-1.5 text-[9px] ${
+                  errorLogGranularity === "day"
+                    ? "accent-bg-15 accent-text-strong"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Day
+              </button>
+              <button
+                type="button"
+                data-error-granularity-week
+                aria-pressed={errorLogGranularity === "week"}
+                onClick={() => changeErrorLogGranularity("week")}
+                className={`h-5 rounded px-1.5 text-[9px] ${
+                  errorLogGranularity === "week"
+                    ? "accent-bg-15 accent-text-strong"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Week
+              </button>
+            </div>
+            <select
+              data-error-severity-filter
+              value={errorSeverityFilter}
+              onChange={(e) => changeErrorSeverityFilter(e.target.value)}
+              aria-label="Error severity filter"
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+            >
+              <option value="all">All</option>
+              <option value="error">error</option>
+              <option value="warning">warning</option>
+              <option value="info">info</option>
+            </select>
+            <span
+              data-error-log-total
+              className="ml-auto shrink-0 text-[9px] text-slate-500"
+            >
+              {errorLogSummary?.total ?? 0} logs
+            </span>
+          </div>
+          <div
+            data-error-log-chart
+            data-error-granularity={errorLogGranularity}
+            className="mb-2 flex h-14 items-end gap-1"
+          >
+            {(errorLogSummary?.buckets.length ?? 0) === 0 && (
+              <div className="py-4 text-[9px] text-slate-600">No errors</div>
+            )}
+            {(errorLogSummary?.buckets ?? []).map((bucket) => {
+              const max = Math.max(
+                1,
+                ...(errorLogSummary?.buckets ?? []).map((b) => b.count),
+              );
+              const height = Math.max(4, Math.round((bucket.count / max) * 42));
+              return (
+                <div
+                  key={bucket.bucket}
+                  className="flex min-w-0 flex-1 flex-col items-center gap-0.5"
+                >
+                  <div
+                    data-error-log-bar
+                    data-error-bucket={bucket.bucket}
+                    data-error-count={bucket.count}
+                    data-error-severity-error={bucket.error}
+                    data-error-severity-warning={bucket.warning}
+                    data-error-severity-info={bucket.info}
+                    title={`${bucket.bucket}: error ${bucket.error}, warning ${bucket.warning}, info ${bucket.info}`}
+                    className="flex w-full flex-col-reverse overflow-hidden rounded-t-sm"
+                    style={{ height }}
+                  >
+                    {bucket.info > 0 && (
+                      <span
+                        className="w-full bg-slate-500/60"
+                        style={{ height: `${(bucket.info / bucket.count) * 100}%` }}
+                      />
+                    )}
+                    {bucket.warning > 0 && (
+                      <span
+                        className="w-full bg-amber-400/80"
+                        style={{ height: `${(bucket.warning / bucket.count) * 100}%` }}
+                      />
+                    )}
+                    {bucket.error > 0 && (
+                      <span
+                        className="w-full bg-red-500/80"
+                        style={{ height: `${(bucket.error / bucket.count) * 100}%` }}
+                      />
+                    )}
+                  </div>
+                  <span className="max-w-full truncate text-[7px] text-slate-600">
+                    {bucket.bucket.slice(5)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
           <div className="flex flex-col gap-1.5">
             {logs.slice(0, 10).map((l) => (

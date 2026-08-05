@@ -216,6 +216,21 @@ export type SyncAuditSummary = {
   buckets: SyncAuditBucket[];
 };
 
+export type ErrorLogBucket = {
+  bucket: string;
+  startAt: number;
+  count: number;
+  error: number;
+  warning: number;
+  info: number;
+};
+
+export type ErrorLogSummary = {
+  granularity: "day" | "week";
+  total: number;
+  buckets: ErrorLogBucket[];
+};
+
 export type RemoteSyncPushResult = {
   ok: boolean;
   syncedAt: number;
@@ -1806,6 +1821,79 @@ export async function getSyncAuditSummary(
     });
   }
   return summarizeSyncAudit(readSyncAudit(), granularity, event, since, until, deviceId);
+}
+
+function summarizeErrorLogs(
+  logs: ErrorLog[],
+  granularity: "day" | "week",
+  source?: string,
+  severity?: string,
+): ErrorLogSummary {
+  const filtered = logs
+    .filter((log) => !source || log.source === source)
+    .filter((log) => !severity || log.severity === severity);
+  const grouped = new Map<number, { error: number; warning: number; info: number }>();
+  let total = 0;
+  for (const log of filtered) {
+    const startAt =
+      granularity === "week"
+        ? (Math.floor((Math.floor(log.updatedAt / AUDIT_DAY_MS) + 3) / 7) * 7 - 3) *
+          AUDIT_DAY_MS
+        : Math.floor(log.updatedAt / AUDIT_DAY_MS) * AUDIT_DAY_MS;
+    const slot = grouped.get(startAt) ?? { error: 0, warning: 0, info: 0 };
+    if (log.severity === "error") slot.error += 1;
+    else if (log.severity === "warning") slot.warning += 1;
+    else slot.info += 1;
+    grouped.set(startAt, slot);
+    total += 1;
+  }
+  let buckets: ErrorLogBucket[] = [...grouped.entries()]
+    .map(([startAt, counts]) => ({
+      bucket: isoDateFromEpochMs(startAt),
+      startAt,
+      count: counts.error + counts.warning + counts.info,
+      error: counts.error,
+      warning: counts.warning,
+      info: counts.info,
+    }))
+    .sort((a, b) => a.startAt - b.startAt);
+  if (buckets.length > 0 && buckets.length <= 62) {
+    const step = granularity === "week" ? AUDIT_DAY_MS * 7 : AUDIT_DAY_MS;
+    const filled: ErrorLogBucket[] = [];
+    let cursor = buckets[0].startAt;
+    for (const bucket of buckets) {
+      while (cursor < bucket.startAt) {
+        filled.push({
+          bucket: isoDateFromEpochMs(cursor),
+          startAt: cursor,
+          count: 0,
+          error: 0,
+          warning: 0,
+          info: 0,
+        });
+        cursor += step;
+      }
+      filled.push(bucket);
+      cursor += step;
+    }
+    buckets = filled;
+  }
+  return { granularity, total, buckets };
+}
+
+export async function getErrorLogSummary(
+  granularity: "day" | "week",
+  source?: string,
+  severity?: string,
+): Promise<ErrorLogSummary> {
+  if (isTauri()) {
+    return invoke<ErrorLogSummary>("get_error_log_summary", {
+      granularity,
+      source: source ?? null,
+      severity: severity ?? null,
+    });
+  }
+  return summarizeErrorLogs(readLocal().logs, granularity, source, severity);
 }
 
 export async function exportSyncAudit(

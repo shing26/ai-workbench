@@ -1911,6 +1911,151 @@ try {
   }
   results.syncAuditChart = syncAuditChart;
 
+  const errorLogSeed = await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.logs = [
+      {
+        id: "err-today",
+        source: "frontend",
+        message: "chart error today",
+        stack: null,
+        severity: "error",
+        timestamp: startOfToday + 1000,
+        updatedAt: startOfToday + 1000,
+      },
+      {
+        id: "warn-yesterday",
+        source: "tauri",
+        message: "chart warning yesterday",
+        stack: null,
+        severity: "warning",
+        timestamp: startOfToday - dayMs + 5000,
+        updatedAt: startOfToday - dayMs + 5000,
+      },
+      {
+        id: "info-yesterday",
+        source: "frontend",
+        message: "chart info yesterday",
+        stack: null,
+        severity: "info",
+        timestamp: startOfToday - dayMs + 6000,
+        updatedAt: startOfToday - dayMs + 6000,
+      },
+      {
+        id: "err-week",
+        source: "tauri",
+        message: "chart error week ago",
+        stack: null,
+        severity: "error",
+        timestamp: startOfToday - dayMs * 7 + 2000,
+        updatedAt: startOfToday - dayMs * 7 + 2000,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("System");
+  const errorLogTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-error-log-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-error-log-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      return {
+        ok: false,
+        reason: "no error log chart bars",
+        chartText: chart()?.textContent ?? "",
+      };
+    }
+    const totalText = document.querySelector("[data-error-log-total]")?.textContent ?? "";
+    const total = Number(totalText.replace(/[^0-9]/g, "") || 0);
+    const barTotal = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-count") || 0),
+      0,
+    );
+    const errorCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-error") || 0),
+      0,
+    );
+    const warningCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-warning") || 0),
+      0,
+    );
+    const infoCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-info") || 0),
+      0,
+    );
+    const countsMatch =
+      total === 4 && barTotal === 4 && errorCount === 2 && warningCount === 1 && infoCount === 1;
+    const dayAttr = chart()?.getAttribute("data-error-granularity");
+    document.querySelector("[data-error-granularity-week]")?.click();
+    let weekOk = false;
+    let weekBars = 0;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      weekBars = document.querySelectorAll("[data-error-log-bar]").length;
+      weekOk = chart()?.getAttribute("data-error-granularity") === "week" && weekBars === 2;
+      if (weekOk) break;
+    }
+    const weekTotalText = document.querySelector("[data-error-log-total]")?.textContent ?? "";
+    const weekTotal = Number(weekTotalText.replace(/[^0-9]/g, "") || 0);
+    const select = document.querySelector("[data-error-severity-filter]");
+    let filterOk = false;
+    let filteredTotal = 0;
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(select, "error");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      for (let i = 0; i < 20; i++) {
+        filteredTotal = Number(
+          document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+        );
+        filterOk =
+          filteredTotal === 2 &&
+          [...document.querySelectorAll("[data-error-log-bar]")].every(
+            (bar) =>
+              Number(bar.getAttribute("data-error-severity-warning") || 0) === 0 &&
+              Number(bar.getAttribute("data-error-severity-info") || 0) === 0,
+          );
+        if (filterOk) break;
+        await sleep(100);
+      }
+      setter.call(select, "all");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(200);
+    }
+    document.querySelector("[data-error-granularity-day]")?.click();
+    await sleep(250);
+    const dayRestored = chart()?.getAttribute("data-error-granularity") === "day";
+    return {
+      ok: countsMatch && weekOk && weekTotal === 4 && filterOk && dayRestored,
+      total,
+      barTotal,
+      errorCount,
+      warningCount,
+      infoCount,
+      dayAttr,
+      weekBars,
+      weekTotal,
+      filterOk,
+      filteredTotal,
+      dayRestored,
+      seedOk: true,
+    };
+  })()`);
+  if (!errorLogTrend.ok) {
+    throw new Error(`Error log trend assertion failed: ${JSON.stringify(errorLogTrend)}`);
+  }
+  results.errorLogTrend = errorLogTrend;
+
   const syncAuditCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let items = [...document.querySelectorAll("[data-sync-audit-item]")];
