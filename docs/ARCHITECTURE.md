@@ -361,3 +361,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `quickPrompts.ts` 新增 `CustomQuickPrompt` 与 `loadQuickPrompts` / `listCustomQuickPrompts` / `addCustomQuickPrompt` / `deleteCustomQuickPrompt`，自定义项持久化到 `ai-workbench:quick-prompts:v1`。
 - AI Studio 芯片行新增 Manage 面板：可填写 label / category / text 新增自定义 prompt，也可删除；内置模板不可删除，自定义项与内置项合并渲染。
 - `verify:ui` / `verify:preview` 新增 `quickPromptManager` / `quickPromptPersist` lane：新增后立即可见、刷新后仍在、删除后消失。
+
+## Sprint 78：Git dirty 逐文件 diff 预览
+
+- Rust 新增 `GitFileDiff { path, status, diff }` 与 `get_git_file_diff(path, file)`：未跟踪文件用 `git status --porcelain` 判定后读磁盘转成 `+` 新增行；已跟踪文件优先 `git diff --unified=3`，为空再走 `git diff --cached` 覆盖暂存改动。
+- Projects 的 dirty 预览中每个文件新增 Diff 开关，点击后调用 `db.getGitFileDiff` 渲染 `<pre>` unified diff，可再次点击收起。
+- `db.ts` 新增 `GitFileDiff` / `getGitFileDiff`，浏览器 fallback 返回含 `diff --git`、`+added line`、`-removed line` 的 mock diff；`verify:ui` / `verify:preview` 新增 `gitDirtyDiff` lane。

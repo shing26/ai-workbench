@@ -281,6 +281,12 @@ export type GitActivityBoard = {
   commitTrend: GitCommitTrend;
 };
 
+export type GitFileDiff = {
+  path: string;
+  status: string;
+  diff: string;
+};
+
 export type CommitPrDraft = {
   branch: string;
   commitMessage: string;
@@ -3127,6 +3133,17 @@ export async function getGitActivity(options?: {
       granularity: "day",
       buckets: trendCounts.map((count, i) => ({ dayMs: dayMs(i), count })),
     },
+  };
+}
+
+export async function getGitFileDiff(path: string, file: string): Promise<GitFileDiff> {
+  if (isTauri()) {
+    return invoke<GitFileDiff>("get_git_file_diff", { path, file });
+  }
+  return {
+    path: file,
+    status: " M",
+    diff: `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1,2 +1,3 @@\n context line\n-removed line\n+added line\n+second addition\n`,
   };
 }
 

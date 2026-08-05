@@ -814,6 +814,46 @@ try {
   if (!results.gitDirtyPreview.ok) {
     throw new Error(`Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`);
   }
+  results.gitDirtyDiff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const preview = dirty.querySelector("[data-git-activity-preview]");
+      if (!preview) return { ok: false, reason: "no preview button" };
+      preview.click();
+      await sleep(80);
+      const toggle = [...dirty.querySelectorAll("[data-git-diff-toggle]")].find((btn) =>
+        (btn.getAttribute("data-git-diff-toggle") || "").includes("ProjectsView.tsx"),
+      );
+      if (!toggle) return { ok: false, reason: "no diff toggle for ProjectsView.tsx" };
+      toggle.click();
+      for (let j = 0; j < 20; j++) {
+        const pre = dirty.querySelector('[data-git-diff-content="src/views/ProjectsView.tsx"]');
+        const text = pre?.textContent ?? "";
+        if (pre && text.includes("diff --git") && text.includes("+added line") && text.includes("-removed line")) {
+          return {
+            ok: true,
+            status: pre.getAttribute("data-git-diff-status"),
+            hasHeader: text.includes("diff --git"),
+            hasAdded: text.includes("+added line"),
+            hasRemoved: text.includes("-removed line"),
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "diff content missing" };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitDirtyDiff.ok) {
+    throw new Error(`Git dirty diff assertion failed: ${JSON.stringify(results.gitDirtyDiff)}`);
+  }
   results.gitCommitTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
