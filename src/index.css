@@ -323,6 +323,23 @@ textarea::placeholder {
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
   animation: stream-blink 900ms ease-in-out infinite;
 }
+.message-jump-highlight {
+  animation: message-jump-glow 900ms var(--ease-out) both;
+}
+.message-jump-highlight .message-in {
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18);
+}
+@keyframes message-jump-glow {
+  from {
+    filter: brightness(1.12);
+    transform: translateY(2px);
+  }
+  to {
+    filter: brightness(1);
+    transform: translateY(0);
+  }
+}
 .stream-status {
   transition:
     transform var(--duration-fast) var(--ease-out),

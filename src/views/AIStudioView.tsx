@@ -183,6 +183,7 @@ export default function AIStudioView() {
   const [exportMarkdown, setExportMarkdown] = useState('');
   const [exportCopied, setExportCopied] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [prompts, setPrompts] = useState<db.QuickPrompt[]>([]);
@@ -413,6 +414,7 @@ export default function AIStudioView() {
       if (first) {
         sessionIdRef.current = first.id;
         setSessionId(first.id);
+        setHighlightMessageId(null);
         const stored = await db.listChatMessages(first.id);
         if (disposed) return;
         if (stored.length > 0) {
@@ -542,6 +544,7 @@ export default function AIStudioView() {
         content: 'Ready. Ask anything or switch to MOA for multi-model consensus.',
       },
     ]);
+    setHighlightMessageId(null);
     runsRef.current.clear();
     retryTargetRef.current = null;
     setStreamStatus('idle');
@@ -554,7 +557,16 @@ export default function AIStudioView() {
     setRecapSaveResult(null);
   };
 
-  const selectSession = async (id: string) => {
+  const focusMessage = (id: string) => {
+    setHighlightMessageId(id);
+    window.setTimeout(() => {
+      const escaped = window.CSS.escape(id);
+      const el = document.querySelector(`[data-message-id="${escaped}"]`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  };
+
+  const selectSession = async (id: string, focusMessageId?: string | null) => {
     if (busy) return;
     sessionIdRef.current = id;
     setSessionId(id);
@@ -574,6 +586,7 @@ export default function AIStudioView() {
             },
           ],
     );
+    setHighlightMessageId(null);
     retryTargetRef.current = null;
     setStreamStatus('idle');
     setStreamError(null);
@@ -581,6 +594,7 @@ export default function AIStudioView() {
     setRagHits([]);
     setPendingSend(null);
     setPendingSelected(null);
+    if (focusMessageId) focusMessage(focusMessageId);
   };
 
   const startRename = (session: db.Session) => {
@@ -1404,7 +1418,19 @@ export default function AIStudioView() {
                   <button
                     type="button"
                     aria-label="Open session"
-                    onClick={() => void selectSession(s.id)}
+                    onClick={() =>
+                      void selectSession(
+                        s.id,
+                        sessionHitBy.get(s.id)?.matchType === 'message'
+                          ? (sessionHitBy.get(s.id)?.messageId ?? null)
+                          : null,
+                      )
+                    }
+                    data-session-message-id={
+                      sessionHitBy.get(s.id)?.matchType === 'message'
+                        ? (sessionHitBy.get(s.id)?.messageId ?? '')
+                        : ''
+                    }
                     className={`w-full rounded-lg border py-1.5 pl-7 pr-16 text-left ${
                       sessionId === s.id
                         ? 'border-emerald-500/30 bg-emerald-500/10'
@@ -1420,6 +1446,7 @@ export default function AIStudioView() {
                         className="mt-0.5 block truncate text-[9px] text-cyan-300/80"
                       >
                         {sessionHitBy.get(s.id)?.snippet ?? ''}
+                        {sessionHitBy.get(s.id)?.matchType === 'message' ? '  →' : ''}
                       </span>
                     ) : null}
                     <span
@@ -1498,8 +1525,11 @@ export default function AIStudioView() {
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
             {messages.map((m, i) => (
               <div
-                key={i}
-                className={`group relative ${m.role === 'user' ? 'self-end' : 'self-start'}`}
+                key={m.id ?? i}
+                data-message-id={m.id ?? ''}
+                className={`group relative ${
+                  m.role === 'user' ? 'self-end' : 'self-start'
+                } ${m.id && m.id === highlightMessageId ? 'message-jump-highlight' : ''}`}
               >
                 <div
                   className={`message-in max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${

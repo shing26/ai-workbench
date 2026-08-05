@@ -558,3 +558,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增同构 `buildMoaConsensus` / `buildMoaConsensusLocal`，`sendAiMessageStream` 的 MOA 分支在全部流结束后 emit 相同摘要块。
 - AI Studio MOA badge 状态从 `3-way` 升级为 `3-way+summary`，Inspector 展示 `3-way consensus` 状态与 Consensus 摘要。
 - `verify:ui` / `verify:preview` 的 `moaParallel` lane 新增 `consensusSeen` / `summaryText` 断言；Rust 118 条单测通过。
+
+## Sprint 105：会话消息跳转与高亮
+
+- `SessionSearchHit` 新增 `message_id: Option<String>`：Rust `search_sessions` 的消息全文查询改为 `SELECT id, content FROM chat_messages`，命中时返回消息 ID，标题 / 模型命中为 `None`。
+- `db.ts` 的 `SessionSearchHit` 同步新增 `messageId`，浏览器 fallback `searchSessions` 在消息命中时携带 `message.id`。
+- AI Studio 搜索结果行新增 `data-session-message-id`，消息命中时点击 Open session 调用 `selectSession(id, messageId)`，加载后 `scrollIntoView` 并添加 `message-jump-highlight`。
+- 消息气泡外层新增 `data-message-id`，`message-jump-highlight` 使用短暂边框辉光动画；新开会话或切换无命中会话时清除高亮。
+- `verify:ui` / `verify:preview` 的 `sessionSearchEnhanced` lane 新增 `jumpSeen` / `jumpMessageId` / `highlightedMessageId` 断言；Rust 118 条单测通过。

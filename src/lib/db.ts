@@ -65,6 +65,7 @@ export type SessionSearchHit = {
   matchType: 'all' | 'title' | 'model' | 'message';
   snippet: string;
   score: number;
+  messageId?: string | null;
 };
 
 export type ChatMessage = {
@@ -1538,6 +1539,7 @@ export async function searchSessions(
       matchType: 'all' as const,
       snippet: '',
       score: 0,
+      messageId: null,
     }));
   }
   const hits: SessionSearchHit[] = [];
@@ -1545,22 +1547,29 @@ export async function searchSessions(
     let bestScore = 0;
     let bestMatch: SessionSearchHit['matchType'] | null = null;
     let bestSnippet = '';
-    const consider = (score: number, matchType: SessionSearchHit['matchType'], snippet: string) => {
+    let bestMessageId: string | null = null;
+    const consider = (
+      score: number,
+      matchType: SessionSearchHit['matchType'],
+      snippet: string,
+      messageId?: string | null,
+    ) => {
       if (score > bestScore) {
         bestScore = score;
         bestMatch = matchType;
         bestSnippet = snippet;
+        bestMessageId = messageId ?? null;
       }
     };
     const titleScore = sessionMatchScore(session.title, q);
-    if (titleScore != null) consider(titleScore, 'title', sessionSnippet(session.title));
+    if (titleScore != null) consider(titleScore, 'title', sessionSnippet(session.title), null);
     const modelScore = sessionMatchScore(session.model, q);
-    if (modelScore != null) consider(modelScore, 'model', sessionSnippet(session.model));
+    if (modelScore != null) consider(modelScore, 'model', sessionSnippet(session.model), null);
     if (options.includeMessages !== false) {
       for (const message of (shape.chatMessages ?? []).filter((m) => m.sessionId === session.id)) {
         const messageScore = sessionMatchScore(message.content, q);
         if (messageScore != null) {
-          consider(messageScore, 'message', sessionSnippet(message.content));
+          consider(messageScore, 'message', sessionSnippet(message.content), message.id);
         }
       }
     }
@@ -1570,6 +1579,7 @@ export async function searchSessions(
         matchType: bestMatch,
         snippet: bestSnippet,
         score: bestScore + (session.pinned ? 10 : 0),
+        messageId: bestMessageId,
       });
     }
   }
