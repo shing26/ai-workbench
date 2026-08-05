@@ -1443,6 +1443,45 @@ fn update_provider_model(
 }
 
 #[tauri::command]
+fn list_provider_models(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<Vec<ProviderModel>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let provider = db::get_provider(&conn, &provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Provider not found".to_string())?;
+    drop(conn);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let is_ollama = is_ollama_provider(&provider.name, &provider.base_url);
+    let endpoint = if is_ollama {
+        format!("{}/api/tags", provider.base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/models", provider.base_url.trim_end_matches('/'))
+    };
+    let mut request = client.get(&endpoint);
+    if !is_ollama {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        let api_key = get_api_key(key_ref)?;
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let response = request.send().map_err(|e| e.to_string())?;
+    let status = response.status();
+    let body = response.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("Models HTTP {}: {}", status, truncate_error(&body)));
+    }
+    parse_provider_models(&body, is_ollama)
+}
+
+#[tauri::command]
 fn list_departments(state: State<'_, db::Db>) -> Result<Vec<db::Department>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_departments(&conn).map_err(|e| e.to_string())
@@ -2690,6 +2729,48 @@ struct ProviderHealth {
     ok: bool,
     latency_ms: u128,
     message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModel {
+    id: String,
+    owned_by: Option<String>,
+}
+
+fn parse_provider_models(body: &str, is_ollama: bool) -> Result<Vec<ProviderModel>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let mut models = Vec::new();
+    if is_ollama {
+        if let Some(items) = value.get("models").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(id) = item.get("name").and_then(|v| v.as_str()) {
+                    models.push(ProviderModel {
+                        id: id.to_string(),
+                        owned_by: None,
+                    });
+                }
+            }
+        }
+    } else if let Some(items) = value.get("data").and_then(|v| v.as_array()) {
+        for item in items {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                let owned_by = item
+                    .get("owned_by")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                models.push(ProviderModel {
+                    id: id.to_string(),
+                    owned_by,
+                });
+            }
+        }
+    }
+    if models.is_empty() {
+        Err("No models returned by provider".to_string())
+    } else {
+        Ok(models)
+    }
 }
 
 fn check_provider_health_state(provider: &db::Provider) -> ProviderHealth {
@@ -4730,6 +4811,7 @@ pub fn run() {
             create_provider,
             set_provider_active,
             update_provider_model,
+            list_provider_models,
             list_departments,
             list_agents,
             create_department,
@@ -4871,6 +4953,28 @@ mod tests {
         assert!(short.ends_with("..."));
         assert!(short.len() <= 164);
         assert_eq!(truncate_error("ok"), "ok");
+    }
+
+    #[test]
+    fn provider_models_parses_openai_and_ollama_shapes() {
+        let openai = r#"{"object":"list","data":[{"id":"gpt-4o-mini","owned_by":"openai"},{"id":"mock-gpt","owned_by":"acme"}]}"#;
+        let parsed = parse_provider_models(openai, false).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, "gpt-4o-mini");
+        assert_eq!(parsed[0].owned_by.as_deref(), Some("openai"));
+        assert_eq!(parsed[1].id, "mock-gpt");
+        assert_eq!(parsed[1].owned_by.as_deref(), Some("acme"));
+
+        let ollama = r#"{"models":[{"name":"qwen2.5:3b"},{"name":"llama3.2"}]}"#;
+        let parsed = parse_provider_models(ollama, true).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, "qwen2.5:3b");
+        assert!(parsed[0].owned_by.is_none());
+        assert_eq!(parsed[1].id, "llama3.2");
+
+        assert!(parse_provider_models("{}", false).is_err());
+        assert!(parse_provider_models(r#"{"data":[]}"#, false).is_err());
+        assert!(parse_provider_models("not json", false).is_err());
     }
 
     #[test]

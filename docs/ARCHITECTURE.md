@@ -499,3 +499,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 Tauri 命令 `trigger_webhook_event` / `list_webhook_deliveries` / `retry_webhook_delivery` / `delete_webhook_delivery` / `clear_webhook_deliveries`；`list_webhook_deliveries` limit 收敛到 1~200。
 - SystemView 新增事件触发输入、快捷按钮与投递队列面板；浏览器 fallback 使用 `ai-workbench:webhook-deliveries:v1` 持久化同一模型。
 - `verify:ui` / `verify:preview` 新增 `webhookQueueEvent` lane；Rust 单测覆盖迁移补列与队列全生命周期。
+
+## Sprint 97：Provider /models 探测与下拉选择
+
+- 新增 `list_provider_models` Tauri 命令：非 Ollama 请求 `{base_url}/models`（Bearer 鉴权），Ollama 请求 `{base_url}/api/tags`，8 秒超时；`parse_provider_models` 兼容 OpenAI `data[].id / owned_by` 与 Ollama `models[].name`。
+- `db.ts` 新增 `ProviderModel` / `listProviderModels`：Tauri 走 invoke，浏览器 fallback 走同构 fetch 并带 8 秒 AbortController 超时。
+- SystemView Provider 卡片新增探测按钮与下拉：`data-provider-models-detect`（带数量 badge）、`data-provider-model-options` / `data-provider-model-option`、`data-provider-model-error`；模型输入改为受控，选择后即时持久化。
+- `verify:ui` / `verify:preview` 新增 `providerModels` lane；Rust 单测覆盖两种响应形状与空列表错误。

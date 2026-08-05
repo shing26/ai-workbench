@@ -5445,6 +5445,133 @@ try {
     if (liveServer) liveServer.close();
   }
 
+  let modelsServer = null;
+  try {
+    modelsServer = http.createServer((req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === "/v1/models") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            object: "list",
+            data: [
+              { id: "mock-gpt-4o", owned_by: "mockai" },
+              { id: "mock-gpt-mini", owned_by: "mockai" },
+              { id: "mock-reasoner", owned_by: "mockai" },
+            ],
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => modelsServer.listen(0, "127.0.0.1", resolve));
+    const modelsPort = modelsServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "models-provider",
+          name: "Models Mock",
+          baseUrl: "http://127.0.0.1:${modelsPort}/v1",
+          apiKey: "test-key",
+          model: "",
+          isActive: true,
+        },
+        {
+          id: "bad-models-provider",
+          name: "Bad Models Mock",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "test-key",
+          model: "",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await send("Page.reload", { ignoreCache: true });
+    await waitForApp();
+    const providerModels = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "dock missing after reload" };
+      dock.click();
+      await sleep(350);
+      const detect = document.querySelector(
+        '[data-provider-id="models-provider"] [data-provider-models-detect]',
+      );
+      if (!detect) return { ok: false, reason: "no detect button" };
+      detect.click();
+      let options = [];
+      for (let i = 0; i < 20; i++) {
+        options = [...document.querySelectorAll("[data-provider-model-option]")]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (options.length >= 3) break;
+        await sleep(100);
+      }
+      const countBadge = document
+        .querySelector('[data-provider-id="models-provider"] [data-provider-models]')
+        ?.getAttribute("data-provider-models");
+      if (options.length < 3) {
+        return { ok: false, options, countBadge, reason: "options not loaded" };
+      }
+      const target = [...document.querySelectorAll("[data-provider-model-option]")]
+        .find((b) => b.getAttribute("data-provider-model-option") === "mock-gpt-4o");
+      target?.click();
+      await sleep(350);
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").providers
+        .find((p) => p.id === "models-provider");
+      const badge = document
+        .querySelector('[data-provider-id="models-provider"] [data-provider-model]')
+        ?.textContent?.trim();
+      const input = document.querySelector(
+        '[data-provider-id="models-provider"] [data-provider-model-input]',
+      );
+      const badDetect = document.querySelector(
+        '[data-provider-id="bad-models-provider"] [data-provider-models-detect]',
+      );
+      badDetect?.click();
+      let errorText = "";
+      for (let i = 0; i < 20; i++) {
+        errorText = document
+          .querySelector('[data-provider-id="bad-models-provider"] [data-provider-model-error]')
+          ?.textContent?.trim() ?? "";
+        if (errorText) break;
+        await sleep(100);
+      }
+      return {
+        ok:
+          stored?.model === "mock-gpt-4o" &&
+          badge === "live" &&
+          input?.value === "mock-gpt-4o" &&
+          errorText.length > 0,
+        options,
+        countBadge,
+        model: stored?.model ?? "",
+        badge,
+        inputValue: input?.value ?? "",
+        errorText,
+      };
+    })()`);
+    if (!providerModels.ok) {
+      throw new Error(`Provider models assertion failed: ${JSON.stringify(providerModels)}`);
+    }
+    results.providerModels = providerModels;
+  } finally {
+    if (modelsServer) modelsServer.close();
+  }
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {

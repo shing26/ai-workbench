@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, Webhook, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, List, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, Webhook, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -55,6 +55,10 @@ export default function SystemView() {
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
+  const [providerModels, setProviderModels] = useState<Record<string, db.ProviderModel[]>>({});
+  const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
+  const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookPayload, setWebhookPayload] = useState(
     '{"event":"daily.summary","source":"ai-workbench"}',
@@ -788,6 +792,41 @@ export default function SystemView() {
     setModel("");
   };
 
+  const saveProviderModel = async (id: string, value: string) => {
+    await setProviderModel(id, value.trim());
+    setModelDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const detectProviderModels = async (id: string) => {
+    const provider = providers.find((p) => p.id === id);
+    if (!provider) return;
+    try {
+      const models = await db.listProviderModels(provider);
+      setProviderModels((prev) => ({ ...prev, [id]: models }));
+      setProviderModelOpen((prev) => ({ ...prev, [id]: true }));
+      setProviderModelError((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    } catch (err) {
+      setProviderModelError((prev) => ({
+        ...prev,
+        [id]: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  };
+
+  const pickProviderModel = async (id: string, modelId: string) => {
+    setModelDrafts((prev) => ({ ...prev, [id]: modelId }));
+    setProviderModelOpen((prev) => ({ ...prev, [id]: false }));
+    await saveProviderModel(id, modelId);
+  };
+
   const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
   const errorDevices = Array.from(
     new Set(logs.map((log) => log.deviceId || "unknown")),
@@ -834,6 +873,7 @@ export default function SystemView() {
             return (
               <div
                 key={p.id}
+                data-provider-id={p.id}
                 className={`provider-card rounded-2xl border bg-white/[0.03] p-3 ${
                   p.isActive ? "active-provider border-emerald-500/20" : "border-white/10"
                 }`}
@@ -853,14 +893,28 @@ export default function SystemView() {
                 <div className="mt-1.5 flex items-center gap-1.5">
                   <input
                     data-provider-model-input
-                    defaultValue={p.model}
-                    onBlur={(e) => void setProviderModel(p.id, e.target.value.trim())}
+                    value={modelDrafts[p.id] ?? p.model}
+                    onChange={(e) =>
+                      setModelDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))
+                    }
+                    onBlur={(e) => void saveProviderModel(p.id, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                     }}
                     placeholder="model"
                     className="h-6 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[10px] text-slate-300 outline-none placeholder:text-slate-600 focus:border-emerald-500/40"
                   />
+                  <button
+                    type="button"
+                    data-provider-models-detect
+                    data-provider-models={providerModels[p.id]?.length ?? 0}
+                    onClick={() => void detectProviderModels(p.id)}
+                    aria-label={`Detect models for ${p.name}`}
+                    title="Detect models"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-slate-400 hover:border-emerald-500/30 hover:text-emerald-300"
+                  >
+                    <List size={10} />
+                  </button>
                   <span
                     data-provider-model={p.model}
                     className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
@@ -870,6 +924,34 @@ export default function SystemView() {
                     {p.model ? "live" : "fallback"}
                   </span>
                 </div>
+                {providerModelOpen[p.id] && (providerModels[p.id]?.length ?? 0) > 0 && (
+                  <div
+                    data-provider-model-options
+                    className="mt-1.5 grid max-h-28 gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#101014] p-1"
+                  >
+                    {providerModels[p.id].map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        data-provider-model-option={m.id}
+                        onClick={() => void pickProviderModel(p.id, m.id)}
+                        className={`flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-[10px] ${
+                          m.id === (modelDrafts[p.id] ?? p.model)
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "text-slate-300 hover:bg-white/[0.06]"
+                        }`}
+                      >
+                        <span className="truncate">{m.id}</span>
+                        {m.ownedBy && <span className="shrink-0 text-slate-600">{m.ownedBy}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {providerModelError[p.id] && (
+                  <p data-provider-model-error className="mt-1 truncate text-[9px] text-rose-300">
+                    {providerModelError[p.id]}
+                  </p>
+                )}
                 <div className="mt-1 flex items-center gap-1.5 text-[10px]">
                   <span className={`h-1.5 w-1.5 rounded-full ${state?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
                   <span className={state?.ok ? "text-emerald-400" : "text-red-300"}>{statusLabel}</span>

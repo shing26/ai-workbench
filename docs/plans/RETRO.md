@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 97
+
+### What went well?
+
+- Provider 模型探测上线：`list_provider_models` 同时支持 OpenAI-compatible `/models` 与 Ollama `/api/tags`，Bearer 鉴权只对非 Ollama 附加，8 秒超时兜底。
+- `parse_provider_models` 兼容 `data[].id / owned_by` 与 `models[].name` 两种形状，空列表 / 非法 JSON 返回明确错误。
+- 浏览器 fallback 与 Rust 同构：`listProviderModels` 走真实 fetch，错误通过 `data-provider-model-error` 回显，坏地址路径在 verify 中验证。
+- SystemView 模型输入改为受控 + 探测下拉：`data-provider-models-detect`、`data-provider-model-options`、`data-provider-model-option`，选择后立即持久化并切换 live 徽标。
+- `verify:ui` / `verify:preview` 新增 `providerModels` lane：本地 `/models` mock 断言 3 个选项、选中持久化、badge live、错误提示；Rust 110 个单测通过，clippy 零告警。
+
+### What went wrong?
+
+- 首次把结构体、解析器、命令与注册放在同一个大补丁里，apply_patch 上下文匹配失败；拆成小补丁后通过，后续 Rust 改动应保持小步提交。
+- 浏览器 fetch 失败在坏地址上显示 `Failed to fetch`，文案可读性一般；后续可把网络错误映射为更友好的提示。
+- 模型输入从 `defaultValue` 改为受控后需要同步 `modelDrafts`：选择下拉项时必须先写 draft 再持久化，否则输入框不会立即刷新。
+
+### Action Items
+
+- 下一 Sprint 候选：前端 ESLint/Prettier + husky/lint-staged、真实 MOA 并行、Webhook payload 模板 / 上下文字段。
+- Provider 探测后续可做模型能力元数据、最近使用排序与 `/models` 缓存。
+- 保留 `providerModels` lane，改动 Provider UI 或探测链路时重跑 `verify:ui`。
+
 ## Sprint 96
 
 ### What went well?
