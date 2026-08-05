@@ -60,6 +60,13 @@ export type Session = {
   createdAt: number;
 };
 
+export type SessionSearchHit = {
+  session: Session;
+  matchType: 'all' | 'title' | 'model' | 'message';
+  snippet: string;
+  score: number;
+};
+
 export type ChatMessage = {
   id: string;
   sessionId: string;
@@ -1470,6 +1477,110 @@ export async function listSessions(): Promise<Session[]> {
       messageCount: shape.chatMessages.filter((m) => m.sessionId === s.id).length,
     }))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
+}
+
+function sessionMatchScore(haystack: string, query: string): number | null {
+  const h = haystack.toLowerCase();
+  const q = query.toLowerCase();
+  if (!h || !q) return null;
+  const exact = h.indexOf(q);
+  if (exact >= 0) return 120 - exact;
+  let qi = 0;
+  let gaps = 0;
+  let last = -1;
+  for (let i = 0; i < h.length; i += 1) {
+    if (h[i] === q[qi]) {
+      if (last >= 0) gaps += i - last - 1;
+      last = i;
+      qi += 1;
+      if (qi === q.length) return Math.max(1, 80 - gaps);
+    }
+  }
+  return null;
+}
+
+function sessionSnippet(content: string): string {
+  const text = content.replace(/\s+/g, ' ').trim();
+  return text.length > 90 ? `${text.slice(0, 90)}...` : text;
+}
+
+export async function searchSessions(
+  query: string,
+  options: {
+    since?: number;
+    until?: number;
+    limit?: number;
+    includeMessages?: boolean;
+  } = {},
+): Promise<SessionSearchHit[]> {
+  const q = query.trim();
+  if (isTauri()) {
+    return invoke<SessionSearchHit[]>('search_sessions', {
+      query: q,
+      since: options.since ?? null,
+      until: options.until ?? null,
+      limit: options.limit ?? null,
+      includeMessages: options.includeMessages ?? true,
+    });
+  }
+  const shape = readLocal();
+  const sessions = shape.sessions
+    .map((s) => ({
+      ...s,
+      pinned: s.pinned ?? false,
+      messageCount: (shape.chatMessages ?? []).filter((m) => m.sessionId === s.id).length,
+    }))
+    .filter((s) => options.since == null || s.createdAt >= options.since)
+    .filter((s) => options.until == null || s.createdAt <= options.until);
+  if (!q) {
+    return sessions.map((session) => ({
+      session,
+      matchType: 'all' as const,
+      snippet: '',
+      score: 0,
+    }));
+  }
+  const hits: SessionSearchHit[] = [];
+  for (const session of sessions) {
+    let bestScore = 0;
+    let bestMatch: SessionSearchHit['matchType'] | null = null;
+    let bestSnippet = '';
+    const consider = (score: number, matchType: SessionSearchHit['matchType'], snippet: string) => {
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = matchType;
+        bestSnippet = snippet;
+      }
+    };
+    const titleScore = sessionMatchScore(session.title, q);
+    if (titleScore != null) consider(titleScore, 'title', sessionSnippet(session.title));
+    const modelScore = sessionMatchScore(session.model, q);
+    if (modelScore != null) consider(modelScore, 'model', sessionSnippet(session.model));
+    if (options.includeMessages !== false) {
+      for (const message of (shape.chatMessages ?? []).filter((m) => m.sessionId === session.id)) {
+        const messageScore = sessionMatchScore(message.content, q);
+        if (messageScore != null) {
+          consider(messageScore, 'message', sessionSnippet(message.content));
+        }
+      }
+    }
+    if (bestMatch) {
+      hits.push({
+        session,
+        matchType: bestMatch,
+        snippet: bestSnippet,
+        score: bestScore + (session.pinned ? 10 : 0),
+      });
+    }
+  }
+  return hits
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        Number(b.session.pinned) - Number(a.session.pinned) ||
+        b.session.createdAt - a.session.createdAt,
+    )
+    .slice(0, Math.max(1, options.limit ?? 50));
 }
 
 export async function createSession(title: string, model: string): Promise<Session> {

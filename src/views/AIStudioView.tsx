@@ -172,6 +172,10 @@ export default function AIStudioView() {
   const [sessions, setSessions] = useState<db.Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionQuery, setSessionQuery] = useState('');
+  const [sessionRange, setSessionRange] = useState('all');
+  const [sessionFullText, setSessionFullText] = useState(true);
+  const [sessionHits, setSessionHits] = useState<db.SessionSearchHit[] | null>(null);
+  const [sessionSearchBusy, setSessionSearchBusy] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -428,6 +432,43 @@ export default function AIStudioView() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const q = sessionQuery.trim();
+    if (!q) {
+      setSessionHits(null);
+      setSessionSearchBusy(false);
+      return;
+    }
+    const rangeMs =
+      sessionRange === 'today'
+        ? 86_400_000
+        : sessionRange === '7d'
+          ? 7 * 86_400_000
+          : sessionRange === '30d'
+            ? 30 * 86_400_000
+            : 0;
+    setSessionSearchBusy(true);
+    const timer = window.setTimeout(() => {
+      void db
+        .searchSessions(q, {
+          since: rangeMs ? Date.now() - rangeMs : undefined,
+          includeMessages: sessionFullText,
+          limit: 50,
+        })
+        .then((hits) => {
+          if (!cancelled) setSessionHits(hits);
+        })
+        .finally(() => {
+          if (!cancelled) setSessionSearchBusy(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [sessionQuery, sessionRange, sessionFullText, sessions]);
+
+  useEffect(() => {
     let disposed = false;
     void Promise.all([db.listDepartments(), db.listAgents()]).then(
       ([departmentList, agentList]) => {
@@ -653,6 +694,7 @@ export default function AIStudioView() {
     URL.revokeObjectURL(url);
   };
 
+  const sessionHitBy = new Map((sessionHits ?? []).map((hit) => [hit.session.id, hit]));
   const filteredSessions = sessions
     .filter((s) => {
       const q = sessionQuery.trim().toLowerCase();
@@ -660,6 +702,7 @@ export default function AIStudioView() {
       return `${s.title} ${s.model}`.toLowerCase().includes(q);
     })
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
+  const visibleSessions = sessionHits ? sessionHits.map((hit) => hit.session) : filteredSessions;
 
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
@@ -1253,11 +1296,40 @@ export default function AIStudioView() {
               value={sessionQuery}
               onChange={(e) => setSessionQuery(e.target.value)}
               placeholder="Search sessions..."
+              data-session-search-input
               className="min-w-0 flex-1 bg-transparent text-[11px] text-slate-300 outline-none placeholder:text-slate-600"
             />
           </label>
+          <div className="flex h-6 shrink-0 items-center gap-1">
+            <select
+              value={sessionRange}
+              onChange={(e) => setSessionRange(e.target.value)}
+              aria-label="Session time range"
+              data-session-range
+              className="h-6 min-w-0 flex-1 rounded-lg border border-white/10 bg-[#18181C] px-1 text-[9px] text-slate-400 outline-none"
+            >
+              <option value="all">Any time</option>
+              <option value="today">Today</option>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+            </select>
+            <label
+              title="Include message text"
+              className="flex h-6 shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-1.5"
+            >
+              <input
+                type="checkbox"
+                checked={sessionFullText}
+                onChange={(e) => setSessionFullText(e.target.checked)}
+                aria-label="Search message text"
+                data-session-fulltext
+                className="h-2.5 w-2.5 accent-emerald-500"
+              />
+              <span className="text-[8px] text-slate-500">Msg</span>
+            </label>
+          </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-            {filteredSessions.map((s) =>
+            {visibleSessions.map((s) =>
               renamingId === s.id ? (
                 <div
                   key={s.id}
@@ -1325,7 +1397,20 @@ export default function AIStudioView() {
                     data-session-count={s.messageCount}
                   >
                     <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
-                    <span className="mt-0.5 block truncate text-[9px] text-slate-600">
+                    {sessionHitBy.get(s.id) ? (
+                      <span
+                        data-session-snippet={s.id}
+                        data-session-match-type={sessionHitBy.get(s.id)?.matchType ?? ''}
+                        className="mt-0.5 block truncate text-[9px] text-cyan-300/80"
+                      >
+                        {sessionHitBy.get(s.id)?.snippet ?? ''}
+                      </span>
+                    ) : null}
+                    <span
+                      className={`${
+                        sessionHitBy.get(s.id) ? 'hidden' : ''
+                      } mt-0.5 block truncate text-[9px] text-slate-600`}
+                    >
                       {s.model} · {s.messageCount} msg(s)
                     </span>
                   </button>
@@ -1379,9 +1464,13 @@ export default function AIStudioView() {
                 </div>
               ),
             )}
-            {filteredSessions.length === 0 && (
+            {visibleSessions.length === 0 && (
               <div className="py-6 text-center text-[10px] text-slate-600">
-                {sessionQuery.trim() ? 'No matching sessions' : 'No sessions'}
+                {sessionQuery.trim()
+                  ? sessionSearchBusy
+                    ? 'Searching...'
+                    : 'No matching sessions'
+                  : 'No sessions'}
               </div>
             )}
           </div>

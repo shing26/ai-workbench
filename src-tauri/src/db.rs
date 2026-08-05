@@ -343,6 +343,15 @@ pub struct Session {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionSearchHit {
+    pub session: Session,
+    pub match_type: String,
+    pub snippet: String,
+    pub score: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
     pub session_id: String,
@@ -4199,6 +4208,121 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     rows.collect()
 }
 
+fn fuzzy_match_score(haystack: &str, query: &str) -> Option<i64> {
+    let h = haystack.to_lowercase();
+    let q = query.to_lowercase();
+    if h.is_empty() || q.is_empty() {
+        return None;
+    }
+    if let Some(index) = h.find(&q) {
+        return Some(120 - index as i64);
+    }
+    let hb = h.as_bytes();
+    let qb = q.as_bytes();
+    let mut qi = 0usize;
+    let mut gaps = 0i64;
+    let mut last: Option<usize> = None;
+    for (index, &byte) in hb.iter().enumerate() {
+        if qi < qb.len() && byte == qb[qi] {
+            if let Some(prev) = last {
+                gaps += (index - prev - 1) as i64;
+            }
+            last = Some(index);
+            qi += 1;
+            if qi == qb.len() {
+                return Some((80 - gaps).max(1));
+            }
+        }
+    }
+    None
+}
+
+fn session_snippet(content: &str) -> String {
+    let text = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = text.chars();
+    let mut out: String = chars.by_ref().take(90).collect();
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
+}
+
+pub fn search_sessions(
+    conn: &Connection,
+    query: &str,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    limit: Option<i64>,
+    include_messages: bool,
+) -> Result<Vec<SessionSearchHit>> {
+    let q = query.trim();
+    let sessions = list_sessions(conn)?
+        .into_iter()
+        .filter(|s| since_ms.is_none_or(|since| s.created_at >= since))
+        .filter(|s| until_ms.is_none_or(|until| s.created_at <= until));
+
+    if q.is_empty() {
+        return Ok(sessions
+            .map(|session| SessionSearchHit {
+                session,
+                match_type: "all".to_string(),
+                snippet: String::new(),
+                score: 0,
+            })
+            .collect());
+    }
+
+    let mut hits = Vec::new();
+    for session in sessions {
+        let mut best: Option<(i64, &str, String)> = None;
+        if let Some(score) = fuzzy_match_score(&session.title, q) {
+            best = Some((score, "title", session.title.clone()));
+        }
+        if let Some(score) = fuzzy_match_score(&session.model, q) {
+            let candidate = (score, "model", session.model.clone());
+            if best.as_ref().is_none_or(|(current, _, _)| score > *current) {
+                best = Some(candidate);
+            }
+        }
+        if include_messages {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM chat_messages
+                 WHERE session_id = ?1
+                 ORDER BY created_at DESC
+                 LIMIT 100",
+            )?;
+            let rows = stmt.query_map(params![session.id], |row| row.get::<_, String>(0))?;
+            for content in rows {
+                let content = content?;
+                if let Some(score) = fuzzy_match_score(&content, q) {
+                    let candidate = (score, "message", session_snippet(&content));
+                    if best.as_ref().is_none_or(|(current, _, _)| score > *current) {
+                        best = Some(candidate);
+                    }
+                }
+            }
+        }
+        if let Some((score, match_type, snippet)) = best {
+            let pinned = session.pinned;
+            hits.push(SessionSearchHit {
+                session,
+                match_type: match_type.to_string(),
+                snippet,
+                score: score + if pinned { 10 } else { 0 },
+            });
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.session.pinned.cmp(&a.session.pinned))
+            .then_with(|| b.session.created_at.cmp(&a.session.created_at))
+    });
+    hits.truncate(limit.unwrap_or(50).max(1) as usize);
+    Ok(hits)
+}
+
 pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Session> {
     let id = uid();
     let now = now_millis();
@@ -4725,6 +4849,94 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn session_search_matches_title_model_and_message_content() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let planning = create_session(&conn, "Sprint Planning", "openai").unwrap();
+        let grocery = create_session(&conn, "Grocery list", "ollama").unwrap();
+        save_chat_message(
+            &conn,
+            &planning.id,
+            "user",
+            "Can you review the RAG architecture?",
+            None,
+        )
+        .unwrap();
+        save_chat_message(&conn, &grocery.id, "user", "Add milk and eggs", None).unwrap();
+
+        let title_hits = search_sessions(&conn, "planning", None, None, None, true).unwrap();
+        assert_eq!(title_hits.len(), 1);
+        assert_eq!(title_hits[0].session.id, planning.id);
+        assert_eq!(title_hits[0].match_type, "title");
+
+        let model_hits = search_sessions(&conn, "ollama", None, None, None, true).unwrap();
+        assert_eq!(model_hits.len(), 1);
+        assert_eq!(model_hits[0].session.id, grocery.id);
+        assert_eq!(model_hits[0].match_type, "model");
+
+        let message_hits =
+            search_sessions(&conn, "RAG architecture", None, None, None, true).unwrap();
+        assert_eq!(message_hits.len(), 1);
+        assert_eq!(message_hits[0].session.id, planning.id);
+        assert_eq!(message_hits[0].match_type, "message");
+        assert!(message_hits[0].snippet.contains("RAG architecture"));
+
+        let title_only =
+            search_sessions(&conn, "RAG architecture", None, None, None, false).unwrap();
+        assert!(title_only.is_empty());
+    }
+
+    #[test]
+    fn session_search_fuzzy_subsequence_ranks_above_message_hits() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let planning = create_session(&conn, "Sprint Planning", "openai").unwrap();
+        let generic = create_session(&conn, "General chat", "openai").unwrap();
+        save_chat_message(
+            &conn,
+            &generic.id,
+            "user",
+            "Please prepare a sprint plan for next week",
+            None,
+        )
+        .unwrap();
+
+        let hits = search_sessions(&conn, "sprnt plan", None, None, None, true).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].session.id, planning.id);
+        assert_eq!(hits[0].match_type, "title");
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn session_search_filters_by_time_range_and_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let old = create_session(&conn, "Old planning", "openai").unwrap();
+        let recent = create_session(&conn, "Recent planning", "openai").unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+            params![1_000i64, old.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+            params![2_000i64, recent.id],
+        )
+        .unwrap();
+
+        let hits = search_sessions(&conn, "planning", Some(1_500), None, None, true).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, recent.id);
+
+        let limited = search_sessions(&conn, "planning", None, None, Some(1), true).unwrap();
+        assert_eq!(limited.len(), 1);
     }
 
     #[test]
