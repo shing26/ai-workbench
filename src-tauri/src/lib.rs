@@ -2466,46 +2466,79 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn spawn_webhook_scheduler(app: tauri::AppHandle) {
+fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         let Some(state) = app.try_state::<db::Db>() else {
             continue;
         };
-        let Ok(conn) = state.0.lock() else {
-            continue;
-        };
-        let Ok(due) = db::list_due_webhook_rules(&conn, now_millis()) else {
-            continue;
-        };
-        drop(conn);
-        for rule in due {
-            let token = if rule.token.trim().is_empty() {
-                None
-            } else {
-                Some(rule.token.as_str())
+        let now = now_millis();
+        let claimed = {
+            let Ok(conn) = state.0.lock() else {
+                continue;
             };
-            let secret = if rule.secret.trim().is_empty() {
+            let Ok(due) = db::list_due_webhook_rules(&conn, now) else {
+                continue;
+            };
+            for rule in &due {
+                let _ = db::enqueue_webhook_delivery(&conn, rule, "", &rule.payload);
+                let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
+            }
+            let Ok(claimed) = db::claim_due_webhook_deliveries(&conn, now, 8) else {
+                continue;
+            };
+            claimed
+        };
+        for delivery in claimed {
+            let token = if delivery.token.trim().is_empty() {
                 None
             } else {
-                Some(rule.secret.as_str())
+                Some(delivery.token.as_str())
+            };
+            let secret = if delivery.secret.trim().is_empty() {
+                None
+            } else {
+                Some(delivery.secret.as_str())
             };
             let outcome = deliver_webhook_http(
-                &rule.url,
-                &rule.payload,
-                &rule.method,
+                &delivery.url,
+                &delivery.payload,
+                &delivery.method,
                 token,
                 secret,
-                rule.retries.max(0) as u32,
+                0,
             );
-            let (status, message) = match outcome {
-                Ok(result) => (result.status as i64, result.message),
-                Err(err) => (0, format!("Webhook delivery failed: {}", err)),
+            let (ok, status, message) = match outcome {
+                Ok(result) => (true, result.status as i64, result.message),
+                Err(err) => (false, 0, format!("Webhook delivery failed: {}", err)),
             };
             let Ok(conn) = state.0.lock() else {
                 continue;
             };
-            let _ = db::mark_webhook_rule_run(&conn, &rule.id, status, &message);
+            let attempts = delivery.attempts + 1;
+            let max_attempts = delivery.retries.max(0) + 1;
+            let dead = !ok && attempts >= max_attempts;
+            let next_attempt_at = if ok || dead {
+                now
+            } else {
+                now + 1000 * (1_i64 << attempts.min(6))
+            };
+            let state = if dead {
+                "dead"
+            } else if ok {
+                "success"
+            } else {
+                "queued"
+            };
+            let _ = db::complete_webhook_delivery(
+                &conn,
+                &delivery.id,
+                state,
+                status,
+                &message,
+                attempts,
+                next_attempt_at,
+            );
         }
     });
 }
@@ -4194,6 +4227,7 @@ struct WebhookRuleRequest {
     secret: Option<String>,
     retries: Option<i64>,
     interval_seconds: i64,
+    trigger_event: Option<String>,
 }
 
 #[tauri::command]
@@ -4219,6 +4253,7 @@ fn create_webhook_rule(
             secret: request.secret.as_deref().unwrap_or(""),
             retries: request.retries.unwrap_or(1).max(0),
             interval_seconds: request.interval_seconds.max(5),
+            trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
         },
     )
     .map_err(|e| e.to_string())
@@ -4248,6 +4283,69 @@ fn delete_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<String, S
 fn run_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<WebhookDeliveryResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     run_webhook_rule_inner(&conn, &id)
+}
+
+#[tauri::command]
+fn trigger_webhook_event(
+    state: State<'_, db::Db>,
+    event: String,
+    context: Option<Value>,
+) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let rules = db::list_event_webhook_rules(&conn, &event).map_err(|e| e.to_string())?;
+    let mut count = 0i64;
+    for rule in &rules {
+        let payload = match &context {
+            Some(ctx) => serde_json::to_string(ctx).unwrap_or_else(|_| rule.payload.clone()),
+            None => rule.payload.clone(),
+        };
+        db::enqueue_webhook_delivery(&conn, rule, &event, &payload).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+fn list_webhook_deliveries(
+    state: State<'_, db::Db>,
+    limit: Option<i64>,
+    status: Option<String>,
+) -> Result<Vec<db::WebhookDelivery>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_webhook_deliveries(
+        &conn,
+        limit.unwrap_or(50).clamp(1, 200),
+        &status.unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn retry_webhook_delivery(
+    state: State<'_, db::Db>,
+    id: String,
+) -> Result<db::WebhookDelivery, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::retry_webhook_delivery(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_webhook_delivery(state: State<'_, db::Db>, id: String) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_webhook_delivery(&conn, &id).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Deleted webhook delivery {}",
+        id.chars().take(8).collect::<String>()
+    ))
+}
+
+#[tauri::command]
+fn clear_webhook_deliveries(
+    state: State<'_, db::Db>,
+    status: Option<String>,
+) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::clear_webhook_deliveries(&conn, &status.unwrap_or_default()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -4598,7 +4696,7 @@ pub fn run() {
             restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
-            spawn_webhook_scheduler(app.handle().clone());
+            spawn_webhook_delivery_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4729,6 +4827,11 @@ pub fn run() {
             set_webhook_rule_enabled,
             delete_webhook_rule,
             run_webhook_rule,
+            trigger_webhook_event,
+            list_webhook_deliveries,
+            retry_webhook_delivery,
+            delete_webhook_delivery,
+            clear_webhook_deliveries,
             run_provider_stream_smoke_test
         ])
         .run(tauri::generate_context!())
@@ -6496,6 +6599,7 @@ mod tests {
                 secret: "rule-secret",
                 retries: 2,
                 interval_seconds: 60,
+                trigger_event: "",
             },
         )
         .unwrap();
