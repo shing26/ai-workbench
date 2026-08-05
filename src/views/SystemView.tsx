@@ -73,6 +73,8 @@ export default function SystemView() {
   const [webhookRuleName, setWebhookRuleName] = useState("");
   const [webhookRuleInterval, setWebhookRuleInterval] = useState("60");
   const [webhookRuleTrigger, setWebhookRuleTrigger] = useState("");
+  const [webhookEventContext, setWebhookEventContext] = useState("");
+  const [webhookPayloadPreview, setWebhookPayloadPreview] = useState("");
   const [webhookDeliveries, setWebhookDeliveries] = useState<db.WebhookDelivery[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
@@ -714,7 +716,24 @@ export default function SystemView() {
   };
 
   const fireWebhookEvent = async (event: string) => {
-    const count = await db.triggerWebhookEvent(event);
+    let context: Record<string, unknown> | undefined;
+    const trimmedContext = webhookEventContext.trim();
+    if (trimmedContext) {
+      try {
+        context = JSON.parse(trimmedContext) as Record<string, unknown>;
+      } catch {
+        setWebhookResult({
+          ok: false,
+          status: 0,
+          durationMs: 0,
+          attempts: 0,
+          signed: false,
+          message: "Event context JSON is invalid",
+        });
+        return;
+      }
+    }
+    const count = await db.triggerWebhookEvent(event, context);
     setWebhookResult({
       ok: true,
       status: 202,
@@ -724,6 +743,20 @@ export default function SystemView() {
       message: `Queued ${count} delivery(ies) for ${event}`,
     });
     await loadWebhookDeliveries();
+  };
+
+  const previewWebhookPayload = () => {
+    let context: Record<string, unknown> = {};
+    const trimmedContext = webhookEventContext.trim();
+    if (trimmedContext) {
+      try {
+        context = JSON.parse(trimmedContext) as Record<string, unknown>;
+      } catch {
+        setWebhookPayloadPreview("Event context JSON is invalid");
+        return;
+      }
+    }
+    setWebhookPayloadPreview(db.renderWebhookPayload(webhookPayload, "sync.completed", context));
   };
 
   const retryWebhookDelivery = async (id: string) => {
@@ -1750,6 +1783,29 @@ export default function SystemView() {
                 </button>
               ),
             )}
+            <input
+              value={webhookEventContext}
+              onChange={(e) => setWebhookEventContext(e.target.value)}
+              placeholder='Context JSON {"note":"hello"}'
+              data-webhook-event-context
+              className="h-6 w-44 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <button
+              type="button"
+              data-webhook-payload-preview
+              onClick={previewWebhookPayload}
+              className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+            >
+              Preview payload
+            </button>
+            {webhookPayloadPreview && (
+              <span
+                data-webhook-payload-preview-text
+                className="max-w-64 truncate rounded-md bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-slate-400"
+              >
+                {webhookPayloadPreview}
+              </span>
+            )}
             <button
               type="button"
               data-webhook-delivery-clear
@@ -1786,6 +1842,14 @@ export default function SystemView() {
                 <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
                   {delivery.event || "interval"} · {delivery.method} {delivery.url}
                 </span>
+                {delivery.payload && (
+                  <span
+                    data-webhook-delivery-payload
+                    className="max-w-56 truncate rounded-md bg-white/[0.03] px-1.5 py-0.5 font-mono text-[9px] text-slate-500"
+                  >
+                    {delivery.payload}
+                  </span>
+                )}
                 <span
                   data-webhook-delivery-attempts
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"

@@ -2520,7 +2520,8 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                 continue;
             };
             for rule in &due {
-                let _ = db::enqueue_webhook_delivery(&conn, rule, "", &rule.payload);
+                let payload = render_webhook_payload(&rule.payload, "", None, now);
+                let _ = db::enqueue_webhook_delivery(&conn, rule, "", &payload);
                 let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
             }
             let Ok(claimed) = db::claim_due_webhook_deliveries(&conn, now, 8) else {
@@ -4261,6 +4262,44 @@ fn deliver_webhook(
     )
 }
 
+fn render_webhook_payload(
+    template: &str,
+    event: &str,
+    context: Option<&Value>,
+    now_ms: i64,
+) -> String {
+    let mut out = String::with_capacity(template.len() + 64);
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            break;
+        };
+        let key = after[..end].trim();
+        let replacement = match key {
+            "event" => Some(serde_json::Value::String(event.to_string()).to_string()),
+            "ts" => Some(serde_json::Value::String(now_ms.to_string()).to_string()),
+            _ if key.starts_with("context.") => {
+                let field = &key["context.".len()..];
+                context
+                    .and_then(|ctx| ctx.get(field))
+                    .map(|value| value.to_string())
+                    .or_else(|| Some("null".to_string()))
+            }
+            _ => None,
+        };
+        match replacement {
+            Some(value) => out.push_str(&value),
+            None => out.push_str(&rest[start..=end + 1]),
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn run_webhook_rule_inner(
     conn: &rusqlite::Connection,
     rule_id: &str,
@@ -4278,9 +4317,10 @@ fn run_webhook_rule_inner(
     } else {
         Some(rule.secret.as_str())
     };
+    let payload = render_webhook_payload(&rule.payload, &rule.trigger_event, None, now_millis());
     let result = deliver_webhook_http(
         &rule.url,
-        &rule.payload,
+        &payload,
         &rule.method,
         token,
         secret,
@@ -4376,10 +4416,7 @@ fn trigger_webhook_event(
     let rules = db::list_event_webhook_rules(&conn, &event).map_err(|e| e.to_string())?;
     let mut count = 0i64;
     for rule in &rules {
-        let payload = match &context {
-            Some(ctx) => serde_json::to_string(ctx).unwrap_or_else(|_| rule.payload.clone()),
-            None => rule.payload.clone(),
-        };
+        let payload = render_webhook_payload(&rule.payload, &event, context.as_ref(), now_millis());
         db::enqueue_webhook_delivery(&conn, rule, &event, &payload).map_err(|e| e.to_string())?;
         count += 1;
     }
@@ -4975,6 +5012,37 @@ mod tests {
         assert!(parse_provider_models("{}", false).is_err());
         assert!(parse_provider_models(r#"{"data":[]}"#, false).is_err());
         assert!(parse_provider_models("not json", false).is_err());
+    }
+
+    #[test]
+    fn webhook_payload_template_renders_event_ts_and_context() {
+        let context = serde_json::json!({
+            "note": "hello",
+            "count": 2,
+            "nested": { "ok": true }
+        });
+        let rendered = render_webhook_payload(
+            r#"{"event":{{event}},"ts":{{ts}},"note":{{context.note}},"count":{{context.count}},"nested":{{context.nested}},"missing":{{context.missing}}}"#,
+            "sync.completed",
+            Some(&context),
+            12345,
+        );
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["event"], "sync.completed");
+        assert_eq!(value["ts"], "12345");
+        assert_eq!(value["note"], "hello");
+        assert_eq!(value["count"], 2);
+        assert_eq!(value["nested"]["ok"], true);
+        assert!(value["missing"].is_null());
+    }
+
+    #[test]
+    fn webhook_payload_template_without_variables_is_unchanged() {
+        let template = r#"{"event":"daily.summary","source":"ai-workbench"}"#;
+        assert_eq!(
+            render_webhook_payload(template, "sync.completed", None, 123),
+            template
+        );
     }
 
     #[test]

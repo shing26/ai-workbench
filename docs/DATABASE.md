@@ -713,3 +713,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 97：Provider /models 探测
 
 无表结构变更。`list_provider_models` 是运行时探测：结果不落库，模型仍由 `providers.model` 保存；浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` 数组，不新增 localStorage key。
+
+## Sprint 98：Webhook payload 模板渲染
+
+无表结构变更。模板渲染发生在入队 / 投递时：`webhook_rules.payload` 保存模板原文，`webhook_deliveries.payload` 保存渲染后的最终 JSON；浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 与 `ai-workbench:webhook-deliveries:v1`，不新增字段或 key。

@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 98
+
+### What went well?
+
+- Webhook payload 模板上线：`render_webhook_payload` 支持 `{{event}}` / `{{ts}}` / `{{context.<field>}}`，占位符展开为 JSON 值，缺失 context 字段展开为 `null`，未知占位符保留原文。
+- 定时 worker、Run now、事件触发三条链路统一渲染 payload，规则模板只需写一次，投递内容随事件 / 上下文变化。
+- `triggerWebhookEvent` 增加可选 context：Tauri 侧透传，浏览器 fallback 用同构 `renderWebhookPayload` 渲染，两侧行为一致。
+- SystemView 新增 Context JSON 输入与 Preview payload，投递队列行直接展示最终 payload；`webhookPayloadTemplate` lane 覆盖预览与触发后的渲染结果。
+- Rust 112 个单测通过，clippy 零告警，`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首版测试把占位符写成 `"event":"{{event}}"`（占位符外包引号），与 JSON 值展开约定冲突导致渲染出 `""sync.completed""`；统一为 `"event":{{event}}` 后修复。
+- 缺失 context 字段最初保留 `{{...}}` 原文，会让 JSON 失效；改为展开为 `null` 后测试稳定。
+- 模板渲染函数同时改 Rust 与 TS 时，两边语义必须保持完全一致；本次靠同一份 verify lane 兜底。
+
+### Action Items
+
+- 下一 Sprint 候选：前端 ESLint/Prettier + husky/lint-staged、真实 MOA 并行、系统事件总线接入。
+- 后续可做 payload schema 校验、模板版本管理与高级语法（条件 / 循环）。
+- 保留 `webhookPayloadTemplate` lane，改动投递链路或模板语法时重跑 `verify:ui`。
+
 ## Sprint 97
 
 ### What went well?
