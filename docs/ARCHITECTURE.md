@@ -542,3 +542,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `.prettierrc.json` / `.prettierignore`：`printWidth: 100`、`singleQuote`、`trailingComma: all`，排除 dist / node_modules / src-tauri 生成物 / docs 与生成 schema；`npx prettier --check .` 全绿。
 - `package.json` 新增 `lint` / `format` / `format:check` / `prepare` scripts 与 `lint-staged` 配置；`.husky/pre-commit` 调用 `npx lint-staged`，staged TS/TSX 自动 `eslint --fix` + `prettier --write`。
 - KnowledgeView 加载函数改为 `useCallback` 并补齐 listener / interval 依赖；SystemView 自动同步定时器用 ref 持有最新 `runAutoSync`，`checkAll` 用 `useCallback`；ProjectsView git context effect 补 `projects` 依赖。
+
+## Sprint 103：会话搜索增强
+
+- Rust 新增 `search_sessions(query, since, until, limit, include_messages)` 命令与 `SessionSearchHit`：标题 / 模型 / 消息全文按不区分大小写匹配，精确包含优先，字符子序列作为模糊分，命中按 score + pinned 排序。
+- `db.ts` 新增 `SessionSearchHit` / `searchSessions` / `sessionMatchScore` / `sessionSnippet`，浏览器 fallback 与 Rust 同构；Tauri 环境走真实命令。
+- AI Studio 会话栏搜索改为 180ms 防抖异步检索：新增 `data-session-search-input`、`data-session-range`、`data-session-fulltext`、`data-session-snippet`、`data-session-match-type`；时间范围为 Any / Today / 7d / 30d。
+- `verify:ui` / `verify:preview` 新增 `sessionSearchEnhanced` lane：断言模糊标题命中、消息全文命中与摘要、全文关闭后空态、清空恢复列表。

@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 103
+
+### What went well?
+
+- 会话搜索从精确 includes 升级为模糊 + 全文：Rust `search_sessions` 与 TS fallback 同构实现字符子序列评分，标题 / 模型 / 消息内容均可命中，pinned 加权并支持时间范围过滤。
+- AI Studio 会话栏新增 180ms 防抖搜索、Any / Today / 7d / 30d 时间范围、全文开关与命中摘要；`data-session-match-type` 区分 title / model / message。
+- `verify:ui` / `verify:preview` 新增 `sessionSearchEnhanced` lane，覆盖模糊标题、消息全文、全文关闭空态与恢复列表；Rust 新增 3 条单测，总计 117 通过。
+- `npm run build`、`cargo fmt`、`cargo clippy --lib -- -D warnings`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮消息全文断言读到上一次模糊搜索的旧渲染，目标按钮还在但 matchType 仍是 `title`；改为等待期望 matchType 后再取摘要，消除竞态。
+- Rust 构造命中项时移动 `session` 后又读 `pinned`，编译器拦截；先取 pinned 再构造，clippy 随后给出 `is_none_or` 简化建议，已落地。
+- preview 偶发 CDP `Runtime.evaluate` 超时，重跑通过，最终干净运行全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：MOA 三路共识摘要、Provider 权重 / 路由排序、会话消息内跳转与拼音模糊搜索。
+- 保留 `sessionSearchEnhanced` lane，修改会话搜索、消息存储或 AI Studio 会话栏时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 102
 
 ### What went well?

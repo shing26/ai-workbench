@@ -5091,6 +5091,101 @@ try {
   }
   results.sessionPersistence = sessionPersistence;
 
+  const sessionSearchEnhanced = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no enhanced session search input" };
+    const range = document.querySelector("[data-session-range]");
+    const fulltext = document.querySelector("[data-session-fulltext]");
+    if (!range || !fulltext) return { ok: false, reason: "no session search controls" };
+
+    const targetMatchType = () => {
+      const row = [
+        ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+      ]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("sprint RAG check"));
+      return (
+        row
+          ?.querySelector("[data-session-match-type]")
+          ?.getAttribute("data-session-match-type") ?? ""
+      );
+    };
+
+    setValue(searchInput, "sprnt rg");
+    const fuzzyTitle = await waitFor(() => targetMatchType() === "title");
+
+    setValue(searchInput, "Streaming fallback");
+    const messageHit = await waitFor(() => targetMatchType() === "message");
+    const targetRow = [
+      ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+    ]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("sprint RAG check"));
+    const messageSnippet =
+      targetRow?.querySelector("[data-session-snippet]")?.textContent ?? "";
+    const messageHitType =
+      targetRow
+        ?.querySelector("[data-session-match-type]")
+        ?.getAttribute("data-session-match-type") ?? "";
+
+    fulltext.click();
+    await sleep(120);
+    setValue(searchInput, "Streaming fallback");
+    const noMessageHit = await waitFor(() => document.body.innerText.includes("No matching sessions"));
+    const noMessageButtons = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+
+    fulltext.click();
+    await sleep(120);
+    setValue(searchInput, "");
+    await sleep(300);
+    const restoredButtons = [
+      ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+    ].filter((btn) => btn.textContent?.includes("sprint RAG check")).length;
+    return {
+      ok: true,
+      fuzzyTitle,
+      messageHit,
+      messageSnippet,
+      messageHitType,
+      noMessageHit,
+      noMessageButtons,
+      restoredButtons,
+    };
+  })()`);
+  if (
+    !sessionSearchEnhanced.ok ||
+    !sessionSearchEnhanced.fuzzyTitle ||
+    !sessionSearchEnhanced.messageHit ||
+    !sessionSearchEnhanced.messageSnippet.includes('Streaming fallback') ||
+    sessionSearchEnhanced.messageHitType !== 'message' ||
+    !sessionSearchEnhanced.noMessageHit ||
+    sessionSearchEnhanced.noMessageButtons !== 0 ||
+    sessionSearchEnhanced.restoredButtons < 1
+  ) {
+    throw new Error(
+      `AI Studio enhanced session search assertion failed: ${JSON.stringify(
+        sessionSearchEnhanced,
+      )}`,
+    );
+  }
+  results.sessionSearchEnhanced = sessionSearchEnhanced;
+
   const sessionManagement = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const setValue = (el, value) => {
@@ -5101,12 +5196,12 @@ try {
     const searchInput = document.querySelector('input[placeholder="Search sessions..."]');
     if (!searchInput) return { ok: false, reason: "no session search input" };
     setValue(searchInput, "sprint RAG");
-    await sleep(250);
+    await sleep(450);
     const searchPills = document.querySelectorAll('main button[aria-label="Open session"]').length;
     const searchMatched = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
       .some((btn) => btn.textContent?.includes("sprint RAG check"));
     setValue(searchInput, "zzz-no-match");
-    await sleep(250);
+    await sleep(450);
     const emptyState = document.body.innerText.includes("No matching sessions");
     setValue(searchInput, "");
     await sleep(250);

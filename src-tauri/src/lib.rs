@@ -1609,6 +1609,27 @@ fn list_sessions(state: State<'_, db::Db>) -> Result<Vec<db::Session>, String> {
 }
 
 #[tauri::command]
+fn search_sessions(
+    state: State<'_, db::Db>,
+    query: String,
+    since: Option<i64>,
+    until: Option<i64>,
+    limit: Option<i64>,
+    include_messages: Option<bool>,
+) -> Result<Vec<db::SessionSearchHit>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::search_sessions(
+        &conn,
+        &query,
+        since,
+        until,
+        limit,
+        include_messages.unwrap_or(true),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn create_session(
     state: State<'_, db::Db>,
     title: String,
@@ -4930,6 +4951,7 @@ pub fn run() {
             create_schedule_event,
             toggle_event_done,
             list_sessions,
+            search_sessions,
             create_session,
             rename_session,
             set_session_pinned,

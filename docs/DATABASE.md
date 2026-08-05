@@ -733,3 +733,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 102：ESLint/Prettier 与 husky/lint-staged
 
 无表结构变更。本 Sprint 只新增前端工程配置（`eslint.config.js` / `.prettierrc.json` / `.husky/pre-commit`）与开发依赖，不涉及 SQLite 表、索引或字段；浏览器 fallback 不新增 localStorage key。
+
+## Sprint 103：会话搜索增强
+
+无表结构变更。`search_sessions` 是运行时查询：复用 `sessions` 与 `chat_messages` 表，在内存中按标题 / 模型 / 消息内容评分并过滤时间范围，不新增表、索引或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。
