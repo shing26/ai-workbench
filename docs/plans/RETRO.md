@@ -1,5 +1,21 @@
 # Sprint Retrospective
 
+## Sprint 81
+
+### What went well?
+
+- Projects dirty 预览新增 Preview all：`loadBatchPreview` 逐个复用 `getGitFileDiff` 拉取全部 changed files，合并为带文件名标题的批量 unified diff，再次点击可收起。
+- `batchLoading` 守卫防止加载中重复点击启动多轮拉取；`verify:ui` / `verify:preview` 的 `gitBatchPreview` 均为 true，`npm run build` 全绿。
+
+### What went wrong?
+
+- 批量按钮放在文件清单面板内，`gitDirtyPreview` 的 filesText 会顺带包含 “Preview all” 按钮文字；路径断言仍按实际文件名判定，后续如需纯文件清单可增加独立数据属性。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、一键提交选中文件。
+- 行内着色与 diff 编辑器、整文件对比视图继续留在 Backlog。
+
 ## Sprint 80
 
 ### What went well?

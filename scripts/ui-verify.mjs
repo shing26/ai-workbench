@@ -987,6 +987,69 @@ try {
   if (!results.gitDirtyDiff.ok) {
     throw new Error(`Git dirty diff assertion failed: ${JSON.stringify(results.gitDirtyDiff)}`);
   }
+  results.gitBatchPreview = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      const panel = document.querySelector(
+        '[data-git-activity-preview-files="' + projectId + '"]',
+      );
+      if (!panel) {
+        previewBtn.click();
+        for (let j = 0; j < 20; j++) {
+          if (document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+            break;
+          }
+          await sleep(100);
+        }
+      }
+      const batchBtn = dirty.querySelector("[data-git-batch-preview]");
+      if (!batchBtn) return { ok: false, reason: "no batch preview button", projectId };
+      batchBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const pre = document.querySelector(
+          '[data-git-batch-preview-content="' + projectId + '"]',
+        );
+        const text = pre?.textContent ?? "";
+        const diffCount = (text.match(/diff --git/g) ?? []).length;
+        if (
+          pre &&
+          diffCount >= 2 &&
+          text.includes("ProjectsView.tsx") &&
+          text.includes("sprint-21-project-git-graph.md")
+        ) {
+          batchBtn.click();
+          await sleep(120);
+          const collapsed = !document.querySelector(
+            '[data-git-batch-preview-content="' + projectId + '"]',
+          );
+          return {
+            ok: collapsed,
+            projectId,
+            diffCount,
+            hasProjects: text.includes("ProjectsView.tsx"),
+            hasPlanDoc: text.includes("sprint-21-project-git-graph.md"),
+            collapsed,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "batch content missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitBatchPreview.ok) {
+    throw new Error(`Git batch preview assertion failed: ${JSON.stringify(results.gitBatchPreview)}`);
+  }
   results.gitCommitTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {

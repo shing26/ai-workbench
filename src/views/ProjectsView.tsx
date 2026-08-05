@@ -36,6 +36,11 @@ export default function ProjectsView() {
   const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
   const [gitDiffs, setGitDiffs] = useState<Record<string, db.GitFileDiff>>({});
   const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
+  const [batchDiff, setBatchDiff] = useState<{
+    projectId: string;
+    content: string;
+  } | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -61,6 +66,30 @@ export default function ProjectsView() {
         return next;
       });
     });
+  };
+
+  const loadBatchPreview = async (
+    projectId: string,
+    projectPath: string,
+    files: string[],
+  ) => {
+    if (batchLoading) return;
+    if (batchDiff?.projectId === projectId) {
+      setBatchDiff(null);
+      return;
+    }
+    setBatchLoading(true);
+    const parts: string[] = [];
+    for (const file of files) {
+      try {
+        const diff = await db.getGitFileDiff(projectPath, file);
+        parts.push(`# ${file}${diff.status ? ` (${diff.status})` : ""}\n${diff.diff}`);
+      } catch {
+        parts.push(`# ${file}\n(error reading diff)`);
+      }
+    }
+    setBatchDiff({ projectId, content: parts.join("\n\n") });
+    setBatchLoading(false);
   };
 
   useEffect(() => {
@@ -373,6 +402,30 @@ export default function ProjectsView() {
                     data-git-activity-preview-files={item.projectId}
                     className="mx-2 mb-2 flex flex-col gap-1.5 rounded-lg bg-black/20 p-2"
                   >
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        type="button"
+                        data-git-batch-preview={item.projectId}
+                        onClick={() =>
+                          void loadBatchPreview(item.projectId, item.path, item.changedPaths)
+                        }
+                        className="self-start rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
+                      >
+                        {batchLoading
+                          ? "Loading"
+                          : batchDiff?.projectId === item.projectId
+                            ? "Hide batch"
+                            : "Preview all"}
+                      </button>
+                      {batchDiff?.projectId === item.projectId && (
+                        <pre
+                          data-git-batch-preview-content={item.projectId}
+                          className="max-h-44 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
+                        >
+                          {batchDiff.content}
+                        </pre>
+                      )}
+                    </div>
                     {item.changedPaths.map((file) => (
                       <div key={file} className="flex min-w-0 flex-col gap-1">
                         <div className="flex min-w-0 items-center gap-1.5">
