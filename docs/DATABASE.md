@@ -725,3 +725,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 100：会话置顶与消息数
 
 `sessions` 新增 `pinned INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建表语句已直接包含该列，旧库由 `migrate_session_pinned` 幂等补列，已加入 `init_connection` 迁移链。`message_count` 不落库，由 `list_sessions` 子查询 `COUNT(*) FROM chat_messages WHERE session_id = sessions.id` 实时计算；`duplicate_session` 复制会话与消息，返回新会话的消息数。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `sessions` 与 `chatMessages`，旧数据在读取时自动补 `pinned=false`。
+
+## Sprint 101：真实 MOA 并行
+
+无表结构变更。MOA 并行是运行时行为：同一个 `runId` 下对前 3 个启用 Provider 并发流式请求，数据仍由 `chat_messages` 落库，不新增表或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` / `chatMessages`，不新增 localStorage key。

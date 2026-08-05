@@ -1215,9 +1215,7 @@ fn migrate_webhook_trigger_event(conn: &Connection) -> Result<()> {
 
 fn migrate_session_pinned(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "sessions", "pinned")? {
-        conn.execute_batch(
-            "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
-        )?;
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")?;
     }
     Ok(())
 }

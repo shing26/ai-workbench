@@ -125,11 +125,29 @@ async function connect(port) {
 
 async function waitForApp() {
   for (let i = 0; i < 80; i++) {
-    const ready = await evaluate(`document.querySelectorAll('nav button[aria-label]').length >= 5`);
-    if (ready) return;
+    try {
+      const ready = await evaluate(`document.querySelectorAll('nav button[aria-label]').length >= 5`);
+      if (ready) return;
+    } catch {}
     await delay(250);
   }
   throw new Error("app shell did not render 5 dock buttons");
+}
+
+async function reloadAndWait() {
+  const marker = `v=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const url = `${APP_URL}${APP_URL.includes("?") ? "&" : "?"}${marker}`;
+  await send("Page.navigate", { url });
+  for (let i = 0; i < 80; i++) {
+    try {
+      const ready = await evaluate(
+        `location.href.includes(${JSON.stringify(marker)}) && document.readyState === "complete" && document.querySelectorAll('nav button[aria-label]').length >= 5`,
+      );
+      if (ready) return;
+    } catch {}
+    await delay(250);
+  }
+  throw new Error("app shell did not render after reload");
 }
 
 async function setViewport(width, height) {
@@ -510,8 +528,7 @@ try {
   if (!results.quickPromptManager.ok) {
     throw new Error(`Quick prompt manager assertion failed: ${JSON.stringify(results.quickPromptManager)}`);
   }
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("AI Studio");
   results.quickPromptPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -540,8 +557,7 @@ try {
     localStorage.removeItem("ai-workbench:quick-prompt-usage:v1");
     return { ok: true };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("AI Studio");
   results.quickPromptUsage = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -587,8 +603,7 @@ try {
   if (!results.quickPromptUsage.ok) {
     throw new Error(`Quick prompt usage assertion failed: ${JSON.stringify(results.quickPromptUsage)}`);
   }
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("AI Studio");
   results.quickPromptUsagePersist = await evaluate(`(async () => {
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
@@ -678,8 +693,7 @@ try {
       `Quick prompt sync visibility assertion failed: ${JSON.stringify(results.quickPromptSyncVisible)}`,
     );
   }
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("AI Studio");
   results.quickPromptSyncPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -791,8 +805,7 @@ try {
       `Quick prompt edit/sort assertion failed: ${JSON.stringify(results.quickPromptEditSort)}`,
     );
   }
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("AI Studio");
   results.quickPromptEditSortPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2082,8 +2095,7 @@ try {
     return { titles, overlap };
   })()`);
   results.actions = { habitToggle, sections: actionsSections };
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Actions");
   const afterReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
   const habitPersisted = await evaluate(`(() => {
@@ -2388,8 +2400,7 @@ try {
     localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
     return { ok: true, seeded: records.length };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const indexQueuePersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2457,8 +2468,7 @@ try {
     localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
     return { ok: true, seeded: records.length };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const indexQueuePriority = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2527,8 +2537,7 @@ try {
     );
     return { ok: true };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("Knowledge");
   const indexQueueRetry = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2604,8 +2613,7 @@ try {
     );
     return { ok: true };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDockFast("Knowledge");
   results.indexQueueBackoff = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2765,8 +2773,7 @@ try {
   if (!vaultWatchReady.ok) {
     throw new Error(`Vault watch persistence setup failed: ${JSON.stringify(vaultWatchReady)}`);
   }
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const vaultWatchPersisted = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2995,8 +3002,7 @@ try {
     );
     return { ok: true, files: 3 };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const knowledgeDocStatus = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3143,8 +3149,7 @@ try {
     );
     return { ok: true, files: 3 };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const knowledgeDocClean = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3279,8 +3284,7 @@ try {
     );
     return { ok: true, files: 3 };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const docHealthAuto = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3341,8 +3345,7 @@ try {
   }
   results.docHealthAuto = docHealthAuto;
 
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const docHealthAutoPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3432,8 +3435,7 @@ try {
   }
   results.docHealthHistory = docHealthHistory;
 
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("Knowledge");
   const docHealthDismissPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -4421,8 +4423,7 @@ try {
   }
   results.structuredSync = structuredSyncCheck;
 
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("System");
   const syncHistoryPersisted = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -4576,8 +4577,7 @@ try {
     localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
     return { ok: true, seeded: shape.logs.length };
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("System");
   const errorLogTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -4984,8 +4984,7 @@ try {
   }
 
   await setViewport(1440, 900);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("AI Studio");
   const sessionPersistence = await evaluate(`(async () => {
     let pill = 0;
@@ -5122,8 +5121,7 @@ try {
     localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
     return true;
   })()`);
-  await send("Page.reload", { ignoreCache: true });
-  await waitForApp();
+  await reloadAndWait();
   await clickDock("AI Studio");
   const sessionWorkspace = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5642,12 +5640,16 @@ try {
       localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
       return true;
     })()`);
-    await send("Page.reload", { ignoreCache: true });
-    await waitForApp();
+    await reloadAndWait();
     const providerLiveStream = await evaluate(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const dock = [...document.querySelectorAll('nav button[aria-label]')]
-        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      let dock = null;
+      for (let i = 0; i < 30; i++) {
+        dock = [...document.querySelectorAll('nav button[aria-label]')]
+          .find((b) => b.getAttribute("aria-label") === "AI Studio");
+        if (dock) break;
+        await sleep(100);
+      }
       if (!dock) return { ok: false, reason: "dock missing after reload" };
       dock.click();
       await sleep(350);
@@ -5742,8 +5744,7 @@ try {
       localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
       return true;
     })()`);
-    await send("Page.reload", { ignoreCache: true });
-    await waitForApp();
+    await reloadAndWait();
     const providerModels = await evaluate(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const dock = [...document.querySelectorAll('nav button[aria-label]')]
@@ -5814,6 +5815,154 @@ try {
     results.providerModels = providerModels;
   } finally {
     if (modelsServer) modelsServer.close();
+  }
+
+  let moaServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    moaServer = http.createServer((req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      active += 1;
+      if (active > maxActive) maxActive = active;
+      const route = req.url ?? "";
+      const tag = route.includes("provider-a")
+        ? "Alpha"
+        : route.includes("provider-b")
+          ? "Beta"
+          : "Gamma";
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+      setTimeout(() => {
+        res.write(`data: {"choices":[{"delta":{"content":"part2"}}]}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        active -= 1;
+      }, 400);
+    });
+    await new Promise((resolve) => moaServer.listen(0, "127.0.0.1", resolve));
+    const moaPort = moaServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "moa-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          isActive: true,
+        },
+        {
+          id: "moa-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          isActive: true,
+        },
+        {
+          id: "moa-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const moaUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "parallel moa check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      const sendTag = sendBtn.outerHTML.slice(0, 160);
+      const inputValue = input.value;
+      const storedProviders = JSON.parse(
+        localStorage.getItem("ai-workbench:db:v1") ?? "{}",
+      ).providers.map((p) => p.id).join(",");
+      sendBtn.click();
+      let allSeen = false;
+      let busySeen = false;
+      let userSeen = false;
+      let text = "";
+      for (let i = 0; i < 60; i++) {
+        text = document.body.innerText;
+        userSeen = userSeen || text.includes("parallel moa check");
+        busySeen =
+          busySeen ||
+          !!document.querySelector(".stream-caret") ||
+          !!document.querySelector(".thinking-dot");
+        allSeen =
+          text.includes("## Alpha AI") &&
+          text.includes("Alpha answer") &&
+          text.includes("## Beta AI") &&
+          text.includes("Beta answer") &&
+          text.includes("## Gamma AI") &&
+          text.includes("Gamma answer");
+        if (
+          allSeen &&
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot")
+        ) {
+          break;
+        }
+        await sleep(100);
+      }
+      return {
+        ok: allSeen,
+        allSeen,
+        busy:
+          !!document.querySelector(".stream-caret") ||
+          !!document.querySelector(".thinking-dot"),
+        busySeen,
+        userSeen,
+        sendTag,
+        inputValue,
+        storedProviders,
+        snippet: text.slice(0, 400),
+      };
+    })()`);
+    await clickDock("System");
+    const moaParallel = {
+      ...moaUi,
+      maxActive,
+    };
+    if (!moaParallel.ok || moaParallel.maxActive < 3) {
+      throw new Error(`MOA parallel assertion failed: ${JSON.stringify(moaParallel)}`);
+    }
+    results.moaParallel = moaParallel;
+  } finally {
+    if (moaServer) moaServer.close();
   }
 
   const webhookSystemEvents = await evaluate(`(async () => {

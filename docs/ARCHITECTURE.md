@@ -146,7 +146,7 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 
 - Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。
 - 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error, cancelled }`，`id` 为前端生成的 `runId`。
-- MOA 模式按 Provider 顺序聚合为单流；无论成功失败，最终都会 emit `done` 事件收尾。
+- MOA 模式对前 3 个启用 Provider 并发请求，每路以 `## Provider` 标题分路聚合为单流；单路失败仅插入错误片段，全部结束后统一 emit `done` 事件收尾。
 - 前端 AI Studio 监听 `stream-chunk`，assistant 消息增量追加；浏览器 fallback 用分块模拟流，保证 UI 验证可运行。
 
 ## AI 流式取消 / 中断
@@ -528,3 +528,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `setSessionPinned` / `duplicateSession` / `buildSessionMarkdown`，浏览器 fallback 同一模型，旧数据自动补 `pinned=false` 与消息数。
 - AI Studio 会话行新增置顶按钮、消息数元信息、复制与导出操作；导出面板用 `data-session-export-panel` / `data-session-export-preview` 提供预览、复制与下载 `.md`。
 - `verify:ui` / `verify:preview` 新增 `sessionWorkspace` lane，覆盖置顶排序、消息数、复制会话、Markdown 导出与面板关闭。
+
+## Sprint 101：真实 MOA 并行聚合
+
+- Rust `stream_ai_message(moa=true)` 对 `selected.take(3)` 并发 `spawn_blocking`，每路先 emit `## {provider.name}` 再流式输出；单路失败只发送 `[{name} error: ...]`，不中断其他路，全部结束后统一 emit `done`。
+- `db.ts` 浏览器 fallback 用 `Promise.allSettled` 并行真实 SSE / NDJSON 流；`streamProviderLive` 新增 `final` / `manageCancel` 选项，多路共享 runId 取消标记，最终 `done.cancelled` 反映取消状态。
+- `verify:ui` / `verify:preview` 新增 `moaParallel` lane：3 个本地 SSE mock 断言 `maxActive >= 3` 并覆盖三个标题与回复。
+- 验证脚本稳定性：`reloadAndWait` 改为 `Page.navigate` + URL marker 轮询，避免旧页面上下文误判就绪导致的 `Runtime.evaluate` 超时。

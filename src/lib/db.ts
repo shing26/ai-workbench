@@ -3619,7 +3619,10 @@ function canRealStream(provider: Provider): boolean {
 async function streamProviderLive(
   provider: Provider,
   args: { providerIds: string[]; messages: { role: string; content: string }[]; moa: boolean; runId: string },
+  opts: { final?: boolean; manageCancel?: boolean } = {},
 ): Promise<void> {
+  const final = opts.final !== false;
+  const manageCancel = opts.manageCancel !== false;
   const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
   const base = provider.baseUrl.replace(/\/+$/, "");
   const endpoint = isOllama ? `${base}/api/chat` : `${base}/chat/completions`;
@@ -3699,7 +3702,24 @@ async function streamProviderLive(
     if (buffer.trim()) await flush(buffer);
   } catch (err) {
     if (localCancelledRuns.has(args.runId)) {
-      localCancelledRuns.delete(args.runId);
+      if (manageCancel) localCancelledRuns.delete(args.runId);
+      if (final) {
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: "",
+          done: true,
+          error: null,
+          cancelled: true,
+        });
+      }
+      return;
+    }
+    throw err;
+  }
+  const wasCancelled = localCancelledRuns.has(args.runId);
+  if (manageCancel) localCancelledRuns.delete(args.runId);
+  if (wasCancelled) {
+    if (final) {
       emitLocalStreamChunk({
         id: args.runId,
         delta: "",
@@ -3707,32 +3727,21 @@ async function streamProviderLive(
         error: null,
         cancelled: true,
       });
-      return;
     }
-    throw err;
-  }
-  const wasCancelled = localCancelledRuns.has(args.runId);
-  localCancelledRuns.delete(args.runId);
-  if (wasCancelled) {
-    emitLocalStreamChunk({
-      id: args.runId,
-      delta: "",
-      done: true,
-      error: null,
-      cancelled: true,
-    });
     return;
   }
   if (!finished) {
     throw new Error(isOllama ? "Ollama stream ended without done: true" : "AI stream ended without [DONE]");
   }
-  emitLocalStreamChunk({
-    id: args.runId,
-    delta: "",
-    done: true,
-    error: null,
-    cancelled: false,
-  });
+  if (final) {
+    emitLocalStreamChunk({
+      id: args.runId,
+      delta: "",
+      done: true,
+      error: null,
+      cancelled: false,
+    });
+  }
 }
 
 export async function sendAiMessageStream(args: {
@@ -3767,11 +3776,52 @@ export async function sendAiMessageStream(args: {
   }
 
   const shape = readLocal();
-  const provider =
-    shape.providers.find((p) => p.isActive && args.providerIds.includes(p.id)) ??
-    shape.providers.find((p) => args.providerIds.includes(p.id)) ??
-    shape.providers.find((p) => p.isActive) ??
-    null;
+  const candidates = shape.providers.filter(
+    (p) => p.isActive || args.providerIds.includes(p.id),
+  );
+  const providers = candidates.slice(0, args.moa ? 3 : 1);
+  const realProviders = providers.filter(canRealStream);
+  if (args.moa && realProviders.length > 0) {
+    await Promise.allSettled(
+      realProviders.map(async (provider) => {
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: `\n\n## ${provider.name}\n\n`,
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        try {
+          await streamProviderLive(
+            provider,
+            { ...args, providerIds: [provider.id] },
+            { final: false, manageCancel: false },
+          );
+        } catch (err) {
+          emitLocalStreamChunk({
+            id: args.runId,
+            delta: `\n[${provider.name} error: ${
+              err instanceof Error ? err.message : String(err)
+            }]\n`,
+            done: false,
+            error: null,
+            cancelled: false,
+          });
+        }
+      }),
+    );
+    const wasCancelled = localCancelledRuns.has(args.runId);
+    localCancelledRuns.delete(args.runId);
+    emitLocalStreamChunk({
+      id: args.runId,
+      delta: "",
+      done: true,
+      error: null,
+      cancelled: wasCancelled,
+    });
+    return;
+  }
+  const provider = realProviders[0] ?? null;
   if (provider && canRealStream(provider)) {
     try {
       await streamProviderLive(provider, args);

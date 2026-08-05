@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 101
+
+### What went well?
+
+- MOA 从串行聚合升级为真实并行：Rust `stream_ai_message(moa=true)` 对前 3 个启用 Provider 并发 `spawn_blocking`，每路先 emit `## {name}` 再流式输出，单路失败只写错误片段，最终统一 `done` 收尾。
+- 浏览器 fallback 用 `Promise.allSettled` 并发真实 SSE / NDJSON；`streamProviderLive` 新增 `final` / `manageCancel` 选项，多路共享 runId 取消标记。
+- `verify:ui` / `verify:preview` 新增 `moaParallel` lane：3 个本地 SSE mock 同时收到请求（`maxActive = 3`），三个标题与回复全部渲染。
+- `reloadAndWait` 改为 `Page.navigate` + URL marker 轮询，`waitForApp` 容忍瞬时 CDP 上下文切换，reload 竞态超时消除。
+- `npm run build`、`verify:ui`、`verify:preview` 全绿；Rust 114 单测、fmt、clippy 通过。
+
+### What went wrong?
+
+- reload 后偶发 `Runtime.evaluate` 超时：旧实现靠 `Page.loadEventFired` 等待，可能在导航前的旧上下文误判就绪，随后 evaluate 落在被销毁的上下文上；改为 marker 轮询后稳定。
+- MOA lane 首轮 `maxActive = 0`：mock 的 CORS `Allow-Headers` 缺 `Authorization`，预检被浏览器拦截；补全后三路并行请求到达。
+
+### Action Items
+
+- 下一 Sprint 候选：前端 ESLint/Prettier + husky/lint-staged、会话搜索模糊匹配、MOA 共识摘要。
+- MOA 共识摘要、Provider 权重排序与跨流 token 预算留在 Backlog。
+- 保留 `moaParallel` lane，修改流式链路或 Provider 选择时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 100
 
 ### What went well?
