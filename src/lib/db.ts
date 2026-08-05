@@ -11,6 +11,7 @@ import {
   type QuickPrompt,
 } from './quickPrompts';
 import { cosineSimilarity, embedText, hybridRagScore } from './embed';
+import { pinyin } from 'pinyin-pro';
 
 export type { CustomQuickPrompt, QuickPrompt };
 
@@ -62,7 +63,8 @@ export type Session = {
 
 export type SessionSearchHit = {
   session: Session;
-  matchType: 'all' | 'title' | 'model' | 'message';
+  matchType:
+    'all' | 'title' | 'model' | 'message' | 'pinyin-title' | 'pinyin-model' | 'pinyin-message';
   snippet: string;
   score: number;
   messageId?: string | null;
@@ -1513,24 +1515,71 @@ export async function listSessions(): Promise<Session[]> {
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
 }
 
-function sessionMatchScore(haystack: string, query: string): number | null {
-  const h = haystack.toLowerCase();
-  const q = query.toLowerCase();
-  if (!h || !q) return null;
-  const exact = h.indexOf(q);
-  if (exact >= 0) return 120 - exact;
+type MatchMode = 'original' | 'full-pinyin' | 'initials-pinyin';
+
+function substringScore(haystack: string, query: string): number | null {
+  if (!haystack || !query) return null;
+  const index = haystack.indexOf(query);
+  return index >= 0 ? 120 - index : null;
+}
+
+function subsequenceScore(haystack: string, query: string): number | null {
+  if (!haystack || !query) return null;
   let qi = 0;
   let gaps = 0;
   let last = -1;
-  for (let i = 0; i < h.length; i += 1) {
-    if (h[i] === q[qi]) {
+  for (let i = 0; i < haystack.length; i += 1) {
+    if (haystack[i] === query[qi]) {
       if (last >= 0) gaps += i - last - 1;
       last = i;
       qi += 1;
-      if (qi === q.length) return Math.max(1, 80 - gaps);
+      if (qi === query.length) return Math.max(1, 80 - gaps);
     }
   }
   return null;
+}
+
+function pinyinText(text: string, firstLetter: boolean): string {
+  const parts = pinyin(text, {
+    toneType: 'none',
+    type: 'array',
+    pattern: firstLetter ? 'first' : 'pinyin',
+  });
+  return parts
+    .map((part) => part.toLowerCase())
+    .filter((part) => /\S/.test(part))
+    .join('');
+}
+
+function textMatchScore(text: string, query: string): { score: number; mode: MatchMode } | null {
+  const originalQ = query.toLowerCase();
+  const lowerText = text.toLowerCase();
+  const originalSubstring = substringScore(lowerText, originalQ);
+  if (originalSubstring != null) return { score: originalSubstring, mode: 'original' };
+  const originalSubsequence = subsequenceScore(lowerText, originalQ);
+  if (originalSubsequence != null) return { score: originalSubsequence, mode: 'original' };
+
+  const compactQ = originalQ.replace(/\s+/g, '');
+  const full = pinyinText(text, false);
+  const fullSubstring = substringScore(full, compactQ);
+  if (fullSubstring != null) return { score: fullSubstring - 5, mode: 'full-pinyin' };
+  const fullSubsequence = subsequenceScore(full, compactQ);
+  if (fullSubsequence != null) return { score: fullSubsequence - 10, mode: 'full-pinyin' };
+
+  const initials = pinyinText(text, true);
+  const initialsSubstring = substringScore(initials, compactQ);
+  if (initialsSubstring != null) return { score: initialsSubstring - 15, mode: 'initials-pinyin' };
+  const initialsSubsequence = subsequenceScore(initials, compactQ);
+  if (initialsSubsequence != null)
+    return { score: initialsSubsequence - 20, mode: 'initials-pinyin' };
+  return null;
+}
+
+function sessionMatchType(
+  field: 'title' | 'model' | 'message',
+  mode: MatchMode,
+): SessionSearchHit['matchType'] {
+  return mode === 'original' ? field : `pinyin-${field}`;
 }
 
 function sessionSnippet(content: string): string {
@@ -1594,15 +1643,32 @@ export async function searchSessions(
         bestMessageId = messageId ?? null;
       }
     };
-    const titleScore = sessionMatchScore(session.title, q);
-    if (titleScore != null) consider(titleScore, 'title', sessionSnippet(session.title), null);
-    const modelScore = sessionMatchScore(session.model, q);
-    if (modelScore != null) consider(modelScore, 'model', sessionSnippet(session.model), null);
+    const titleMatch = textMatchScore(session.title, q);
+    if (titleMatch)
+      consider(
+        titleMatch.score,
+        sessionMatchType('title', titleMatch.mode),
+        sessionSnippet(session.title),
+        null,
+      );
+    const modelMatch = textMatchScore(session.model, q);
+    if (modelMatch)
+      consider(
+        modelMatch.score,
+        sessionMatchType('model', modelMatch.mode),
+        sessionSnippet(session.model),
+        null,
+      );
     if (options.includeMessages !== false) {
       for (const message of (shape.chatMessages ?? []).filter((m) => m.sessionId === session.id)) {
-        const messageScore = sessionMatchScore(message.content, q);
-        if (messageScore != null) {
-          consider(messageScore, 'message', sessionSnippet(message.content), message.id);
+        const messageMatch = textMatchScore(message.content, q);
+        if (messageMatch) {
+          consider(
+            messageMatch.score,
+            sessionMatchType('message', messageMatch.mode),
+            sessionSnippet(message.content),
+            message.id,
+          );
         }
       }
     }

@@ -491,13 +491,6 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 浏览器 `sendAiMessageStream` 新增真实流式：配置 model 的 http(s) Provider 用 `fetch` 消费 OpenAI-compatible SSE 或 Ollama NDJSON，支持取消与错误回显；未配置 model 保持模拟流。
 - `verify:ui` / `verify:preview` 新增 `providerLiveStream` lane；Rust 单测覆盖 model 迁移 / 持久化与请求体模型名。
 
-## Sprint 106：Provider 优先级与路由排序
-
-- `providers` 新增 `priority INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建列，旧库 `migrate_provider_priority` 幂等补列；新增 `set_provider_priority` Tauri 命令，System Provider 卡片提供上下优先级按钮。
-- `list_providers` / `get_provider` 统一按 `priority DESC, rowid ASC` 返回；Rust `stream_ai_message` / `send_ai_message` 与浏览器 fallback 均按优先级排序后再取前 3 / 路由目标。
-- `db.ts` 的 `routeProvider` 在同优先级下继续按健康检查延迟升序兜底；SystemView 新增 `data-provider-priority` / `data-provider-priority-up` / `data-provider-priority-down` 验证锚点。
-- `verify:ui` / `verify:preview` 新增 `providerPriority` lane，断言卡片按 3/2/1 排序且增减优先级持久化到 localStorage；Rust 单测覆盖迁移补列、持久化与负数钳制。
-
 ## Sprint 96：Webhook 事件触发器与投递队列
 
 - `webhook_rules` 新增 `trigger_event TEXT DEFAULT ''`：新库 SCHEMA 建列，旧库 `migrate_webhook_trigger_event` 幂等补列；`list_event_webhook_rules` 按事件匹配 enabled 规则，`list_due_webhook_rules` 只选 `trigger_event = ''` 的定时规则。
@@ -573,3 +566,16 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 搜索结果行新增 `data-session-message-id`，消息命中时点击 Open session 调用 `selectSession(id, messageId)`，加载后 `scrollIntoView` 并添加 `message-jump-highlight`。
 - 消息气泡外层新增 `data-message-id`，`message-jump-highlight` 使用短暂边框辉光动画；新开会话或切换无命中会话时清除高亮。
 - `verify:ui` / `verify:preview` 的 `sessionSearchEnhanced` lane 新增 `jumpSeen` / `jumpMessageId` / `highlightedMessageId` 断言；Rust 118 条单测通过。
+
+## Sprint 106：Provider 优先级与路由排序
+
+- `providers` 新增 `priority INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建列，旧库 `migrate_provider_priority` 幂等补列；新增 `set_provider_priority` Tauri 命令，System Provider 卡片提供上下优先级按钮。
+- `list_providers` / `get_provider` 统一按 `priority DESC, rowid ASC` 返回；Rust `stream_ai_message` / `send_ai_message` 与浏览器 fallback 均按优先级排序后再取前 3 / 路由目标。
+- `db.ts` 的 `routeProvider` 在同优先级下继续按健康检查延迟升序兜底；SystemView 新增 `data-provider-priority` / `data-provider-priority-up` / `data-provider-priority-down` 验证锚点。
+- `verify:ui` / `verify:preview` 新增 `providerPriority` lane，断言卡片按 3/2/1 排序且增减优先级持久化到 localStorage；Rust 单测覆盖迁移补列、持久化与负数钳制。
+
+## Sprint 107：拼音/中文分词模糊搜索
+
+- `search_sessions` 的匹配从单层原文模糊升级为原文 → 全拼 → 首字母三层：Rust 引入 `pinyin` crate，`db.ts` 引入 `pinyin-pro`，两侧同构；命中类型扩展为 `pinyin-title` / `pinyin-model` / `pinyin-message`。
+- 拼音匹配使用紧凑小写形式（去空白），原文优先、全拼次之、首字母兜底；AI Studio 拼音消息命中仍携带 `messageId` 并可跳转高亮。
+- `verify:ui` / `verify:preview` 新增 `sessionPinyinSearch` lane，覆盖 `mrjh` / `meirijihua` 标题命中与 `mnhjd` 消息命中跳转；Rust 120 条单测通过。

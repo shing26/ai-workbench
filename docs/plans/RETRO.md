@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 107
+
+### What went well?
+
+- 会话搜索升级为原文 → 全拼 → 首字母三层匹配：Rust 引入 `pinyin` crate，`db.ts` 引入 `pinyin-pro`，两侧同构；命中类型 `pinyin-title` / `pinyin-model` / `pinyin-message` 让 UI 与验证都能区分来源。
+- 拼音消息命中沿用 `messageId`，点击后自动加载消息、滚动到命中位置并高亮，`sessionPinyinSearch` lane 在 dev 与 preview 均覆盖 `mrjh` / `meirijihua` / `mnhjd`。
+- Rust 120 条单测、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`npm run build`、lint、prettier、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 拼音 lane 首次用新会话覆盖 localStorage，导致后续 `sessionManagement` 的 `emptyState` 断言失败；改为追加拼音会话并在 lane 结束后清理，双端验证恢复稳定。
+
+### Action Items
+
+- 下一个 Sprint 候选：搜索历史与跨会话聚合统计。
+- 保留 `sessionPinyinSearch` lane，修改搜索评分、会话模型或消息渲染时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 106
 
 ### What went well?

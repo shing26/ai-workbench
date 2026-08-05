@@ -753,3 +753,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 105：会话消息跳转与高亮
 
 无表结构变更。`SessionSearchHit.message_id` 是运行时派生字段：`search_sessions` 复用 `chat_messages.id` 作为命中定位锚点，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。
+
+## Sprint 107：拼音/中文分词模糊搜索
+
+无表结构变更。拼音匹配在运行时由 `search_sessions` 对原文生成全拼 / 首字母紧凑串后评分，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。
