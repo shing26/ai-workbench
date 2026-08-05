@@ -3866,6 +3866,91 @@ try {
   }
   results.webhookRules = webhookRules;
 
+  const webhookQueueEvent = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "trigger controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/event");
+    setValue(nameInput, "Event sync hook");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (
+        item &&
+        item.textContent.includes("Event sync hook") &&
+        item.textContent.includes("event: sync.completed")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "trigger rule not created" };
+    const ruleBadge = item.querySelector("[data-webhook-rule-trigger]")?.textContent ?? "";
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let delivery = null;
+    for (let i = 0; i < 20; i++) {
+      delivery = document.querySelector("[data-webhook-delivery-item]");
+      if (
+        delivery &&
+        delivery.textContent.includes("sync.completed") &&
+        delivery.textContent.includes("success")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (!delivery) return { ok: false, reason: "delivery not queued" };
+    const statusAfterTrigger =
+      delivery.querySelector("[data-webhook-delivery-status]")?.textContent ?? "";
+    delivery.querySelector("[data-webhook-delivery-retry]")?.click();
+    await sleep(150);
+    delivery = document.querySelector("[data-webhook-delivery-item]");
+    const statusAfterRetry =
+      delivery?.querySelector("[data-webhook-delivery-status]")?.textContent ?? "";
+    const attemptsAfterRetry =
+      delivery?.querySelector("[data-webhook-delivery-attempts]")?.textContent ?? "";
+    delivery?.querySelector("[data-webhook-delivery-delete]")?.click();
+    await sleep(150);
+    const deleted = !document.querySelector("[data-webhook-delivery-item]");
+    return {
+      ok:
+        ruleBadge.includes("sync.completed") &&
+        statusAfterTrigger === "success" &&
+        statusAfterRetry === "queued" &&
+        attemptsAfterRetry.startsWith("0/") &&
+        deleted,
+      ruleBadge,
+      statusAfterTrigger,
+      statusAfterRetry,
+      attemptsAfterRetry,
+      deleted,
+    };
+  })()`);
+  if (!webhookQueueEvent.ok) {
+    throw new Error(`Webhook queue/event assertion failed: ${JSON.stringify(webhookQueueEvent)}`);
+  }
+  results.webhookQueueEvent = webhookQueueEvent;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     secret TEXT NOT NULL DEFAULT '',
     retries INTEGER NOT NULL DEFAULT 1,
     interval_seconds INTEGER NOT NULL DEFAULT 60,
+    trigger_event TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 0,
     last_run_at INTEGER NOT NULL DEFAULT 0,
     last_status INTEGER NOT NULL DEFAULT 0,
@@ -231,6 +232,26 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL DEFAULT '',
+    event TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    method TEXT NOT NULL DEFAULT 'POST',
+    url TEXT NOT NULL DEFAULT '',
+    token TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL DEFAULT '',
+    retries INTEGER NOT NULL DEFAULT 1,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'queued',
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rule_id);
 CREATE TABLE IF NOT EXISTS quick_prompts (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
@@ -672,6 +693,7 @@ pub struct WebhookRule {
     pub secret: String,
     pub retries: i64,
     pub interval_seconds: i64,
+    pub trigger_event: String,
     pub enabled: bool,
     pub last_run_at: i64,
     pub last_status: i64,
@@ -689,6 +711,28 @@ pub struct WebhookRuleInput<'a> {
     pub secret: &'a str,
     pub retries: i64,
     pub interval_seconds: i64,
+    pub trigger_event: &'a str,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDelivery {
+    pub id: String,
+    pub rule_id: String,
+    pub event: String,
+    pub payload: String,
+    pub method: String,
+    pub url: String,
+    pub token: String,
+    pub secret: String,
+    pub retries: i64,
+    pub attempts: i64,
+    pub status: String,
+    pub last_status: i64,
+    pub last_message: String,
+    pub next_attempt_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 fn now_millis() -> i64 {
@@ -723,7 +767,7 @@ fn uid() -> String {
 
 const WEBHOOK_RULE_COLUMNS: &str =
     "id, name, url, payload, method, token, secret, retries, interval_seconds, enabled, \
-     last_run_at, last_status, last_message, created_at, updated_at";
+     last_run_at, last_status, last_message, created_at, updated_at, trigger_event";
 
 fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
     Ok(WebhookRule {
@@ -742,6 +786,7 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         last_message: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        trigger_event: row.get(15)?,
     })
 }
 
@@ -781,8 +826,8 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
     };
     let interval = input.interval_seconds.max(5);
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, interval_seconds, enabled, last_run_at, last_status, last_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 0, 0, '', ?10, ?10)",
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, interval_seconds, trigger_event, enabled, last_run_at, last_status, last_message, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, 0, 0, '', ?11, ?11)",
         params![
             id,
             input.name,
@@ -793,7 +838,8 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
             input.secret,
             input.retries,
             interval,
-            now
+            input.trigger_event,
+            now,
         ],
     )?;
     get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
@@ -811,6 +857,10 @@ pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> R
 }
 
 pub fn delete_webhook_rule(conn: &Connection, id: &str) -> Result<()> {
+    let _ = conn.execute(
+        "DELETE FROM webhook_deliveries WHERE rule_id = ?1",
+        params![id],
+    )?;
     let removed = conn.execute("DELETE FROM webhook_rules WHERE id = ?1", params![id])?;
     if removed == 0 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -821,11 +871,23 @@ pub fn delete_webhook_rule(conn: &Connection, id: &str) -> Result<()> {
 pub fn list_due_webhook_rules(conn: &Connection, now_ms: i64) -> Result<Vec<WebhookRule>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM webhook_rules
-         WHERE enabled = 1 AND (last_run_at = 0 OR ?1 - last_run_at >= interval_seconds * 1000)
+         WHERE enabled = 1 AND trigger_event = ''
+           AND (last_run_at = 0 OR ?1 - last_run_at >= interval_seconds * 1000)
          ORDER BY last_run_at ASC",
         WEBHOOK_RULE_COLUMNS
     ))?;
     let rows = stmt.query_map(params![now_ms], map_webhook_rule)?;
+    rows.collect()
+}
+
+pub fn list_event_webhook_rules(conn: &Connection, event: &str) -> Result<Vec<WebhookRule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM webhook_rules
+         WHERE enabled = 1 AND trigger_event = ?1
+         ORDER BY created_at ASC",
+        WEBHOOK_RULE_COLUMNS
+    ))?;
+    let rows = stmt.query_map(params![event], map_webhook_rule)?;
     rows.collect()
 }
 
@@ -843,6 +905,172 @@ pub fn mark_webhook_rule_run(
     Ok(())
 }
 
+const WEBHOOK_DELIVERY_COLUMNS: &str =
+    "id, rule_id, event, payload, method, url, token, secret, retries, attempts, status, \
+     last_status, last_message, next_attempt_at, created_at, updated_at";
+
+fn map_webhook_delivery(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookDelivery> {
+    Ok(WebhookDelivery {
+        id: row.get(0)?,
+        rule_id: row.get(1)?,
+        event: row.get(2)?,
+        payload: row.get(3)?,
+        method: row.get(4)?,
+        url: row.get(5)?,
+        token: row.get(6)?,
+        secret: row.get(7)?,
+        retries: row.get(8)?,
+        attempts: row.get(9)?,
+        status: row.get(10)?,
+        last_status: row.get(11)?,
+        last_message: row.get(12)?,
+        next_attempt_at: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
+pub fn get_webhook_delivery(conn: &Connection, id: &str) -> Result<Option<WebhookDelivery>> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM webhook_deliveries WHERE id = ?1",
+            WEBHOOK_DELIVERY_COLUMNS
+        ),
+        params![id],
+        map_webhook_delivery,
+    )
+    .optional()
+}
+
+pub fn enqueue_webhook_delivery(
+    conn: &Connection,
+    rule: &WebhookRule,
+    event: &str,
+    payload: &str,
+) -> Result<WebhookDelivery> {
+    let now = now_millis();
+    let id = uid();
+    conn.execute(
+        "INSERT INTO webhook_deliveries (id, rule_id, event, payload, method, url, token, secret, retries, attempts, status, last_status, last_message, next_attempt_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 'queued', 0, '', ?10, ?10, ?10)",
+        params![
+            id, rule.id, event, payload, rule.method, rule.url, rule.token, rule.secret,
+            rule.retries.max(0), now,
+        ],
+    )?;
+    get_webhook_delivery(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn list_webhook_deliveries(
+    conn: &Connection,
+    limit: i64,
+    status_filter: &str,
+) -> Result<Vec<WebhookDelivery>> {
+    let mut stmt = if status_filter.trim().is_empty() {
+        conn.prepare(&format!(
+            "SELECT {} FROM webhook_deliveries ORDER BY created_at DESC LIMIT ?1",
+            WEBHOOK_DELIVERY_COLUMNS
+        ))?
+    } else {
+        conn.prepare(&format!(
+            "SELECT {} FROM webhook_deliveries WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
+            WEBHOOK_DELIVERY_COLUMNS
+        ))?
+    };
+    let rows = if status_filter.trim().is_empty() {
+        stmt.query_map(params![limit], map_webhook_delivery)?
+    } else {
+        stmt.query_map(params![status_filter, limit], map_webhook_delivery)?
+    };
+    rows.collect()
+}
+
+pub fn claim_due_webhook_deliveries(
+    conn: &Connection,
+    now_ms: i64,
+    limit: i64,
+) -> Result<Vec<WebhookDelivery>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM webhook_deliveries
+         WHERE status = 'queued' AND next_attempt_at <= ?1
+         ORDER BY next_attempt_at ASC, created_at ASC
+         LIMIT ?2",
+        WEBHOOK_DELIVERY_COLUMNS
+    ))?;
+    let rows = stmt.query_map(params![now_ms, limit], map_webhook_delivery)?;
+    let ids: Vec<String> = rows.filter_map(Result::ok).map(|d| d.id).collect();
+    for id in &ids {
+        conn.execute(
+            "UPDATE webhook_deliveries SET status = 'delivering', updated_at = ?1 WHERE id = ?2",
+            params![now_millis(), id],
+        )?;
+    }
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| get_webhook_delivery(conn, &id).ok().flatten())
+        .collect::<Vec<_>>())
+}
+
+pub fn complete_webhook_delivery(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    last_status: i64,
+    message: &str,
+    attempts: i64,
+    next_attempt_at: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE webhook_deliveries
+         SET attempts = ?1, status = ?2, last_status = ?3, last_message = ?4,
+             next_attempt_at = ?5, updated_at = ?6
+         WHERE id = ?7",
+        params![
+            attempts,
+            status,
+            last_status,
+            message,
+            next_attempt_at,
+            now_millis(),
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn retry_webhook_delivery(conn: &Connection, id: &str) -> Result<WebhookDelivery> {
+    let updated = conn.execute(
+        "UPDATE webhook_deliveries
+         SET attempts = 0, status = 'queued', last_message = '', next_attempt_at = ?1, updated_at = ?1
+         WHERE id = ?2",
+        params![now_millis(), id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_webhook_delivery(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_webhook_delivery(conn: &Connection, id: &str) -> Result<()> {
+    let removed = conn.execute("DELETE FROM webhook_deliveries WHERE id = ?1", params![id])?;
+    if removed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+pub fn clear_webhook_deliveries(conn: &Connection, status_filter: &str) -> Result<i64> {
+    let removed = if status_filter.trim().is_empty() {
+        conn.execute("DELETE FROM webhook_deliveries", [])?
+    } else {
+        conn.execute(
+            "DELETE FROM webhook_deliveries WHERE status = ?1",
+            params![status_filter],
+        )?
+    };
+    Ok(removed as i64)
+}
+
 pub fn init_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
@@ -857,6 +1085,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
+    migrate_webhook_trigger_event(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -966,6 +1195,15 @@ fn migrate_webhook_secret_retries(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "webhook_rules", "retries")? {
         conn.execute_batch(
             "ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_webhook_trigger_event(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "trigger_event")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN trigger_event TEXT NOT NULL DEFAULT '';",
         )?;
     }
     Ok(())
@@ -5884,6 +6122,7 @@ mod tests {
                 secret: "hook-secret",
                 retries: 2,
                 interval_seconds: 60,
+                trigger_event: "",
             },
         )
         .unwrap();
@@ -5893,6 +6132,7 @@ mod tests {
         assert_eq!(rule.token, "secret-token");
         assert_eq!(rule.secret, "hook-secret");
         assert_eq!(rule.retries, 2);
+        assert_eq!(rule.trigger_event, "");
 
         let due = list_due_webhook_rules(&conn, now).unwrap();
         assert!(due.iter().any(|r| r.id == rule.id));
@@ -6046,5 +6286,147 @@ mod tests {
         update_provider_model(&conn, &provider.id, "qwen3:8b").unwrap();
         let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
         assert_eq!(updated.model, "qwen3:8b");
+    }
+
+    #[test]
+    fn webhook_trigger_event_migration_adds_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_webhook_trigger_event(&conn).unwrap();
+        assert!(column_exists(&conn, "webhook_rules", "trigger_event").unwrap());
+        conn.execute(
+            "INSERT INTO webhook_rules (id, name, url, created_at, updated_at)
+             VALUES ('legacy-rule', 'Legacy', 'https://example.test', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let trigger_event: String = conn
+            .query_row(
+                "SELECT trigger_event FROM webhook_rules WHERE id = 'legacy-rule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger_event, "");
+    }
+
+    #[test]
+    fn webhook_delivery_queue_lifecycle() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let event_rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Event hook",
+                url: "https://example.test/event",
+                payload: "{\"source\":\"event\"}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 2,
+                interval_seconds: 60,
+                trigger_event: "sync.completed",
+            },
+        )
+        .unwrap();
+        let interval_rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Interval hook",
+                url: "https://example.test/interval",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                interval_seconds: 60,
+                trigger_event: "",
+            },
+        )
+        .unwrap();
+        assert_eq!(event_rule.trigger_event, "sync.completed");
+        let fail_rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Fail hook",
+                url: "https://example.test/fail",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                interval_seconds: 60,
+                trigger_event: "sync.completed",
+            },
+        )
+        .unwrap();
+        let due = list_due_webhook_rules(&conn, now_millis()).unwrap();
+        assert!(due.iter().any(|r| r.id == interval_rule.id));
+        assert!(!due.iter().any(|r| r.id == event_rule.id));
+
+        let now = now_millis();
+        let delivery =
+            enqueue_webhook_delivery(&conn, &event_rule, "sync.completed", &event_rule.payload)
+                .unwrap();
+        assert_eq!(delivery.status, "queued");
+        assert!(delivery.next_attempt_at <= now + 1);
+        let claimed = claim_due_webhook_deliveries(&conn, now, 8).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, "delivering");
+        complete_webhook_delivery(
+            &conn,
+            &delivery.id,
+            "success",
+            200,
+            "HTTP 200 delivered",
+            1,
+            now,
+        )
+        .unwrap();
+        let done = get_webhook_delivery(&conn, &delivery.id).unwrap().unwrap();
+        assert_eq!(done.status, "success");
+
+        let failing = enqueue_webhook_delivery(&conn, &fail_rule, "sync.completed", "{}").unwrap();
+        claim_due_webhook_deliveries(&conn, now, 8).unwrap();
+        let backoff = now + 2000;
+        complete_webhook_delivery(&conn, &failing.id, "queued", 500, "HTTP 500", 1, backoff)
+            .unwrap();
+        let retryable = get_webhook_delivery(&conn, &failing.id).unwrap().unwrap();
+        assert_eq!(retryable.status, "queued");
+        assert_eq!(retryable.attempts, 1);
+        assert_eq!(retryable.next_attempt_at, backoff);
+        claim_due_webhook_deliveries(&conn, backoff, 8).unwrap();
+        complete_webhook_delivery(&conn, &failing.id, "dead", 500, "HTTP 500", 2, backoff).unwrap();
+        let dead = get_webhook_delivery(&conn, &failing.id).unwrap().unwrap();
+        assert_eq!(dead.status, "dead");
+        let retried = retry_webhook_delivery(&conn, &failing.id).unwrap();
+        assert_eq!(retried.status, "queued");
+        assert_eq!(retried.attempts, 0);
+        delete_webhook_delivery(&conn, &failing.id).unwrap();
+        assert!(get_webhook_delivery(&conn, &failing.id).unwrap().is_none());
+
+        enqueue_webhook_delivery(&conn, &event_rule, "sync.completed", "{}").unwrap();
+        delete_webhook_rule(&conn, &event_rule.id).unwrap();
+        let remaining = list_webhook_deliveries(&conn, 100, "").unwrap();
+        assert!(remaining.iter().all(|d| d.rule_id != event_rule.id));
     }
 }

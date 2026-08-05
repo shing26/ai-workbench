@@ -675,3 +675,37 @@ ALTER TABLE providers ADD COLUMN model TEXT DEFAULT '';
 - 新库的 `providers` 建表语句已直接包含 `model TEXT DEFAULT ''`；`migrate_provider_model` 按列存在性幂等补列并把 `NULL` 回写为空串，已加入 `init_connection` 迁移链。
 - `list_providers` / `get_provider` / `create_provider` 均读写 `model`；新增 `update_provider_model` Tauri 命令用于编辑既有 Provider 的模型名。
 - `model` 属于本地 Provider 配置，不进入 `SyncSnapshot`：同步协议无变化，浏览器 fallback 继续保存在 `ai-workbench:db:v1` 的 `providers` 数组中。
+
+## Sprint 96：Webhook 事件触发器与投递队列
+
+```sql
+-- Sprint 84 建表后，旧库由 migrate_webhook_trigger_event 补充该列
+ALTER TABLE webhook_rules ADD COLUMN trigger_event TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL DEFAULT '',
+    event TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    method TEXT NOT NULL DEFAULT 'POST',
+    url TEXT NOT NULL DEFAULT '',
+    token TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL DEFAULT '',
+    retries INTEGER NOT NULL DEFAULT 1,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'queued',
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rule_id);
+```
+
+- 新库的 `webhook_rules` 建表语句已直接包含 `trigger_event TEXT NOT NULL DEFAULT ''`；`migrate_webhook_trigger_event` 按列存在性幂等补列，已加入 `init_connection` 迁移链。
+- `webhook_deliveries` 是投递队列的事实来源：定时与事件规则都由 `enqueue_webhook_delivery` 写入，worker 用 `claim_due_webhook_deliveries` 认领并回写 `attempts / status / last_status / last_message / next_attempt_at`。
+- `status` 取值：`queued`（待投递）、`delivering`（已认领）、`success`（投递成功）、`dead`（超过 `retries + 1` 次仍失败）；`retry_webhook_delivery` 重置为 `queued / attempts 0 / next_attempt_at = now`。
+- `delete_webhook_rule` 会级联 `DELETE FROM webhook_deliveries WHERE rule_id = ?`；`clear_webhook_deliveries` 支持按 status 过滤或清空全表。
+- 浏览器 fallback 使用 `ai-workbench:webhook-deliveries:v1` 保存同一模型，不写入 SQLite。

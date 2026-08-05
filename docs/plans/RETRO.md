@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 96
+
+### What went well?
+
+- Webhook 规则支持事件触发：`webhook_rules.trigger_event` 新库建列 / 旧库幂等迁移，`list_event_webhook_rules` 按事件匹配 enabled 规则，`list_due_webhook_rules` 只选定时规则，两类规则不再互相干扰。
+- 投递队列落地：新增 `webhook_deliveries` 表（queued / delivering / success / dead、attempts、next_attempt_at），`spawn_webhook_scheduler` 重构为 `spawn_webhook_delivery_worker`，定时与事件投递统一入队消费，失败按 `1000ms << attempts` 指数退避，超限标记 dead。
+- Tauri 命令补全：`trigger_webhook_event`、`list_webhook_deliveries`、`retry_webhook_delivery`、`delete_webhook_delivery`、`clear_webhook_deliveries` 全部注册；浏览器 fallback 用 `ai-workbench:webhook-deliveries:v1` 保持同一模型。
+- SystemView 投递队列面板：事件触发输入、快捷按钮、状态与 attempts 展示、Retry / Delete / Clear dead 全部可操作；删除规则时级联清理其投递记录。
+- `verify:ui` / `verify:preview` 新增 `webhookQueueEvent` lane，覆盖创建事件规则、触发、success、Retry 回 queued、Delete 消失；Rust 109 个单测通过，clippy 零告警。
+
+### What went wrong?
+
+- 初始 `complete_webhook_delivery` 参数过多触发 clippy too-many-arguments；收敛状态签名后压掉，但调用方必须保持参数顺序一致。
+- 事件规则加入后，旧的 `list_due_webhook_rules` 会误选事件规则导致重复投递；补 `trigger_event = ''` 过滤后定时与事件链路各自稳定。
+- 浏览器 fallback 的触发命令最初缺少 enabled 过滤，与 Rust 行为不一致；统一只匹配 enabled 规则后断言通过。
+
+### Action Items
+
+- 下一 Sprint 候选：前端 ESLint/Prettier + husky/lint-staged、Provider `/models` 探测与真实 MOA 并行、Webhook payload 模板 / 上下文字段。
+- Webhook 队列后续可做自动保留策略（天数 / 数量上限）与系统事件总线接入。
+- 保留 `webhookQueueEvent` lane，改动投递链路或 System Webhook UI 时重跑 `verify:ui`。
+
 ## Sprint 95
 
 ### What went well?

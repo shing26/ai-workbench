@@ -409,10 +409,32 @@ export type WebhookRule = {
   secret: string;
   retries: number;
   intervalSeconds: number;
+  triggerEvent: string;
   enabled: boolean;
   lastRunAt: number;
   lastStatus: number;
   lastMessage: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type WebhookDeliveryStatus = "queued" | "delivering" | "success" | "failed" | "dead";
+
+export type WebhookDelivery = {
+  id: string;
+  ruleId: string;
+  event: string;
+  payload: string;
+  method: string;
+  url: string;
+  token: string;
+  secret: string;
+  retries: number;
+  attempts: number;
+  status: WebhookDeliveryStatus;
+  lastStatus: number;
+  lastMessage: string;
+  nextAttemptAt: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -593,6 +615,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 const makeId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}`);
 const WEBHOOK_RULES_LS_KEY = "ai-workbench:webhook-rules:v1";
+const WEBHOOK_DELIVERIES_LS_KEY = "ai-workbench:webhook-deliveries:v1";
 
 function emptyShape(): LocalShape {
   return {
@@ -3971,6 +3994,7 @@ export async function createWebhookRule(
   intervalSeconds = 60,
   secret?: string,
   retries = 1,
+  triggerEvent = "",
 ): Promise<WebhookRule> {
   if (isTauri()) {
     return invoke<WebhookRule>("create_webhook_rule", {
@@ -3983,6 +4007,7 @@ export async function createWebhookRule(
         secret: secret?.trim() ? secret.trim() : null,
         retries,
         intervalSeconds: Math.max(5, intervalSeconds),
+        triggerEvent: triggerEvent.trim(),
       },
     });
   }
@@ -3997,6 +4022,7 @@ export async function createWebhookRule(
     secret: secret?.trim() || "",
     retries: Math.max(0, retries),
     intervalSeconds: Math.max(5, intervalSeconds),
+    triggerEvent: triggerEvent.trim(),
     enabled: true,
     lastRunAt: 0,
     lastStatus: 0,
@@ -4052,6 +4078,101 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
   return result;
+}
+
+function readWebhookDeliveries(): WebhookDelivery[] {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_DELIVERIES_LS_KEY);
+    return raw ? (JSON.parse(raw) as WebhookDelivery[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWebhookDeliveries(deliveries: WebhookDelivery[]) {
+  localStorage.setItem(WEBHOOK_DELIVERIES_LS_KEY, JSON.stringify(deliveries));
+}
+
+export async function listWebhookDeliveries(
+  status?: string,
+  limit = 50,
+): Promise<WebhookDelivery[]> {
+  if (isTauri()) {
+    return invoke<WebhookDelivery[]>("list_webhook_deliveries", {
+      status: status?.trim() ? status.trim() : null,
+      limit,
+    });
+  }
+  const all = readWebhookDeliveries();
+  const filtered = status?.trim() ? all.filter((d) => d.status === status.trim()) : all;
+  return filtered.slice(0, limit);
+}
+
+export async function triggerWebhookEvent(event: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("trigger_webhook_event", { event });
+  }
+  const rules = readWebhookRules().filter(
+    (r) => r.enabled && (r.triggerEvent || "") === event,
+  );
+  const now = Date.now();
+  const deliveries: WebhookDelivery[] = rules.map((rule) => ({
+    id: makeId(),
+    ruleId: rule.id,
+    event,
+    payload: rule.payload,
+    method: rule.method,
+    url: rule.url,
+    token: rule.token,
+    secret: rule.secret,
+    retries: rule.retries,
+    attempts: 1,
+    status: "success",
+    lastStatus: 200,
+    lastMessage: `HTTP 200 delivered (event: ${event})`,
+    nextAttemptAt: now,
+    createdAt: now,
+    updatedAt: now,
+  }));
+  writeWebhookDeliveries([...readWebhookDeliveries(), ...deliveries]);
+  return deliveries.length;
+}
+
+export async function retryWebhookDelivery(id: string): Promise<WebhookDelivery> {
+  if (isTauri()) return invoke<WebhookDelivery>("retry_webhook_delivery", { id });
+  const deliveries = readWebhookDeliveries();
+  const delivery = deliveries.find((d) => d.id === id);
+  if (!delivery) throw new Error("Webhook delivery not found");
+  delivery.attempts = 0;
+  delivery.status = "queued";
+  delivery.lastMessage = "";
+  delivery.nextAttemptAt = Date.now();
+  delivery.updatedAt = Date.now();
+  writeWebhookDeliveries(deliveries);
+  return delivery;
+}
+
+export async function deleteWebhookDelivery(id: string): Promise<string> {
+  if (isTauri()) return invoke<string>("delete_webhook_delivery", { id });
+  const deliveries = readWebhookDeliveries();
+  const next = deliveries.filter((d) => d.id !== id);
+  if (next.length === deliveries.length) throw new Error("Webhook delivery not found");
+  writeWebhookDeliveries(next);
+  return `Deleted webhook delivery ${id.slice(0, 8)}`;
+}
+
+export async function clearWebhookDeliveries(status?: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("clear_webhook_deliveries", {
+      status: status?.trim() ? status.trim() : null,
+    });
+  }
+  const deliveries = readWebhookDeliveries();
+  const next = status?.trim()
+    ? deliveries.filter((d) => d.status !== status.trim())
+    : [];
+  writeWebhookDeliveries(next);
+  return deliveries.length - next.length;
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {

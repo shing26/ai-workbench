@@ -68,6 +68,8 @@ export default function SystemView() {
   const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
   const [webhookRuleName, setWebhookRuleName] = useState("");
   const [webhookRuleInterval, setWebhookRuleInterval] = useState("60");
+  const [webhookRuleTrigger, setWebhookRuleTrigger] = useState("");
+  const [webhookDeliveries, setWebhookDeliveries] = useState<db.WebhookDelivery[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
@@ -678,9 +680,12 @@ export default function SystemView() {
       Number(webhookRuleInterval) || 60,
       webhookSecret,
       Math.max(0, Number(webhookRetries) || 0),
+      webhookRuleTrigger.trim(),
     );
     await loadWebhookRules();
+    await loadWebhookDeliveries();
     setWebhookRuleName("");
+    setWebhookRuleTrigger("");
   };
 
   const toggleWebhookRule = async (id: string, enabled: boolean) => {
@@ -697,6 +702,47 @@ export default function SystemView() {
   const deleteWebhookRule = async (id: string) => {
     await db.deleteWebhookRule(id);
     await loadWebhookRules();
+    await loadWebhookDeliveries();
+  };
+
+  const loadWebhookDeliveries = async () => {
+    setWebhookDeliveries(await db.listWebhookDeliveries());
+  };
+
+  const fireWebhookEvent = async (event: string) => {
+    const count = await db.triggerWebhookEvent(event);
+    setWebhookResult({
+      ok: true,
+      status: 202,
+      durationMs: 0,
+      attempts: 0,
+      signed: false,
+      message: `Queued ${count} delivery(ies) for ${event}`,
+    });
+    await loadWebhookDeliveries();
+  };
+
+  const retryWebhookDelivery = async (id: string) => {
+    await db.retryWebhookDelivery(id);
+    await loadWebhookDeliveries();
+  };
+
+  const deleteWebhookDelivery = async (id: string) => {
+    await db.deleteWebhookDelivery(id);
+    await loadWebhookDeliveries();
+  };
+
+  const clearWebhookDeliveries = async () => {
+    const removed = await db.clearWebhookDeliveries("dead");
+    setWebhookResult({
+      ok: true,
+      status: 0,
+      durationMs: 0,
+      attempts: 0,
+      signed: false,
+      message: `Cleared ${removed} dead delivery(ies)`,
+    });
+    await loadWebhookDeliveries();
   };
 
   useEffect(() => {
@@ -705,7 +751,11 @@ export default function SystemView() {
 
   useEffect(() => {
     void loadWebhookRules();
-    const timer = window.setInterval(() => void loadWebhookRules(), 5000);
+    void loadWebhookDeliveries();
+    const timer = window.setInterval(() => {
+      void loadWebhookRules();
+      void loadWebhookDeliveries();
+    }, 5000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -1501,6 +1551,13 @@ export default function SystemView() {
               data-webhook-rule-interval
               className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
             />
+            <input
+              value={webhookRuleTrigger}
+              onChange={(e) => setWebhookRuleTrigger(e.target.value)}
+              placeholder="Trigger event"
+              data-webhook-rule-trigger-input
+              className="h-7 w-36 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
             <button
               type="button"
               data-webhook-rule-save
@@ -1528,9 +1585,18 @@ export default function SystemView() {
                 <span className="max-w-40 truncate text-[9px] text-slate-500">
                   {rule.method} {rule.url}
                 </span>
-                <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
-                  every {rule.intervalSeconds}s
-                </span>
+                {rule.triggerEvent ? (
+                  <span
+                    data-webhook-rule-trigger
+                    className="rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300"
+                  >
+                    event: {rule.triggerEvent}
+                  </span>
+                ) : (
+                  <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
+                    every {rule.intervalSeconds}s
+                  </span>
+                )}
                 <span
                   data-webhook-rule-retries
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
@@ -1580,6 +1646,87 @@ export default function SystemView() {
                   type="button"
                   data-webhook-rule-delete
                   onClick={() => void deleteWebhookRule(rule.id)}
+                  className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
+            <span className="text-[9px] text-slate-500">Event triggers</span>
+            {["sync.completed", "knowledge.indexed", "clipboard.captured", "error.reported"].map(
+              (event) => (
+                <button
+                  key={event}
+                  type="button"
+                  data-webhook-event-trigger={event}
+                  onClick={() => void fireWebhookEvent(event)}
+                  className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+                >
+                  {event}
+                </button>
+              ),
+            )}
+            <button
+              type="button"
+              data-webhook-delivery-clear
+              onClick={() => void clearWebhookDeliveries()}
+              className="ml-auto flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+            >
+              Clear dead
+            </button>
+          </div>
+          <div data-webhook-deliveries className="mt-2 space-y-1">
+            {webhookDeliveries.length === 0 && (
+              <div className="rounded-lg border border-white/5 px-2 py-1.5 text-[10px] text-slate-600">
+                No queued deliveries
+              </div>
+            )}
+            {webhookDeliveries.slice(0, 8).map((delivery) => (
+              <div
+                key={delivery.id}
+                data-webhook-delivery-item
+                className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+              >
+                <span
+                  data-webhook-delivery-status
+                  className={`rounded-md px-1.5 py-0.5 text-[9px] ${
+                    delivery.status === "success"
+                      ? "bg-emerald-500/10 text-emerald-300"
+                      : delivery.status === "dead"
+                        ? "bg-rose-500/10 text-rose-300"
+                        : "bg-sky-500/10 text-sky-300"
+                  }`}
+                >
+                  {delivery.status}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
+                  {delivery.event || "interval"} · {delivery.method} {delivery.url}
+                </span>
+                <span
+                  data-webhook-delivery-attempts
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  {delivery.attempts}/{delivery.retries + 1}
+                </span>
+                {delivery.lastMessage && (
+                  <span className="max-w-48 truncate text-[9px] text-slate-500">
+                    {delivery.lastMessage}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  data-webhook-delivery-retry
+                  onClick={() => void retryWebhookDelivery(delivery.id)}
+                  className="flex h-6 items-center rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  data-webhook-delivery-delete
+                  onClick={() => void deleteWebhookDelivery(delivery.id)}
                   className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
                 >
                   Delete

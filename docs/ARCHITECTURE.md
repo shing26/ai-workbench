@@ -490,3 +490,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Rust 流式链路按 `provider.model` 请求：`stream_ai_message` / `run_provider_stream_smoke_test` / `call_provider` 空值回退 `gpt-4o-mini` / `qwen2.5:3b`；`stream_ollama` / `chat_ollama` 改用 `provider.base_url`。
 - 浏览器 `sendAiMessageStream` 新增真实流式：配置 model 的 http(s) Provider 用 `fetch` 消费 OpenAI-compatible SSE 或 Ollama NDJSON，支持取消与错误回显；未配置 model 保持模拟流。
 - `verify:ui` / `verify:preview` 新增 `providerLiveStream` lane；Rust 单测覆盖 model 迁移 / 持久化与请求体模型名。
+
+## Sprint 96：Webhook 事件触发器与投递队列
+
+- `webhook_rules` 新增 `trigger_event TEXT DEFAULT ''`：新库 SCHEMA 建列，旧库 `migrate_webhook_trigger_event` 幂等补列；`list_event_webhook_rules` 按事件匹配 enabled 规则，`list_due_webhook_rules` 只选 `trigger_event = ''` 的定时规则。
+- 新增持久化投递队列 `webhook_deliveries`：`queued / delivering / success / dead` 状态、`attempts`、`next_attempt_at`，带 `(status, next_attempt_at)` 与 `(rule_id)` 索引；`delete_webhook_rule` 级联删除该规则投递记录。
+- `spawn_webhook_scheduler` 重构为 `spawn_webhook_delivery_worker`：定时规则先入队，`claim_due_webhook_deliveries` 最多取 8 条消费；失败按 `1000ms << attempts` 指数退避，超过 `retries + 1` 次标记 dead。
+- 新增 Tauri 命令 `trigger_webhook_event` / `list_webhook_deliveries` / `retry_webhook_delivery` / `delete_webhook_delivery` / `clear_webhook_deliveries`；`list_webhook_deliveries` limit 收敛到 1~200。
+- SystemView 新增事件触发输入、快捷按钮与投递队列面板；浏览器 fallback 使用 `ai-workbench:webhook-deliveries:v1` 持久化同一模型。
+- `verify:ui` / `verify:preview` 新增 `webhookQueueEvent` lane；Rust 单测覆盖迁移补列与队列全生命周期。
