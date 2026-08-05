@@ -835,6 +835,25 @@ fn update_agent_system_prompt(
 }
 
 #[tauri::command]
+fn list_agent_prompt_versions(
+    state: State<'_, db::Db>,
+    agent_id: String,
+) -> Result<Vec<db::AgentPromptVersion>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_agent_prompt_versions(&conn, &agent_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_agent_prompt(
+    state: State<'_, db::Db>,
+    agent_id: String,
+    version_id: String,
+) -> Result<db::Agent, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::restore_agent_prompt(&conn, &agent_id, &version_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_habits(state: State<'_, db::Db>) -> Result<Vec<db::Habit>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_habits(&conn).map_err(|e| e.to_string())
@@ -1646,6 +1665,8 @@ pub fn run() {
             create_department,
             create_agent,
             update_agent_system_prompt,
+            list_agent_prompt_versions,
+            restore_agent_prompt,
             list_habits,
             create_habit,
             toggle_habit,

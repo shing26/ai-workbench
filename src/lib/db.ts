@@ -87,6 +87,13 @@ export type Agent = {
   createdAt: number;
 };
 
+export type AgentPromptVersion = {
+  id: string;
+  agentId: string;
+  content: string;
+  createdAt: number;
+};
+
 export type ProviderHealth = {
   ok: boolean;
   latencyMs: number;
@@ -217,6 +224,7 @@ type LocalShape = {
   providers: Provider[];
   departments: Department[];
   agents: Agent[];
+  promptVersions: AgentPromptVersion[];
   sessions: Session[];
   chatMessages: ChatMessage[];
   messageVersions: MessageVersion[];
@@ -245,6 +253,7 @@ function emptyShape(): LocalShape {
     providers: [],
     departments: [],
     agents: [],
+    promptVersions: [],
     sessions: [],
     chatMessages: [],
     messageVersions: [],
@@ -285,6 +294,7 @@ function seedShape(): LocalShape {
       { id: makeId(), name: "Ollama", baseUrl: "http://localhost:11434", apiKey: "", isActive: true },
       { id: makeId(), name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "OPENROUTER_API_KEY", isActive: false },
     ],
+    promptVersions: [],
     departments: [
       { id: designId, name: "设计部", description: "界面、交互与视觉动效", color: "iris", agentCount: 3, createdAt: now - 9000 },
       { id: productId, name: "产品与体验部", description: "需求、用户路径与优先级", color: "ocean", agentCount: 2, createdAt: now - 8000 },
@@ -519,8 +529,51 @@ export async function updateAgentSystemPrompt(id: string, systemPrompt: string):
   const shape = readLocal();
   const agent = shape.agents.find((a) => a.id === id);
   if (!agent) throw new Error("agent not found");
-  agent.systemPrompt = systemPrompt;
-  writeLocal(shape);
+  if (agent.systemPrompt !== systemPrompt) {
+    shape.promptVersions = shape.promptVersions ?? [];
+    shape.promptVersions.push({
+      id: makeId(),
+      agentId: id,
+      content: agent.systemPrompt,
+      createdAt: Date.now(),
+    });
+    agent.systemPrompt = systemPrompt;
+    writeLocal(shape);
+  }
+  return { ...agent };
+}
+
+export async function listAgentPromptVersions(agentId: string): Promise<AgentPromptVersion[]> {
+  if (isTauri()) {
+    return invoke<AgentPromptVersion[]>("list_agent_prompt_versions", { agentId });
+  }
+  const shape = readLocal();
+  return (shape.promptVersions ?? [])
+    .filter((v) => v.agentId === agentId)
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function restoreAgentPrompt(agentId: string, versionId: string): Promise<Agent> {
+  if (isTauri()) {
+    return invoke<Agent>("restore_agent_prompt", { agentId, versionId });
+  }
+  const shape = readLocal();
+  const agent = shape.agents.find((a) => a.id === agentId);
+  const version = (shape.promptVersions ?? []).find(
+    (v) => v.id === versionId && v.agentId === agentId,
+  );
+  if (!agent || !version) throw new Error("agent or version not found");
+  if (agent.systemPrompt !== version.content) {
+    shape.promptVersions = shape.promptVersions ?? [];
+    shape.promptVersions.push({
+      id: makeId(),
+      agentId,
+      content: agent.systemPrompt,
+      createdAt: Date.now(),
+    });
+    agent.systemPrompt = version.content;
+    writeLocal(shape);
+  }
   return { ...agent };
 }
 

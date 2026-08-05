@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, HeartPulse, Pencil, Plus, Radio, RefreshCw, Terminal, Users, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -33,6 +33,8 @@ export default function SystemView() {
   const [agentRole, setAgentRole] = useState("");
   const [promptEditAgentId, setPromptEditAgentId] = useState<string | null>(null);
   const [promptDraft, setPromptDraft] = useState("");
+  const [versionOpenAgentId, setVersionOpenAgentId] = useState<string | null>(null);
+  const [promptVersions, setPromptVersions] = useState<db.AgentPromptVersion[]>([]);
 
   useEffect(() => {
     void db.getSyncStatus().then((status) => {
@@ -68,6 +70,22 @@ export default function SystemView() {
     setAgents(await db.listAgents());
     setPromptEditAgentId(null);
     setPromptDraft("");
+  };
+
+  const togglePromptVersions = async (agentId: string) => {
+    if (versionOpenAgentId === agentId) {
+      setVersionOpenAgentId(null);
+      setPromptVersions([]);
+      return;
+    }
+    setVersionOpenAgentId(agentId);
+    setPromptVersions(await db.listAgentPromptVersions(agentId));
+  };
+
+  const restorePromptVersion = async (agentId: string, versionId: string) => {
+    await db.restoreAgentPrompt(agentId, versionId);
+    setAgents(await db.listAgents());
+    setPromptVersions(await db.listAgentPromptVersions(agentId));
   };
 
   const exportSync = async () => {
@@ -315,6 +333,14 @@ export default function SystemView() {
                           <div className="mt-1.5 flex justify-end gap-1">
                             <button
                               type="button"
+                              aria-label="Show prompt versions"
+                              onClick={() => void togglePromptVersions(a.id)}
+                              className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-400 hover:text-blue-300"
+                            >
+                              <History size={10} /> Versions
+                            </button>
+                            <button
+                              type="button"
                               aria-label="Cancel agent prompt"
                               onClick={() => {
                                 setPromptEditAgentId(null);
@@ -333,6 +359,32 @@ export default function SystemView() {
                               <Check size={10} /> Save
                             </button>
                           </div>
+                          {versionOpenAgentId === a.id && (
+                            <div className="prompt-version-list mt-1.5 space-y-1">
+                              {promptVersions.length === 0 && (
+                                <div className="px-1 text-[9px] text-slate-600">No versions yet</div>
+                              )}
+                              {promptVersions.map((v, index) => (
+                                <div
+                                  key={v.id}
+                                  className="flex items-start gap-1.5 rounded-md bg-black/20 px-1.5 py-1"
+                                >
+                                  <span className="shrink-0 text-[9px] text-slate-500">v{index + 1}</span>
+                                  <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                                    {v.content || "(empty)"}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    aria-label={`Restore prompt version ${index + 1}`}
+                                    onClick={() => void restorePromptVersion(a.id, v.id)}
+                                    className="shrink-0 text-[9px] text-blue-300 hover:text-[#7FB4FF]"
+                                  >
+                                    Restore
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
