@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 89
+
+### What went well?
+
+- Projects diff 从纯文本 `<pre>` 升级为行级渲染：`parseDiffLines` 把 diff 分为 file / hunk / add / del / context，行背景与文字按类型着色；`highlightLine` 对注释、字符串、数字、关键字做内联高亮，diff 面板可读性明显提升。
+- Rust 新增 `get_git_file_versions(path, file)`：tracked 文件返回 `git show HEAD:file` 与磁盘内容，untracked 返回空 old；两条单测覆盖 tracked / untracked 两条链路。
+- `db.ts` 新增 `getGitFileVersions`，浏览器 fallback 从 `getGitFileDiff` mock 反解 old / new，`verify:ui` / `verify:preview` 无需真实 Git 仓库即可验证。
+- ProjectsView 新增 Side by side 切换：`data-git-side-by-side-toggle` 打开 HEAD / Working tree 双栏，`data-git-file-version=old|new` 便于断言；切回 Inline 后原有行渲染恢复。
+- `verify:ui` / `verify:preview` 新增 `gitInlineDiffSideBySide` lane：断言行类型集合、高亮 span、双栏行号与往返切换均通过。
+
+### What went wrong?
+
+- 首版把高亮模块建成 `.ts`，内含 JSX 导致 `npm run build` 编译失败；改为 `.tsx` 并收敛 `ReactNode` 类型后通过。
+- `git diff` 的 `---` / `+++` 头与 `-` / `+` 行前缀需要额外判空，首轮解析把 `---` 误判为 del 行，补前缀保护后修正。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Vector Embedding RAG、提交阶段行级 diff 选择。
+- Side by side 大文件渲染、diff 编辑与三向 merge 继续留在 Backlog。
+- 保留 `gitInlineDiffSideBySide` 断言，改动 diff 渲染或版本读取命令时重跑 `verify:ui`。
+
 ## Sprint 88
 
 ### What went well?

@@ -434,3 +434,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `updateCustomQuickPrompt` / `reorderCustomQuickPrompts`；`loadQuickPromptsByUsage` 排序为使用次数降序 + `order` 升序。
 - AIStudioView Manage 面板升级为 dnd-kit 行式列表：拖拽手柄、编辑、上下箭头、删除；编辑态复用顶部表单并显示 Save / Cancel。
 - `verify:ui` / `verify:preview` 新增 `quickPromptEditSort` / `quickPromptEditSortPersist` lane；Rust 单测覆盖编辑与重排。
+
+## Sprint 89：行内着色 diff 与整文件对比
+
+- Rust 新增 `get_git_file_versions(path, file)` Tauri 命令：返回 `GitFileVersions { path, status, oldContent, newContent }`，tracked 文件 old 取 `git show HEAD:file`、new 读磁盘，untracked old 为空；已注册到 `invoke_handler` 并有两条单测覆盖。
+- 新增 `src/lib/diffHighlight.tsx`：`parseDiffLines` 分类 file / hunk / add / del / context，`detectLanguage` 按扩展名识别语言，`highlightLine` 基于正则 token 对注释、字符串、数字、关键字输出 JSX span。
+- `db.ts` 新增 `GitFileVersions` 与 `getGitFileVersions`；浏览器 fallback 从 `getGitFileDiff` mock 反解 old / new，保证 UI 验证不依赖真实 Git 仓库。
+- ProjectsView diff 面板改为行式渲染（`data-git-diff-line` / `data-git-diff-line-type`），新增 `data-git-side-by-side-toggle` 与 HEAD / Working tree 双栏（`data-git-file-version=old|new`）。
+- `verify:ui` / `verify:preview` 新增 `gitInlineDiffSideBySide` lane，断言行类型集合、高亮 span、双栏行号与往返切换。
