@@ -1,6 +1,7 @@
-import { Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Square, Trash2, X } from "lucide-react";
+import { Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
+import { QUICK_PROMPTS } from "../lib/quickPrompts";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import type { InspectorSection } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -41,6 +42,7 @@ export default function AIStudioView() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
@@ -1137,8 +1139,28 @@ export default function AIStudioView() {
             ))}
           </div>
         )}
+        <div data-quick-prompts className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
+          {QUICK_PROMPTS.map((prompt) => (
+            <button
+              key={prompt.id}
+              type="button"
+              data-quick-prompt={prompt.id}
+              data-quick-prompt-label={prompt.label}
+              data-quick-prompt-category={prompt.category}
+              onClick={() => {
+                setInput(prompt.text);
+                composerRef.current?.focus();
+              }}
+              className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-300"
+            >
+              <Sparkles size={10} className="shrink-0" />
+              {prompt.label}
+            </button>
+          ))}
+        </div>
         <div className="composer flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
           <textarea
+            ref={composerRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

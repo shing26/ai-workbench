@@ -1,5 +1,21 @@
 # Sprint Retrospective
 
+## Sprint 75
+
+### What went well?
+
+- 围绕“便捷日常的生活和工作”在 AI Studio 加入 6 个 Quick Prompt：生活（Daily recap / Meal plan / Wind down）与工作（Week plan / Summarize notes / Draft reply）各 3 个，一键填入结构化提示词并聚焦输入框。
+- `src/lib/quickPrompts.ts` 用 `category: life/work` 统一数据模型，UI 芯片暴露稳定数据属性，为后续自定义模板与按分类分组预留结构。
+- 验证覆盖：`npm run build` 全绿；`verify:ui` / `verify:preview` 的 `quickPrompts` lane 断言 6 个芯片、life/work 两类齐全、点击后输入框内容正确。
+
+### What went wrong?
+
+- 本轮无 Rust 变更，无阻塞性问题；主要工作量在把 Quick Prompt lane 插入 streaming 之前，避免点击模板后的输入框内容影响后续流式断言。
+
+### Action Items
+
+- 下一 Sprint 候选：Git dirty 逐文件 diff 预览、真实 Provider 端到端流式联调、Quick Prompt 自定义编辑与持久化。
+
 ## Sprint 74
 
 ### What went well?
