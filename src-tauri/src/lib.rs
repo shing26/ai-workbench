@@ -1306,17 +1306,41 @@ fn add_custom_quick_prompt(
 ) -> Result<db::QuickPrompt, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let now = now_millis();
+    let sort_order = db::next_quick_prompt_order(&conn).map_err(|e| e.to_string())?;
     let prompt = db::QuickPrompt {
         id: uuid::Uuid::new_v4().to_string(),
         label,
         category,
         text,
         custom: true,
+        sort_order,
         updated_at: now,
         created_at: now,
     };
     db::upsert_quick_prompt(&conn, &prompt).map_err(|e| e.to_string())?;
     Ok(prompt)
+}
+
+#[tauri::command]
+fn update_custom_quick_prompt(
+    state: State<'_, db::Db>,
+    id: String,
+    label: String,
+    category: String,
+    text: String,
+) -> Result<db::QuickPrompt, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_custom_quick_prompt(&conn, &id, &label, &category, &text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_custom_quick_prompts(
+    state: State<'_, db::Db>,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::reorder_custom_quick_prompts(&conn, &ids).map_err(|e| e.to_string())?;
+    Ok(ids.len())
 }
 
 #[tauri::command]
@@ -4215,6 +4239,8 @@ pub fn run() {
             create_thought,
             list_quick_prompts,
             add_custom_quick_prompt,
+            update_custom_quick_prompt,
+            reorder_custom_quick_prompts,
             delete_custom_quick_prompt,
             list_quick_prompt_usage,
             record_quick_prompt_usage,
@@ -5733,6 +5759,7 @@ mod tests {
                 category: "work".to_string(),
                 text: "local".to_string(),
                 custom: true,
+                sort_order: 0,
                 updated_at: 1000,
                 created_at: 500,
             },
@@ -5752,6 +5779,7 @@ mod tests {
                     category: "work".to_string(),
                     text: "remote".to_string(),
                     custom: true,
+                    sort_order: 0,
                     updated_at: 2000,
                     created_at: 500,
                 },
@@ -5761,6 +5789,7 @@ mod tests {
                     category: "life".to_string(),
                     text: "only remote".to_string(),
                     custom: true,
+                    sort_order: 1,
                     updated_at: 2500,
                     created_at: 2500,
                 },

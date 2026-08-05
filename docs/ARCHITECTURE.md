@@ -426,3 +426,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `SyncSnapshot` 增加 `quickPrompts` / `quickPromptUsage`；`merge_sync_snapshot` 按 `updatedAt` 合并 prompt、按 max count 合并 usage，`quick_prompt` 冲突存两端完整 JSON，`resolve_conflict` / union / structured 均支持该 kind。
 - `db.ts` 新增 `listQuickPrompts` / `listCustomQuickPrompts` / `loadQuickPromptsByUsage` / `getQuickPromptUsage` / `recordQuickPromptUsage` / `addCustomQuickPrompt` / `deleteCustomQuickPrompt` 异步 API；AIStudioView 迁移到 `db.*`，浏览器 fallback 沿用 `ai-workbench:quick-prompts:v1` / `ai-workbench:quick-prompt-usage:v1`。
 - `verify:ui` / `verify:preview` 新增 `quickPromptSync` / `quickPromptSyncVisible` / `quickPromptSyncPersist` lane；Rust 单测覆盖同步合并与冲突仲裁。
+
+## Sprint 88：Quick Prompt 编辑与拖拽排序
+
+- `quick_prompts` 新增 `sort_order` 列（新库走 SCHEMA，旧库走 `migrate_quick_prompt_order`）；`QuickPrompt.order` 通过 serde 进入同步快照。
+- 新增 Tauri 命令 `update_custom_quick_prompt`（仅 custom 行，回写 `updated_at`）与 `reorder_custom_quick_prompts`（单事务重编号 0..n-1）。
+- `db.ts` 新增 `updateCustomQuickPrompt` / `reorderCustomQuickPrompts`；`loadQuickPromptsByUsage` 排序为使用次数降序 + `order` 升序。
+- AIStudioView Manage 面板升级为 dnd-kit 行式列表：拖拽手柄、编辑、上下箭头、删除；编辑态复用顶部表单并显示 Save / Cancel。
+- `verify:ui` / `verify:preview` 新增 `quickPromptEditSort` / `quickPromptEditSortPersist` lane；Rust 单测覆盖编辑与重排。

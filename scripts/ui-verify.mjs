@@ -638,6 +638,120 @@ try {
     );
   }
 
+  results.quickPromptEditSort = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(100);
+    const addPrompt = async (label, text) => {
+      const name = document.querySelector("[data-quick-prompt-name]");
+      const promptText = document.querySelector("[data-quick-prompt-text]");
+      if (!name || !promptText) return false;
+      setInput(name, label);
+      setInput(promptText, text);
+      await sleep(60);
+      document.querySelector("[data-quick-prompt-add]")?.click();
+      await sleep(160);
+      return !![...document.querySelectorAll("[data-quick-prompt-custom-row]")].some(
+        (row) => row.textContent?.includes(label),
+      );
+    };
+    const alphaAdded = await addPrompt("Alpha", "alpha text");
+    const betaAdded = await addPrompt("Beta", "beta text");
+    if (!alphaAdded || !betaAdded) {
+      return { ok: false, reason: "custom prompts not added", alphaAdded, betaAdded };
+    }
+    const rows = () => [...document.querySelectorAll("[data-quick-prompt-custom-row]")];
+    const alphaRow = rows().find((row) => row.textContent?.includes("Alpha"));
+    const editBtn = alphaRow?.querySelector("[data-quick-prompt-custom-edit]");
+    if (!editBtn) return { ok: false, reason: "edit button missing" };
+    const before = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const beforeAlpha = before.find((p) => p.label === "Alpha");
+    editBtn.click();
+    await sleep(100);
+    const name = document.querySelector("[data-quick-prompt-name]");
+    const promptText = document.querySelector("[data-quick-prompt-text]");
+    const prefilled = name?.value === "Alpha" && promptText?.value === "alpha text";
+    setInput(name, "Alpha edited");
+    setInput(promptText, "edited text");
+    await sleep(60);
+    document.querySelector("[data-quick-prompt-save]")?.click();
+    await sleep(200);
+    const chipVisible = [...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited",
+    );
+    const after = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const afterAlpha = after.find((p) => p.label === "Alpha edited");
+    const editedOk =
+      prefilled &&
+      chipVisible &&
+      !!afterAlpha &&
+      afterAlpha.text === "edited text" &&
+      (afterAlpha.updatedAt ?? 0) >= (beforeAlpha?.updatedAt ?? 0);
+    const alphaId = afterAlpha?.id;
+    const betaId = after.find((p) => p.label === "Beta")?.id;
+    const alphaRowAfter = rows().find((row) => row.textContent?.includes("Alpha edited"));
+    alphaRowAfter?.querySelector("[data-quick-prompt-custom-move-down]")?.click();
+    await sleep(200);
+    const reorderedRows = rows();
+    const rowIds = reorderedRows.map((row) => row.getAttribute("data-quick-prompt-custom-row"));
+    const storedOrder = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const alphaOrder = storedOrder.find((p) => p.id === alphaId)?.order;
+    const betaOrder = storedOrder.find((p) => p.id === betaId)?.order;
+    const alphaIndex = rowIds.indexOf(alphaId);
+    const betaIndex = rowIds.indexOf(betaId);
+    const sortedOk =
+      alphaIndex > betaIndex &&
+      alphaOrder > betaOrder &&
+      storedOrder.filter((p) => p.custom === true).every((p, index) => p.order === index);
+    return {
+      ok: editedOk && sortedOk,
+      editedOk,
+      sortedOk,
+      prefilled,
+      chipVisible,
+      rowIds,
+      alphaOrder,
+      betaOrder,
+      stored: storedOrder.map((p) => ({ label: p.label, order: p.order })),
+    };
+  })()`);
+  if (!results.quickPromptEditSort.ok) {
+    throw new Error(
+      `Quick prompt edit/sort assertion failed: ${JSON.stringify(results.quickPromptEditSort)}`,
+    );
+  }
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("AI Studio");
+  results.quickPromptEditSortPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const alpha = stored.find((p) => p.label === "Alpha edited");
+    const beta = stored.find((p) => p.label === "Beta");
+    const ok =
+      chips.some((el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited") &&
+      !!alpha &&
+      alpha.text === "edited text" &&
+      alpha.order > (beta?.order ?? -1);
+    return { ok, stored: stored.map((p) => ({ label: p.label, order: p.order, text: p.text })) };
+  })()`);
+  if (!results.quickPromptEditSortPersist.ok) {
+    throw new Error(
+      `Quick prompt edit/sort persistence assertion failed: ${JSON.stringify(results.quickPromptEditSortPersist)}`,
+    );
+  }
+
   results.aiDailyRecap = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector("[data-ai-daily-recap]");

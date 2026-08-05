@@ -1,5 +1,8 @@
-import { CalendarDays, Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Save, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronUp, GitCompare, GitFork, GripVertical, History, Pencil, Plus, RefreshCw, Save, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import * as db from "../lib/db";
 import { buildDailyRecapPrompt } from "../lib/dailyRecap";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -8,6 +11,85 @@ import ModelBadge from "../components/ui/ModelBadge";
 
 type Message = { role: "user" | "assistant"; content: string; id?: string };
 type ApiMessage = { role: "user" | "assistant" | "system"; content: string };
+
+function SortablePromptRow({
+  prompt,
+  onEdit,
+  onDelete,
+  onMove,
+}: {
+  prompt: db.CustomQuickPrompt;
+  onEdit: (prompt: db.CustomQuickPrompt) => void;
+  onDelete: (id: string) => void;
+  onMove: (id: string, direction: -1 | 1) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: prompt.id,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      data-quick-prompt-custom-row={prompt.id}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.55 : 1,
+      }}
+      className="flex items-center gap-1.5 rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
+    >
+      <button
+        type="button"
+        data-quick-prompt-custom-drag={prompt.id}
+        aria-label={`Drag ${prompt.label}`}
+        {...attributes}
+        {...listeners}
+        className="cursor-grab text-slate-600 hover:text-slate-300"
+      >
+        <GripVertical size={11} />
+      </button>
+      <span className="max-w-24 truncate text-slate-300">{prompt.label}</span>
+      <span className="rounded bg-white/10 px-1 text-[8px] leading-3 text-slate-500">
+        {prompt.category}
+      </span>
+      <button
+        type="button"
+        data-quick-prompt-custom-edit={prompt.id}
+        aria-label={`Edit ${prompt.label}`}
+        onClick={() => onEdit(prompt)}
+        className="text-slate-600 hover:text-blue-300"
+      >
+        <Pencil size={10} />
+      </button>
+      <button
+        type="button"
+        data-quick-prompt-custom-move-up={prompt.id}
+        aria-label={`Move ${prompt.label} up`}
+        onClick={() => onMove(prompt.id, -1)}
+        className="text-slate-600 hover:text-emerald-300"
+      >
+        <ChevronUp size={10} />
+      </button>
+      <button
+        type="button"
+        data-quick-prompt-custom-move-down={prompt.id}
+        aria-label={`Move ${prompt.label} down`}
+        onClick={() => onMove(prompt.id, 1)}
+        className="text-slate-600 hover:text-emerald-300"
+      >
+        <ChevronDown size={10} />
+      </button>
+      <button
+        type="button"
+        data-quick-prompt-custom-delete={prompt.id}
+        aria-label={`Delete ${prompt.label}`}
+        onClick={() => onDelete(prompt.id)}
+        className="ml-auto text-slate-600 hover:text-rose-400"
+      >
+        <Trash2 size={10} />
+      </button>
+    </div>
+  );
+}
 
 export default function AIStudioView() {
   const providers = useWorkbenchStore((s) => s.providers);
@@ -54,6 +136,13 @@ export default function AIStudioView() {
   const [customLabel, setCustomLabel] = useState("");
   const [customCategory, setCustomCategory] = useState<"life" | "work">("work");
   const [customText, setCustomText] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+  const sortedCustomPrompts = [...customPrompts].sort(
+    (a, b) => (a.order ?? 0) - (b.order ?? 0),
+  );
   const [recapReady, setRecapReady] = useState(false);
   const [recapSaving, setRecapSaving] = useState(false);
   const [recapSaveResult, setRecapSaveResult] = useState<string | null>(null);
@@ -90,6 +179,56 @@ export default function AIStudioView() {
     await refreshQuickPrompts();
     setCustomLabel("");
     setCustomText("");
+  };
+
+  const startQuickPromptEdit = (prompt: db.CustomQuickPrompt) => {
+    setEditingId(prompt.id);
+    setCustomLabel(prompt.label);
+    setCustomCategory(prompt.category === "life" ? "life" : "work");
+    setCustomText(prompt.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setCustomLabel("");
+    setCustomCategory("work");
+    setCustomText("");
+  };
+
+  const saveCustom = async () => {
+    if (!editingId || !customLabel.trim() || !customText.trim()) return;
+    await db.updateCustomQuickPrompt(
+      editingId,
+      customLabel.trim(),
+      customCategory,
+      customText.trim(),
+    );
+    cancelEdit();
+    await refreshQuickPrompts();
+  };
+
+  const moveCustom = async (id: string, direction: -1 | 1) => {
+    const ordered = sortedCustomPrompts;
+    const index = ordered.findIndex((prompt) => prompt.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    const next = [...ordered];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    await db.reorderCustomQuickPrompts(next.map((prompt) => prompt.id));
+    await refreshQuickPrompts();
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const ids = sortedCustomPrompts.map((prompt) => prompt.id);
+    const oldIndex = ids.indexOf(String(active.id));
+    const newIndex = ids.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove(ids, oldIndex, newIndex);
+    await db.reorderCustomQuickPrompts(reordered);
+    await refreshQuickPrompts();
   };
 
   const removeCustom = async (id: string) => {
@@ -1326,35 +1465,59 @@ export default function AIStudioView() {
                 placeholder="Prompt text"
                 className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
               />
-              <button
-                type="button"
-                data-quick-prompt-add
-                onClick={() => void addCustom()}
-                className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/20 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/30"
-              >
-                <Plus size={11} /> Add
-              </button>
-            </div>
-            {customPrompts.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {customPrompts.map((prompt) => (
-                  <span
-                    key={prompt.id}
-                    className="flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
+              {editingId ? (
+                <>
+                  <button
+                    type="button"
+                    data-quick-prompt-save
+                    onClick={() => void saveCustom()}
+                    className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/20 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/30"
                   >
-                    {prompt.label}
-                    <button
-                      type="button"
-                      data-quick-prompt-custom-delete={prompt.id}
-                      aria-label={`Delete ${prompt.label}`}
-                      onClick={() => void removeCustom(prompt.id)}
-                      className="text-slate-600 hover:text-rose-400"
-                    >
-                      <Trash2 size={10} />
-                    </button>
-                  </span>
-                ))}
-              </div>
+                    <Save size={11} /> Save
+                  </button>
+                  <button
+                    type="button"
+                    data-quick-prompt-cancel
+                    onClick={cancelEdit}
+                    className="flex h-7 items-center gap-1 rounded-md bg-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/15"
+                  >
+                    <X size={11} /> Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  data-quick-prompt-add
+                  onClick={() => void addCustom()}
+                  className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/20 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/30"
+                >
+                  <Plus size={11} /> Add
+                </button>
+              )}
+            </div>
+            {sortedCustomPrompts.length > 0 && (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={(event) => void handleDragEnd(event)}
+              >
+                <SortableContext
+                  items={sortedCustomPrompts.map((prompt) => prompt.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <div className="space-y-1">
+                    {sortedCustomPrompts.map((prompt) => (
+                      <SortablePromptRow
+                        key={prompt.id}
+                        prompt={prompt}
+                        onEdit={startQuickPromptEdit}
+                        onDelete={(id) => void removeCustom(id)}
+                        onMove={(id, direction) => void moveCustom(id, direction)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
             )}
           </div>
         )}

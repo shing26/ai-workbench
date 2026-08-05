@@ -615,3 +615,14 @@ CREATE TABLE IF NOT EXISTS quick_prompt_usage (
 
 - 新表由 `SCHEMA` 自动创建，无旧库迁移；浏览器 fallback 继续使用 `ai-workbench:quick-prompts:v1` / `ai-workbench:quick-prompt-usage:v1`。
 - `quick_prompt_usage.id` 覆盖内置与自定义 prompt；`record_quick_prompt_usage` 以 `ON CONFLICT(id) DO UPDATE SET count = count + 1` 累加，同步合并取两端较大 count。
+
+## Sprint 88：Quick Prompt 编辑与拖拽排序
+
+```sql
+-- Sprint 87 建表后，旧库由 migrate_quick_prompt_order 补充该列
+ALTER TABLE quick_prompts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+UPDATE quick_prompts SET sort_order = rowid WHERE sort_order = 0;
+```
+
+- 新库的 `quick_prompts` 建表语句已直接包含 `sort_order INTEGER NOT NULL DEFAULT 0`；`QuickPrompt.order` 经 serde 命名映射为 JSON `order`，随 Sync Snapshot 同步。
+- `update_custom_quick_prompt` 只允许 `custom = 1` 的行，保留 `created_at` 与 `sort_order`；`reorder_custom_quick_prompts` 单事务把传入 id 依次重编号为 0..n-1。

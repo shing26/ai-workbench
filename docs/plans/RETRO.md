@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 88
+
+### What went well?
+
+- `quick_prompts` 新增 `sort_order` 列：SCHEMA 与新库自动包含，旧库走 `migrate_quick_prompt_order` ALTER TABLE + rowid 回填，无数据丢失；`QuickPrompt.order` 进入同步快照，与 Sprint 87 协议兼容。
+- 新增 `update_custom_quick_prompt` / `reorder_custom_quick_prompts` 两个 Tauri 命令，单测覆盖“编辑拒绝内置行、重排后 order 0..n-1 持久化”。
+- AIStudioView Manage 面板升级为 dnd-kit 行式列表：拖拽手柄 + 编辑 + 上下箭头 + 删除；编辑态复用顶部表单并显示 Save / Cancel；`loadQuickPromptsByUsage` 改为“使用次数降序 + order 升序”，既有用法 / 同步断言全部保持。
+- `verify:ui` / `verify:preview` 新增 `quickPromptEditSort` / `quickPromptEditSortPersist` lane：新增两个 prompt → 编辑第一个 → 下移 → 断言 DOM 顺序、localStorage order 与刷新持久化均通过。
+
+### What went wrong?
+
+- 首次实现时 `startEdit` 与既有消息编辑函数重名，TS 编译报重复声明；改名 `startQuickPromptEdit` 后恢复。
+- `update_custom_quick_prompt` 初版错误类型混用 `rusqlite::Error` 与 `String`，改为统一返回 `Result<_, String>` 后通过 clippy / 单测。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、行内着色与 diff 编辑器 / 整文件对比视图。
+- Vector Embedding RAG、Sync HTTPS / E2E 加密、Webhook 签名与重试继续留在 Backlog。
+
 ## Sprint 87
 
 ### What went well?

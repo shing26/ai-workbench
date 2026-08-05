@@ -5,6 +5,8 @@ import {
   getQuickPromptUsage as getQuickPromptUsageLocal,
   listCustomQuickPrompts as listCustomQuickPromptsLocal,
   recordQuickPromptUsage as recordQuickPromptUsageLocal,
+  reorderCustomQuickPrompts as reorderCustomQuickPromptsLocal,
+  updateCustomQuickPrompt as updateCustomQuickPromptLocal,
   type CustomQuickPrompt,
   type QuickPrompt,
 } from "./quickPrompts";
@@ -1261,7 +1263,11 @@ export async function loadQuickPromptsByUsage(): Promise<QuickPrompt[]> {
   }
   return [...byId.values()]
     .map((prompt, index) => ({ prompt, index, count: usage[prompt.id] ?? 0 }))
-    .sort((a, b) => b.count - a.count || a.index - b.index)
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        (a.prompt.order ?? a.index) - (b.prompt.order ?? b.index),
+    )
     .map((entry) => entry.prompt);
 }
 
@@ -1287,6 +1293,30 @@ export async function addCustomQuickPrompt(
     return invoke<CustomQuickPrompt>("add_custom_quick_prompt", { label, category, text });
   }
   return addCustomQuickPromptLocal(label, category as "life" | "work", text);
+}
+
+export async function updateCustomQuickPrompt(
+  id: string,
+  label: string,
+  category: string,
+  text: string,
+): Promise<CustomQuickPrompt> {
+  if (isTauri()) {
+    return invoke<CustomQuickPrompt>("update_custom_quick_prompt", {
+      id,
+      label,
+      category,
+      text,
+    });
+  }
+  return updateCustomQuickPromptLocal(id, label, category, text);
+}
+
+export async function reorderCustomQuickPrompts(ids: string[]): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("reorder_custom_quick_prompts", { ids });
+  }
+  return reorderCustomQuickPromptsLocal(ids);
 }
 
 export async function deleteCustomQuickPrompt(id: string): Promise<void> {
