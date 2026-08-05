@@ -1807,6 +1807,16 @@ fn list_vault_target_stats(state: State<'_, db::Db>) -> Result<Vec<db::VaultTarg
     db::vault_target_stats(&conn).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn list_knowledge_files(
+    state: State<'_, db::Db>,
+    vault_path: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<db::KnowledgeFileRecord>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_knowledge_files(&conn, vault_path.as_deref(), limit).map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecommendedConcurrency {
@@ -3388,6 +3398,7 @@ pub fn run() {
             get_knowledge_index_status,
             recommend_index_concurrency,
             list_vault_target_stats,
+            list_knowledge_files,
             start_vault_watch,
             start_vault_watch_ex,
             stop_vault_watch,

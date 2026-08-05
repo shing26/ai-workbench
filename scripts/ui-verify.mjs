@@ -1315,6 +1315,121 @@ try {
   }
   results.vaultWatchTimeline = vaultWatchTimeline;
 
+  const knowledgeDocSeed = await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Obsidian Roadmap.md",
+          title: "Obsidian Roadmap",
+          tags: "#work",
+          content: "roadmap",
+          indexedAt: startOfToday - dayMs,
+        },
+        {
+          path: "C:/vault\\\\Daily Notes\\\\2026-08-05.md",
+          title: "Daily Note",
+          tags: "#life",
+          content: "daily",
+          indexedAt: startOfToday - 3_600_000,
+        },
+        {
+          path: "D:/vault\\\\Notes.md",
+          title: "Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 7_200_000,
+        },
+      ]),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const knowledgeDocStatus = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const panel = () => document.querySelector("[data-knowledge-docs]");
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (docs.length >= 3) break;
+      await sleep(100);
+    }
+    if (docs.length < 3) {
+      return {
+        ok: false,
+        reason: "not enough knowledge docs",
+        count: docs.length,
+        panel: panel()?.textContent ?? "",
+      };
+    }
+    const countText = document.querySelector("[data-knowledge-docs-count]")?.textContent ?? "";
+    const count = Number(countText.replace(/[^0-9]/g, "") || 0);
+    const vaults = [
+      ...new Set(docs.map((doc) => doc.getAttribute("data-knowledge-doc-vault"))),
+    ];
+    const hasC = docs.some((doc) =>
+      (doc.getAttribute("data-knowledge-doc-path") ?? "").includes("C:/vault"),
+    );
+    const hasD = docs.some((doc) =>
+      (doc.getAttribute("data-knowledge-doc-path") ?? "").includes("D:/vault"),
+    );
+    const select = document.querySelector("[data-knowledge-doc-filter]");
+    let filterOk = false;
+    let filteredCount = 0;
+    let targetsRaw = "";
+    let targetPaths = [];
+    try {
+      targetsRaw =
+        localStorage.getItem("ai-workbench:vault-watch-targets:v1") ?? "missing";
+      targetPaths = JSON.parse(targetsRaw).map((t) => t.path);
+    } catch {}
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(select, "C:/vault");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      for (let i = 0; i < 20; i++) {
+        await sleep(100);
+        docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+        filteredCount = docs.length;
+        filterOk =
+          filteredCount === 2 &&
+          docs.every(
+            (doc) => doc.getAttribute("data-knowledge-doc-vault") === "C:/vault",
+          );
+        if (filterOk) break;
+      }
+      setter.call(select, "all");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(200);
+    }
+    return {
+      ok:
+        count === 3 &&
+        vaults.includes("C:/vault") &&
+        vaults.includes("D:/vault") &&
+        hasC &&
+        hasD &&
+        filterOk,
+      count,
+      vaults,
+      filterOk,
+      filteredCount,
+      targetsRaw,
+      targetPaths,
+      seedFiles: true,
+    };
+  })()`);
+  if (!knowledgeDocStatus.ok) {
+    throw new Error(
+      `Knowledge document status assertion failed: ${JSON.stringify(knowledgeDocStatus)}`,
+    );
+  }
+  results.knowledgeDocStatus = knowledgeDocStatus;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

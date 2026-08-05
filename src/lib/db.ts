@@ -350,6 +350,15 @@ export type VaultTargetStats = {
   removedEvents: number;
 };
 
+export type KnowledgeFileRecord = {
+  id: string;
+  path: string;
+  title: string;
+  tags: string;
+  vaultPath: string;
+  indexedAt: number;
+};
+
 export type VaultWatchConfig = {
   path: string;
   ignorePatterns: string[];
@@ -1963,6 +1972,7 @@ type VaultFileRecord = {
   title: string;
   tags: string;
   content: string;
+  indexedAt?: number;
 };
 
 function readVaultFiles(): VaultFileRecord[] {
@@ -2199,6 +2209,35 @@ export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
     modifiedEvents: target.modifiedEvents ?? 0,
     removedEvents: target.removedEvents ?? 0,
   }));
+}
+
+export async function listKnowledgeFiles(
+  vaultPath?: string,
+  limit = 50,
+): Promise<KnowledgeFileRecord[]> {
+  if (isTauri()) {
+    return invoke<KnowledgeFileRecord[]>("list_knowledge_files", {
+      vaultPath: vaultPath ?? null,
+      limit,
+    });
+  }
+  const targets = readVaultWatchTargets();
+  const inferVault = (path: string) =>
+    targets.find(
+      (target) => path === target.path || path.startsWith(`${target.path}\\`),
+    )?.path ?? "";
+  return readVaultFiles()
+    .filter((file) => !vaultPath || inferVault(file.path) === vaultPath)
+    .sort((a, b) => (b.indexedAt ?? 0) - (a.indexedAt ?? 0))
+    .slice(0, Math.max(1, Math.min(200, limit)))
+    .map((file) => ({
+      id: file.path,
+      path: file.path,
+      title: file.title,
+      tags: file.tags,
+      vaultPath: inferVault(file.path),
+      indexedAt: file.indexedAt ?? 0,
+    }));
 }
 
 export async function indexVault(

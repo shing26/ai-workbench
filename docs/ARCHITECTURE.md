@@ -117,6 +117,8 @@ Sprint 61 新增命令：`list_vault_watch_events` / `clear_vault_watch_events`�
 
 Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周聚合 error / warning / info，System 错误日志卡片新增趋势图与严重度过滤。
 
+Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -267,3 +269,9 @@ Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周�
 - 新增 `error_log_summary` 聚合：按 `updated_at` 的 UTC 日 / 周分组 `error_logs`，支持可选 source / severity 过滤，bucket 内拆分 error / warning / info，缺失区间补零。
 - 新增 Tauri 命令 `get_error_log_summary(granularity, source?, severity?)`，返回 `ErrorLogSummary { granularity, total, buckets }`。
 - System Error logs 卡片新增 Day / Week 分段切换、严重度下拉与分层柱状图；浏览器 fallback 用 `summarizeErrorLogs` 镜像同一语义。
+
+## Sprint 63：RAG 文档状态面板
+
+- 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
+- Knowledge Vault Index 卡片新增 Document status 区：数量徽标、vault 过滤下拉与文档列表，watch / 索引完成后自动刷新。
+- 浏览器 fallback 按 watch target 路径前缀推断文档归属 vault，与 Rust 目标级语义一致。
