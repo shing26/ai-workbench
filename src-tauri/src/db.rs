@@ -218,6 +218,8 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     payload TEXT NOT NULL DEFAULT '{}',
     method TEXT NOT NULL DEFAULT 'POST',
     token TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL DEFAULT '',
+    retries INTEGER NOT NULL DEFAULT 1,
     interval_seconds INTEGER NOT NULL DEFAULT 60,
     enabled INTEGER NOT NULL DEFAULT 0,
     last_run_at INTEGER NOT NULL DEFAULT 0,
@@ -662,6 +664,8 @@ pub struct WebhookRule {
     pub payload: String,
     pub method: String,
     pub token: String,
+    pub secret: String,
+    pub retries: i64,
     pub interval_seconds: i64,
     pub enabled: bool,
     pub last_run_at: i64,
@@ -669,6 +673,17 @@ pub struct WebhookRule {
     pub last_message: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+pub struct WebhookRuleInput<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+    pub payload: &'a str,
+    pub method: &'a str,
+    pub token: &'a str,
+    pub secret: &'a str,
+    pub retries: i64,
+    pub interval_seconds: i64,
 }
 
 fn now_millis() -> i64 {
@@ -702,8 +717,8 @@ fn uid() -> String {
 }
 
 const WEBHOOK_RULE_COLUMNS: &str =
-    "id, name, url, payload, method, token, interval_seconds, enabled, last_run_at, \
-     last_status, last_message, created_at, updated_at";
+    "id, name, url, payload, method, token, secret, retries, interval_seconds, enabled, \
+     last_run_at, last_status, last_message, created_at, updated_at";
 
 fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
     Ok(WebhookRule {
@@ -713,13 +728,15 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         payload: row.get(3)?,
         method: row.get(4)?,
         token: row.get(5)?,
-        interval_seconds: row.get(6)?,
-        enabled: row.get::<_, i64>(7)? != 0,
-        last_run_at: row.get(8)?,
-        last_status: row.get(9)?,
-        last_message: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        secret: row.get(6)?,
+        retries: row.get(7)?,
+        interval_seconds: row.get(8)?,
+        enabled: row.get::<_, i64>(9)? != 0,
+        last_run_at: row.get(10)?,
+        last_status: row.get(11)?,
+        last_message: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 
@@ -744,32 +761,35 @@ pub fn list_webhook_rules(conn: &Connection) -> Result<Vec<WebhookRule>> {
     rows.collect()
 }
 
-pub fn create_webhook_rule(
-    conn: &Connection,
-    name: &str,
-    url: &str,
-    payload: &str,
-    method: &str,
-    token: &str,
-    interval_seconds: i64,
-) -> Result<WebhookRule> {
+pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> Result<WebhookRule> {
     let now = now_millis();
     let id = uid();
-    let method = if method.trim().is_empty() {
+    let method = if input.method.trim().is_empty() {
         "POST".to_string()
     } else {
-        method.trim().to_uppercase()
+        input.method.trim().to_uppercase()
     };
-    let payload = if payload.trim().is_empty() {
+    let payload = if input.payload.trim().is_empty() {
         "{}".to_string()
     } else {
-        payload.trim().to_string()
+        input.payload.trim().to_string()
     };
-    let interval = interval_seconds.max(5);
+    let interval = input.interval_seconds.max(5);
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, interval_seconds, enabled, last_run_at, last_status, last_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 0, 0, '', ?8, ?8)",
-        params![id, name, url, payload, method, token, interval, now],
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, interval_seconds, enabled, last_run_at, last_status, last_message, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 0, 0, '', ?10, ?10)",
+        params![
+            id,
+            input.name,
+            input.url,
+            payload,
+            method,
+            input.token,
+            input.secret,
+            input.retries,
+            interval,
+            now
+        ],
     )?;
     get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
@@ -829,6 +849,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_knowledge_vault_path(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
+    migrate_webhook_secret_retries(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -906,6 +927,20 @@ fn migrate_quick_prompt_order(conn: &Connection) -> Result<()> {
             "ALTER TABLE quick_prompts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
         )?;
         conn.execute_batch("UPDATE quick_prompts SET sort_order = rowid WHERE sort_order = 0;")?;
+    }
+    Ok(())
+}
+
+fn migrate_webhook_secret_retries(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "secret")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN secret TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    if !column_exists(conn, "webhook_rules", "retries")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;",
+        )?;
     }
     Ok(())
 }
@@ -5698,18 +5733,24 @@ mod tests {
         let now = now_millis();
         let rule = create_webhook_rule(
             &conn,
-            "Daily sync",
-            "https://example.test/hook",
-            "{\"event\":\"daily\"}",
-            "POST",
-            "secret-token",
-            60,
+            &WebhookRuleInput {
+                name: "Daily sync",
+                url: "https://example.test/hook",
+                payload: "{\"event\":\"daily\"}",
+                method: "POST",
+                token: "secret-token",
+                secret: "hook-secret",
+                retries: 2,
+                interval_seconds: 60,
+            },
         )
         .unwrap();
         assert!(rule.enabled);
         assert_eq!(rule.interval_seconds, 60);
         assert_eq!(rule.method, "POST");
         assert_eq!(rule.token, "secret-token");
+        assert_eq!(rule.secret, "hook-secret");
+        assert_eq!(rule.retries, 2);
 
         let due = list_due_webhook_rules(&conn, now).unwrap();
         assert!(due.iter().any(|r| r.id == rule.id));
@@ -5727,5 +5768,53 @@ mod tests {
 
         delete_webhook_rule(&conn, &rule.id).unwrap();
         assert!(get_webhook_rule(&conn, &rule.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn webhook_migration_adds_secret_and_retries() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_webhook_secret_retries(&conn).unwrap();
+        assert!(column_exists(&conn, "webhook_rules", "secret").unwrap());
+        assert!(column_exists(&conn, "webhook_rules", "retries").unwrap());
+        conn.execute(
+            "INSERT INTO webhook_rules (id, name, url, created_at, updated_at)
+             VALUES (?1, 'migrated', 'https://example.test', 1, 1)",
+            params!["migrated-rule"],
+        )
+        .unwrap();
+        let secret: String = conn
+            .query_row(
+                "SELECT secret FROM webhook_rules WHERE id = 'migrated-rule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retries: i64 = conn
+            .query_row(
+                "SELECT retries FROM webhook_rules WHERE id = 'migrated-rule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(secret, "");
+        assert_eq!(retries, 1);
     }
 }

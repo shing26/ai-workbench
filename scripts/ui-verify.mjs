@@ -3401,6 +3401,85 @@ try {
   }
   results.webhookDelivery = webhookDelivery;
 
+  const webhookSignRetry = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector('textarea[placeholder="Payload (JSON)"]');
+    const secretInput = document.querySelector("[data-webhook-secret]");
+    const retriesSelect = document.querySelector("[data-webhook-retries]");
+    const deliverBtn = document.querySelector("[data-webhook-deliver]");
+    if (!urlInput || !payloadInput || !secretInput || !retriesSelect || !deliverBtn) {
+      return { ok: false, reason: "webhook sign/retry controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/signed");
+    setValue(payloadInput, '{"event":"signed.delivery"}');
+    setValue(secretInput, "test-secret");
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(
+      retriesSelect,
+      "2",
+    );
+    retriesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    retriesSelect.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    deliverBtn.click();
+    let attempts = "";
+    let signed = "";
+    for (let i = 0; i < 20; i++) {
+      attempts = document.querySelector("[data-webhook-attempts]")?.textContent ?? "";
+      signed = document.querySelector("[data-webhook-signed]")?.textContent ?? "";
+      if (attempts === "3" && signed === "signed") break;
+      await sleep(100);
+    }
+    const delivered = attempts === "3" && signed === "signed";
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const intervalInput = document.querySelector("[data-webhook-rule-interval]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!nameInput || !intervalInput || !saveBtn) {
+      return { ok: false, reason: "webhook rule controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/signed-rule");
+    setValue(nameInput, "Signed scheduled webhook");
+    setValue(intervalInput, "60");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Signed scheduled webhook")) break;
+      await sleep(100);
+    }
+    const ruleRetries = item?.querySelector("[data-webhook-rule-retries]")?.textContent ?? "";
+    const ruleSigned = !!item?.querySelector("[data-webhook-rule-secret]");
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const persisted = stored.some(
+      (r) => r.name === "Signed scheduled webhook" && r.secret === "test-secret" && r.retries === 2,
+    );
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    return {
+      ok: delivered && ruleRetries.includes("2") && ruleSigned && persisted,
+      delivered,
+      ruleRetries,
+      ruleSigned,
+      persisted,
+      attempts,
+      signed,
+    };
+  })()`);
+  if (!webhookSignRetry.ok) {
+    throw new Error(
+      `Webhook sign/retry assertion failed: ${JSON.stringify(webhookSignRetry)}`,
+    );
+  }
+  results.webhookSignRetry = webhookSignRetry;
+
   const webhookRules = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");

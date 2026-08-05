@@ -51,6 +51,8 @@ export default function SystemView() {
   );
   const [webhookMethod, setWebhookMethod] = useState("POST");
   const [webhookToken, setWebhookToken] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [webhookRetries, setWebhookRetries] = useState("1");
   const [webhookResult, setWebhookResult] = useState<db.WebhookDeliveryResult | null>(null);
   const [webhookBusy, setWebhookBusy] = useState(false);
   const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
@@ -576,6 +578,8 @@ export default function SystemView() {
         ok: false,
         status: 0,
         durationMs: 0,
+        attempts: 0,
+        signed: false,
         message: "Webhook URL required",
       });
       return;
@@ -587,6 +591,8 @@ export default function SystemView() {
         webhookPayload.trim() || "{}",
         webhookMethod,
         webhookToken,
+        webhookSecret,
+        Math.max(0, Number(webhookRetries) || 0),
       );
       setWebhookResult(result);
     } catch (err) {
@@ -594,6 +600,8 @@ export default function SystemView() {
         ok: false,
         status: 0,
         durationMs: 0,
+        attempts: 0,
+        signed: false,
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -611,6 +619,8 @@ export default function SystemView() {
         ok: false,
         status: 0,
         durationMs: 0,
+        attempts: 0,
+        signed: false,
         message: "Rule name and Webhook URL required",
       });
       return;
@@ -622,6 +632,8 @@ export default function SystemView() {
       webhookMethod,
       webhookToken,
       Number(webhookRuleInterval) || 60,
+      webhookSecret,
+      Math.max(0, Number(webhookRetries) || 0),
     );
     await loadWebhookRules();
     setWebhookRuleName("");
@@ -1309,6 +1321,25 @@ export default function SystemView() {
             data-webhook-token
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
+          <input
+            value={webhookSecret}
+            onChange={(e) => setWebhookSecret(e.target.value)}
+            placeholder="Signature secret"
+            data-webhook-secret
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <select
+            value={webhookRetries}
+            onChange={(e) => setWebhookRetries(e.target.value)}
+            aria-label="Webhook retries"
+            data-webhook-retries
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+          >
+            <option value="0">0 retries</option>
+            <option value="1">1 retry</option>
+            <option value="2">2 retries</option>
+            <option value="3">3 retries</option>
+          </select>
         </div>
         <textarea
           value={webhookPayload}
@@ -1338,7 +1369,10 @@ export default function SystemView() {
               }`}
             >
               {webhookResult.ok ? "OK" : "FAILED"} - HTTP {webhookResult.status || "-"} -{" "}
-              {webhookResult.durationMs}ms - {webhookResult.message}
+              {webhookResult.durationMs}ms -{" "}
+              <span data-webhook-attempts>{webhookResult.attempts}</span> attempt(s) -{" "}
+              <span data-webhook-signed>{webhookResult.signed ? "signed" : "unsigned"}</span> -{" "}
+              {webhookResult.message}
             </span>
           )}
         </div>
@@ -1393,6 +1427,20 @@ export default function SystemView() {
                 <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
                   every {rule.intervalSeconds}s
                 </span>
+                <span
+                  data-webhook-rule-retries
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  {rule.retries} retry(ies)
+                </span>
+                {rule.secret && (
+                  <span
+                    data-webhook-rule-secret
+                    className="rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300"
+                  >
+                    signed
+                  </span>
+                )}
                 <span
                   data-webhook-rule-status
                   className={`rounded-md px-1.5 py-0.5 text-[9px] ${

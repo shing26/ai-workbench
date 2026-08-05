@@ -630,3 +630,14 @@ UPDATE quick_prompts SET sort_order = rowid WHERE sort_order = 0;
 ## Sprint 89：行内着色 diff 与整文件对比
 
 无表结构变更。`get_git_file_versions` 为运行时命令：旧内容来自 `git show HEAD:file`，新内容来自工作区磁盘读取，status 来自 `git status --porcelain`，不新增持久化字段或表；浏览器 fallback 仍由既有 `getGitFileDiff` mock 派生，不涉及 localStorage 新 key。
+
+## Sprint 90：Webhook 签名与自动重试
+
+```sql
+-- Sprint 84 建表后，旧库由 migrate_webhook_secret_retries 补充这两列
+ALTER TABLE webhook_rules ADD COLUMN secret TEXT NOT NULL DEFAULT '';
+ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;
+```
+
+- 新库的 `webhook_rules` 建表语句已直接包含 `secret TEXT NOT NULL DEFAULT ''` 与 `retries INTEGER NOT NULL DEFAULT 1`；`WebhookRule.secret` / `retries` 经 serde 映射为 JSON `secret` / `retries`。
+- `create_webhook_rule` 通过 `WebhookRuleInput` 写入 secret / retries；调度器与 `run_webhook_rule` 读取该字段驱动签名与重试，浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 保存同一模型。

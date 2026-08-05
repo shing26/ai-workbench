@@ -1,7 +1,8 @@
 use keyring::Entry;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -2433,7 +2434,19 @@ fn spawn_webhook_scheduler(app: tauri::AppHandle) {
             } else {
                 Some(rule.token.as_str())
             };
-            let outcome = deliver_webhook_http(&rule.url, &rule.payload, &rule.method, token);
+            let secret = if rule.secret.trim().is_empty() {
+                None
+            } else {
+                Some(rule.secret.as_str())
+            };
+            let outcome = deliver_webhook_http(
+                &rule.url,
+                &rule.payload,
+                &rule.method,
+                token,
+                secret,
+                rule.retries.max(0) as u32,
+            );
             let (status, message) = match outcome {
                 Ok(result) => (result.status as i64, result.message),
                 Err(err) => (0, format!("Webhook delivery failed: {}", err)),
@@ -2470,7 +2483,35 @@ struct WebhookDeliveryResult {
     ok: bool,
     status: u16,
     duration_ms: u128,
+    attempts: u32,
+    signed: bool,
     message: String,
+}
+
+fn webhook_signature(secret: &str, payload: &str) -> String {
+    const BLOCK_SIZE: usize = 64;
+    let key = secret.as_bytes();
+    let mut key_block = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        let digest = Sha256::digest(key);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let inner_pad: Vec<u8> = key_block.iter().map(|byte| byte ^ 0x36).collect();
+    let outer_pad: Vec<u8> = key_block.iter().map(|byte| byte ^ 0x5c).collect();
+    let mut inner = Sha256::new();
+    inner.update(&inner_pad);
+    inner.update(payload.as_bytes());
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(&outer_pad);
+    outer.update(inner_digest);
+    outer
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 #[tauri::command]
@@ -3817,6 +3858,8 @@ fn deliver_webhook_http(
     payload: &str,
     method: &str,
     token: Option<&str>,
+    secret: Option<&str>,
+    retries: u32,
 ) -> Result<WebhookDeliveryResult, String> {
     let method = method.trim().to_uppercase();
     if !matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "GET" | "DELETE") {
@@ -3835,40 +3878,74 @@ fn deliver_webhook_http(
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new());
     let started = std::time::Instant::now();
-    let mut request = match method.as_str() {
-        "GET" => client.get(url),
-        "DELETE" => client.delete(url),
-        "PUT" => client.put(url),
-        "PATCH" => client.patch(url),
-        _ => client.post(url),
-    };
-    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
-        request = request.header("Authorization", format!("Bearer {}", token.trim()));
+    let signed = secret
+        .map(|secret| !secret.trim().is_empty())
+        .unwrap_or(false);
+    let max_attempts = retries.saturating_add(1).max(1);
+    let mut last: Option<Result<WebhookDeliveryResult, String>> = None;
+    for attempt in 0..max_attempts {
+        let mut request = match method.as_str() {
+            "GET" => client.get(url),
+            "DELETE" => client.delete(url),
+            "PUT" => client.put(url),
+            "PATCH" => client.patch(url),
+            _ => client.post(url),
+        };
+        if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+            request = request.header("Authorization", format!("Bearer {}", token.trim()));
+        }
+        if signed {
+            request = request
+                .header(
+                    "X-Webhook-Signature",
+                    format!(
+                        "sha256={}",
+                        webhook_signature(secret.unwrap_or_default().trim(), payload)
+                    ),
+                )
+                .header("X-Webhook-Timestamp", now_millis().to_string());
+        }
+        let request = if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
+            request
+                .header("Content-Type", "application/json")
+                .body(payload.to_string())
+        } else {
+            request
+        };
+        match request.send() {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                let summary = if body.trim().is_empty() {
+                    "empty response".to_string()
+                } else {
+                    body.chars().take(400).collect::<String>()
+                };
+                let result = WebhookDeliveryResult {
+                    ok: status.is_success(),
+                    status: status.as_u16(),
+                    duration_ms: started.elapsed().as_millis(),
+                    attempts: attempt + 1,
+                    signed,
+                    message: format!("HTTP {} {}", status.as_u16(), summary),
+                };
+                if status.is_success() || attempt + 1 >= max_attempts {
+                    return Ok(result);
+                }
+                last = Some(Ok(result));
+            }
+            Err(err) => {
+                if attempt + 1 >= max_attempts {
+                    return Err(format!("Webhook delivery failed: {}", err));
+                }
+                last = Some(Err(format!("Webhook delivery failed: {}", err)));
+            }
+        }
+        thread::sleep(Duration::from_millis(
+            50_u64.saturating_mul(1 << attempt.min(6)),
+        ));
     }
-    let request = if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
-        request
-            .header("Content-Type", "application/json")
-            .body(payload.to_string())
-    } else {
-        request
-    };
-    let resp = request
-        .send()
-        .map_err(|e| format!("Webhook delivery failed: {}", e))?;
-    let status = resp.status();
-    let duration_ms = started.elapsed().as_millis();
-    let body = resp.text().unwrap_or_default();
-    let summary = if body.trim().is_empty() {
-        "empty response".to_string()
-    } else {
-        body.chars().take(400).collect::<String>()
-    };
-    Ok(WebhookDeliveryResult {
-        ok: status.is_success(),
-        status: status.as_u16(),
-        duration_ms,
-        message: format!("HTTP {} {}", status.as_u16(), summary),
-    })
+    last.unwrap_or_else(|| Err("Webhook delivery failed".to_string()))
 }
 
 #[tauri::command]
@@ -3877,12 +3954,16 @@ fn deliver_webhook(
     payload: String,
     method: Option<String>,
     token: Option<String>,
+    secret: Option<String>,
+    retries: Option<u32>,
 ) -> Result<WebhookDeliveryResult, String> {
     deliver_webhook_http(
         &url,
         &payload,
         method.as_deref().unwrap_or("POST"),
         token.as_deref(),
+        secret.as_deref(),
+        retries.unwrap_or(1),
     )
 }
 
@@ -3898,7 +3979,19 @@ fn run_webhook_rule_inner(
     } else {
         Some(rule.token.as_str())
     };
-    let result = deliver_webhook_http(&rule.url, &rule.payload, &rule.method, token)?;
+    let secret = if rule.secret.trim().is_empty() {
+        None
+    } else {
+        Some(rule.secret.as_str())
+    };
+    let result = deliver_webhook_http(
+        &rule.url,
+        &rule.payload,
+        &rule.method,
+        token,
+        secret,
+        rule.retries.max(0) as u32,
+    )?;
     db::mark_webhook_rule_run(conn, &rule.id, result.status as i64, &result.message)
         .map_err(|e| e.to_string())?;
     Ok(result)
@@ -3910,31 +4003,43 @@ fn list_webhook_rules(state: State<'_, db::Db>) -> Result<Vec<db::WebhookRule>, 
     db::list_webhook_rules(&conn).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn create_webhook_rule(
-    state: State<'_, db::Db>,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookRuleRequest {
     name: String,
     url: String,
     payload: String,
     method: Option<String>,
     token: Option<String>,
+    secret: Option<String>,
+    retries: Option<i64>,
     interval_seconds: i64,
+}
+
+#[tauri::command]
+fn create_webhook_rule(
+    state: State<'_, db::Db>,
+    request: WebhookRuleRequest,
 ) -> Result<db::WebhookRule, String> {
-    if name.trim().is_empty() {
+    if request.name.trim().is_empty() {
         return Err("Rule name is required".to_string());
     }
-    if url.trim().is_empty() {
+    if request.url.trim().is_empty() {
         return Err("Webhook URL is required".to_string());
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::create_webhook_rule(
         &conn,
-        name.trim(),
-        url.trim(),
-        &payload,
-        method.as_deref().unwrap_or("POST"),
-        token.as_deref().unwrap_or(""),
-        interval_seconds.max(5),
+        &db::WebhookRuleInput {
+            name: request.name.trim(),
+            url: request.url.trim(),
+            payload: &request.payload,
+            method: request.method.as_deref().unwrap_or("POST"),
+            token: request.token.as_deref().unwrap_or(""),
+            secret: request.secret.as_deref().unwrap_or(""),
+            retries: request.retries.unwrap_or(1).max(0),
+            interval_seconds: request.interval_seconds.max(5),
+        },
     )
     .map_err(|e| e.to_string())
 }
@@ -5904,6 +6009,18 @@ mod tests {
     }
 
     #[test]
+    fn webhook_signature_matches_hmac_sha256_known_answer() {
+        let key = "\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+                   \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}"
+            .to_string();
+        let signature = webhook_signature(&key, "Hi There");
+        assert_eq!(
+            signature,
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
+
+    #[test]
     fn webhook_delivery_posts_json_with_auth() {
         use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -5930,6 +6047,8 @@ mod tests {
             &payload,
             "POST",
             Some("wh-token-123"),
+            None,
+            0,
         )
         .unwrap();
         let (request, has_post, has_json, has_auth, has_body) = server.join().unwrap();
@@ -5958,6 +6077,8 @@ mod tests {
             r#"{"event":"daily.summary","ok":true}"#,
             "POST",
             None,
+            None,
+            0,
         )
         .unwrap();
         server.join().unwrap();
@@ -5965,6 +6086,80 @@ mod tests {
         assert_eq!(result.status, 400);
         assert!(result.message.contains("HTTP 400"), "{}", result.message);
         assert!(result.message.contains("bad request"), "{}", result.message);
+    }
+
+    #[test]
+    fn webhook_delivery_sends_hmac_signature() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = r#"{"event":"signed"}"#;
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request_until(&mut stream, "signed");
+            let has_signature = request
+                .to_lowercase()
+                .contains("x-webhook-signature: sha256=");
+            let has_timestamp = request.to_lowercase().contains("x-webhook-timestamp:");
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = stream.write_all(response.as_bytes());
+            (request, has_signature, has_timestamp)
+        });
+        let result = deliver_webhook_http(
+            &format!("http://{}", addr),
+            payload,
+            "POST",
+            None,
+            Some("test-secret"),
+            0,
+        )
+        .unwrap();
+        let (request, has_signature, has_timestamp) = server.join().unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert!(result.signed);
+        assert_eq!(result.attempts, 1);
+        assert!(
+            has_signature,
+            "expected signature header, got:\n{}",
+            request
+        );
+        assert!(
+            has_timestamp,
+            "expected timestamp header, got:\n{}",
+            request
+        );
+    }
+
+    #[test]
+    fn webhook_delivery_retries_on_server_error() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let responses = [
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        ];
+        let server = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _request = read_http_request_until(&mut stream, "retry");
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let result = deliver_webhook_http(
+            &format!("http://{}", addr),
+            r#"{"event":"retry"}"#,
+            "POST",
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
+        assert_eq!(result.attempts, 3);
     }
 
     #[test]
@@ -5984,20 +6179,27 @@ mod tests {
         let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
         let rule = db::create_webhook_rule(
             &conn,
-            "Scheduled",
-            &format!("http://{}", addr),
-            r#"{"event":"scheduled"}"#,
-            "POST",
-            "rule-token",
-            60,
+            &db::WebhookRuleInput {
+                name: "Scheduled",
+                url: &format!("http://{}", addr),
+                payload: r#"{"event":"scheduled"}"#,
+                method: "POST",
+                token: "rule-token",
+                secret: "rule-secret",
+                retries: 2,
+                interval_seconds: 60,
+            },
         )
         .unwrap();
         let result = run_webhook_rule_inner(&conn, &rule.id).unwrap();
         server.join().unwrap();
         assert!(result.ok);
         assert_eq!(result.status, 200);
+        assert!(result.signed);
         let after = db::get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
         assert_eq!(after.last_status, 200);
+        assert_eq!(after.secret, "rule-secret");
+        assert_eq!(after.retries, 2);
         assert!(
             after.last_message.contains("HTTP 200"),
             "{}",

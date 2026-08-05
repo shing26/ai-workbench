@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 90
+
+### What went well?
+
+- Webhook 投递升级为企业级策略：`webhook_signature` 用已在锁文件中的 sha2 实现 HMAC-SHA256，RFC 4231 已知答案单测固定正确性，发送 `X-Webhook-Signature` 与 `X-Webhook-Timestamp` 头。
+- `deliver_webhook_http` 支持指数退避重试：非 2xx 或网络错误按 `50ms << attempt` 重试，返回 `attempts` / `signed`；本地 TCP 单测覆盖 500 → 503 → 200 的 3 次尝试链路。
+- `webhook_rules` 新增 `secret` / `retries` 列，旧库走 `migrate_webhook_secret_retries`；`WebhookRuleInput` 收敛参数，`create_webhook_rule` 改为 `WebhookRuleRequest` 结构体，clippy too-many-arguments 清零。
+- SystemView 新增签名 secret 输入与 retries 下拉，结果区展示 attempts / signed，规则行显示 retries 与 signed badge；浏览器 fallback 确定性返回 `retries + 1` 次。
+- `verify:ui` / `verify:preview` 新增 `webhookSignRetry` lane：投递结果 attempts=3 / signed、规则持久化 secret / retries 均通过。
+
+### What went wrong?
+
+- 首次尝试引入 `hmac` crate 时 crates.io 走代理连接失败；改为仅添加锁文件中已有的 `sha2` 并手写 HMAC 拼接，用 RFC 已知答案验证，避免新增网络依赖。
+- `create_webhook_rule` 参数增至 9 个触发 clippy；用 `WebhookRuleInput` + `WebhookRuleRequest` 收敛后通过。
+- verify lane 首轮读到上一个 lane 的旧投递结果（2 attempt / unsigned），改为轮询等待 attempts=3 / signed 后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、RAG 命中人工确认、消息队列式 Webhook 投递。
+- 复杂触发器表达式、签名验签 UI、死信重放继续留在 Backlog。
+- 保留 `webhookSignRetry` 断言，改动投递策略或 Webhook UI 时重跑 `verify:ui`。
+
 ## Sprint 89
 
 ### What went well?
