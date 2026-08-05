@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
     title TEXT,
     tags TEXT,
     content TEXT NOT NULL,
+    vault_path TEXT NOT NULL DEFAULT '',
     indexed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_files_path ON knowledge_files(path);
@@ -456,6 +457,14 @@ pub struct IndexResult {
     pub ignored: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultTargetStats {
+    pub path: String,
+    pub files: i64,
+    pub last_indexed_at: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -492,6 +501,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_updated_at(&conn)?;
     migrate_version_parent(&conn)?;
     migrate_vault_watch_targets(&conn)?;
+    migrate_knowledge_vault_path(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -503,6 +513,15 @@ fn migrate_vault_watch_targets(conn: &Connection) -> Result<()> {
          FROM vault_watch_config
          WHERE id = 1 AND path <> '';",
     )?;
+    Ok(())
+}
+
+fn migrate_knowledge_vault_path(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "knowledge_files", "vault_path")? {
+        conn.execute_batch(
+            "ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     Ok(())
 }
 
@@ -1970,18 +1989,51 @@ pub fn upsert_knowledge_file(
     title: &str,
     tags: &str,
     content: &str,
+    vault_path: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO knowledge_files (id, path, title, tags, content, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(path) DO UPDATE SET
            title = excluded.title,
            tags = excluded.tags,
            content = excluded.content,
+           vault_path = excluded.vault_path,
            indexed_at = excluded.indexed_at",
-        params![uid(), path, title, tags, content, now_millis()],
+        params![uid(), path, title, tags, content, vault_path, now_millis()],
     )?;
     Ok(())
+}
+
+pub fn vault_target_stats(conn: &Connection) -> Result<Vec<VaultTargetStats>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT vault_path, COUNT(*), MAX(indexed_at)
+             FROM knowledge_files
+             WHERE vault_path <> ''
+             GROUP BY vault_path
+             ORDER BY vault_path",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (path, files, last_indexed_at) = row.map_err(|e| e.to_string())?;
+        out.push(VaultTargetStats {
+            path,
+            files,
+            last_indexed_at: last_indexed_at.unwrap_or(0),
+        });
+    }
+    Ok(out)
 }
 
 pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
@@ -3010,6 +3062,33 @@ mod tests {
         let remaining = list_vault_watch_targets(&conn).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, "D:/work");
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_target_stats_group_by_vault_path() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-stats-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+
+        upsert_knowledge_file(&conn, "C:/a/a.md", "A", "", "a", "C:/a").unwrap();
+        upsert_knowledge_file(&conn, "C:/a/b.md", "B", "", "b", "C:/a").unwrap();
+        upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
+        upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
+
+        let stats = vault_target_stats(&conn).unwrap();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].path, "C:/a");
+        assert_eq!(stats[0].files, 2);
+        assert!(stats[0].last_indexed_at > 0);
+        assert_eq!(stats[1].path, "D:/b");
+        assert_eq!(stats[1].files, 1);
+
+        upsert_knowledge_file(&conn, "C:/a/c.md", "C", "", "c", "C:/a").unwrap();
+        let stats = vault_target_stats(&conn).unwrap();
+        assert_eq!(stats[0].files, 3);
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

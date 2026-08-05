@@ -24,6 +24,7 @@ export default function KnowledgeView() {
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
   const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
+  const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
   const [lastIgnored, setLastIgnored] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,6 +51,7 @@ export default function KnowledgeView() {
   useEffect(() => {
     void db.getVaultWatchStatus().then(setWatchStatus);
     void db.listVaultWatchTargets().then(setVaultTargets);
+    void db.listVaultTargetStats().then(setTargetStats);
   }, []);
 
   useEffect(() => {
@@ -137,12 +139,13 @@ export default function KnowledgeView() {
       enabled: watchStatus?.paths?.includes(vaultPath.trim()) ?? false,
       updatedAt: Date.now(),
     });
-    setVaultTargets(await db.listVaultWatchTargets());
+    await loadTargets();
   };
 
   const loadTargets = async () => {
     setVaultTargets(await db.listVaultWatchTargets());
     setWatchStatus(await db.getVaultWatchStatus());
+    setTargetStats(await db.listVaultTargetStats());
   };
 
   const toggleWatch = async () => {
@@ -153,7 +156,7 @@ export default function KnowledgeView() {
       ? await db.stopVaultWatch(vaultPath.trim() || undefined)
       : await db.startVaultWatch(vaultPath.trim(), parseIgnore());
     setWatchStatus(next);
-    setVaultTargets(await db.listVaultWatchTargets());
+    await loadTargets();
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -164,7 +167,7 @@ export default function KnowledgeView() {
       ? await db.stopVaultWatch(target.path)
       : await db.startVaultWatch(target.path, target.ignorePatterns);
     setWatchStatus(next);
-    setVaultTargets(await db.listVaultWatchTargets());
+    await loadTargets();
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -317,6 +320,8 @@ export default function KnowledgeView() {
             {vaultTargets.map((target) => {
               const targetWatching =
                 watchStatus?.paths?.includes(target.path) ?? target.enabled;
+              const targetFileCount =
+                targetStats.find((stat) => stat.path === target.path)?.files ?? 0;
               return (
                 <div
                   key={target.path}
@@ -327,6 +332,12 @@ export default function KnowledgeView() {
                 >
                   <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
                     {target.path}
+                  </span>
+                  <span
+                    data-vault-target-files={targetFileCount}
+                    className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
+                  >
+                    {targetFileCount} files
                   </span>
                   {target.ignorePatterns.length > 0 && (
                     <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">

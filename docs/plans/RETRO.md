@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 47
+
+### What went well?
+
+- 目标级索引统计闭环完成：`knowledge_files.vault_path` 列 + 幂等迁移，`upsert_knowledge_file` 全链路传参，`vault_target_stats` 按路径分组返回文件数与最近索引时间。
+- Knowledge 每个 vault 目标显示独立文件数，浏览器 fallback 按目标前缀统计与 Rust 语义一致；watch 单测同步补齐 vault 参数。
+- 验证覆盖：`cargo test --lib` 48/48，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增两个目标文件数断言，两条 lane 全绿。
+
+### What went wrong?
+
+- `list_vault_target_stats` 首版签名跨行不符合 fmt，`cargo fmt --check` 暴露后格式化通过。
+
+### Action Items
+
+- 下一 Sprint 候选：审计导出与筛选、按文件规模动态并发、三方合并策略、watch 目标级事件隔离。
+- 后续改动索引协议时，保留 vault_path 写入链路与目标级统计 UI 断言。
+
 ## Sprint 46
 
 ### What went well?

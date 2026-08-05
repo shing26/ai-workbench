@@ -348,6 +348,17 @@ CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at D
 
 无表结构变更。新增 `recommend_index_concurrency` 命令，按设备可用并行度返回推荐并发（1~16）；`index_vault_ex` 的 concurrency 参数 clamp 语义不变，Knowledge UI 的 Auto 开关只是把推荐值透传给索引命令。
 
+## Sprint 47：目标级索引统计
+
+```sql
+ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
+```
+
+- `init_connection` 对旧库执行幂等迁移：`column_exists(knowledge_files, vault_path)` 为 false 时执行 `ALTER TABLE`，重复启动安全。
+- `upsert_knowledge_file` 新增 `vault_path` 参数并写入新列；`index_vault_files`、`upsert_markdown_path`、`sync_vault_path` 与 watch 事件同步携带目标路径。
+- 新增 `vault_target_stats(conn)`：按 `vault_path <> ''` 分组返回 `{ path, files, last_indexed_at }`，旧记录（空路径）不进入统计。
+- 新增 Tauri 命令 `list_vault_target_stats`，Knowledge UI 每个 vault 目标行显示独立文件数；浏览器 fallback 按目标前缀统计 `readVaultFiles()`。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。
