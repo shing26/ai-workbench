@@ -91,6 +91,8 @@ Sprint 40 新增命令：`list_sync_conflicts`、`clear_resolved_sync_conflicts`
 
 Sprint 41 新增命令：`get_vault_watch_config` / `set_vault_watch_config`；Vault watch 的路径、ignore 与开关状态持久化，应用启动或 Knowledge 视图挂载时自动恢复。
 
+Sprint 42 扩展 `index_vault_ex`：新增 `concurrency` 参数（1~16 自动 clamp），Vault Index 卡片提供并发数输入，默认 4 保持兼容。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

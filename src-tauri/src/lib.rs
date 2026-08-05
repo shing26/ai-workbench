@@ -735,6 +735,7 @@ fn index_vault_files(
     conn: &rusqlite::Connection,
     vault_path: &str,
     ignore_patterns: &[String],
+    concurrency: usize,
 ) -> Result<db::IndexResult, String> {
     let dir = Path::new(vault_path);
     if !dir.is_dir() {
@@ -745,7 +746,7 @@ fn index_vault_files(
     collect_markdown_paths(dir, ignore_patterns, &mut paths, &mut ignored, "", 0)?;
     let mut files = Vec::new();
     if !paths.is_empty() {
-        let workers = 4.min(paths.len());
+        let workers = concurrency.clamp(1, 16).min(paths.len());
         let chunk_size = paths.len().div_ceil(workers);
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
@@ -1357,7 +1358,7 @@ fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, 
 #[tauri::command]
 fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    index_vault_files(&conn, &vault_path, &[])
+    index_vault_files(&conn, &vault_path, &[], 4)
 }
 
 #[tauri::command]
@@ -1365,9 +1366,10 @@ fn index_vault_ex(
     state: State<'_, db::Db>,
     vault_path: String,
     ignore_patterns: Vec<String>,
+    concurrency: usize,
 ) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    index_vault_files(&conn, &vault_path, &ignore_patterns)
+    index_vault_files(&conn, &vault_path, &ignore_patterns, concurrency)
 }
 
 #[tauri::command]
@@ -1400,7 +1402,7 @@ fn start_vault_watch_impl(
     }
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        index_vault_files(&conn, &canonical_str, &ignore_patterns)?;
+        index_vault_files(&conn, &canonical_str, &ignore_patterns, 4)?;
     }
     let app_clone = app.clone();
     let canonical_for_events = canonical.clone();
@@ -2887,7 +2889,7 @@ mod tests {
         )
         .unwrap();
         let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &[]).unwrap();
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &[], 4).unwrap();
         assert_eq!(result.files, 2);
         assert_eq!(result.ignored, 0);
         let status = db::knowledge_index_status(&conn).unwrap();
@@ -2913,7 +2915,7 @@ mod tests {
         std::fs::write(vault.join("notes").join("deep.md"), "# Deep\n\nindexed").unwrap();
         let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
         let patterns = vec!["node_modules".to_string(), "archive/**".to_string()];
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns).unwrap();
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns, 4).unwrap();
         assert_eq!(result.files, 2);
         assert_eq!(result.ignored, 2);
         let status = db::knowledge_index_status(&conn).unwrap();
@@ -2922,6 +2924,26 @@ mod tests {
         assert!(search.iter().any(|r| r.content.contains("Keep")));
         assert!(search.iter().any(|r| r.content.contains("Deep")));
         assert!(!search.iter().any(|r| r.content.contains("skip")));
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn vault_index_concurrency_bounds_keep_results_stable() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-vault-concurrency-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("a.md"), "# A\n\na").unwrap();
+        std::fs::write(vault.join("b.md"), "# B\n\nb").unwrap();
+        std::fs::write(vault.join("c.md"), "# C\n\nc").unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        for concurrency in [0usize, 1, 3, 16, 100] {
+            let result =
+                index_vault_files(&conn, vault.to_str().unwrap(), &[], concurrency).unwrap();
+            assert_eq!(result.files, 3);
+            assert_eq!(result.ignored, 0);
+        }
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }
@@ -2947,7 +2969,7 @@ mod tests {
         let conn = std::sync::Arc::new(std::sync::Mutex::new(
             db::init_connection(&temp.join("workbench.db")).unwrap(),
         ));
-        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap(), &[]).unwrap();
+        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap(), &[], 4).unwrap();
         let db_for_event = conn.clone();
         let on_event = move |event: &Event| {
             for path in &event.paths {
@@ -2994,7 +3016,7 @@ mod tests {
         std::fs::write(vault.join("seed.md"), "# Seed\n\ninitial note").unwrap();
         let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
         let patterns = vec!["node_modules".to_string()];
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns).unwrap();
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns, 4).unwrap();
         assert_eq!(result.files, 1);
         assert_eq!(result.ignored, 1);
         let ignored_path = vault.join("node_modules").join("dep.md");

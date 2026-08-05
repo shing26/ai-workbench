@@ -1424,9 +1424,14 @@ export async function setVaultWatchConfig(config: VaultWatchConfig): Promise<Vau
 export async function indexVault(
   vaultPath: string,
   ignorePatterns: string[] = [],
+  concurrency = 4,
 ): Promise<IndexResult> {
   if (isTauri()) {
-    return invoke<IndexResult>("index_vault_ex", { vaultPath, ignorePatterns });
+    return invoke<IndexResult>("index_vault_ex", {
+      vaultPath,
+      ignorePatterns,
+      concurrency,
+    });
   }
   const existing = readVaultFiles();
   const sample = sampleVaultFiles(vaultPath);

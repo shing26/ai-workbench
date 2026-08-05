@@ -18,6 +18,7 @@ export default function KnowledgeView() {
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
   const [vaultPath, setVaultPath] = useState("");
   const [ignorePatterns, setIgnorePatterns] = useState("");
+  const [indexConcurrency, setIndexConcurrency] = useState("4");
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
@@ -118,7 +119,8 @@ export default function KnowledgeView() {
 
   const runIndex = async () => {
     if (!vaultPath.trim()) return;
-    const result = await db.indexVault(vaultPath.trim(), parseIgnore());
+    const concurrency = Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
+    const result = await db.indexVault(vaultPath.trim(), parseIgnore(), concurrency);
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
@@ -228,6 +230,17 @@ export default function KnowledgeView() {
           </span>
         </div>
         <div className="mt-2 flex items-center gap-2">
+          <input
+            value={indexConcurrency}
+            onChange={(e) => setIndexConcurrency(e.target.value)}
+            type="number"
+            min={1}
+            max={16}
+            aria-label="Index concurrency"
+            data-index-concurrency={indexConcurrency}
+            placeholder="Threads"
+            className="h-8 w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
           <input
             value={ignorePatterns}
             onChange={(e) => setIgnorePatterns(e.target.value)}

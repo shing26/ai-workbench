@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 42
+
+### What went well?
+
+- Vault 索引并发数从硬编码 4 升级为可配置：`index_vault_files` 增加 concurrency 参数并 clamp 到 1~16，文件数不足时自动降级，结果不受并发影响。
+- `index_vault` 与 watch 初始索引保持默认 4，旧命令行为不变；Knowledge Vault Index 新增并发数输入，Index vault 时透传。
+- 验证覆盖：`cargo test --lib` 42/42，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增并发输入存在与设置后索引正常断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 并发参数接入后所有 `index_vault_files` 测试调用点需要同步补默认值，遗漏会导致编译失败；通过编译期强制检查避免运行时回归。
+
+### Action Items
+
+- 下一 Sprint 候选：批量仲裁与三方合并策略、多 vault 并行 watch、并发数随设备配置自动调优。
+- 后续改动索引协议时，保留并发边界单测与并发输入 UI 断言。
+
 ## Sprint 41
 
 ### What went well?
