@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 78
+
+### What went well?
+
+- Rust 新增 `GitFileDiff { path, status, diff }` 与 `get_git_file_diff(path, file)`：未跟踪文件读磁盘转 `+` 新增行，已跟踪文件优先 `git diff --unified=3`、为空再走 `git diff --cached`，覆盖已跟踪 / 暂存 / 未跟踪三类 diff。
+- Projects 的 dirty 预览中每个文件新增 Diff 开关，点击后渲染 `<pre>` unified diff，可再次点击收起；TS fallback 返回可读 mock diff。
+- 验证覆盖：`cargo test --lib` 84/84，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `gitDirtyDiff` 均为 true。
+
+### What went wrong?
+
+- 已跟踪文件首次只走 `git diff`，纯暂存改动场景会拿到空输出；补上 `--cached` fallback 后语义才完整。
+- 未跟踪文件把整份磁盘内容转成 `+` 行，大文件 diff 体积会偏大；当前只做纯文本预览，不做分块或着色。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Quick Prompt 编辑与排序、批量提交内容预览。
+- 行内着色与 diff 编辑器、整文件对比视图进入 Backlog。
+
 ## Sprint 77
 
 ### What went well?

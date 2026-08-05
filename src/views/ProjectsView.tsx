@@ -34,10 +34,34 @@ export default function ProjectsView() {
   const [gitRange, setGitRange] = useState("all");
   const [gitCommitter, setGitCommitter] = useState("");
   const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
+  const [gitDiffs, setGitDiffs] = useState<Record<string, db.GitFileDiff>>({});
+  const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
     : 1;
+
+  const toggleGitDiff = (projectId: string, projectPath: string, file: string) => {
+    const key = `${projectId}:${file}`;
+    if (gitDiffs[key]) {
+      setGitDiffs((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    if (loadingDiffs[key]) return;
+    setLoadingDiffs((prev) => ({ ...prev, [key]: true }));
+    void db.getGitFileDiff(projectPath, file).then((diff) => {
+      setGitDiffs((prev) => ({ ...prev, [key]: diff }));
+      setLoadingDiffs((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    });
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -347,15 +371,37 @@ export default function ProjectsView() {
                 {expandedPreview === item.projectId && item.changedPaths.length > 0 && (
                   <div
                     data-git-activity-preview-files={item.projectId}
-                    className="mx-2 mb-2 flex flex-wrap gap-1 rounded-lg bg-black/20 p-2"
+                    className="mx-2 mb-2 flex flex-col gap-1.5 rounded-lg bg-black/20 p-2"
                   >
                     {item.changedPaths.map((file) => (
-                      <span
-                        key={file}
-                        className="max-w-full truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500"
-                      >
-                        {file}
-                      </span>
+                      <div key={file} className="flex min-w-0 flex-col gap-1">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 flex-1 truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
+                            {file}
+                          </span>
+                          <button
+                            type="button"
+                            data-git-diff-toggle={file}
+                            onClick={() => toggleGitDiff(item.projectId, item.path, file)}
+                            className="shrink-0 rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
+                          >
+                            {loadingDiffs[`${item.projectId}:${file}`]
+                              ? "Loading"
+                              : gitDiffs[`${item.projectId}:${file}`]
+                                ? "Hide diff"
+                                : "Diff"}
+                          </button>
+                        </div>
+                        {gitDiffs[`${item.projectId}:${file}`] && (
+                          <pre
+                            data-git-diff-content={file}
+                            data-git-diff-status={gitDiffs[`${item.projectId}:${file}`].status}
+                            className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
+                          >
+                            {gitDiffs[`${item.projectId}:${file}`].diff}
+                          </pre>
+                        )}
+                      </div>
                     ))}
                   </div>
                 )}

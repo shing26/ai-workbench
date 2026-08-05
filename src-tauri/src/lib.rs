@@ -2681,6 +2681,69 @@ fn git_change_paths(changes: &[String]) -> Vec<String> {
         .collect()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileDiff {
+    path: String,
+    status: String,
+    diff: String,
+}
+
+fn read_untracked_diff(path: &str, file: &str) -> String {
+    let display = file.replace('\\', "/");
+    let target = Path::new(path).join(file);
+    let content = fs::read_to_string(&target).unwrap_or_default();
+    let mut out = format!(
+        "diff --git a/{} b/{}\n--- /dev/null\n+++ b/{}\n",
+        display, display, display
+    );
+    for line in content.lines() {
+        out.push_str(&format!("+{}\n", line));
+    }
+    out
+}
+
+#[tauri::command]
+fn get_git_file_diff(path: String, file: String) -> Result<GitFileDiff, String> {
+    let git_file = file.replace('\\', "/");
+    let status = run_git(&path, &["status", "--porcelain", "--", &git_file])
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "clean".to_string());
+    let diff = if status.starts_with("??") {
+        read_untracked_diff(&path, &file)
+    } else {
+        let tracked = run_git(
+            &path,
+            &["diff", "--no-ext-diff", "--unified=3", "--", &git_file],
+        )
+        .unwrap_or_default();
+        if tracked.trim().is_empty() {
+            run_git(
+                &path,
+                &[
+                    "diff",
+                    "--cached",
+                    "--no-ext-diff",
+                    "--unified=3",
+                    "--",
+                    &git_file,
+                ],
+            )
+            .unwrap_or_default()
+        } else {
+            tracked
+        }
+    };
+    Ok(GitFileDiff {
+        path: file,
+        status,
+        diff,
+    })
+}
+
 #[tauri::command]
 fn get_project_git_context(path: String) -> Result<GitContext, String> {
     let mut head = String::from("unknown");
@@ -3829,6 +3892,7 @@ pub fn run() {
             set_vault_watch_config,
             get_project_git_context,
             get_git_activity,
+            get_git_file_diff,
             generate_commit_pr_draft,
             apply_commit,
             create_remote_pr,
@@ -3931,6 +3995,42 @@ mod tests {
                 "README.md".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn git_file_diff_returns_unified_diff_for_modified_file() {
+        let temp = std::env::temp_dir().join(format!("aiwb-file-diff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "line one\nline two\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        std::fs::write(temp.join("README.md"), "line one\nline changed\n").unwrap();
+
+        let diff = get_git_file_diff(path.clone(), "README.md".to_string()).unwrap();
+        assert!(diff.diff.contains("diff --git"));
+        assert!(diff.diff.contains("-line two"));
+        assert!(diff.diff.contains("+line changed"));
+        assert!(diff.status.contains("M"));
+
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn git_file_diff_reads_untracked_file_content() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-untracked-diff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("notes.txt"), "new content\nsecond line\n").unwrap();
+
+        let diff = get_git_file_diff(path.clone(), "notes.txt".to_string()).unwrap();
+        assert!(diff.status.starts_with("??"));
+        assert!(diff.diff.contains("diff --git"));
+        assert!(diff.diff.contains("+new content"));
+        assert!(diff.diff.contains("+second line"));
+
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
