@@ -363,6 +363,10 @@ ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
 
 无表结构变更。`list_sync_audit` 增加可选 `event` 参数，按事件精确过滤后按 `created_at DESC, id DESC` 返回；`export_sync_audit(format, event)` 复用同一过滤逻辑，JSON 输出美化数组，CSV 输出 `id,event,detail,device_id,created_at` 表头并对逗号、双引号、CR/LF 转义。
 
+## Sprint 49：按文件规模动态索引并发
+
+无表结构变更。`index_vault_ex` 的 `concurrency = 0` 表示 Auto：`index_vault_files` 扫描后按 `plan_index_concurrency`（≤32 文件用 1，≤256 或大文件 ≥8 用 4 上限，其余按核数）选择实际工作线程；`IndexResult` 新增 `concurrency_used` 返回实际值。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

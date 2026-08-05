@@ -455,6 +455,7 @@ pub struct KnowledgeIndexStatus {
 pub struct IndexResult {
     pub files: i64,
     pub ignored: i64,
+    pub concurrency_used: i64,
 }
 
 #[derive(Clone, Serialize)]

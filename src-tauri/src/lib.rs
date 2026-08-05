@@ -746,8 +746,17 @@ fn index_vault_files(
     let mut ignored = 0i64;
     collect_markdown_paths(dir, ignore_patterns, &mut paths, &mut ignored, "", 0)?;
     let mut files = Vec::new();
-    if !paths.is_empty() {
-        let workers = concurrency.clamp(1, 16).min(paths.len());
+    let workers = if paths.is_empty() {
+        0
+    } else if concurrency == 0 {
+        let cores = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4);
+        plan_index_concurrency(paths.len(), count_large_vault_files(&paths), cores)
+    } else {
+        concurrency.clamp(1, 16).min(paths.len())
+    };
+    if workers > 0 {
         let chunk_size = paths.len().div_ceil(workers);
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
@@ -769,7 +778,7 @@ fn index_vault_files(
             }
             Ok::<(), String>(())
         })?;
-    }
+    };
     let mut indexed = 0i64;
     for (path, title, tags, content) in files {
         db::upsert_knowledge_file(conn, &path, &title, &tags, &content, vault_path)
@@ -779,7 +788,31 @@ fn index_vault_files(
     Ok(db::IndexResult {
         files: indexed,
         ignored,
+        concurrency_used: workers as i64,
     })
+}
+
+fn plan_index_concurrency(file_count: usize, large_file_count: usize, cores: usize) -> usize {
+    let cores = cores.clamp(1, 16);
+    if file_count <= 32 {
+        1
+    } else if file_count <= 256 || large_file_count >= 8 {
+        cores.min(4)
+    } else {
+        cores.min(16)
+    }
+}
+
+fn count_large_vault_files(paths: &[std::path::PathBuf]) -> usize {
+    paths
+        .iter()
+        .take(64)
+        .filter(|path| {
+            fs::metadata(path)
+                .map(|meta| meta.len() > 1_048_576)
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 fn upsert_markdown_path(
@@ -3121,9 +3154,20 @@ mod tests {
                 index_vault_files(&conn, vault.to_str().unwrap(), &[], concurrency).unwrap();
             assert_eq!(result.files, 3);
             assert_eq!(result.ignored, 0);
+            assert!((1..=3).contains(&result.concurrency_used));
         }
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn plan_index_concurrency_scales_with_file_count() {
+        assert_eq!(plan_index_concurrency(0, 0, 8), 1);
+        assert_eq!(plan_index_concurrency(32, 0, 8), 1);
+        assert_eq!(plan_index_concurrency(100, 0, 8), 4);
+        assert_eq!(plan_index_concurrency(300, 0, 8), 8);
+        assert_eq!(plan_index_concurrency(300, 8, 8), 4);
+        assert_eq!(plan_index_concurrency(300, 8, 2), 2);
     }
 
     #[test]
