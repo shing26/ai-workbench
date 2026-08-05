@@ -33,6 +33,8 @@ export default function KnowledgeView() {
   const [docAutoConfig, setDocAutoConfig] = useState<db.DocHealthAutoConfig | null>(null);
   const [docAutoInterval, setDocAutoInterval] = useState("60");
   const [docAutoRunning, setDocAutoRunning] = useState(false);
+  const [docHealthHistory, setDocHealthHistory] = useState<db.DocHealthRunRecord[]>([]);
+  const [docHealthAlertDismissedAt, setDocHealthAlertDismissedAt] = useState(0);
   const [expandedTimeline, setExpandedTimeline] = useState<string | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
@@ -74,6 +76,12 @@ export default function KnowledgeView() {
       if (disposed) return;
       setDocAutoConfig(config);
       setDocAutoInterval(String(Math.max(1, Math.round(config.intervalMs / 60_000))));
+    });
+    void db.getDocHealthRunHistory().then((history) => {
+      if (!disposed) setDocHealthHistory(history);
+    });
+    void db.getDocHealthAlertDismissedAt().then((timestamp) => {
+      if (!disposed) setDocHealthAlertDismissedAt(timestamp);
     });
     return () => {
       disposed = true;
@@ -255,10 +263,21 @@ export default function KnowledgeView() {
   };
 
   const cleanDocs = async () => {
+    const ranAt = Date.now();
     const result = await db.cleanupKnowledgeFiles(
       docVaultFilter === "all" ? undefined : docVaultFilter,
     );
     setCleanResult(result);
+    setDocHealthHistory(
+      await db.appendDocHealthRun({
+        ranAt,
+        removed: result.removed,
+        reindexed: result.reindexed,
+        failed: result.failed,
+        triggeredBy: "manual",
+        alert: result.removed + result.reindexed + result.failed > 0,
+      }),
+    );
     void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
     void loadTargets();
     void db.getKnowledgeIndexStatus().then(setVaultStatus);
@@ -268,16 +287,27 @@ export default function KnowledgeView() {
   const runDocHealthAutoInspect = async (config: db.DocHealthAutoConfig) => {
     setDocAutoRunning(true);
     try {
+      const ranAt = Date.now();
       const result = await db.cleanupKnowledgeFiles(
         docVaultFilter === "all" ? undefined : docVaultFilter,
       );
       const next: db.DocHealthAutoConfig = {
         ...config,
-        lastRunAt: Date.now(),
+        lastRunAt: ranAt,
         lastResult: result,
       };
       setDocAutoConfig(next);
       await db.setDocHealthAutoConfig(next);
+      setDocHealthHistory(
+        await db.appendDocHealthRun({
+          ranAt,
+          removed: result.removed,
+          reindexed: result.reindexed,
+          failed: result.failed,
+          triggeredBy: "auto",
+          alert: result.removed + result.reindexed + result.failed > 0,
+        }),
+      );
       await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
       await loadTargets();
       setVaultStatus(await db.getKnowledgeIndexStatus());
@@ -285,6 +315,12 @@ export default function KnowledgeView() {
     } finally {
       setDocAutoRunning(false);
     }
+  };
+
+  const dismissDocHealthAlert = async () => {
+    if (!docHealthAlert) return;
+    await db.setDocHealthAlertDismissedAt(docHealthAlert.ranAt);
+    setDocHealthAlertDismissedAt(docHealthAlert.ranAt);
   };
 
   const toggleDocAuto = async () => {
@@ -375,6 +411,13 @@ export default function KnowledgeView() {
     watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
   const missingDocCount = knowledgeDocs.filter((doc) => !doc.exists).length;
   const staleDocCount = knowledgeDocs.filter((doc) => doc.exists && doc.stale).length;
+  const latestAutoRun = docHealthHistory.find((record) => record.triggeredBy === "auto");
+  const docHealthAlert =
+    latestAutoRun &&
+    latestAutoRun.alert &&
+    latestAutoRun.ranAt > docHealthAlertDismissedAt
+      ? latestAutoRun
+      : null;
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 p-4">
@@ -885,6 +928,44 @@ export default function KnowledgeView() {
               )}
             </div>
           </div>
+          {docHealthAlert && (
+            <div
+              data-doc-health-alert
+              className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 text-[9px] text-amber-200"
+            >
+              <span>
+                Auto inspect removed {docHealthAlert.removed}, reindexed{" "}
+                {docHealthAlert.reindexed}, failed {docHealthAlert.failed}
+              </span>
+              <button
+                type="button"
+                data-doc-health-dismiss
+                onClick={() => void dismissDocHealthAlert()}
+                className="rounded-md bg-white/10 px-1.5 py-0.5 text-[8px] text-slate-200 hover:bg-white/20"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {docHealthHistory.length > 0 && (
+            <div data-doc-health-history className="mb-2 flex flex-wrap items-center gap-1.5">
+              {docHealthHistory.slice(0, 5).map((record) => (
+                <span
+                  key={record.id}
+                  data-doc-health-run
+                  data-doc-health-run-time={record.ranAt}
+                  data-doc-health-removed={record.removed}
+                  data-doc-health-reindexed={record.reindexed}
+                  data-doc-health-failed={record.failed}
+                  data-doc-health-triggered={record.triggeredBy}
+                  className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[8px] text-slate-500"
+                >
+                  {new Date(record.ranAt).toLocaleTimeString("zh-CN", { hour12: false })}
+                  <span className="ml-1">{record.triggeredBy}</span>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="max-h-44 space-y-1 overflow-y-auto">
             {knowledgeDocs.length === 0 && (
               <div className="py-3 text-center text-[9px] text-slate-600">

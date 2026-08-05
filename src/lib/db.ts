@@ -398,6 +398,16 @@ export type DocHealthAutoConfig = {
   lastResult: KnowledgeCleanupResult | null;
 };
 
+export type DocHealthRunRecord = {
+  id: string;
+  ranAt: number;
+  removed: number;
+  reindexed: number;
+  failed: number;
+  triggeredBy: "auto" | "manual";
+  alert: boolean;
+};
+
 export type VaultWatchConfig = {
   path: string;
   ignorePatterns: string[];
@@ -448,6 +458,8 @@ const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
 const VAULT_WATCH_TARGETS_LS_KEY = "ai-workbench:vault-watch-targets:v1";
 const VAULT_WATCH_EVENTS_LS_KEY = "ai-workbench:vault-watch-events:v1";
 const DOC_HEALTH_AUTO_LS_KEY = "ai-workbench:doc-health-auto:v1";
+const DOC_HEALTH_HISTORY_LS_KEY = "ai-workbench:doc-health-history:v1";
+const DOC_HEALTH_ALERT_DISMISSED_LS_KEY = "ai-workbench:doc-health-alert-dismissed:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -2368,6 +2380,36 @@ export async function setDocHealthAutoConfig(
 ): Promise<DocHealthAutoConfig> {
   localStorage.setItem(DOC_HEALTH_AUTO_LS_KEY, JSON.stringify(config));
   return config;
+}
+
+export async function getDocHealthRunHistory(): Promise<DocHealthRunRecord[]> {
+  try {
+    const raw = localStorage.getItem(DOC_HEALTH_HISTORY_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as DocHealthRunRecord[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // fall through to empty history
+  }
+  return [];
+}
+
+export async function appendDocHealthRun(
+  record: Omit<DocHealthRunRecord, "id">,
+): Promise<DocHealthRunRecord[]> {
+  const history = await getDocHealthRunHistory();
+  const next = [{ ...record, id: makeId() }, ...history].slice(0, 50);
+  localStorage.setItem(DOC_HEALTH_HISTORY_LS_KEY, JSON.stringify(next));
+  return next;
+}
+
+export async function getDocHealthAlertDismissedAt(): Promise<number> {
+  return Number(localStorage.getItem(DOC_HEALTH_ALERT_DISMISSED_LS_KEY) ?? 0) || 0;
+}
+
+export async function setDocHealthAlertDismissedAt(timestamp: number): Promise<void> {
+  localStorage.setItem(DOC_HEALTH_ALERT_DISMISSED_LS_KEY, String(timestamp));
 }
 
 export async function indexVault(

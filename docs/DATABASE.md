@@ -514,3 +514,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ```
 
 - `migrate_vault_index_queue_priority` 按列存在性幂等补列，旧库升级不丢记录；`persist_vault_index_queue` 改为接收 `VaultIndexQueueRecord`，保留 `created_at` 供同优先级 FIFO 排序。
+
+## Sprint 72：自动巡检运行历史与通知提醒
+
+无表结构变更。运行历史与提醒 Dismiss 状态保存在前端 `ai-workbench:doc-health-history:v1`（最多 50 条）与 `ai-workbench:doc-health-alert-dismissed:v1`；巡检仍复用 `cleanup_knowledge_files` 命令。
