@@ -530,3 +530,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 75：AI Studio 日常 Quick Prompts
 
 无表结构变更。Quick Prompt 模板为前端静态常量，不落库；点击后仅填充输入框，不新增持久化字段。
+
+## Sprint 76：Actions 今日进度总览
+
+无表结构变更。今日进度为 ActionsView 基于 `tasks / habits / schedule_events` 的运行时聚合，不新增持久化字段。

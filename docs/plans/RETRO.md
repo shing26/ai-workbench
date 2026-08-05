@@ -1,5 +1,21 @@
 # Sprint Retrospective
 
+## Sprint 76
+
+### What went well?
+
+- Actions 新增 `Today progress` 置顶卡片：Focus / Habits / Schedule 三类完成数、总进度条与下一个未完成日程一眼可读，聚合自现有 store 数据，无新增落库字段。
+- 进度卡暴露 6 个稳定数据属性，`dailyProgress` lane 在 seed 态断言 Focus 0/3、Habits 0/3、Schedule 0/2、Next 含“每日复盘”。
+- 验证覆盖：`npm run build` 全绿；`verify:ui` / `verify:preview` 的 `dailyProgress` 均为 true，Actions 卡片无重叠。
+
+### What went wrong?
+
+- 本轮无 Rust 变更，无阻塞性问题；主要工作是确保 `dailyProgress` lane 插入在新建任务之后、习惯打卡之前，用固定 seed 态拿到可稳定断言的三类计数。
+
+### Action Items
+
+- 下一 Sprint 候选：Git dirty 逐文件 diff 预览、真实 Provider 端到端流式联调、Quick Prompt 自定义编辑与持久化。
+
 ## Sprint 75
 
 ### What went well?

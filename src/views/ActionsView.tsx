@@ -1,7 +1,8 @@
-import { CalendarDays, Check, Flame, Plus, Target } from "lucide-react";
+import { CalendarDays, Check, Flame, ListChecks, Plus, Target } from "lucide-react";
 import { useState } from "react";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
+import StatPill from "../components/ui/StatPill";
 import { resetTilt, tiltCard } from "../lib/tilt";
 
 const HABIT_COLORS = ["emerald", "blue", "amber", "rose"] as const;
@@ -54,6 +55,12 @@ export default function ActionsView() {
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
   const todayDone = todayTasks.filter((t) => t.status === "done").length;
   const focusProgress = Math.min(todayDone / 3, 1);
+  const habitDone = habits.filter((h) => h.doneToday).length;
+  const eventDone = scheduleEvents.filter((e) => e.done).length;
+  const nextEvent = scheduleEvents.find((e) => !e.done);
+  const totalItems = todayTasks.length + habits.length + scheduleEvents.length;
+  const doneItems = todayDone + habitDone + eventDone;
+  const overallProgress = totalItems > 0 ? doneItems / totalItems : 0;
 
   const add = async () => {
     if (!title.trim()) return;
@@ -77,6 +84,46 @@ export default function ActionsView() {
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
       <div className="grid grid-cols-12 gap-4">
+        <BentoCard
+          title="Today progress"
+          subtitle="Focus · Habits · Schedule"
+          icon={ListChecks}
+          colSpan={12}
+        >
+          <div data-daily-progress className="space-y-2">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              <div data-daily-focus={`${todayDone}/${todayTasks.length}`} className="min-w-0">
+                <StatPill label="Focus" value={`${todayDone}/${todayTasks.length}`} tone="green" />
+              </div>
+              <div data-daily-habits={`${habitDone}/${habits.length}`} className="min-w-0">
+                <StatPill label="Habits" value={`${habitDone}/${habits.length}`} tone="blue" />
+              </div>
+              <div data-daily-schedule={`${eventDone}/${scheduleEvents.length}`} className="min-w-0">
+                <StatPill
+                  label="Schedule"
+                  value={`${eventDone}/${scheduleEvents.length}`}
+                  tone="neutral"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div
+                  data-daily-progress-bar
+                  className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
+                  style={{ transform: `scaleX(${overallProgress})` }}
+                />
+              </div>
+              <span data-daily-overall className="font-mono text-[10px] text-slate-500">
+                {doneItems}/{totalItems}
+              </span>
+            </div>
+            <div data-daily-next-event className="truncate text-[11px] text-slate-400">
+              Next: {nextEvent ? `${nextEvent.startTime} ${nextEvent.title}` : "Nothing scheduled"}
+            </div>
+          </div>
+        </BentoCard>
+
         <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={7}>
           <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
             <div
