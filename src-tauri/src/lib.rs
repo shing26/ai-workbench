@@ -137,7 +137,7 @@ struct ProviderHeartbeatSnapshot {
 
 #[derive(Default)]
 struct VaultWatchState {
-    active: std::sync::Mutex<Option<ActiveVaultWatch>>,
+    active: std::sync::Mutex<Vec<ActiveVaultWatch>>,
 }
 
 struct ActiveVaultWatch {
@@ -160,6 +160,7 @@ impl ActiveVaultWatch {
 struct VaultWatchStatus {
     watching: bool,
     path: Option<String>,
+    paths: Vec<String>,
     files: i64,
     updated_at: i64,
 }
@@ -872,20 +873,21 @@ fn vault_watch_status(
     app: &tauri::AppHandle,
     conn: &rusqlite::Connection,
 ) -> Result<VaultWatchStatus, String> {
-    let (watching, path) = match app.try_state::<VaultWatchState>() {
+    let (watching, paths) = match app.try_state::<VaultWatchState>() {
         Some(state) => match state.active.lock() {
-            Ok(active) => active
-                .as_ref()
-                .map(|handle| (true, Some(handle.path.clone())))
-                .unwrap_or((false, None)),
-            Err(_) => (false, None),
+            Ok(active) => {
+                let paths: Vec<String> = active.iter().map(|handle| handle.path.clone()).collect();
+                (!paths.is_empty(), paths)
+            }
+            Err(_) => (false, Vec::new()),
         },
-        None => (false, None),
+        None => (false, Vec::new()),
     };
     let status = db::knowledge_index_status(conn).map_err(|e| e.to_string())?;
     Ok(VaultWatchStatus {
         watching,
-        path,
+        path: paths.first().cloned(),
+        paths,
         files: status.files,
         updated_at: status.indexed_at,
     })
@@ -1396,9 +1398,15 @@ fn start_vault_watch_impl(
     let canonical_str = canonical.to_string_lossy().to_string();
     {
         let mut active = state.active.lock().map_err(|e| e.to_string())?;
-        if let Some(handle) = active.take() {
-            handle.stop();
+        let mut remaining = Vec::with_capacity(active.len());
+        for handle in active.drain(..) {
+            if handle.path == canonical_str {
+                handle.stop();
+            } else {
+                remaining.push(handle);
+            }
         }
+        *active = remaining;
     }
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -1429,9 +1437,9 @@ fn start_vault_watch_impl(
         }
     };
     let handle = start_vault_watcher(canonical_str.clone(), on_event)?;
-    *state.active.lock().map_err(|e| e.to_string())? = Some(handle);
+    state.active.lock().map_err(|e| e.to_string())?.push(handle);
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    db::set_vault_watch_config(&conn, &canonical_str, &patterns_for_config, true)
+    db::upsert_vault_watch_target(&conn, &canonical_str, &patterns_for_config, true)
         .map_err(|e| e.to_string())?;
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
@@ -1464,20 +1472,89 @@ fn stop_vault_watch(
     app: tauri::AppHandle,
     state: State<'_, VaultWatchState>,
     db_state: State<'_, db::Db>,
+    vault_path: Option<String>,
 ) -> Result<VaultWatchStatus, String> {
     {
         let mut active = state.active.lock().map_err(|e| e.to_string())?;
-        if let Some(handle) = active.take() {
-            handle.stop();
+        let mut remaining = Vec::with_capacity(active.len());
+        for handle in active.drain(..) {
+            let matches = match &vault_path {
+                Some(path) => handle.path == *path,
+                None => true,
+            };
+            if matches {
+                handle.stop();
+            } else {
+                remaining.push(handle);
+            }
         }
+        *active = remaining;
     }
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    let config = db::get_vault_watch_config(&conn).map_err(|e| e.to_string())?;
-    db::set_vault_watch_config(&conn, &config.path, &config.ignore_patterns, false)
-        .map_err(|e| e.to_string())?;
+    if let Some(path) = &vault_path {
+        let _ = db::set_vault_watch_target_enabled(&conn, path, false);
+    } else {
+        let targets = db::list_vault_watch_targets(&conn).map_err(|e| e.to_string())?;
+        for target in targets {
+            let _ = db::set_vault_watch_target_enabled(&conn, &target.path, false);
+        }
+    }
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
     Ok(status)
+}
+
+#[tauri::command]
+fn list_vault_watch_targets(
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+) -> Result<Vec<db::VaultWatchTarget>, String> {
+    let active_paths: Vec<String> = match state.active.lock() {
+        Ok(active) => active.iter().map(|handle| handle.path.clone()).collect(),
+        Err(_) => Vec::new(),
+    };
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    let mut targets = db::list_vault_watch_targets(&conn).map_err(|e| e.to_string())?;
+    for target in &mut targets {
+        target.enabled = active_paths.contains(&target.path);
+    }
+    Ok(targets)
+}
+
+#[tauri::command]
+fn upsert_vault_watch_target(
+    state: State<'_, db::Db>,
+    target: db::VaultWatchTarget,
+) -> Result<db::VaultWatchTarget, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::upsert_vault_watch_target(&conn, &target.path, &target.ignore_patterns, target.enabled)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_vault_watch_target(
+    app: tauri::AppHandle,
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+    vault_path: String,
+) -> Result<bool, String> {
+    {
+        let mut active = state.active.lock().map_err(|e| e.to_string())?;
+        let mut remaining = Vec::with_capacity(active.len());
+        for handle in active.drain(..) {
+            if handle.path == vault_path {
+                handle.stop();
+            } else {
+                remaining.push(handle);
+            }
+        }
+        *active = remaining;
+    }
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    let deleted = db::delete_vault_watch_target(&conn, &vault_path).map_err(|e| e.to_string())?;
+    let status = vault_watch_status(&app, &conn)?;
+    let _ = app.emit("vault-watch-update", status.clone());
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -1510,20 +1587,23 @@ fn restore_vault_watch(app: tauri::AppHandle) {
     let Some(db_state) = app.try_state::<db::Db>() else {
         return;
     };
-    let config = {
+    let targets = {
         let Ok(conn) = db_state.0.lock() else {
             return;
         };
-        db::get_vault_watch_config(&conn).ok()
+        db::list_vault_watch_targets(&conn).ok()
     };
-    if let Some(config) = config {
-        if config.enabled && !config.path.is_empty() {
+    if let Some(targets) = targets {
+        for target in targets {
+            if !target.enabled || target.path.is_empty() {
+                continue;
+            }
             let _ = start_vault_watch_impl(
                 app.clone(),
                 app.state::<VaultWatchState>(),
-                db_state,
-                config.path,
-                config.ignore_patterns,
+                db_state.clone(),
+                target.path,
+                target.ignore_patterns,
             );
         }
     }
@@ -2695,6 +2775,9 @@ pub fn run() {
             start_vault_watch,
             start_vault_watch_ex,
             stop_vault_watch,
+            list_vault_watch_targets,
+            upsert_vault_watch_target,
+            delete_vault_watch_target,
             get_vault_watch_status,
             get_vault_watch_config,
             set_vault_watch_config,
@@ -3011,6 +3094,62 @@ mod tests {
         );
         assert!(removed, "watcher did not remove deleted markdown file");
         handle.stop();
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn vault_watch_parallel_tracks_two_vaults() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-vault-parallel-test-{}", uuid::Uuid::new_v4()));
+        let vault_a = temp.join("vault-a");
+        let vault_b = temp.join("vault-b");
+        std::fs::create_dir_all(&vault_a).unwrap();
+        std::fs::create_dir_all(&vault_b).unwrap();
+        std::fs::write(vault_a.join("a-seed.md"), "# A\n\nseed a").unwrap();
+        std::fs::write(vault_b.join("b-seed.md"), "# B\n\nseed b").unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(
+            db::init_connection(&temp.join("workbench.db")).unwrap(),
+        ));
+        index_vault_files(&conn.lock().unwrap(), vault_a.to_str().unwrap(), &[], 4).unwrap();
+        index_vault_files(&conn.lock().unwrap(), vault_b.to_str().unwrap(), &[], 4).unwrap();
+
+        let db_a = conn.clone();
+        let handle_a = start_vault_watcher(
+            vault_a.to_string_lossy().to_string(),
+            move |event: &Event| {
+                for path in &event.paths {
+                    let _ = sync_vault_path(&db_a.lock().unwrap(), path);
+                }
+            },
+        )
+        .unwrap();
+        let db_b = conn.clone();
+        let handle_b = start_vault_watcher(
+            vault_b.to_string_lossy().to_string(),
+            move |event: &Event| {
+                for path in &event.paths {
+                    let _ = sync_vault_path(&db_b.lock().unwrap(), path);
+                }
+            },
+        )
+        .unwrap();
+
+        std::fs::write(vault_a.join("a-new.md"), "# A new\n\nfresh a").unwrap();
+        std::fs::write(vault_b.join("b-new.md"), "# B new\n\nfresh b").unwrap();
+        let both = wait_until(
+            || {
+                db::knowledge_index_status(&conn.lock().unwrap())
+                    .map(|status| status.files)
+                    .unwrap_or(0)
+                    == 4
+            },
+            Duration::from_secs(8),
+        );
+        assert!(both, "parallel watchers did not index both vaults");
+
+        handle_a.stop();
+        handle_b.stop();
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }
