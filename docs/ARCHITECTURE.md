@@ -349,3 +349,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `src/lib/quickPrompts.ts`：`QuickPrompt { id, label, category: life/work, text }`，内置 6 个生活与工作高频模板。
 - AI Studio composer 上方新增 Quick Prompt 芯片行，点击后把结构化提示词填入输入框并聚焦；芯片带 `data-quick-prompt` / `data-quick-prompt-label` / `data-quick-prompt-category`。
 - `verify:ui` / `verify:preview` 新增 `quickPrompts` lane：断言 >=4 个芯片、life/work 两类齐全、点击后输入框内容正确。
+
+## Sprint 76：Actions 今日进度总览
+
+- ActionsView 聚合今日 Focus / Habits / Schedule 的完成数、总数、总进度与下一个未完成日程；`Today progress` 12 列宽卡片置顶展示。
+- 进度卡带 `data-daily-progress` / `data-daily-focus` / `data-daily-habits` / `data-daily-schedule` / `data-daily-progress-bar` / `data-daily-next-event` 数据属性。
+- `verify:ui` / `verify:preview` 新增 `dailyProgress` lane：seed 态断言 Focus 0/3、Habits 0/3、Schedule 0/2、Next 含“每日复盘”。

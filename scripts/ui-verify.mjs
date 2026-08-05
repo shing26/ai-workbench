@@ -967,6 +967,33 @@ try {
     const visible = document.body.innerText.includes("DoD persistence check");
     return { ok: true, visible };
   })()`);
+  results.dailyProgress = await evaluate(`(() => {
+    const focus = document.querySelector("[data-daily-focus]")?.getAttribute("data-daily-focus") ?? "";
+    const habits = document.querySelector("[data-daily-habits]")?.getAttribute("data-daily-habits") ?? "";
+    const schedule = document.querySelector("[data-daily-schedule]")?.getAttribute("data-daily-schedule") ?? "";
+    const next = document.querySelector("[data-daily-next-event]")?.textContent ?? "";
+    const overall = document.querySelector("[data-daily-overall]")?.textContent ?? "";
+    const progressBar = document.querySelector("[data-daily-progress-bar]");
+    const focusParts = focus.split("/").map(Number);
+    const habitParts = habits.split("/").map(Number);
+    const scheduleParts = schedule.split("/").map(Number);
+    const ok =
+      focus === "0/3" &&
+      habits === "0/3" &&
+      schedule === "0/2" &&
+      focusParts.length === 2 &&
+      habitParts.length === 2 &&
+      scheduleParts.length === 2 &&
+      focusParts.every(Number.isFinite) &&
+      habitParts.every(Number.isFinite) &&
+      scheduleParts.every(Number.isFinite) &&
+      next.includes("每日复盘") &&
+      !!progressBar;
+    return { ok, focus, habits, schedule, next, overall };
+  })()`);
+  if (!results.dailyProgress.ok) {
+    throw new Error(`Daily progress assertion failed: ${JSON.stringify(results.dailyProgress)}`);
+  }
   await delay(400);
   const beforeReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
   const habitToggle = await evaluate(`(async () => {
