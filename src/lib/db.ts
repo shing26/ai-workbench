@@ -1013,6 +1013,28 @@ export async function listenClipboardUpdated(
 }
 
 const SYNC_LS_KEY = "ai-workbench:sync-snapshot:v1";
+const SYNC_AUTO_LS_KEY = "ai-workbench:sync-auto:v1";
+
+export type SyncAutoConfig = {
+  enabled: boolean;
+  intervalMs: number;
+  remoteUrl: string;
+};
+
+export async function getSyncAutoConfig(): Promise<SyncAutoConfig> {
+  try {
+    const raw = localStorage.getItem(SYNC_AUTO_LS_KEY);
+    if (raw) return JSON.parse(raw) as SyncAutoConfig;
+  } catch {
+    // fall through to defaults
+  }
+  return { enabled: false, intervalMs: 60_000, remoteUrl: "" };
+}
+
+export async function setSyncAutoConfig(config: SyncAutoConfig): Promise<SyncAutoConfig> {
+  localStorage.setItem(SYNC_AUTO_LS_KEY, JSON.stringify(config));
+  return config;
+}
 
 export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
   if (isTauri()) return invoke<SyncSnapshot>("export_sync_snapshot");

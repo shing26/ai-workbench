@@ -81,6 +81,8 @@ Sprint 35 新增命令：`index_vault_ex`；Vault 扫描改为收集路径后最
 
 Sprint 36 新增命令：`start_vault_watch_ex`；watch 启动索引与增量事件统一经过 `sync_vault_event` 的 ignore 过滤，忽略目录下的新增/修改/删除不再污染 RAG。
 
+Sprint 37 新增前端同步配置：`getSyncAutoConfig` / `setSyncAutoConfig` 持久化 `{ enabled, intervalMs, remoteUrl }`；System Auto sync 启用时立即执行 pull → push 双向同步，并按 10s / 30s / 60s / 5m 间隔定时续跑，Token 不落盘。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

@@ -30,6 +30,8 @@ export default function SystemView() {
   const [syncError, setSyncError] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteToken, setRemoteToken] = useState("");
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
+  const [autoSyncInterval, setAutoSyncInterval] = useState("60");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -44,6 +46,11 @@ export default function SystemView() {
     void db.getSyncStatus().then((status) => {
       setDeviceId(status.deviceId);
       setLastSyncedAt(status.lastSyncedAt);
+    });
+    void db.getSyncAutoConfig().then((config) => {
+      setAutoSyncEnabled(config.enabled);
+      setAutoSyncInterval(String(config.intervalMs / 1000));
+      if (config.remoteUrl) setRemoteUrl(config.remoteUrl);
     });
   }, []);
 
@@ -142,6 +149,56 @@ export default function SystemView() {
       setSyncMessage(err instanceof Error ? err.message : String(err));
     }
   };
+
+  const runAutoSync = async () => {
+    if (!remoteUrl.trim()) return;
+    try {
+      const pulled = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
+      await refreshSystem();
+      const pushed = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
+      setSyncError(false);
+      setLastSyncedAt(pushed.syncedAt);
+      setLastRemoteDevice(pulled.deviceId);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const toggleAutoSync = async () => {
+    if (autoSyncEnabled) {
+      setAutoSyncEnabled(false);
+      await db.setSyncAutoConfig({
+        enabled: false,
+        intervalMs: Number(autoSyncInterval) * 1000,
+        remoteUrl: remoteUrl.trim(),
+      });
+      setSyncError(false);
+      setSyncMessage("Auto sync disabled");
+      return;
+    }
+    if (!remoteUrl.trim()) {
+      setSyncError(true);
+      setSyncMessage("Remote URL required for auto sync");
+      return;
+    }
+    setAutoSyncEnabled(true);
+    await db.setSyncAutoConfig({
+      enabled: true,
+      intervalMs: Number(autoSyncInterval) * 1000,
+      remoteUrl: remoteUrl.trim(),
+    });
+    await runAutoSync();
+    setSyncError(false);
+    setSyncMessage(`Auto sync enabled, every ${autoSyncInterval}s`);
+  };
+
+  useEffect(() => {
+    if (!autoSyncEnabled) return;
+    const intervalMs = Math.max(Number(autoSyncInterval) * 1000, 10_000);
+    const timer = window.setInterval(() => void runAutoSync(), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [autoSyncEnabled, autoSyncInterval, remoteUrl, remoteToken]);
 
   const check = async (id: string) => {
     const result = await db.checkProviderHealth(id);
@@ -388,6 +445,33 @@ export default function SystemView() {
           >
             <Download size={12} /> Pull
           </button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            aria-label="Toggle auto sync"
+            data-auto-sync={autoSyncEnabled ? "on" : "off"}
+            onClick={() => void toggleAutoSync()}
+            className={`flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] ${
+              autoSyncEnabled
+                ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
+                : "accent-bg-15 accent-text-strong accent-hover-bg-25"
+            }`}
+          >
+            <RefreshCw size={12} className={autoSyncEnabled ? "animate-spin" : ""} />
+            {autoSyncEnabled ? "Auto sync on" : "Auto sync off"}
+          </button>
+          <select
+            aria-label="Auto sync interval"
+            value={autoSyncInterval}
+            onChange={(e) => setAutoSyncInterval(e.target.value)}
+            className="h-8 rounded-lg border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+          >
+            <option value="10">10s</option>
+            <option value="30">30s</option>
+            <option value="60">60s</option>
+            <option value="300">5m</option>
+          </select>
         </div>
       </BentoCard>
 

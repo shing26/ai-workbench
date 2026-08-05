@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 37
+
+### What went well?
+
+- 同步从“手动 Push / Pull”升级为“定时双向自动同步”：启用时立即 pull 合并 → push 上传，之后按 10s / 30s / 60s / 5m 间隔自动续跑，剪贴板与日志跨设备保持一致。
+- `getSyncAutoConfig` / `setSyncAutoConfig` 持久化 `{ enabled, intervalMs, remoteUrl }`，Token 只停留在当前会话输入，不落盘。
+- System Sync snapshot 卡片新增 Auto sync 开关与间隔选择，启用/关闭/立即同步结果都有回显；`verify:ui` / `verify:preview` 新增开关与状态断言，两条 lane 全绿。
+- 验证覆盖：build 全绿；`cargo test --lib` 保持 37/37，fmt、clippy 全绿。
+
+### What went wrong?
+
+- UI 验证首次运行再次遇到 motion 冷启动时序抖动，重跑后全绿；该偶发与此 Sprint 改动无关。
+
+### Action Items
+
+- 下一 Sprint 候选：同步冲突 UI 与三方合并策略可视化、Vault 索引并发数可配置。
+- 后续改动同步逻辑时，保留手动 Push/Pull、Auto sync 开关两条 UI 断言与 Rust 合并单测。
+
 ## Sprint 36
 
 ### What went well?
