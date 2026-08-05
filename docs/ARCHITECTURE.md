@@ -506,3 +506,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `ProviderModel` / `listProviderModels`：Tauri 走 invoke，浏览器 fallback 走同构 fetch 并带 8 秒 AbortController 超时。
 - SystemView Provider 卡片新增探测按钮与下拉：`data-provider-models-detect`（带数量 badge）、`data-provider-model-options` / `data-provider-model-option`、`data-provider-model-error`；模型输入改为受控，选择后即时持久化。
 - `verify:ui` / `verify:preview` 新增 `providerModels` lane；Rust 单测覆盖两种响应形状与空列表错误。
+
+## Sprint 98：Webhook payload 模板变量与事件上下文
+
+- Rust 新增 `render_webhook_payload`：`{{event}}` / `{{ts}}` / `{{context.<field>}}` 展开为 JSON 值，缺失 context 字段展开为 `null`，未知占位符保留；定时 worker、Run now、`trigger_webhook_event` 入队前统一渲染。
+- `db.ts` 新增同构 `renderWebhookPayload`；`triggerWebhookEvent` 接受可选 context，Tauri 透传、浏览器 fallback 渲染后写入投递队列。
+- SystemView 事件触发器行新增 Context JSON 输入与 Preview payload；投递队列行新增 `data-webhook-delivery-payload` 展示最终 payload。
+- `verify:ui` / `verify:preview` 新增 `webhookPayloadTemplate` lane；Rust 单测覆盖变量渲染、缺失字段与无变量模板。

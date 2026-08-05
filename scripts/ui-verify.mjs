@@ -3951,6 +3951,94 @@ try {
   }
   results.webhookQueueEvent = webhookQueueEvent;
 
+  const webhookPayloadTemplate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector("[data-webhook-payload]");
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !payloadInput || !nameInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "template controls missing" };
+    }
+    setValue(
+      urlInput,
+      "https://hooks.example.test/template",
+    );
+    setValue(
+      payloadInput,
+      '{"event":{{event}},"ts":{{ts}},"note":{{context.note}},"count":{{context.count}},"kept":"plain"}',
+    );
+    setValue(nameInput, "Template hook");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Template hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "template rule not created" };
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (!contextInput) return { ok: false, reason: "context input missing" };
+    setValue(contextInput, '{"note":"from verify","count":7}');
+    await sleep(80);
+    document.querySelector("[data-webhook-payload-preview]")?.click();
+    let previewText = "";
+    for (let i = 0; i < 20; i++) {
+      previewText =
+        document.querySelector("[data-webhook-payload-preview-text]")?.textContent?.trim() ?? "";
+      if (previewText.includes('"event":"sync.completed"') && previewText.includes("7")) break;
+      await sleep(100);
+    }
+    const previewOk =
+      previewText.includes('"event":"sync.completed"') &&
+      previewText.includes('"note":"from verify"') &&
+      previewText.includes('"count":7') &&
+      previewText.includes('"kept":"plain"') &&
+      !previewText.includes("{{");
+    document.querySelector('[data-webhook-event-trigger="sync.completed"]')?.click();
+    let delivery = null;
+    let payloadText = "";
+    for (let i = 0; i < 20; i++) {
+      delivery = document.querySelector("[data-webhook-delivery-item]");
+      payloadText =
+        delivery?.querySelector("[data-webhook-delivery-payload]")?.textContent?.trim() ?? "";
+      if (payloadText.includes('"event":"sync.completed"') && payloadText.includes("7")) break;
+      await sleep(100);
+    }
+    const deliveryOk =
+      payloadText.includes('"event":"sync.completed"') &&
+      payloadText.includes('"note":"from verify"') &&
+      payloadText.includes('"count":7') &&
+      payloadText.includes('"kept":"plain"') &&
+      !payloadText.includes("{{");
+    return {
+      ok: previewOk && deliveryOk,
+      previewText,
+      payloadText,
+      previewOk,
+      deliveryOk,
+    };
+  })()`);
+  if (!webhookPayloadTemplate.ok) {
+    throw new Error(
+      `Webhook payload template assertion failed: ${JSON.stringify(webhookPayloadTemplate)}`,
+    );
+  }
+  results.webhookPayloadTemplate = webhookPayloadTemplate;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

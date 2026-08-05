@@ -4155,9 +4155,31 @@ export async function listWebhookDeliveries(
   return filtered.slice(0, limit);
 }
 
-export async function triggerWebhookEvent(event: string): Promise<number> {
+export function renderWebhookPayload(
+  template: string,
+  event: string,
+  context: Record<string, unknown> = {},
+  now = Date.now(),
+): string {
+  return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (raw, key: string) => {
+    if (key === "event") return JSON.stringify(event);
+    if (key === "ts") return JSON.stringify(String(now));
+    if (key.startsWith("context.")) {
+      const field = key.slice("context.".length);
+      const value = context[field];
+      if (value !== undefined) return JSON.stringify(value);
+      return "null";
+    }
+    return raw;
+  });
+}
+
+export async function triggerWebhookEvent(
+  event: string,
+  context?: Record<string, unknown>,
+): Promise<number> {
   if (isTauri()) {
-    return invoke<number>("trigger_webhook_event", { event });
+    return invoke<number>("trigger_webhook_event", { event, context: context ?? null });
   }
   const rules = readWebhookRules().filter(
     (r) => r.enabled && (r.triggerEvent || "") === event,
@@ -4167,7 +4189,7 @@ export async function triggerWebhookEvent(event: string): Promise<number> {
     id: makeId(),
     ruleId: rule.id,
     event,
-    payload: rule.payload,
+    payload: renderWebhookPayload(rule.payload, event, context ?? {}, now),
     method: rule.method,
     url: rule.url,
     token: rule.token,
