@@ -107,6 +107,8 @@ Sprint 48 扩展 `list_sync_audit`：新增 `event` 筛选参数；新增 `expor
 
 Sprint 49 约定 `index_vault_ex` 的 `concurrency = 0` 表示 Auto：Rust 按文件数量与大型文件占比动态规划实际并发，`IndexResult` 返回 `concurrency_used`，Knowledge Vault Index 显示实际工作线程数。
 
+Sprint 50 新增命令：`resolve_sync_conflict_union` / `resolve_sync_conflicts_union`；冲突按行并集合并写回，System Sync card 提供单个 Merge 与 Merge all，审计新增 union 事件。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

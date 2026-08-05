@@ -1368,6 +1368,65 @@ export async function resolveSyncConflicts(
   return conflicts.length;
 }
 
+function unionMergeContent(local: string, remote: string): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const line of local.split("\n")) {
+    if (!seen.has(line)) {
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  for (const line of remote.split("\n")) {
+    if (!seen.has(line)) {
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  return lines.join("\n");
+}
+
+export async function resolveSyncConflictUnion(conflict: SyncConflictItem): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("resolve_sync_conflict_union", { conflict });
+  }
+  const shape = readLocal();
+  const content = unionMergeContent(conflict.localContent, conflict.remoteContent);
+  const updatedAt = Date.now();
+  if (conflict.kind === "clipboard") {
+    const item = shape.clipboard.find((c) => c.id === conflict.id);
+    if (!item) throw new Error(`clipboard conflict not found: ${conflict.id}`);
+    item.content = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  } else {
+    const item = shape.logs.find((l) => l.id === conflict.id);
+    if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
+    item.message = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  }
+  writeLocal(shape);
+  const records = readSyncConflictRecords().map((record) =>
+    record.id === conflict.id && record.kind === conflict.kind && !record.resolvedChoice
+      ? { ...record, resolvedChoice: "union", resolvedAt: updatedAt }
+      : record,
+  );
+  writeSyncConflictRecords(records);
+  appendSyncAudit("sync.resolve.union", `${conflict.kind} ${conflict.id} -> union`);
+  return `Merged ${conflict.kind} conflict ${conflict.id} with union`;
+}
+
+export async function resolveSyncConflictsUnion(conflicts: SyncConflictItem[]): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("resolve_sync_conflicts_union", { conflicts });
+  }
+  for (const conflict of conflicts) {
+    await resolveSyncConflictUnion(conflict);
+  }
+  return conflicts.length;
+}
+
 export async function listSyncConflicts(
   status: "unresolved" | "resolved" | "all" = "unresolved",
 ): Promise<SyncConflictRecord[]> {

@@ -1475,8 +1475,29 @@ try {
       await sleep(100);
     }
     if (!conflictSeen) return { ok: false, reason: "no conflict after second pull" };
+    const unionBtn = document.querySelector('[data-batch-resolve="union"]');
+    if (!unionBtn) return { ok: false, reason: "no batch union button" };
+    unionBtn.click();
+    let merged = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      merged = msg.includes("Merged") && badgeGone;
+      if (merged) break;
+      await sleep(100);
+    }
+    if (!merged) return { ok: false, reason: "batch union not merged", merged };
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let secondConflictSeen = false;
+    for (let i = 0; i < 20; i++) {
+      secondConflictSeen = !!document.querySelector("[data-sync-conflict-item]");
+      if (secondConflictSeen) break;
+      await sleep(100);
+    }
     const batchBtn = document.querySelector('[data-batch-resolve="remote"]');
-    if (!batchBtn) return { ok: false, reason: "no batch resolve button" };
+    if (!secondConflictSeen || !batchBtn) {
+      return { ok: false, reason: "no second conflict for batch remote", secondConflictSeen };
+    }
     batchBtn.click();
     let resolved = false;
     for (let i = 0; i < 30; i++) {
@@ -1486,7 +1507,7 @@ try {
       if (resolved) break;
       await sleep(100);
     }
-    return { ok: resolved, resolved };
+    return { ok: merged && resolved, merged, resolved };
   })()`);
   if (!batchResolveCheck.ok) {
     throw new Error(
@@ -1501,16 +1522,18 @@ try {
     if (!toggle) return { ok: false, reason: "no history toggle" };
     toggle.click();
     let historySeen = false;
+    let unionSeen = false;
     for (let i = 0; i < 20; i++) {
       const item = [...document.querySelectorAll("[data-sync-resolved-item]")].find((el) =>
         (el.textContent ?? "").includes("sprint 38 conflict override"),
       );
       historySeen =
         !!item && item.querySelector('[data-resolved-choice="remote"]') !== null;
-      if (historySeen) break;
+      unionSeen = !!document.querySelector('[data-resolved-choice="union"]');
+      if (historySeen && unionSeen) break;
       await sleep(100);
     }
-    return { ok: historySeen, historySeen };
+    return { ok: historySeen && unionSeen, historySeen, unionSeen };
   })()`);
   if (!syncHistoryCheck.ok) {
     throw new Error(`sync history assertion failed: ${JSON.stringify(syncHistoryCheck)}`);

@@ -254,6 +254,35 @@ export default function SystemView() {
     }
   };
 
+  const resolveConflictUnionItem = async (conflict: db.SyncConflictItem) => {
+    try {
+      const message = await db.resolveSyncConflictUnion(conflict);
+      await refreshSystem();
+      await loadConflicts();
+      await loadAudit();
+      setSyncError(false);
+      setSyncMessage(message);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const resolveAllConflictsUnion = async () => {
+    if (syncConflicts.length === 0) return;
+    try {
+      const count = await db.resolveSyncConflictsUnion(syncConflicts);
+      await refreshSystem();
+      await loadConflicts();
+      await loadAudit();
+      setSyncError(false);
+      setSyncMessage(`Merged ${count} conflict(s) with union`);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const toggleResolvedHistory = async () => {
     if (showResolved) {
       setShowResolved(false);
@@ -550,6 +579,15 @@ export default function SystemView() {
               </button>
               <button
                 type="button"
+                data-batch-resolve="union"
+                aria-label="Merge all conflicts"
+                onClick={() => void resolveAllConflictsUnion()}
+                className="flex h-6 items-center gap-1 rounded-md bg-sky-500/15 px-2 text-[9px] text-sky-300 hover:bg-sky-500/25"
+              >
+                Merge all
+              </button>
+              <button
+                type="button"
                 data-batch-resolve="remote"
                 aria-label="Resolve all conflicts keeping remote"
                 onClick={() => void resolveAllConflicts("remote")}
@@ -587,6 +625,15 @@ export default function SystemView() {
                   className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-400 hover:bg-emerald-500/25"
                 >
                   Keep remote
+                </button>
+                <button
+                  type="button"
+                  data-resolve-union
+                  aria-label={`Merge conflict ${conflict.id}`}
+                  onClick={() => void resolveConflictUnionItem(conflict)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-sky-500/15 px-2 text-[9px] text-sky-300 hover:bg-sky-500/25"
+                >
+                  Merge
                 </button>
               </div>
             ))}
@@ -662,7 +709,9 @@ export default function SystemView() {
               <option value="all">All events</option>
               <option value="sync.merge">merge</option>
               <option value="sync.resolve">resolve</option>
+              <option value="sync.resolve.union">merge union</option>
               <option value="sync.resolve.batch">batch resolve</option>
+              <option value="sync.resolve.union.batch">batch union</option>
               <option value="sync.history.cleared">history cleared</option>
             </select>
             <button
