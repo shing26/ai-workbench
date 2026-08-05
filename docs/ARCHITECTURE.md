@@ -520,3 +520,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 已接入系统事件：`clipboard.captured`（`captureClipboard` + Tauri `clipboard-updated` 监听）、`error.reported`（`reportFrontendError`）、`sync.completed`（import / importEncrypted / push / pull）、`knowledge.indexed`（`indexVault`）。
 - SystemView 监听 `workbench:webhook-deliveries-updated` 后立即重载投递队列，原 5 秒轮询保留为兜底；事件入队不再依赖最长 5 秒的 UI 刷新延迟。
 - `verify:ui` / `verify:preview` 新增 `webhookSystemEvents` lane：先种子两条 enabled 规则，再通过真实 Pull 与真实 `ErrorEvent` 分别触发 `sync.completed` / `error.reported`，校验 DOM 中的最终 payload。
+
+## Sprint 100：AI Studio 会话工作台
+
+- `sessions` 新增 `pinned INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 直接建列，旧库 `migrate_session_pinned` 幂等补列；`list_sessions` 子查询返回 `message_count`，按 `pinned DESC, created_at DESC` 排序。
+- Rust 新增 `set_session_pinned(id, pinned)` 与 `duplicate_session(id)`：复制会话生成 `(copy)` 标题并复制全部消息，返回新会话及消息数。
+- `db.ts` 新增 `setSessionPinned` / `duplicateSession` / `buildSessionMarkdown`，浏览器 fallback 同一模型，旧数据自动补 `pinned=false` 与消息数。
+- AI Studio 会话行新增置顶按钮、消息数元信息、复制与导出操作；导出面板用 `data-session-export-panel` / `data-session-export-preview` 提供预览、复制与下载 `.md`。
+- `verify:ui` / `verify:preview` 新增 `sessionWorkspace` lane，覆盖置顶排序、消息数、复制会话、Markdown 导出与面板关闭。
