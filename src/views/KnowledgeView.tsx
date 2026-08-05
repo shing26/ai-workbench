@@ -28,6 +28,7 @@ export default function KnowledgeView() {
   const [watchEvents, setWatchEvents] = useState<db.VaultWatchEvent[]>([]);
   const [knowledgeDocs, setKnowledgeDocs] = useState<db.KnowledgeFileRecord[]>([]);
   const [docVaultFilter, setDocVaultFilter] = useState("all");
+  const [cleanResult, setCleanResult] = useState<db.KnowledgeCleanupResult | null>(null);
   const [expandedTimeline, setExpandedTimeline] = useState<string | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
@@ -229,6 +230,17 @@ export default function KnowledgeView() {
   const changeDocVaultFilter = (vaultPath: string) => {
     setDocVaultFilter(vaultPath);
     void loadDocs(vaultPath === "all" ? undefined : vaultPath);
+  };
+
+  const cleanDocs = async () => {
+    const result = await db.cleanupKnowledgeFiles(
+      docVaultFilter === "all" ? undefined : docVaultFilter,
+    );
+    setCleanResult(result);
+    void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+    void loadTargets();
+    void db.getKnowledgeIndexStatus().then(setVaultStatus);
+    void db.getRagIndexStatus().then(setIndexStatus);
   };
 
   const toggleWatch = async () => {
@@ -689,20 +701,38 @@ export default function KnowledgeView() {
             >
               {staleDocCount} stale
             </span>
-            <select
-              data-knowledge-doc-filter
-              value={docVaultFilter}
-              onChange={(e) => changeDocVaultFilter(e.target.value)}
-              aria-label="Document vault filter"
-              className="ml-auto h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
-            >
-              <option value="all">All vaults</option>
-              {vaultTargets.map((target) => (
-                <option key={target.path} value={target.path}>
-                  {target.path}
-                </option>
-              ))}
-            </select>
+            <div className="ml-auto flex items-center gap-1.5">
+              <select
+                data-knowledge-doc-filter
+                value={docVaultFilter}
+                onChange={(e) => changeDocVaultFilter(e.target.value)}
+                aria-label="Document vault filter"
+                className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+              >
+                <option value="all">All vaults</option>
+                {vaultTargets.map((target) => (
+                  <option key={target.path} value={target.path}>
+                    {target.path}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void cleanDocs()}
+                data-knowledge-docs-clean
+                className="h-6 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/20"
+              >
+                Clean
+              </button>
+              {cleanResult && (
+                <span
+                  data-knowledge-clean-result
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  removed {cleanResult.removed} reindexed {cleanResult.reindexed}
+                </span>
+              )}
+            </div>
           </div>
           <div className="max-h-44 space-y-1 overflow-y-auto">
             {knowledgeDocs.length === 0 && (

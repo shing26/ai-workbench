@@ -461,3 +461,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 ## Sprint 64：文档存在性与过期检测
 
 无表结构变更。`exists` / `stale` 为运行时计算字段：`exists` 由 `Path::exists` 判定，`stale` 在文件存在且 mtime 比 `indexed_at` 晚超过 1 秒时为 true；不写入数据库。
+
+## Sprint 65：文档健康一键清理与重新索引
+
+无表结构变更。`cleanup_knowledge_files` 复用 `knowledge_files` 既有列：missing 文档执行 `DELETE`，stale 文档重读磁盘内容后按 `path` upsert 并刷新 `indexed_at`；浏览器 fallback 在 `ai-workbench:vault:v1` 上写回 `exists` / `stale` 模拟状态与清理结果。
