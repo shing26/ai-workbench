@@ -1,29 +1,29 @@
-import { ChevronLeft, ChevronRight, Layers, Orbit, Pause, Play } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { useWorkbenchStore } from "../../stores/workbenchStore";
+import { ChevronLeft, ChevronRight, Layers, Orbit, Pause, Play } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 
-const CAROUSEL_MATERIALS = ["cyan", "original", "rain", "chrome"] as const;
+const CAROUSEL_MATERIALS = ['cyan', 'original', 'rain', 'chrome'] as const;
 
 function relativePosition(index: number, position: number, count: number): number {
   if (count === 0) return 0;
-  let delta = ((index - position) % count + count) % count;
+  let delta = (((index - position) % count) + count) % count;
   if (delta > count / 2) delta -= count;
   return delta;
 }
 
 export default function ProjectCarousel() {
   const projects = useWorkbenchStore((s) => s.projects);
-  const [mode, setMode] = useState<"orbit" | "fan">("orbit");
+  const [mode, setMode] = useState<'orbit' | 'fan'>('orbit');
   const [playing, setPlaying] = useState(false);
   const [index, setIndex] = useState(0);
   const sceneRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const positionRef = useRef(0);
   const indexRef = useRef(0);
-  const modeRef = useRef<"orbit" | "fan">("orbit");
+  const modeRef = useRef<'orbit' | 'fan'>('orbit');
   const pausedRef = useRef(false);
   const reducedRef = useRef(
-    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const frameRef = useRef<number | null>(null);
 
@@ -44,7 +44,7 @@ export default function ProjectCarousel() {
       let scale: number;
       let opacity: number;
       let zIndex: number;
-      if (currentMode === "orbit") {
+      if (currentMode === 'orbit') {
         x = Math.sin(delta * 0.75) * 185;
         z = 30 - Math.min(abs, 3) * 46;
         y = -4 + Math.min(abs, 3) * 4;
@@ -66,7 +66,7 @@ export default function ProjectCarousel() {
       card.style.zIndex = String(zIndex);
       const selected = abs < 0.05;
       card.dataset.carouselSelected = String(selected);
-      card.setAttribute("aria-selected", String(selected));
+      card.setAttribute('aria-selected', String(selected));
     });
   };
 
@@ -84,14 +84,14 @@ export default function ProjectCarousel() {
   }, [mode, projects]);
 
   useEffect(() => {
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const update = () => {
       reducedRef.current = media.matches;
       if (media.matches) setPlaying(false);
     };
     update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
   }, []);
 
   useEffect(() => {
@@ -125,14 +125,14 @@ export default function ProjectCarousel() {
   const go = (delta: number) => {
     const count = projects.length;
     if (count === 0) return;
-    const nextIndex = ((indexRef.current + delta) % count + count) % count;
+    const nextIndex = (((indexRef.current + delta) % count) + count) % count;
     positionRef.current = nextIndex;
     indexRef.current = nextIndex;
     setIndex(nextIndex);
     applyPositionsRef.current();
   };
 
-  const setCarouselMode = (nextMode: "orbit" | "fan") => {
+  const setCarouselMode = (nextMode: 'orbit' | 'fan') => {
     modeRef.current = nextMode;
     setMode(nextMode);
     positionRef.current = indexRef.current;
@@ -148,9 +148,9 @@ export default function ProjectCarousel() {
           <button
             type="button"
             aria-label="Orbit mode"
-            aria-pressed={mode === "orbit"}
+            aria-pressed={mode === 'orbit'}
             data-carousel-mode="orbit"
-            onClick={() => setCarouselMode("orbit")}
+            onClick={() => setCarouselMode('orbit')}
             className="flex h-6 items-center gap-1 rounded-md px-2 text-[9px] text-slate-400 transition-colors hover:text-slate-200 aria-pressed:bg-emerald-500/15 aria-pressed:text-emerald-300"
           >
             <Orbit size={10} /> Orbit
@@ -158,9 +158,9 @@ export default function ProjectCarousel() {
           <button
             type="button"
             aria-label="Fan mode"
-            aria-pressed={mode === "fan"}
+            aria-pressed={mode === 'fan'}
             data-carousel-mode="fan"
-            onClick={() => setCarouselMode("fan")}
+            onClick={() => setCarouselMode('fan')}
             className="flex h-6 items-center gap-1 rounded-md px-2 text-[9px] text-slate-400 transition-colors hover:text-slate-200 aria-pressed:bg-emerald-500/15 aria-pressed:text-emerald-300"
           >
             <Layers size={10} /> Fan
@@ -176,7 +176,7 @@ export default function ProjectCarousel() {
           className="flex h-6 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400 transition-colors hover:border-emerald-500/30 hover:text-emerald-300 aria-pressed:border-emerald-500/30 aria-pressed:text-emerald-300"
         >
           {playing ? <Pause size={10} /> : <Play size={10} />}
-          {playing ? "Pause" : "Play"}
+          {playing ? 'Pause' : 'Play'}
         </button>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -190,7 +190,7 @@ export default function ProjectCarousel() {
             <ChevronLeft size={13} />
           </button>
           <span data-carousel-index className="min-w-9 text-center text-[9px] text-slate-500">
-            {projects.length === 0 ? "0 / 0" : `${index + 1} / ${projects.length}`}
+            {projects.length === 0 ? '0 / 0' : `${index + 1} / ${projects.length}`}
           </span>
           <button
             type="button"
@@ -215,8 +215,8 @@ export default function ProjectCarousel() {
           else if (event.deltaY < 0) go(-1);
         }}
         onKeyDown={(event) => {
-          if (event.key === "ArrowRight") go(1);
-          else if (event.key === "ArrowLeft") go(-1);
+          if (event.key === 'ArrowRight') go(1);
+          else if (event.key === 'ArrowLeft') go(-1);
         }}
         onPointerEnter={() => {
           pausedRef.current = true;
@@ -273,7 +273,7 @@ export default function ProjectCarousel() {
             <span className="rounded bg-white/[0.04] px-1.5 py-0.5">{selected.status}</span>
             <span className="text-emerald-300">${selected.revenue.toFixed(2)}</span>
             <span className="max-w-48 truncate text-slate-600">
-              {selected.path || "No local path"}
+              {selected.path || 'No local path'}
             </span>
           </>
         ) : (

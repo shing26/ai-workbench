@@ -1,12 +1,7 @@
-﻿import { create } from "zustand";
+﻿import { create } from 'zustand';
 
 export type ViewId =
-  | "chat"
-  | "vibe-coding"
-  | "knowledge"
-  | "automation"
-  | "monetization"
-  | "connections";
+  'chat' | 'vibe-coding' | 'knowledge' | 'automation' | 'monetization' | 'connections';
 
 interface AppState {
   activeView: ViewId;
@@ -14,6 +9,6 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  activeView: "chat",
+  activeView: 'chat',
   setActiveView: (view) => set({ activeView: view }),
 }));

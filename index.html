@@ -7,15 +7,18 @@
     <script>
       (() => {
         try {
-          const themes = ["dark", "light", "system"];
-          const accents = ["emerald", "ocean", "iris", "amber", "sakura"];
-          let theme = localStorage.getItem("ai-workbench:theme") || "dark";
-          if (!themes.includes(theme)) theme = "dark";
-          let accent = localStorage.getItem("ai-workbench:accent") || "emerald";
-          if (!accents.includes(accent)) accent = "emerald";
-          const resolved = theme === "system"
-            ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
-            : theme;
+          const themes = ['dark', 'light', 'system'];
+          const accents = ['emerald', 'ocean', 'iris', 'amber', 'sakura'];
+          let theme = localStorage.getItem('ai-workbench:theme') || 'dark';
+          if (!themes.includes(theme)) theme = 'dark';
+          let accent = localStorage.getItem('ai-workbench:accent') || 'emerald';
+          if (!accents.includes(accent)) accent = 'emerald';
+          const resolved =
+            theme === 'system'
+              ? matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark'
+              : theme;
           document.documentElement.dataset.theme = theme;
           document.documentElement.dataset.themeResolved = resolved;
           document.documentElement.dataset.accent = accent;

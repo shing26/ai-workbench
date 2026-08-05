@@ -1,19 +1,38 @@
-import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, List, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, Webhook, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import * as db from "../lib/db";
-import { useWorkbenchStore } from "../stores/workbenchStore";
-import BentoCard from "../components/ui/BentoCard";
-import ModelBadge from "../components/ui/ModelBadge";
+import {
+  Activity,
+  AlertTriangle,
+  Check,
+  Clipboard,
+  CloudUpload,
+  Download,
+  HeartPulse,
+  History,
+  List,
+  Pencil,
+  Plus,
+  Radio,
+  RefreshCw,
+  Terminal,
+  Upload,
+  Users,
+  Webhook,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import * as db from '../lib/db';
+import { useWorkbenchStore } from '../stores/workbenchStore';
+import BentoCard from '../components/ui/BentoCard';
+import ModelBadge from '../components/ui/ModelBadge';
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
-  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function dateInput(value: Date): string {
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(
     value.getDate(),
-  ).padStart(2, "0")}`;
+  ).padStart(2, '0')}`;
 }
 
 function resolveAuditRange(
@@ -21,9 +40,9 @@ function resolveAuditRange(
   fromDate: string,
   toDate: string,
 ): { sinceMs?: number; untilMs?: number } {
-  if (since === "today") return { sinceMs: Date.now() - 24 * 60 * 60 * 1000 };
-  if (since === "7d") return { sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1000 };
-  if (since === "custom") {
+  if (since === 'today') return { sinceMs: Date.now() - 24 * 60 * 60 * 1000 };
+  if (since === '7d') return { sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1000 };
+  if (since === 'custom') {
     return {
       sinceMs: fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : undefined,
       untilMs: toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : undefined,
@@ -34,10 +53,10 @@ function resolveAuditRange(
 
 function syncErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
-  const name = err && typeof err === "object" && "name" in err ? String(err.name) : "";
-  const message = err instanceof Error ? err.message : "";
+  const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
+  const message = err instanceof Error ? err.message : '';
   if (name) return message ? `${name}: ${message}` : `Operation failed (${name})`;
-  return message || String(err ?? "Unknown sync error");
+  return message || String(err ?? 'Unknown sync error');
 }
 
 export default function SystemView() {
@@ -48,10 +67,10 @@ export default function SystemView() {
   const clipboard = useWorkbenchStore((s) => s.clipboard);
   const logs = useWorkbenchStore((s) => s.logs);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
-  const [name, setName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
+  const [name, setName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState('');
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
@@ -59,70 +78,73 @@ export default function SystemView() {
   const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
   const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
-  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookPayload, setWebhookPayload] = useState(
     '{"event":"daily.summary","source":"ai-workbench"}',
   );
-  const [webhookMethod, setWebhookMethod] = useState("POST");
-  const [webhookToken, setWebhookToken] = useState("");
-  const [webhookSecret, setWebhookSecret] = useState("");
-  const [webhookRetries, setWebhookRetries] = useState("1");
+  const [webhookMethod, setWebhookMethod] = useState('POST');
+  const [webhookToken, setWebhookToken] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [webhookRetries, setWebhookRetries] = useState('1');
   const [webhookResult, setWebhookResult] = useState<db.WebhookDeliveryResult | null>(null);
   const [webhookBusy, setWebhookBusy] = useState(false);
   const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
-  const [webhookRuleName, setWebhookRuleName] = useState("");
-  const [webhookRuleInterval, setWebhookRuleInterval] = useState("60");
-  const [webhookRuleTrigger, setWebhookRuleTrigger] = useState("");
-  const [webhookEventContext, setWebhookEventContext] = useState("");
-  const [webhookPayloadPreview, setWebhookPayloadPreview] = useState("");
+  const [webhookRuleName, setWebhookRuleName] = useState('');
+  const [webhookRuleInterval, setWebhookRuleInterval] = useState('60');
+  const [webhookRuleTrigger, setWebhookRuleTrigger] = useState('');
+  const [webhookEventContext, setWebhookEventContext] = useState('');
+  const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
   const [webhookDeliveries, setWebhookDeliveries] = useState<db.WebhookDelivery[]>([]);
-  const [deviceId, setDeviceId] = useState("");
+  const [deviceId, setDeviceId] = useState('');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  const [lastRemoteDevice, setLastRemoteDevice] = useState("");
-  const [syncMessage, setSyncMessage] = useState("");
+  const [lastRemoteDevice, setLastRemoteDevice] = useState('');
+  const [syncMessage, setSyncMessage] = useState('');
   const [syncError, setSyncError] = useState(false);
-  const [remoteUrl, setRemoteUrl] = useState("");
-  const [remoteToken, setRemoteToken] = useState("");
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteToken, setRemoteToken] = useState('');
   const [syncEncryptEnabled, setSyncEncryptEnabled] = useState(false);
-  const [syncPassphrase, setSyncPassphrase] = useState("");
+  const [syncPassphrase, setSyncPassphrase] = useState('');
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
-  const [autoSyncInterval, setAutoSyncInterval] = useState("60");
+  const [autoSyncInterval, setAutoSyncInterval] = useState('60');
   const [syncConflicts, setSyncConflicts] = useState<db.SyncConflictRecord[]>([]);
   const [resolvedConflicts, setResolvedConflicts] = useState<db.SyncConflictRecord[]>([]);
   const [showResolved, setShowResolved] = useState(false);
   const [syncAudit, setSyncAudit] = useState<db.SyncAuditEntry[]>([]);
-  const [auditFilter, setAuditFilter] = useState("all");
-  const [auditSince, setAuditSince] = useState("all");
-  const [auditFromDate, setAuditFromDate] = useState(() => dateInput(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
+  const [auditFilter, setAuditFilter] = useState('all');
+  const [auditSince, setAuditSince] = useState('all');
+  const [auditFromDate, setAuditFromDate] = useState(() =>
+    dateInput(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)),
+  );
   const [auditToDate, setAuditToDate] = useState(() => dateInput(new Date()));
-  const [auditDevice, setAuditDevice] = useState("all");
-  const [auditExportMessage, setAuditExportMessage] = useState("");
+  const [auditDevice, setAuditDevice] = useState('all');
+  const [auditExportMessage, setAuditExportMessage] = useState('');
   const [auditSummary, setAuditSummary] = useState<db.SyncAuditSummary | null>(null);
-  const [auditGranularity, setAuditGranularity] = useState<"day" | "week">("day");
+  const [auditGranularity, setAuditGranularity] = useState<'day' | 'week'>('day');
   const [errorLogSummary, setErrorLogSummary] = useState<db.ErrorLogSummary | null>(null);
-  const [errorLogGranularity, setErrorLogGranularity] = useState<"day" | "week">("day");
-  const [errorSeverityFilter, setErrorSeverityFilter] = useState("all");
-  const [errorSourceFilter, setErrorSourceFilter] = useState("all");
-  const [errorDeviceFilter, setErrorDeviceFilter] = useState("all");
+  const [errorLogGranularity, setErrorLogGranularity] = useState<'day' | 'week'>('day');
+  const [errorSeverityFilter, setErrorSeverityFilter] = useState('all');
+  const [errorSourceFilter, setErrorSourceFilter] = useState('all');
+  const [errorDeviceFilter, setErrorDeviceFilter] = useState('all');
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
-  const [agentDeptId, setAgentDeptId] = useState("");
-  const [agentName, setAgentName] = useState("");
-  const [agentRole, setAgentRole] = useState("");
+  const [agentDeptId, setAgentDeptId] = useState('');
+  const [agentName, setAgentName] = useState('');
+  const [agentRole, setAgentRole] = useState('');
   const [promptEditAgentId, setPromptEditAgentId] = useState<string | null>(null);
-  const [promptDraft, setPromptDraft] = useState("");
+  const [promptDraft, setPromptDraft] = useState('');
   const [versionOpenAgentId, setVersionOpenAgentId] = useState<string | null>(null);
   const [promptVersions, setPromptVersions] = useState<db.AgentPromptVersion[]>([]);
+  const runAutoSyncRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     void db.getSyncStatus().then((status) => {
       setDeviceId(status.deviceId);
       setLastSyncedAt(status.lastSyncedAt);
     });
-    void db.listSyncConflicts("unresolved").then(setSyncConflicts);
+    void db.listSyncConflicts('unresolved').then(setSyncConflicts);
     void db.listSyncAudit(50).then(setSyncAudit);
-    void db.getSyncAuditSummary("day").then(setAuditSummary);
-    void db.getErrorLogSummary("day").then(setErrorLogSummary);
+    void db.getSyncAuditSummary('day').then(setAuditSummary);
+    void db.getErrorLogSummary('day').then(setErrorLogSummary);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -132,12 +154,14 @@ export default function SystemView() {
 
   useEffect(() => {
     let disposed = false;
-    void Promise.all([db.listDepartments(), db.listAgents()]).then(([departmentList, agentList]) => {
-      if (disposed) return;
-      setDepartments(departmentList);
-      setAgents(agentList);
-      setAgentDeptId((current) => current || departmentList[0]?.id || "");
-    });
+    void Promise.all([db.listDepartments(), db.listAgents()]).then(
+      ([departmentList, agentList]) => {
+        if (disposed) return;
+        setDepartments(departmentList);
+        setAgents(agentList);
+        setAgentDeptId((current) => current || departmentList[0]?.id || '');
+      },
+    );
     return () => {
       disposed = true;
     };
@@ -145,18 +169,18 @@ export default function SystemView() {
 
   const createAgentItem = async () => {
     if (!agentDeptId || !agentName.trim()) return;
-    await db.createAgent(agentDeptId, agentName.trim(), agentRole.trim(), "openai", null, "");
+    await db.createAgent(agentDeptId, agentName.trim(), agentRole.trim(), 'openai', null, '');
     setAgents(await db.listAgents());
     setDepartments(await db.listDepartments());
-    setAgentName("");
-    setAgentRole("");
+    setAgentName('');
+    setAgentRole('');
   };
 
   const saveAgentPrompt = async (id: string) => {
     await db.updateAgentSystemPrompt(id, promptDraft.trim());
     setAgents(await db.listAgents());
     setPromptEditAgentId(null);
-    setPromptDraft("");
+    setPromptDraft('');
   };
 
   const togglePromptVersions = async (agentId: string) => {
@@ -179,7 +203,7 @@ export default function SystemView() {
     setSyncError(false);
     if (syncEncryptEnabled && syncPassphrase.trim()) {
       await db.exportEncryptedSyncSnapshot(syncPassphrase.trim());
-      setSyncMessage("Exported encrypted snapshot");
+      setSyncMessage('Exported encrypted snapshot');
     } else {
       const snapshot = await db.exportSyncSnapshot();
       setSyncMessage(`Exported ${snapshot.clipboard.length} clips / ${snapshot.logs.length} logs`);
@@ -188,9 +212,10 @@ export default function SystemView() {
 
   const importSync = async () => {
     try {
-      const result = syncEncryptEnabled && syncPassphrase.trim()
-        ? await db.importEncryptedSyncSnapshot(syncPassphrase.trim())
-        : await db.importSyncSnapshot();
+      const result =
+        syncEncryptEnabled && syncPassphrase.trim()
+          ? await db.importEncryptedSyncSnapshot(syncPassphrase.trim())
+          : await db.importSyncSnapshot();
       await refreshSystem();
       await loadConflicts();
       await loadAudit();
@@ -211,7 +236,7 @@ export default function SystemView() {
   const pushSync = async () => {
     if (!remoteUrl.trim()) {
       setSyncError(true);
-      setSyncMessage("Remote URL required");
+      setSyncMessage('Remote URL required');
       return;
     }
     try {
@@ -232,7 +257,7 @@ export default function SystemView() {
   const pullSync = async () => {
     if (!remoteUrl.trim()) {
       setSyncError(true);
-      setSyncMessage("Remote URL required");
+      setSyncMessage('Remote URL required');
       return;
     }
     try {
@@ -279,8 +304,12 @@ export default function SystemView() {
     }
   };
 
+  useEffect(() => {
+    runAutoSyncRef.current = runAutoSync;
+  });
+
   const loadConflicts = async () => {
-    setSyncConflicts(await db.listSyncConflicts("unresolved"));
+    setSyncConflicts(await db.listSyncConflicts('unresolved'));
   };
 
   const loadAudit = async (
@@ -294,48 +323,48 @@ export default function SystemView() {
     setSyncAudit(
       await db.listSyncAudit(
         200,
-        filter === "all" ? undefined : filter,
+        filter === 'all' ? undefined : filter,
         range.sinceMs,
         range.untilMs,
-        device === "current" ? deviceId : undefined,
+        device === 'current' ? deviceId : undefined,
       ),
     );
     setAuditSummary(
       await db.getSyncAuditSummary(
         auditGranularity,
-        filter === "all" ? undefined : filter,
+        filter === 'all' ? undefined : filter,
         range.sinceMs,
         range.untilMs,
-        device === "current" ? deviceId : undefined,
+        device === 'current' ? deviceId : undefined,
       ),
     );
   };
 
-  const changeAuditGranularity = (granularity: "day" | "week") => {
+  const changeAuditGranularity = (granularity: 'day' | 'week') => {
     setAuditGranularity(granularity);
-    setAuditExportMessage("");
+    setAuditExportMessage('');
     const range = resolveAuditRange(auditSince, auditFromDate, auditToDate);
     void db
       .getSyncAuditSummary(
         granularity,
-        auditFilter === "all" ? undefined : auditFilter,
+        auditFilter === 'all' ? undefined : auditFilter,
         range.sinceMs,
         range.untilMs,
-        auditDevice === "current" ? deviceId : undefined,
+        auditDevice === 'current' ? deviceId : undefined,
       )
       .then(setAuditSummary);
   };
 
-  const changeErrorLogGranularity = (granularity: "day" | "week") => {
+  const changeErrorLogGranularity = (granularity: 'day' | 'week') => {
     setErrorLogGranularity(granularity);
     void db
       .getErrorLogSummary(
         granularity,
-        errorSourceFilter === "all" ? undefined : errorSourceFilter,
-        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
-        errorDeviceFilter === "all"
+        errorSourceFilter === 'all' ? undefined : errorSourceFilter,
+        errorSeverityFilter === 'all' ? undefined : errorSeverityFilter,
+        errorDeviceFilter === 'all'
           ? undefined
-          : errorDeviceFilter === "current"
+          : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
       )
@@ -347,11 +376,11 @@ export default function SystemView() {
     void db
       .getErrorLogSummary(
         errorLogGranularity,
-        errorSourceFilter === "all" ? undefined : errorSourceFilter,
-        severity === "all" ? undefined : severity,
-        errorDeviceFilter === "all"
+        errorSourceFilter === 'all' ? undefined : errorSourceFilter,
+        severity === 'all' ? undefined : severity,
+        errorDeviceFilter === 'all'
           ? undefined
-          : errorDeviceFilter === "current"
+          : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
       )
@@ -363,11 +392,11 @@ export default function SystemView() {
     void db
       .getErrorLogSummary(
         errorLogGranularity,
-        source === "all" ? undefined : source,
-        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
-        errorDeviceFilter === "all"
+        source === 'all' ? undefined : source,
+        errorSeverityFilter === 'all' ? undefined : errorSeverityFilter,
+        errorDeviceFilter === 'all'
           ? undefined
-          : errorDeviceFilter === "current"
+          : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
       )
@@ -379,70 +408,66 @@ export default function SystemView() {
     void db
       .getErrorLogSummary(
         errorLogGranularity,
-        errorSourceFilter === "all" ? undefined : errorSourceFilter,
-        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
-        device === "all"
-          ? undefined
-          : device === "current"
-            ? deviceId
-            : device,
+        errorSourceFilter === 'all' ? undefined : errorSourceFilter,
+        errorSeverityFilter === 'all' ? undefined : errorSeverityFilter,
+        device === 'all' ? undefined : device === 'current' ? deviceId : device,
       )
       .then(setErrorLogSummary);
   };
 
   const changeAuditFilter = (filter: string) => {
     setAuditFilter(filter);
-    setAuditExportMessage("");
+    setAuditExportMessage('');
     void loadAudit(filter);
   };
 
   const changeAuditRange = (range: string) => {
     setAuditSince(range);
-    setAuditExportMessage("");
+    setAuditExportMessage('');
     void loadAudit(auditFilter, range, auditDevice);
   };
 
   const changeAuditDevice = (device: string) => {
     setAuditDevice(device);
-    setAuditExportMessage("");
+    setAuditExportMessage('');
     void loadAudit(auditFilter, auditSince, device);
   };
 
   const changeAuditFromDate = (value: string) => {
     setAuditFromDate(value);
-    setAuditExportMessage("");
-    if (auditSince === "custom") {
-      void loadAudit(auditFilter, "custom", auditDevice, value, auditToDate);
+    setAuditExportMessage('');
+    if (auditSince === 'custom') {
+      void loadAudit(auditFilter, 'custom', auditDevice, value, auditToDate);
     }
   };
 
   const changeAuditToDate = (value: string) => {
     setAuditToDate(value);
-    setAuditExportMessage("");
-    if (auditSince === "custom") {
-      void loadAudit(auditFilter, "custom", auditDevice, auditFromDate, value);
+    setAuditExportMessage('');
+    if (auditSince === 'custom') {
+      void loadAudit(auditFilter, 'custom', auditDevice, auditFromDate, value);
     }
   };
 
-  const exportAudit = async (format: "json" | "csv") => {
+  const exportAudit = async (format: 'json' | 'csv') => {
     try {
       const range = resolveAuditRange(auditSince, auditFromDate, auditToDate);
       const text = await db.exportSyncAudit(
         format,
-        auditFilter === "all" ? undefined : auditFilter,
+        auditFilter === 'all' ? undefined : auditFilter,
         range.sinceMs,
         range.untilMs,
-        auditDevice === "current" ? deviceId : undefined,
+        auditDevice === 'current' ? deviceId : undefined,
       );
       const count =
-        format === "json"
+        format === 'json'
           ? (JSON.parse(text) as db.SyncAuditEntry[]).length
-          : Math.max(0, text.trim().split("\n").length - 1);
+          : Math.max(0, text.trim().split('\n').length - 1);
       const blob = new Blob([text], {
-        type: format === "json" ? "application/json" : "text/csv",
+        type: format === 'json' ? 'application/json' : 'text/csv',
       });
       const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
+      const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = `sync-audit-${new Date().toISOString().slice(0, 10)}.${format}`;
       anchor.click();
@@ -457,10 +482,7 @@ export default function SystemView() {
     }
   };
 
-  const resolveConflictItem = async (
-    conflict: db.SyncConflictItem,
-    choice: "local" | "remote",
-  ) => {
+  const resolveConflictItem = async (conflict: db.SyncConflictItem, choice: 'local' | 'remote') => {
     try {
       const message = await db.resolveSyncConflict(conflict, choice);
       await refreshSystem();
@@ -474,7 +496,7 @@ export default function SystemView() {
     }
   };
 
-  const resolveAllConflicts = async (choice: "local" | "remote") => {
+  const resolveAllConflicts = async (choice: 'local' | 'remote') => {
     if (syncConflicts.length === 0) return;
     try {
       const count = await db.resolveSyncConflicts(syncConflicts, choice);
@@ -552,13 +574,13 @@ export default function SystemView() {
       setShowResolved(false);
       return;
     }
-    setResolvedConflicts(await db.listSyncConflicts("resolved"));
+    setResolvedConflicts(await db.listSyncConflicts('resolved'));
     setShowResolved(true);
   };
 
   const clearResolvedHistory = async () => {
     const cleared = await db.clearResolvedSyncConflicts();
-    setResolvedConflicts(await db.listSyncConflicts("resolved"));
+    setResolvedConflicts(await db.listSyncConflicts('resolved'));
     await loadAudit();
     setSyncError(false);
     setSyncMessage(`Cleared ${cleared} resolved conflict(s)`);
@@ -581,12 +603,12 @@ export default function SystemView() {
         remoteUrl: remoteUrl.trim(),
       });
       setSyncError(false);
-      setSyncMessage("Auto sync disabled");
+      setSyncMessage('Auto sync disabled');
       return;
     }
     if (!remoteUrl.trim()) {
       setSyncError(true);
-      setSyncMessage("Remote URL required for auto sync");
+      setSyncMessage('Remote URL required for auto sync');
       return;
     }
     setAutoSyncEnabled(true);
@@ -603,21 +625,21 @@ export default function SystemView() {
   useEffect(() => {
     if (!autoSyncEnabled) return;
     const intervalMs = Math.max(Number(autoSyncInterval) * 1000, 10_000);
-    const timer = window.setInterval(() => void runAutoSync(), intervalMs);
+    const timer = window.setInterval(() => void runAutoSyncRef.current(), intervalMs);
     return () => window.clearInterval(timer);
-  }, [autoSyncEnabled, autoSyncInterval, remoteUrl, remoteToken]);
+  }, [autoSyncEnabled, autoSyncInterval]);
 
   const check = async (id: string) => {
     const result = await db.checkProviderHealth(id);
     setHealth((prev) => ({ ...prev, [id]: result }));
   };
 
-  const checkAll = async () => {
+  const checkAll = useCallback(async () => {
     const entries = await Promise.all(
       providers.map(async (p) => [p.id, await db.checkProviderHealth(p.id)] as const),
     );
     setHealth(Object.fromEntries(entries));
-  };
+  }, [providers]);
 
   const runStreamSmoke = async (id: string) => {
     const result = await db.runProviderStreamSmokeTest(id);
@@ -632,7 +654,7 @@ export default function SystemView() {
         durationMs: 0,
         attempts: 0,
         signed: false,
-        message: "Webhook URL required",
+        message: 'Webhook URL required',
       });
       return;
     }
@@ -640,7 +662,7 @@ export default function SystemView() {
     try {
       const result = await db.deliverWebhook(
         webhookUrl.trim(),
-        webhookPayload.trim() || "{}",
+        webhookPayload.trim() || '{}',
         webhookMethod,
         webhookToken,
         webhookSecret,
@@ -673,7 +695,7 @@ export default function SystemView() {
         durationMs: 0,
         attempts: 0,
         signed: false,
-        message: "Rule name and Webhook URL required",
+        message: 'Rule name and Webhook URL required',
       });
       return;
     }
@@ -690,8 +712,8 @@ export default function SystemView() {
     );
     await loadWebhookRules();
     await loadWebhookDeliveries();
-    setWebhookRuleName("");
-    setWebhookRuleTrigger("");
+    setWebhookRuleName('');
+    setWebhookRuleTrigger('');
   };
 
   const toggleWebhookRule = async (id: string, enabled: boolean) => {
@@ -728,7 +750,7 @@ export default function SystemView() {
           durationMs: 0,
           attempts: 0,
           signed: false,
-          message: "Event context JSON is invalid",
+          message: 'Event context JSON is invalid',
         });
         return;
       }
@@ -752,11 +774,11 @@ export default function SystemView() {
       try {
         context = JSON.parse(trimmedContext) as Record<string, unknown>;
       } catch {
-        setWebhookPayloadPreview("Event context JSON is invalid");
+        setWebhookPayloadPreview('Event context JSON is invalid');
         return;
       }
     }
-    setWebhookPayloadPreview(db.renderWebhookPayload(webhookPayload, "sync.completed", context));
+    setWebhookPayloadPreview(db.renderWebhookPayload(webhookPayload, 'sync.completed', context));
   };
 
   const retryWebhookDelivery = async (id: string) => {
@@ -770,7 +792,7 @@ export default function SystemView() {
   };
 
   const clearWebhookDeliveries = async () => {
-    const removed = await db.clearWebhookDeliveries("dead");
+    const removed = await db.clearWebhookDeliveries('dead');
     setWebhookResult({
       ok: true,
       status: 0,
@@ -784,20 +806,20 @@ export default function SystemView() {
 
   useEffect(() => {
     void checkAll();
-  }, [providers.length]);
+  }, [checkAll]);
 
   useEffect(() => {
     void loadWebhookRules();
     void loadWebhookDeliveries();
     const onWebhooksUpdated = () => void loadWebhookDeliveries();
-    window.addEventListener("workbench:webhook-deliveries-updated", onWebhooksUpdated);
+    window.addEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
     const timer = window.setInterval(() => {
       void loadWebhookRules();
       void loadWebhookDeliveries();
     }, 5000);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("workbench:webhook-deliveries-updated", onWebhooksUpdated);
+      window.removeEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
     };
   }, []);
 
@@ -824,10 +846,10 @@ export default function SystemView() {
   const create = async () => {
     if (!name.trim() || !baseUrl.trim()) return;
     await addProvider(name.trim(), baseUrl.trim(), apiKey.trim(), model.trim());
-    setName("");
-    setBaseUrl("");
-    setApiKey("");
-    setModel("");
+    setName('');
+    setBaseUrl('');
+    setApiKey('');
+    setModel('');
   };
 
   const saveProviderModel = async (id: string, value: string) => {
@@ -866,16 +888,14 @@ export default function SystemView() {
   };
 
   const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
-  const errorDevices = Array.from(
-    new Set(logs.map((log) => log.deviceId || "unknown")),
-  ).sort();
+  const errorDevices = Array.from(new Set(logs.map((log) => log.deviceId || 'unknown'))).sort();
   const visibleLogs = logs
-    .filter((log) => errorSourceFilter === "all" || log.source === errorSourceFilter)
-    .filter((log) => errorSeverityFilter === "all" || log.severity === errorSeverityFilter)
+    .filter((log) => errorSourceFilter === 'all' || log.source === errorSourceFilter)
+    .filter((log) => errorSeverityFilter === 'all' || log.severity === errorSeverityFilter)
     .filter((log) => {
-      if (errorDeviceFilter === "all") return true;
-      const logDevice = log.deviceId || "unknown";
-      return errorDeviceFilter === "current"
+      if (errorDeviceFilter === 'all') return true;
+      const logDevice = log.deviceId || 'unknown';
+      return errorDeviceFilter === 'current'
         ? logDevice === deviceId
         : logDevice === errorDeviceFilter;
     });
@@ -893,7 +913,7 @@ export default function SystemView() {
               </span>
             ))}
             <span className="ml-auto text-red-400/70">
-              {heartbeat.checkedAt ? new Date(heartbeat.checkedAt).toLocaleTimeString("zh-CN") : ""}
+              {heartbeat.checkedAt ? new Date(heartbeat.checkedAt).toLocaleTimeString('zh-CN') : ''}
             </span>
           </div>
         )}
@@ -902,29 +922,33 @@ export default function SystemView() {
             const entry = heartbeat?.providers.find((h) => h.id === p.id) ?? null;
             const state = entry ?? health[p.id];
             const statusLabel = !state
-              ? "pending"
+              ? 'pending'
               : state.ok
-                ? "ok"
+                ? 'ok'
                 : entry?.checked === false
-                  ? "pending"
-                  : "degraded";
+                  ? 'pending'
+                  : 'degraded';
             return (
               <div
                 key={p.id}
                 data-provider-id={p.id}
                 className={`provider-card rounded-2xl border bg-white/[0.03] p-3 ${
-                  p.isActive ? "active-provider border-emerald-500/20" : "border-white/10"
+                  p.isActive ? 'active-provider border-emerald-500/20' : 'border-white/10'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <ModelBadge
                     label={p.name}
-                    tone={p.isActive ? "green" : "neutral"}
-                    status={p.isActive ? "active" : "idle"}
+                    tone={p.isActive ? 'green' : 'neutral'}
+                    status={p.isActive ? 'active' : 'idle'}
                     pulse={p.isActive}
                   />
-                  <button type="button" onClick={() => void toggleProvider(p.id, !p.isActive)} className="text-[10px] text-slate-500 hover:text-slate-300">
-                    {p.isActive ? "Disable" : "Enable"}
+                  <button
+                    type="button"
+                    onClick={() => void toggleProvider(p.id, !p.isActive)}
+                    className="text-[10px] text-slate-500 hover:text-slate-300"
+                  >
+                    {p.isActive ? 'Disable' : 'Enable'}
                   </button>
                 </div>
                 <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
@@ -937,7 +961,7 @@ export default function SystemView() {
                     }
                     onBlur={(e) => void saveProviderModel(p.id, e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     }}
                     placeholder="model"
                     className="h-6 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[10px] text-slate-300 outline-none placeholder:text-slate-600 focus:border-emerald-500/40"
@@ -956,10 +980,12 @@ export default function SystemView() {
                   <span
                     data-provider-model={p.model}
                     className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
-                      p.model ? "bg-emerald-500/10 text-emerald-300" : "bg-white/[0.03] text-slate-500"
+                      p.model
+                        ? 'bg-emerald-500/10 text-emerald-300'
+                        : 'bg-white/[0.03] text-slate-500'
                     }`}
                   >
-                    {p.model ? "live" : "fallback"}
+                    {p.model ? 'live' : 'fallback'}
                   </span>
                 </div>
                 {providerModelOpen[p.id] && (providerModels[p.id]?.length ?? 0) > 0 && (
@@ -975,8 +1001,8 @@ export default function SystemView() {
                         onClick={() => void pickProviderModel(p.id, m.id)}
                         className={`flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-[10px] ${
                           m.id === (modelDrafts[p.id] ?? p.model)
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "text-slate-300 hover:bg-white/[0.06]"
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'text-slate-300 hover:bg-white/[0.06]'
                         }`}
                       >
                         <span className="truncate">{m.id}</span>
@@ -991,11 +1017,17 @@ export default function SystemView() {
                   </p>
                 )}
                 <div className="mt-1 flex items-center gap-1.5 text-[10px]">
-                  <span className={`h-1.5 w-1.5 rounded-full ${state?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
-                  <span className={state?.ok ? "text-emerald-400" : "text-red-300"}>{statusLabel}</span>
-                  <span className="text-slate-500">{state ? `${state.latencyMs}ms` : "- ms"}</span>
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${state?.ok ? 'bg-emerald-400' : 'bg-red-400'}`}
+                  />
+                  <span className={state?.ok ? 'text-emerald-400' : 'text-red-300'}>
+                    {statusLabel}
+                  </span>
+                  <span className="text-slate-500">{state ? `${state.latencyMs}ms` : '- ms'}</span>
                   {entry?.alert && (
-                    <span className="rounded-md bg-red-500/15 px-1.5 py-0.5 text-red-300">alert</span>
+                    <span className="rounded-md bg-red-500/15 px-1.5 py-0.5 text-red-300">
+                      alert
+                    </span>
                   )}
                   <button
                     type="button"
@@ -1019,8 +1051,8 @@ export default function SystemView() {
                       data-stream-smoke-result
                       className={`rounded-md px-1.5 py-0.5 text-[9px] ${
                         streamSmoke[p.id].ok
-                          ? "bg-emerald-500/10 text-emerald-300"
-                          : "bg-rose-500/10 text-rose-300"
+                          ? 'bg-emerald-500/10 text-emerald-300'
+                          : 'bg-rose-500/10 text-rose-300'
                       }`}
                     >
                       {streamSmoke[p.id].message}
@@ -1081,7 +1113,12 @@ export default function SystemView() {
         </div>
       </BentoCard>
 
-      <BentoCard title="Sync snapshot" subtitle="剪贴板与日志跨设备同步" icon={CloudUpload} colSpan={12}>
+      <BentoCard
+        title="Sync snapshot"
+        subtitle="剪贴板与日志跨设备同步"
+        icon={CloudUpload}
+        colSpan={12}
+      >
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <label className="flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-400">
             <input
@@ -1107,11 +1144,11 @@ export default function SystemView() {
             data-sync-e2e-status
             className={
               syncEncryptEnabled && syncPassphrase.trim()
-                ? "rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300"
-                : "text-[9px] text-slate-600"
+                ? 'rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300'
+                : 'text-[9px] text-slate-600'
             }
           >
-            {syncEncryptEnabled && syncPassphrase.trim() ? "encrypted" : "plain"}
+            {syncEncryptEnabled && syncPassphrase.trim() ? 'encrypted' : 'plain'}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
@@ -1120,12 +1157,14 @@ export default function SystemView() {
           </span>
           <span>
             {lastSyncedAt
-              ? `last sync ${new Date(lastSyncedAt).toLocaleTimeString("zh-CN")}`
-              : "not synced yet"}
+              ? `last sync ${new Date(lastSyncedAt).toLocaleTimeString('zh-CN')}`
+              : 'not synced yet'}
           </span>
-          {lastRemoteDevice && <span className="text-slate-400">from {lastRemoteDevice.slice(0, 8)}</span>}
+          {lastRemoteDevice && (
+            <span className="text-slate-400">from {lastRemoteDevice.slice(0, 8)}</span>
+          )}
           {syncMessage && (
-            <span data-sync-message className={syncError ? "text-rose-400" : "text-emerald-400"}>
+            <span data-sync-message className={syncError ? 'text-rose-400' : 'text-emerald-400'}>
               {syncMessage}
             </span>
           )}
@@ -1163,7 +1202,7 @@ export default function SystemView() {
                 type="button"
                 data-batch-resolve="local"
                 aria-label="Resolve all conflicts keeping local"
-                onClick={() => void resolveAllConflicts("local")}
+                onClick={() => void resolveAllConflicts('local')}
                 className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
               >
                 Keep all local
@@ -1190,7 +1229,7 @@ export default function SystemView() {
                 type="button"
                 data-batch-resolve="remote"
                 aria-label="Resolve all conflicts keeping remote"
-                onClick={() => void resolveAllConflicts("remote")}
+                onClick={() => void resolveAllConflicts('remote')}
                 className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-400 hover:bg-emerald-500/25"
               >
                 Keep all remote
@@ -1212,7 +1251,7 @@ export default function SystemView() {
                   type="button"
                   data-resolve-choice="local"
                   aria-label={`Keep local conflict ${conflict.id}`}
-                  onClick={() => void resolveConflictItem(conflict, "local")}
+                  onClick={() => void resolveConflictItem(conflict, 'local')}
                   className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
                 >
                   Keep local
@@ -1221,7 +1260,7 @@ export default function SystemView() {
                   type="button"
                   data-resolve-choice="remote"
                   aria-label={`Keep remote conflict ${conflict.id}`}
-                  onClick={() => void resolveConflictItem(conflict, "remote")}
+                  onClick={() => void resolveConflictItem(conflict, 'remote')}
                   className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-400 hover:bg-emerald-500/25"
                 >
                   Keep remote
@@ -1257,7 +1296,7 @@ export default function SystemView() {
             className="flex h-7 items-center gap-1 rounded-lg accent-bg-15 px-2 text-[10px] accent-text-strong accent-hover-bg-25"
           >
             <History size={11} />
-            {showResolved ? "Hide resolved" : "Show resolved history"}
+            {showResolved ? 'Hide resolved' : 'Show resolved history'}
           </button>
           {showResolved && resolvedConflicts.length > 0 && (
             <button
@@ -1286,13 +1325,13 @@ export default function SystemView() {
                   {conflict.preview}
                 </span>
                 <span
-                  data-resolved-choice={conflict.resolvedChoice ?? ""}
+                  data-resolved-choice={conflict.resolvedChoice ?? ''}
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-300"
                 >
-                  {conflict.resolvedChoice ?? "unknown"}
+                  {conflict.resolvedChoice ?? 'unknown'}
                 </span>
                 <span className="text-[9px] text-slate-600">
-                  {conflict.resolvedAt ? formatTime(conflict.resolvedAt) : ""}
+                  {conflict.resolvedAt ? formatTime(conflict.resolvedAt) : ''}
                 </span>
               </div>
             ))}
@@ -1337,7 +1376,7 @@ export default function SystemView() {
               <option value="7d">Last 7 days</option>
               <option value="custom">Custom</option>
             </select>
-            {auditSince === "custom" && (
+            {auditSince === 'custom' && (
               <>
                 <input
                   type="date"
@@ -1371,7 +1410,7 @@ export default function SystemView() {
               type="button"
               aria-label="Export sync audit as JSON"
               data-sync-audit-export-json
-              onClick={() => void exportAudit("json")}
+              onClick={() => void exportAudit('json')}
               className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
             >
               JSON
@@ -1380,7 +1419,7 @@ export default function SystemView() {
               type="button"
               aria-label="Export sync audit as CSV"
               data-sync-audit-export-csv
-              onClick={() => void exportAudit("csv")}
+              onClick={() => void exportAudit('csv')}
               className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
             >
               CSV
@@ -1397,19 +1436,17 @@ export default function SystemView() {
           </div>
           <div className="mt-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-[9px] uppercase tracking-wide text-slate-600">
-                Activity
-              </span>
+              <span className="text-[9px] uppercase tracking-wide text-slate-600">Activity</span>
               <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
                 <button
                   type="button"
                   data-audit-granularity-day
-                  aria-pressed={auditGranularity === "day"}
-                  onClick={() => changeAuditGranularity("day")}
+                  aria-pressed={auditGranularity === 'day'}
+                  onClick={() => changeAuditGranularity('day')}
                   className={`h-5 rounded px-1.5 text-[9px] ${
-                    auditGranularity === "day"
-                      ? "accent-bg-15 accent-text-strong"
-                      : "text-slate-500 hover:text-slate-300"
+                    auditGranularity === 'day'
+                      ? 'accent-bg-15 accent-text-strong'
+                      : 'text-slate-500 hover:text-slate-300'
                   }`}
                 >
                   Day
@@ -1417,21 +1454,18 @@ export default function SystemView() {
                 <button
                   type="button"
                   data-audit-granularity-week
-                  aria-pressed={auditGranularity === "week"}
-                  onClick={() => changeAuditGranularity("week")}
+                  aria-pressed={auditGranularity === 'week'}
+                  onClick={() => changeAuditGranularity('week')}
                   className={`h-5 rounded px-1.5 text-[9px] ${
-                    auditGranularity === "week"
-                      ? "accent-bg-15 accent-text-strong"
-                      : "text-slate-500 hover:text-slate-300"
+                    auditGranularity === 'week'
+                      ? 'accent-bg-15 accent-text-strong'
+                      : 'text-slate-500 hover:text-slate-300'
                   }`}
                 >
                   Week
                 </button>
               </div>
-              <span
-                data-sync-audit-total
-                className="ml-auto shrink-0 text-[9px] text-slate-500"
-              >
+              <span data-sync-audit-total className="ml-auto shrink-0 text-[9px] text-slate-500">
                 {auditSummary?.total ?? 0} events
               </span>
             </div>
@@ -1444,10 +1478,7 @@ export default function SystemView() {
                 <div className="py-4 text-[9px] text-slate-600">No activity</div>
               )}
               {(auditSummary?.buckets ?? []).map((bucket) => {
-                const max = Math.max(
-                  1,
-                  ...(auditSummary?.buckets ?? []).map((b) => b.count),
-                );
+                const max = Math.max(1, ...(auditSummary?.buckets ?? []).map((b) => b.count));
                 const height = Math.max(4, Math.round((bucket.count / max) * 42));
                 return (
                   <div
@@ -1541,16 +1572,16 @@ export default function SystemView() {
           <button
             type="button"
             aria-label="Toggle auto sync"
-            data-auto-sync={autoSyncEnabled ? "on" : "off"}
+            data-auto-sync={autoSyncEnabled ? 'on' : 'off'}
             onClick={() => void toggleAutoSync()}
             className={`flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] ${
               autoSyncEnabled
-                ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
-                : "accent-bg-15 accent-text-strong accent-hover-bg-25"
+                ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                : 'accent-bg-15 accent-text-strong accent-hover-bg-25'
             }`}
           >
-            <RefreshCw size={12} className={autoSyncEnabled ? "animate-spin" : ""} />
-            {autoSyncEnabled ? "Auto sync on" : "Auto sync off"}
+            <RefreshCw size={12} className={autoSyncEnabled ? 'animate-spin' : ''} />
+            {autoSyncEnabled ? 'Auto sync on' : 'Auto sync off'}
           </button>
           <select
             aria-label="Auto sync interval"
@@ -1566,7 +1597,12 @@ export default function SystemView() {
         </div>
       </BentoCard>
 
-      <BentoCard title="Webhook delivery" subtitle="真实 HTTP JSON 投递" icon={Webhook} colSpan={12}>
+      <BentoCard
+        title="Webhook delivery"
+        subtitle="真实 HTTP JSON 投递"
+        icon={Webhook}
+        colSpan={12}
+      >
         <div className="flex flex-wrap items-center gap-2">
           <input
             value={webhookUrl}
@@ -1631,21 +1667,21 @@ export default function SystemView() {
             className="flex h-9 items-center gap-1.5 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Webhook size={14} />
-            {webhookBusy ? "Delivering..." : "Deliver"}
+            {webhookBusy ? 'Delivering...' : 'Deliver'}
           </button>
           {webhookResult && (
             <span
               data-webhook-result
               className={`max-w-full rounded-md px-2 py-1 text-[10px] ${
                 webhookResult.ok
-                  ? "bg-emerald-500/10 text-emerald-300"
-                  : "bg-rose-500/10 text-rose-300"
+                  ? 'bg-emerald-500/10 text-emerald-300'
+                  : 'bg-rose-500/10 text-rose-300'
               }`}
             >
-              {webhookResult.ok ? "OK" : "FAILED"} - HTTP {webhookResult.status || "-"} -{" "}
-              {webhookResult.durationMs}ms -{" "}
-              <span data-webhook-attempts>{webhookResult.attempts}</span> attempt(s) -{" "}
-              <span data-webhook-signed>{webhookResult.signed ? "signed" : "unsigned"}</span> -{" "}
+              {webhookResult.ok ? 'OK' : 'FAILED'} - HTTP {webhookResult.status || '-'} -{' '}
+              {webhookResult.durationMs}ms -{' '}
+              <span data-webhook-attempts>{webhookResult.attempts}</span> attempt(s) -{' '}
+              <span data-webhook-signed>{webhookResult.signed ? 'signed' : 'unsigned'}</span> -{' '}
               {webhookResult.message}
             </span>
           )}
@@ -1735,11 +1771,11 @@ export default function SystemView() {
                   data-webhook-rule-status
                   className={`rounded-md px-1.5 py-0.5 text-[9px] ${
                     rule.enabled
-                      ? "bg-emerald-500/10 text-emerald-300"
-                      : "bg-slate-500/10 text-slate-400"
+                      ? 'bg-emerald-500/10 text-emerald-300'
+                      : 'bg-slate-500/10 text-slate-400'
                   }`}
                 >
-                  {rule.enabled ? "on" : "off"} - HTTP {rule.lastStatus || "-"}
+                  {rule.enabled ? 'on' : 'off'} - HTTP {rule.lastStatus || '-'}
                 </span>
                 {rule.lastMessage && (
                   <span className="max-w-48 truncate text-[9px] text-slate-500">
@@ -1752,7 +1788,7 @@ export default function SystemView() {
                   onClick={() => void toggleWebhookRule(rule.id, !rule.enabled)}
                   className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
                 >
-                  {rule.enabled ? "Disable" : "Enable"}
+                  {rule.enabled ? 'Disable' : 'Enable'}
                 </button>
                 <button
                   type="button"
@@ -1775,7 +1811,7 @@ export default function SystemView() {
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
             <span className="text-[9px] text-slate-500">Event triggers</span>
-            {["sync.completed", "knowledge.indexed", "clipboard.captured", "error.reported"].map(
+            {['sync.completed', 'knowledge.indexed', 'clipboard.captured', 'error.reported'].map(
               (event) => (
                 <button
                   key={event}
@@ -1835,17 +1871,17 @@ export default function SystemView() {
                 <span
                   data-webhook-delivery-status
                   className={`rounded-md px-1.5 py-0.5 text-[9px] ${
-                    delivery.status === "success"
-                      ? "bg-emerald-500/10 text-emerald-300"
-                      : delivery.status === "dead"
-                        ? "bg-rose-500/10 text-rose-300"
-                        : "bg-sky-500/10 text-sky-300"
+                    delivery.status === 'success'
+                      ? 'bg-emerald-500/10 text-emerald-300'
+                      : delivery.status === 'dead'
+                        ? 'bg-rose-500/10 text-rose-300'
+                        : 'bg-sky-500/10 text-sky-300'
                   }`}
                 >
                   {delivery.status}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
-                  {delivery.event || "interval"} · {delivery.method} {delivery.url}
+                  {delivery.event || 'interval'} · {delivery.method} {delivery.url}
                 </span>
                 {delivery.payload && (
                   <span
@@ -1920,7 +1956,9 @@ export default function SystemView() {
                         <span className="shrink-0 text-slate-600">{a.role}</span>
                       </div>
                       {a.systemPrompt && (
-                        <p className="mt-0.5 truncate px-2 text-[9px] text-violet-400/70">{a.systemPrompt}</p>
+                        <p className="mt-0.5 truncate px-2 text-[9px] text-violet-400/70">
+                          {a.systemPrompt}
+                        </p>
                       )}
                       {promptEditAgentId === a.id && (
                         <div className="agent-prompt-editor mt-1 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
@@ -1945,7 +1983,7 @@ export default function SystemView() {
                               aria-label="Cancel agent prompt"
                               onClick={() => {
                                 setPromptEditAgentId(null);
-                                setPromptDraft("");
+                                setPromptDraft('');
                               }}
                               className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
                             >
@@ -1963,16 +2001,20 @@ export default function SystemView() {
                           {versionOpenAgentId === a.id && (
                             <div className="prompt-version-list mt-1.5 space-y-1">
                               {promptVersions.length === 0 && (
-                                <div className="px-1 text-[9px] text-slate-600">No versions yet</div>
+                                <div className="px-1 text-[9px] text-slate-600">
+                                  No versions yet
+                                </div>
                               )}
                               {promptVersions.map((v, index) => (
                                 <div
                                   key={v.id}
                                   className="flex items-start gap-1.5 rounded-md bg-black/20 px-1.5 py-1"
                                 >
-                                  <span className="shrink-0 text-[9px] text-slate-500">v{index + 1}</span>
+                                  <span className="shrink-0 text-[9px] text-slate-500">
+                                    v{index + 1}
+                                  </span>
                                   <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
-                                    {v.content || "(empty)"}
+                                    {v.content || '(empty)'}
                                   </span>
                                   <button
                                     type="button"
@@ -2011,7 +2053,7 @@ export default function SystemView() {
             value={agentName}
             onChange={(e) => setAgentName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void createAgentItem();
+              if (e.key === 'Enter') void createAgentItem();
             }}
             placeholder="Agent name"
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
@@ -2020,7 +2062,7 @@ export default function SystemView() {
             value={agentRole}
             onChange={(e) => setAgentRole(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void createAgentItem();
+              if (e.key === 'Enter') void createAgentItem();
             }}
             placeholder="Role"
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
@@ -2057,13 +2099,17 @@ export default function SystemView() {
                 </div>
               </div>
             ))}
-            {clipboard.length === 0 && <div className="py-8 text-center text-xs text-slate-600">Empty</div>}
+            {clipboard.length === 0 && (
+              <div className="py-8 text-center text-xs text-slate-600">Empty</div>
+            )}
           </div>
         </BentoCard>
         <BentoCard title="Error logs" subtitle="前端与 Rust 实时诊断" icon={Terminal} colSpan={6}>
           <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-500">
-            <span className={`health-dot h-1.5 w-1.5 rounded-full ${logs.some((l) => l.severity === "error") ? "bg-red-400" : "bg-emerald-400"}`} />
-            <span>{logs.some((l) => l.severity === "error") ? "has errors" : "healthy"}</span>
+            <span
+              className={`health-dot h-1.5 w-1.5 rounded-full ${logs.some((l) => l.severity === 'error') ? 'bg-red-400' : 'bg-emerald-400'}`}
+            />
+            <span>{logs.some((l) => l.severity === 'error') ? 'has errors' : 'healthy'}</span>
             <span className="ml-auto">{visibleLogs.length} entries</span>
           </div>
           <div className="mb-2 flex items-center gap-1.5">
@@ -2071,12 +2117,12 @@ export default function SystemView() {
               <button
                 type="button"
                 data-error-granularity-day
-                aria-pressed={errorLogGranularity === "day"}
-                onClick={() => changeErrorLogGranularity("day")}
+                aria-pressed={errorLogGranularity === 'day'}
+                onClick={() => changeErrorLogGranularity('day')}
                 className={`h-5 rounded px-1.5 text-[9px] ${
-                  errorLogGranularity === "day"
-                    ? "accent-bg-15 accent-text-strong"
-                    : "text-slate-500 hover:text-slate-300"
+                  errorLogGranularity === 'day'
+                    ? 'accent-bg-15 accent-text-strong'
+                    : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
                 Day
@@ -2084,12 +2130,12 @@ export default function SystemView() {
               <button
                 type="button"
                 data-error-granularity-week
-                aria-pressed={errorLogGranularity === "week"}
-                onClick={() => changeErrorLogGranularity("week")}
+                aria-pressed={errorLogGranularity === 'week'}
+                onClick={() => changeErrorLogGranularity('week')}
                 className={`h-5 rounded px-1.5 text-[9px] ${
-                  errorLogGranularity === "week"
-                    ? "accent-bg-15 accent-text-strong"
-                    : "text-slate-500 hover:text-slate-300"
+                  errorLogGranularity === 'week'
+                    ? 'accent-bg-15 accent-text-strong'
+                    : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
                 Week
@@ -2131,17 +2177,14 @@ export default function SystemView() {
               <option value="all">All devices</option>
               <option value="current">current</option>
               {errorDevices
-                .filter((device) => device !== deviceId && device !== "unknown")
+                .filter((device) => device !== deviceId && device !== 'unknown')
                 .map((device) => (
                   <option key={device} value={device}>
                     {device.slice(0, 12)}
                   </option>
                 ))}
             </select>
-            <span
-              data-error-log-total
-              className="ml-auto shrink-0 text-[9px] text-slate-500"
-            >
+            <span data-error-log-total className="ml-auto shrink-0 text-[9px] text-slate-500">
               {errorLogSummary?.total ?? 0} logs
             </span>
           </div>
@@ -2154,10 +2197,7 @@ export default function SystemView() {
               <div className="py-4 text-[9px] text-slate-600">No errors</div>
             )}
             {(errorLogSummary?.buckets ?? []).map((bucket) => {
-              const max = Math.max(
-                1,
-                ...(errorLogSummary?.buckets ?? []).map((b) => b.count),
-              );
+              const max = Math.max(1, ...(errorLogSummary?.buckets ?? []).map((b) => b.count));
               const height = Math.max(4, Math.round((bucket.count / max) * 42));
               return (
                 <div
@@ -2206,22 +2246,32 @@ export default function SystemView() {
               <div
                 key={l.id}
                 data-error-log-source={l.source}
-                data-error-log-device={l.deviceId || "unknown"}
+                data-error-log-device={l.deviceId || 'unknown'}
                 className="message-in rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2"
               >
                 <div className="flex items-center gap-2 text-[11px] text-red-300">
                   <span className="font-medium">{l.source}</span>
                   <span className="text-[9px] text-red-400/70">
-                    {(l.deviceId || "unknown").slice(0, 12)}
+                    {(l.deviceId || 'unknown').slice(0, 12)}
                   </span>
                   <span className="text-[9px] uppercase text-red-400/70">{l.severity}</span>
-                  <span className="ml-auto text-[10px] text-red-400/60">{formatTime(l.timestamp)}</span>
+                  <span className="ml-auto text-[10px] text-red-400/60">
+                    {formatTime(l.timestamp)}
+                  </span>
                 </div>
-                <p className="mt-1 break-words text-[11px] leading-relaxed text-red-200/80">{l.message}</p>
-                {l.stack && <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-red-300/60">{l.stack}</pre>}
+                <p className="mt-1 break-words text-[11px] leading-relaxed text-red-200/80">
+                  {l.message}
+                </p>
+                {l.stack && (
+                  <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-red-300/60">
+                    {l.stack}
+                  </pre>
+                )}
               </div>
             ))}
-            {logs.length === 0 && <div className="py-8 text-center text-xs text-slate-600">No logs</div>}
+            {logs.length === 0 && (
+              <div className="py-8 text-center text-xs text-slate-600">No logs</div>
+            )}
           </div>
         </BentoCard>
       </div>

@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 102
+
+### What went well?
+
+- 前端质量门禁落地：ESLint flat config + TypeScript/React rules，Prettier 覆盖 55 个代码/配置文件，`husky` pre-commit 通过 `lint-staged` 自动 fix 与格式化。
+- 六个 `react-hooks/exhaustive-deps` warning 清零：Knowledge 加载函数与自动巡检用 `useCallback`，System 定时器用 ref 持有最新闭包，Projects 补 `projects` 依赖。
+- `npm run lint` 0 errors / 0 warnings，`npx prettier --check .` 全绿；build、Rust 114 单测、fmt、clippy、`verify:preview` 全绿。
+
+### What went wrong?
+
+- Prettier 首轮批量写入后 `ChatView.tsx` 仍有一处未对齐，单独重写一次后 check 才全绿；以后格式验收以 `prettier --check` 为准。
+- React Hooks v7 新增的四条激进规则会改变现有实现语义，关闭后保留 `exhaustive-deps` 逐个手修。
+
+### Action Items
+
+- 后续提交必须通过 husky/lint-staged；改动 UI、hooks 或验证脚本后重跑 `npm run lint` 与 `verify:preview`。
+- 下一 Sprint 候选：会话搜索模糊匹配、MOA 共识摘要、Provider 权重 / 路由排序。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 101
 
 ### What went well?

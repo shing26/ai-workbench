@@ -61,7 +61,7 @@ AC 3：样式严格使用 Design Token（bg-[#18181C] border-white/10）。
 
 ### Lint 与 Format Hooks
 
-- 前端：ESLint + Prettier，`husky` + `lint-staged` 在 commit 时自动格式化。
+- 前端：ESLint + Prettier，`husky` + `lint-staged` 在 commit 时自动格式化。Sprint 102 已落地：`npm run lint` 0 errors / 0 warnings，`npx prettier --check .` 全绿。
 - Rust 后台：`cargo fmt` + `cargo clippy`。
 
 ## 阶段四：质量审查与 DoD 验收

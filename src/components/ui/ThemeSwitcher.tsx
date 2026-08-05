@@ -1,20 +1,20 @@
-import { Palette } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { ACCENTS, THEMES, watchSystemTheme } from "../../lib/theme";
-import { useThemeStore } from "../../stores/themeStore";
+import { Palette } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ACCENTS, THEMES, watchSystemTheme } from '../../lib/theme';
+import { useThemeStore } from '../../stores/themeStore';
 
 const ACCENT_LABELS: Record<string, string> = {
-  emerald: "翡翠",
-  ocean: "静海",
-  iris: "鸢尾",
-  amber: "琥珀",
-  sakura: "绯樱",
+  emerald: '翡翠',
+  ocean: '静海',
+  iris: '鸢尾',
+  amber: '琥珀',
+  sakura: '绯樱',
 };
 
 const THEME_LABELS: Record<string, string> = {
-  dark: "Dark",
-  light: "Light",
-  system: "System",
+  dark: 'Dark',
+  light: 'Light',
+  system: 'System',
 };
 
 export default function ThemeSwitcher() {
@@ -28,8 +28,8 @@ export default function ThemeSwitcher() {
 
   useEffect(() => {
     return watchSystemTheme(() => {
-      if (useThemeStore.getState().theme === "system") {
-        useThemeStore.getState().setTheme("system");
+      if (useThemeStore.getState().theme === 'system') {
+        useThemeStore.getState().setTheme('system');
       }
     });
   }, []);
@@ -37,7 +37,7 @@ export default function ThemeSwitcher() {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === 'Escape') {
         setOpen(false);
         buttonRef.current?.focus();
       }
@@ -45,11 +45,11 @@ export default function ThemeSwitcher() {
     const onPointerDown = (event: PointerEvent) => {
       if (!panelRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', onPointerDown);
     return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onPointerDown);
     };
   }, [open]);
 
@@ -84,8 +84,8 @@ export default function ThemeSwitcher() {
                 onClick={() => setTheme(value)}
                 className={`theme-segment flex-1 rounded-lg px-2 py-1.5 text-[11px] ${
                   theme === value
-                    ? "bg-emerald-500/20 text-emerald-400"
-                    : "text-slate-500 hover:text-slate-300"
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
                 {THEME_LABELS[value]}
@@ -105,8 +105,8 @@ export default function ThemeSwitcher() {
                 onClick={() => setAccent(value)}
                 className={`accent-swatch flex h-9 items-center justify-center rounded-lg border text-[10px] ${
                   accent === value
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
-                    : "border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300"
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                    : 'border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300'
                 }`}
               >
                 {ACCENT_LABELS[value]}

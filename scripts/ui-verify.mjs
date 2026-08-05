@@ -1,74 +1,78 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import http from "node:http";
-import os from "node:os";
-import path from "node:path";
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-const APP_URL = process.env.AIWB_APP_URL || "http://localhost:1420";
-const OUT_DIR = "D:/ai-workbench/.screenshots";
-const SHOT_PREFIX = process.env.AIWB_SHOT_PREFIX || "sprint1";
+const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+const APP_URL = process.env.AIWB_APP_URL || 'http://localhost:1420';
+const OUT_DIR = 'D:/ai-workbench/.screenshots';
+const SHOT_PREFIX = process.env.AIWB_SHOT_PREFIX || 'sprint1';
 const APP_HOST = new URL(APP_URL).host;
 const VIEWS = [
-  { id: "ai-studio", label: "AI Studio", header: "AI Studio" },
-  { id: "projects", label: "Projects", header: "Projects" },
-  { id: "knowledge", label: "Knowledge", header: "Knowledge & Inbox" },
-  { id: "actions", label: "Actions", header: "Actions & Schedule" },
-  { id: "system", label: "System", header: "System & Automation" },
+  { id: 'ai-studio', label: 'AI Studio', header: 'AI Studio' },
+  { id: 'projects', label: 'Projects', header: 'Projects' },
+  { id: 'knowledge', label: 'Knowledge', header: 'Knowledge & Inbox' },
+  { id: 'actions', label: 'Actions', header: 'Actions & Schedule' },
+  { id: 'system', label: 'System', header: 'System & Automation' },
 ];
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-cdp-"));
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'aiwb-cdp-'));
 const edge = spawn(
   EDGE,
   [
-    "--headless=new",
-    "--disable-gpu",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--remote-debugging-port=0",
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--remote-debugging-port=0',
     `--user-data-dir=${profile}`,
     APP_URL,
   ],
-  { windowsHide: true, stdio: "ignore" },
+  { windowsHide: true, stdio: 'ignore' },
 );
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = { views: [], tokens: {}, persistence: {}, overlay: {} };
 
 function durationSeconds(value) {
-  const parts = String(value || "").split(",").map((s) => s.trim());
+  const parts = String(value || '')
+    .split(',')
+    .map((s) => s.trim());
   const nums = parts.map((part) => {
-    if (part.endsWith("ms")) return Number(part.slice(0, -2)) / 1000;
-    if (part.endsWith("s")) return Number(part.slice(0, -1));
+    if (part.endsWith('ms')) return Number(part.slice(0, -2)) / 1000;
+    if (part.endsWith('s')) return Number(part.slice(0, -1));
     return 0;
   });
   return Math.max(0, ...nums);
 }
 
 async function waitForDevToolsPort() {
-  const portFile = path.join(profile, "DevToolsActivePort");
+  const portFile = path.join(profile, 'DevToolsActivePort');
   for (let i = 0; i < 60; i++) {
     if (fs.existsSync(portFile)) {
-      const [port] = fs.readFileSync(portFile, "utf8").trim().split(/\r?\n/);
+      const [port] = fs.readFileSync(portFile, 'utf8').trim().split(/\r?\n/);
       return Number(port);
     }
     await delay(250);
   }
-  throw new Error("Edge DevTools port file not created");
+  throw new Error('Edge DevTools port file not created');
 }
 
 async function getPageTarget(port) {
   for (let i = 0; i < 60; i++) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = list.find((t) => t.type === "page" && t.url.includes(APP_HOST));
+      const page = list.find((t) => t.type === 'page' && t.url.includes(APP_HOST));
       if (page) return page;
-    } catch {}
+    } catch {
+      /* retry until target appears */
+    }
     await delay(250);
   }
-  throw new Error("page target not found");
+  throw new Error('page target not found');
 }
 
 let ws;
@@ -88,15 +92,16 @@ function send(method, params = {}) {
 }
 
 async function evaluate(expression) {
-  const result = await send("Runtime.evaluate", {
+  const result = await send('Runtime.evaluate', {
     expression,
     returnByValue: true,
     awaitPromise: true,
   });
   if (result.exceptionDetails) {
-    const details = result.exceptionDetails.exception?.description
-      ?? result.exceptionDetails.exception?.value
-      ?? JSON.stringify(result.exceptionDetails);
+    const details =
+      result.exceptionDetails.exception?.description ??
+      result.exceptionDetails.exception?.value ??
+      JSON.stringify(result.exceptionDetails);
     throw new Error(`evaluate failed: ${details}`);
   }
   return result.result.value;
@@ -107,7 +112,7 @@ async function connect(port) {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;
-    ws.onerror = () => reject(new Error("CDP websocket error"));
+    ws.onerror = () => reject(new Error('CDP websocket error'));
   });
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
@@ -119,39 +124,45 @@ async function connect(port) {
       else resolve(msg.result);
     }
   };
-  await send("Page.enable");
-  await send("Runtime.enable");
+  await send('Page.enable');
+  await send('Runtime.enable');
 }
 
 async function waitForApp() {
   for (let i = 0; i < 80; i++) {
     try {
-      const ready = await evaluate(`document.querySelectorAll('nav button[aria-label]').length >= 5`);
+      const ready = await evaluate(
+        `document.querySelectorAll('nav button[aria-label]').length >= 5`,
+      );
       if (ready) return;
-    } catch {}
+    } catch {
+      /* tolerate transient context switches */
+    }
     await delay(250);
   }
-  throw new Error("app shell did not render 5 dock buttons");
+  throw new Error('app shell did not render 5 dock buttons');
 }
 
 async function reloadAndWait() {
   const marker = `v=${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const url = `${APP_URL}${APP_URL.includes("?") ? "&" : "?"}${marker}`;
-  await send("Page.navigate", { url });
+  const url = `${APP_URL}${APP_URL.includes('?') ? '&' : '?'}${marker}`;
+  await send('Page.navigate', { url });
   for (let i = 0; i < 80; i++) {
     try {
       const ready = await evaluate(
         `location.href.includes(${JSON.stringify(marker)}) && document.readyState === "complete" && document.querySelectorAll('nav button[aria-label]').length >= 5`,
       );
       if (ready) return;
-    } catch {}
+    } catch {
+      /* tolerate transient context switches */
+    }
     await delay(250);
   }
-  throw new Error("app shell did not render after reload");
+  throw new Error('app shell did not render after reload');
 }
 
 async function setViewport(width, height) {
-  await send("Emulation.setDeviceMetricsOverride", {
+  await send('Emulation.setDeviceMetricsOverride', {
     width,
     height,
     deviceScaleFactor: 1,
@@ -160,9 +171,12 @@ async function setViewport(width, height) {
 }
 
 async function capture(name) {
-  const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  const shot = await send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: false,
+  });
   const out = path.join(OUT_DIR, name);
-  fs.writeFileSync(out, Buffer.from(shot.data, "base64"));
+  fs.writeFileSync(out, Buffer.from(shot.data, 'base64'));
   return out;
 }
 
@@ -252,7 +266,7 @@ try {
     };
   })()`);
 
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   results.uiDynamics = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const click = (selector) => {
@@ -295,7 +309,11 @@ try {
       stageStreamingOff: stage ? stage.dataset.streaming === "false" : false,
     };
   })()`);
-  if (!results.uiDynamics.ok || !results.uiDynamics.stagePresent || !results.uiDynamics.composerPresent) {
+  if (
+    !results.uiDynamics.ok ||
+    !results.uiDynamics.stagePresent ||
+    !results.uiDynamics.composerPresent
+  ) {
     throw new Error(`UI theme/stage assertion failed: ${JSON.stringify(results.uiDynamics)}`);
   }
 
@@ -312,15 +330,19 @@ try {
     return { ok: false, options: select?.options.length ?? 0 };
   })()`);
   if (!results.uiDynamics.agentSelect.ok) {
-    throw new Error(`AI Studio agent selector assertion failed: ${JSON.stringify(results.uiDynamics.agentSelect)}`);
+    throw new Error(
+      `AI Studio agent selector assertion failed: ${JSON.stringify(results.uiDynamics.agentSelect)}`,
+    );
   }
 
-  await send("Emulation.setEmulatedMedia", {
-    features: [{ name: "prefers-color-scheme", value: "light" }],
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-color-scheme', value: 'light' }],
   });
   await delay(200);
-  const systemResolved = await evaluate(`document.documentElement.dataset.themeResolved === "light"`);
-  await send("Emulation.setEmulatedMedia", { features: [] });
+  const systemResolved = await evaluate(
+    `document.documentElement.dataset.themeResolved === "light"`,
+  );
+  await send('Emulation.setEmulatedMedia', { features: [] });
   const restored = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     document.querySelector('[data-theme-option="dark"]')?.click();
@@ -332,10 +354,12 @@ try {
     return document.documentElement.dataset.theme === "dark" && document.documentElement.dataset.accent === "emerald";
   })()`);
   if (!systemResolved || !restored) {
-    throw new Error(`UI system theme assertion failed: systemResolved=${systemResolved} restored=${restored}`);
+    throw new Error(
+      `UI system theme assertion failed: systemResolved=${systemResolved} restored=${restored}`,
+    );
   }
 
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   results.accentTokens = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let btn = null;
@@ -433,7 +457,7 @@ try {
     throw new Error(`Material drawer assertion failed: ${JSON.stringify(results.materialDrawer)}`);
   }
 
-  await clickDock("Actions");
+  await clickDock('Actions');
   results.uiDynamics.material = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const card = document.querySelector(".material-card[data-material]");
@@ -460,7 +484,7 @@ try {
     throw new Error(`UI material assertion failed: ${JSON.stringify(results.uiDynamics.material)}`);
   }
 
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   results.quickPrompts = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chips = [...document.querySelectorAll("[data-quick-prompt]")];
@@ -526,10 +550,12 @@ try {
     return { ok: storedOk && filled && chipCategory === "work", stored, filled, chipCategory };
   })()`);
   if (!results.quickPromptManager.ok) {
-    throw new Error(`Quick prompt manager assertion failed: ${JSON.stringify(results.quickPromptManager)}`);
+    throw new Error(
+      `Quick prompt manager assertion failed: ${JSON.stringify(results.quickPromptManager)}`,
+    );
   }
   await reloadAndWait();
-  await clickDockFast("AI Studio");
+  await clickDockFast('AI Studio');
   results.quickPromptPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const persisted = [...document.querySelectorAll("[data-quick-prompt]")].some(
@@ -551,14 +577,16 @@ try {
     return { ok: persisted && gone && storedGone, persisted, gone, storedGone };
   })()`);
   if (!results.quickPromptPersist.ok) {
-    throw new Error(`Quick prompt persistence assertion failed: ${JSON.stringify(results.quickPromptPersist)}`);
+    throw new Error(
+      `Quick prompt persistence assertion failed: ${JSON.stringify(results.quickPromptPersist)}`,
+    );
   }
   await evaluate(`(async () => {
     localStorage.removeItem("ai-workbench:quick-prompt-usage:v1");
     return { ok: true };
   })()`);
   await reloadAndWait();
-  await clickDockFast("AI Studio");
+  await clickDockFast('AI Studio');
   results.quickPromptUsage = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
@@ -601,10 +629,12 @@ try {
     };
   })()`);
   if (!results.quickPromptUsage.ok) {
-    throw new Error(`Quick prompt usage assertion failed: ${JSON.stringify(results.quickPromptUsage)}`);
+    throw new Error(
+      `Quick prompt usage assertion failed: ${JSON.stringify(results.quickPromptUsage)}`,
+    );
   }
   await reloadAndWait();
-  await clickDockFast("AI Studio");
+  await clickDockFast('AI Studio');
   results.quickPromptUsagePersist = await evaluate(`(async () => {
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
     const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
@@ -622,7 +652,7 @@ try {
     );
   }
 
-  await clickDock("System");
+  await clickDock('System');
   results.quickPromptSync = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const remote = {
@@ -662,9 +692,11 @@ try {
     return { ok: imported, imported };
   })()`);
   if (!results.quickPromptSync.ok) {
-    throw new Error(`Quick prompt sync merge assertion failed: ${JSON.stringify(results.quickPromptSync)}`);
+    throw new Error(
+      `Quick prompt sync merge assertion failed: ${JSON.stringify(results.quickPromptSync)}`,
+    );
   }
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   results.quickPromptSyncVisible = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let chips = [];
@@ -694,7 +726,7 @@ try {
     );
   }
   await reloadAndWait();
-  await clickDockFast("AI Studio");
+  await clickDockFast('AI Studio');
   results.quickPromptSyncPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let chips = [];
@@ -806,7 +838,7 @@ try {
     );
   }
   await reloadAndWait();
-  await clickDockFast("AI Studio");
+  await clickDockFast('AI Studio');
   results.quickPromptEditSortPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let chips = [];
@@ -975,7 +1007,7 @@ try {
   if (!results.aiRecapSave.ok) {
     throw new Error(`AI recap save assertion failed: ${JSON.stringify(results.aiRecapSave)}`);
   }
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   results.aiRecapKnowledgeVisible = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
@@ -992,8 +1024,10 @@ try {
       `AI recap knowledge visibility assertion failed: ${JSON.stringify(results.aiRecapKnowledgeVisible)}`,
     );
   }
-  await clickDock("AI Studio");
-  await evaluate(`[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`);
+  await clickDock('AI Studio');
+  await evaluate(
+    `[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`,
+  );
   await delay(200);
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
@@ -1034,17 +1068,20 @@ try {
     };
   })()`);
   if (!streamStarted.ok || !streamStarted.earlyCaret || !streamStarted.replyVisible) {
-    throw new Error("AI Studio streaming assertion failed");
+    throw new Error('AI Studio streaming assertion failed');
   }
-  if (!streamStarted.ragBadge.includes("RAG +") || !streamStarted.inspectorText.toLowerCase().includes("rag context")) {
+  if (
+    !streamStarted.ragBadge.includes('RAG +') ||
+    !streamStarted.inspectorText.toLowerCase().includes('rag context')
+  ) {
     throw new Error(
       `AI Studio RAG injection assertion failed: badge=${JSON.stringify(streamStarted.ragBadge)} inspector=${JSON.stringify(streamStarted.inspectorText.slice(0, 160))}`,
     );
   }
   if (
-    !streamStarted.inspectorText.toLowerCase().includes("department") ||
-    !streamStarted.inspectorText.includes("UI Designer") ||
-    !streamStarted.inspectorText.includes("设计部")
+    !streamStarted.inspectorText.toLowerCase().includes('department') ||
+    !streamStarted.inspectorText.includes('UI Designer') ||
+    !streamStarted.inspectorText.includes('设计部')
   ) {
     throw new Error(
       `AI Studio agent trace assertion failed: ${JSON.stringify(streamStarted.inspectorText.slice(0, 220))}`,
@@ -1130,9 +1167,7 @@ try {
     };
   })()`);
   if (!ragConfirmSend.ok) {
-    throw new Error(
-      `RAG confirm send assertion failed: ${JSON.stringify(ragConfirmSend)}`,
-    );
+    throw new Error(`RAG confirm send assertion failed: ${JSON.stringify(ragConfirmSend)}`);
   }
   results.ragConfirmSend = ragConfirmSend;
 
@@ -1258,12 +1293,16 @@ try {
     !results.teamDispatch.hasAgents ||
     !results.teamDispatch.summaryOk
   ) {
-    throw new Error(`AI Studio team dispatch assertion failed: ${JSON.stringify(results.teamDispatch)}`);
+    throw new Error(
+      `AI Studio team dispatch assertion failed: ${JSON.stringify(results.teamDispatch)}`,
+    );
   }
-  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click(); [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Single")?.click();`);
+  await evaluate(
+    `document.querySelector('aside button[aria-label="Close inspector"]')?.click(); [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Single")?.click();`,
+  );
   await delay(250);
 
-  await clickDock("Projects");
+  await clickDock('Projects');
   results.projectCarousel = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let carousel = null;
@@ -1310,10 +1349,12 @@ try {
     };
   })()`);
   if (!results.projectCarousel.ok) {
-    throw new Error(`Project carousel assertion failed: ${JSON.stringify(results.projectCarousel)}`);
+    throw new Error(
+      `Project carousel assertion failed: ${JSON.stringify(results.projectCarousel)}`,
+    );
   }
-  await send("Emulation.setEmulatedMedia", {
-    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
   });
   await delay(200);
   results.projectCarouselReduced = await evaluate(`(() => {
@@ -1323,10 +1364,10 @@ try {
     const playState = playBtn?.getAttribute("aria-pressed") ?? "";
     return { transition, playState };
   })()`);
-  await send("Emulation.setEmulatedMedia", { features: [] });
+  await send('Emulation.setEmulatedMedia', { features: [] });
   results.projectCarouselReduced.ok =
     durationSeconds(results.projectCarouselReduced.transition) <= 0.02 &&
-    results.projectCarouselReduced.playState === "false";
+    results.projectCarouselReduced.playState === 'false';
   if (!results.projectCarouselReduced.ok) {
     throw new Error(
       `Project carousel reduced motion assertion failed: ${JSON.stringify(results.projectCarouselReduced)}`,
@@ -1445,7 +1486,9 @@ try {
     return { ok, initialRows, committerOptions, after24h, after24hTotal, after24hCommits, afterAll, afterAlice, aliceRows };
   })()`);
   if (!results.gitActivityFilters.ok) {
-    throw new Error(`Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`);
+    throw new Error(
+      `Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`,
+    );
   }
   results.gitDirtyPreview = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1488,7 +1531,9 @@ try {
     return { ok: false, reason: "no dirty project row" };
   })()`);
   if (!results.gitDirtyPreview.ok) {
-    throw new Error(`Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`);
+    throw new Error(
+      `Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`,
+    );
   }
   results.gitStagedUnstaged = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1563,7 +1608,9 @@ try {
     return { ok: false, reason: "no dirty project row" };
   })()`);
   if (!results.gitStagedUnstaged.ok) {
-    throw new Error(`Git staged/unstaged grouping assertion failed: ${JSON.stringify(results.gitStagedUnstaged)}`);
+    throw new Error(
+      `Git staged/unstaged grouping assertion failed: ${JSON.stringify(results.gitStagedUnstaged)}`,
+    );
   }
   results.gitDirtyDiff = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1718,7 +1765,9 @@ try {
     return { ok: false, reason: "no dirty project row" };
   })()`);
   if (!results.gitBatchPreview.ok) {
-    throw new Error(`Git batch preview assertion failed: ${JSON.stringify(results.gitBatchPreview)}`);
+    throw new Error(
+      `Git batch preview assertion failed: ${JSON.stringify(results.gitBatchPreview)}`,
+    );
   }
   results.gitCommitSelected = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1768,7 +1817,9 @@ try {
     return { ok: false, reason: "no dirty project row" };
   })()`);
   if (!results.gitCommitSelected.ok) {
-    throw new Error(`Git commit selected assertion failed: ${JSON.stringify(results.gitCommitSelected)}`);
+    throw new Error(
+      `Git commit selected assertion failed: ${JSON.stringify(results.gitCommitSelected)}`,
+    );
   }
   results.gitCommitLintGate = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1822,7 +1873,9 @@ try {
     return { ok: false, reason: "no dirty project row" };
   })()`);
   if (!results.gitCommitLintGate.ok) {
-    throw new Error(`Git commit lint gate assertion failed: ${JSON.stringify(results.gitCommitLintGate)}`);
+    throw new Error(
+      `Git commit lint gate assertion failed: ${JSON.stringify(results.gitCommitLintGate)}`,
+    );
   }
   results.gitCommitTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1889,7 +1942,9 @@ try {
     return { ok: conflicted && resolved, conflicted, resolved };
   })()`);
   if (!results.rebaseResolve.ok) {
-    throw new Error(`rebase conflict resolution assertion failed: ${JSON.stringify(results.rebaseResolve)}`);
+    throw new Error(
+      `rebase conflict resolution assertion failed: ${JSON.stringify(results.rebaseResolve)}`,
+    );
   }
   results.commitPrDraft = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1956,14 +2011,16 @@ try {
   if (!results.remotePr.ok) {
     throw new Error(`Remote PR assertion failed: ${JSON.stringify(results.remotePr)}`);
   }
-  const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
+  const widthBefore = await evaluate(
+    `document.querySelector('main').getBoundingClientRect().width`,
+  );
   const inspectorOpened = await evaluate(`(() => {
     const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");
     if (!btn) return false;
     btn.click();
     return true;
   })()`);
-  if (!inspectorOpened) throw new Error("AI Coding button missing for inspector layout check");
+  if (!inspectorOpened) throw new Error('AI Coding button missing for inspector layout check');
   await delay(300);
   const inspectorInfo = await evaluate(`(() => {
     const aside = document.querySelector('aside.drawer-panel');
@@ -1976,15 +2033,17 @@ try {
   })()`);
   await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
   await delay(250);
-  const widthAfterClose = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
+  const widthAfterClose = await evaluate(
+    `document.querySelector('main').getBoundingClientRect().width`,
+  );
   const layoutStable =
     widthBefore === inspectorInfo.mainWidth &&
     widthAfterClose === inspectorInfo.mainWidth &&
-    inspectorInfo.asideWidth === "240px";
+    inspectorInfo.asideWidth === '240px';
   results.motion.inspector = { widthBefore, inspectorInfo, widthAfterClose, layoutStable };
 
-  await send("Emulation.setEmulatedMedia", {
-    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
   });
   await delay(150);
   results.motion.reducedMotion = await evaluate(`(async () => {
@@ -2003,7 +2062,7 @@ try {
       tiltTransform,
     };
   })()`);
-  await send("Emulation.setEmulatedMedia", { features: [] });
+  await send('Emulation.setEmulatedMedia', { features: [] });
 
   const maxNav = durationSeconds(results.motion.navTransitionDuration);
   const maxView = durationSeconds(results.motion.viewAnimationDuration);
@@ -2019,12 +2078,12 @@ try {
     reducedView <= 0.02 &&
     reducedDock <= 0.02 &&
     reducedMaterial <= 0.02 &&
-    reducedTilt === "none";
+    reducedTilt === 'none';
   if (!results.motion.pass) {
     throw new Error(`UI motion DoD assertion failed: ${JSON.stringify(results.motion)}`);
   }
 
-  await clickDock("Actions");
+  await clickDock('Actions');
   const created = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="New task..."]');
     if (!input) return { ok: false, reason: "no task input" };
@@ -2096,7 +2155,7 @@ try {
   })()`);
   results.actions = { habitToggle, sections: actionsSections };
   await reloadAndWait();
-  await clickDock("Actions");
+  await clickDock('Actions');
   const afterReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
   const habitPersisted = await evaluate(`(() => {
     const btn = [...document.querySelectorAll("main button[aria-label]")]
@@ -2107,7 +2166,7 @@ try {
   })()`);
   results.persistence = { created, beforeReload, afterReload, habitPersisted };
 
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const selectedMarkdownThought = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")]
       .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
@@ -2143,8 +2202,13 @@ try {
       indexStatusVisible: document.body.innerText.includes("docs") || document.body.innerText.includes("pending"),
     };
   })()`);
-  if (!ragSearch.ok || !ragSearch.matches || !ragSearch.resultVisible || !ragSearch.indexStatusVisible) {
-    throw new Error("RAG search assertion failed");
+  if (
+    !ragSearch.ok ||
+    !ragSearch.matches ||
+    !ragSearch.resultVisible ||
+    !ragSearch.indexStatusVisible
+  ) {
+    throw new Error('RAG search assertion failed');
   }
   results.ragSearch = ragSearch;
   const vaultIndex = await evaluate(`(async () => {
@@ -2253,12 +2317,14 @@ try {
     !vectorRagCrossFile.ok ||
     vectorRagCrossFile.chipCount < 2 ||
     !vectorRagCrossFile.hasVectorScore ||
-    vectorRagCrossFile.vectorStatus !== "on" ||
+    vectorRagCrossFile.vectorStatus !== 'on' ||
     !vectorRagCrossFile.activeAfterToggle ||
     !vectorRagCrossFile.onlyOtherFile ||
     !vectorRagCrossFile.restoredActive
   ) {
-    throw new Error(`Vector RAG cross file assertion failed: ${JSON.stringify(vectorRagCrossFile)}`);
+    throw new Error(
+      `Vector RAG cross file assertion failed: ${JSON.stringify(vectorRagCrossFile)}`,
+    );
   }
   results.vectorRagCrossFile = vectorRagCrossFile;
 
@@ -2401,7 +2467,7 @@ try {
     return { ok: true, seeded: records.length };
   })()`);
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const indexQueuePersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let sawQueue = false;
@@ -2436,9 +2502,7 @@ try {
     };
   })()`);
   if (!indexQueuePersist.ok) {
-    throw new Error(
-      `Index queue persist assertion failed: ${JSON.stringify(indexQueuePersist)}`,
-    );
+    throw new Error(`Index queue persist assertion failed: ${JSON.stringify(indexQueuePersist)}`);
   }
   results.indexQueuePersist = indexQueuePersist;
 
@@ -2469,7 +2533,7 @@ try {
     return { ok: true, seeded: records.length };
   })()`);
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const indexQueuePriority = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let firstActive = "";
@@ -2538,7 +2602,7 @@ try {
     return { ok: true };
   })()`);
   await reloadAndWait();
-  await clickDockFast("Knowledge");
+  await clickDockFast('Knowledge');
   const indexQueueRetry = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const attemptsSeen = new Set();
@@ -2614,7 +2678,7 @@ try {
     return { ok: true };
   })()`);
   await reloadAndWait();
-  await clickDockFast("Knowledge");
+  await clickDockFast('Knowledge');
   results.indexQueueBackoff = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const attemptsSeen = new Set();
@@ -2661,7 +2725,9 @@ try {
     };
   })()`);
   if (!results.indexQueueBackoff.ok) {
-    throw new Error(`Index queue backoff assertion failed: ${JSON.stringify(results.indexQueueBackoff)}`);
+    throw new Error(
+      `Index queue backoff assertion failed: ${JSON.stringify(results.indexQueueBackoff)}`,
+    );
   }
 
   await evaluate(`(() => {
@@ -2774,7 +2840,7 @@ try {
     throw new Error(`Vault watch persistence setup failed: ${JSON.stringify(vaultWatchReady)}`);
   }
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const vaultWatchPersisted = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let restored = false;
@@ -2965,13 +3031,11 @@ try {
     };
   })()`);
   if (!vaultWatchTimeline.ok) {
-    throw new Error(
-      `Vault watch timeline assertion failed: ${JSON.stringify(vaultWatchTimeline)}`,
-    );
+    throw new Error(`Vault watch timeline assertion failed: ${JSON.stringify(vaultWatchTimeline)}`);
   }
   results.vaultWatchTimeline = vaultWatchTimeline;
 
-  const knowledgeDocSeed = await evaluate(`(() => {
+  await evaluate(`(() => {
     const dayMs = 86_400_000;
     const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
     localStorage.setItem(
@@ -3003,7 +3067,7 @@ try {
     return { ok: true, files: 3 };
   })()`);
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const knowledgeDocStatus = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const panel = () => document.querySelector("[data-knowledge-docs]");
@@ -3116,7 +3180,7 @@ try {
   }
   results.knowledgeDocStatus = knowledgeDocStatus;
 
-  const knowledgeDocCleanSeed = await evaluate(`(() => {
+  await evaluate(`(() => {
     const dayMs = 86_400_000;
     const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
     localStorage.setItem(
@@ -3150,7 +3214,7 @@ try {
     return { ok: true, files: 3 };
   })()`);
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const knowledgeDocClean = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let docs = [];
@@ -3247,7 +3311,7 @@ try {
   }
   results.knowledgeDocClean = knowledgeDocClean;
 
-  const docHealthAutoSeed = await evaluate(`(() => {
+  await evaluate(`(() => {
     const dayMs = 86_400_000;
     const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
     localStorage.setItem(
@@ -3285,7 +3349,7 @@ try {
     return { ok: true, files: 3 };
   })()`);
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const docHealthAuto = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let docs = [];
@@ -3346,7 +3410,7 @@ try {
   results.docHealthAuto = docHealthAuto;
 
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const docHealthAutoPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let auto = "";
@@ -3436,7 +3500,7 @@ try {
   results.docHealthHistory = docHealthHistory;
 
   await reloadAndWait();
-  await clickDock("Knowledge");
+  await clickDock('Knowledge');
   const docHealthDismissPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let alertGone = false;
@@ -3457,13 +3521,17 @@ try {
   results.docHealthDismissPersist = docHealthDismissPersist;
 
   if (!selectedMarkdownThought) {
-    throw new Error("markdown thought button missing");
+    throw new Error('markdown thought button missing');
   }
-  if (!results.knowledge.hasMarkdown || results.knowledge.heading === "" || results.knowledge.code === "") {
-    throw new Error("Knowledge markdown preview assertion failed");
+  if (
+    !results.knowledge.hasMarkdown ||
+    results.knowledge.heading === '' ||
+    results.knowledge.code === ''
+  ) {
+    throw new Error('Knowledge markdown preview assertion failed');
   }
   if (!results.actions.habitToggle.ok || !results.actions.habitToggle.doneClass) {
-    throw new Error("habit toggle assertion failed");
+    throw new Error('habit toggle assertion failed');
   }
   if (results.actions.sections.overlap > 0) {
     throw new Error(`actions sections overlap: ${results.actions.sections.overlap}`);
@@ -3474,9 +3542,11 @@ try {
     devIssuesText: document.body.innerText.includes("Dev Issues") || document.body.innerText.includes("Internal server error"),
   }))()`);
 
-  await clickDock("System");
+  await clickDock('System');
   for (let i = 0; i < 20; i++) {
-    const ready = await evaluate(`[...document.querySelectorAll("main section h2")].some((h) => h.textContent.trim() === "Clipboard history")`);
+    const ready = await evaluate(
+      `[...document.querySelectorAll("main section h2")].some((h) => h.textContent.trim() === "Clipboard history")`,
+    );
     if (ready) break;
     await delay(150);
   }
@@ -3493,11 +3563,18 @@ try {
       hasSampleClip: text.includes("pnpm run dev"),
     };
   })()`);
-  if (!results.system.cards.includes("Clipboard history") || !results.system.cards.includes("Error logs")) {
-    throw new Error("system view cards missing");
+  if (
+    !results.system.cards.includes('Clipboard history') ||
+    !results.system.cards.includes('Error logs')
+  ) {
+    throw new Error('system view cards missing');
   }
-  if (!results.system.listening || results.system.clipEntries < 1 || results.system.logEntries < 1) {
-    throw new Error("system capture assertions failed");
+  if (
+    !results.system.listening ||
+    results.system.clipEntries < 1 ||
+    results.system.logEntries < 1
+  ) {
+    throw new Error('system capture assertions failed');
   }
   results.agentDirectory = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3615,7 +3692,9 @@ try {
     };
   })()`);
   if (!results.agentDirectory.ok) {
-    throw new Error(`System agent directory assertion failed: ${JSON.stringify(results.agentDirectory)}`);
+    throw new Error(
+      `System agent directory assertion failed: ${JSON.stringify(results.agentDirectory)}`,
+    );
   }
   const healthCheck = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Check");
@@ -3625,7 +3704,11 @@ try {
     const card = document.querySelector(".provider-card")?.innerText ?? "";
     return { ok: true, cardText: card };
   })()`);
-  if (!healthCheck.ok || !healthCheck.cardText.includes("ok") || !healthCheck.cardText.includes("ms")) {
+  if (
+    !healthCheck.ok ||
+    !healthCheck.cardText.includes('ok') ||
+    !healthCheck.cardText.includes('ms')
+  ) {
     throw new Error(`Provider health assertion failed: ${JSON.stringify(healthCheck)}`);
   }
   results.health = healthCheck;
@@ -3780,9 +3863,7 @@ try {
     };
   })()`);
   if (!webhookSignRetry.ok) {
-    throw new Error(
-      `Webhook sign/retry assertion failed: ${JSON.stringify(webhookSignRetry)}`,
-    );
+    throw new Error(`Webhook sign/retry assertion failed: ${JSON.stringify(webhookSignRetry)}`);
   }
   results.webhookSignRetry = webhookSignRetry;
 
@@ -4228,9 +4309,7 @@ try {
     };
   })()`);
   if (!syncE2eCheck.ok) {
-    throw new Error(
-      `sync E2E encryption assertion failed: ${JSON.stringify(syncE2eCheck)}`,
-    );
+    throw new Error(`sync E2E encryption assertion failed: ${JSON.stringify(syncE2eCheck)}`);
   }
   results.syncE2e = syncE2eCheck;
 
@@ -4310,9 +4389,7 @@ try {
     return { ok: merged && resolved, merged, resolved };
   })()`);
   if (!batchResolveCheck.ok) {
-    throw new Error(
-      `batch sync resolve assertion failed: ${JSON.stringify(batchResolveCheck)}`,
-    );
+    throw new Error(`batch sync resolve assertion failed: ${JSON.stringify(batchResolveCheck)}`);
   }
   results.batchResolve = batchResolveCheck;
 
@@ -4424,7 +4501,7 @@ try {
   results.structuredSync = structuredSyncCheck;
 
   await reloadAndWait();
-  await clickDock("System");
+  await clickDock('System');
   const syncHistoryPersisted = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let toggle = null;
@@ -4527,7 +4604,7 @@ try {
   }
   results.syncAuditChart = syncAuditChart;
 
-  const errorLogSeed = await evaluate(`(() => {
+  await evaluate(`(() => {
     const dayMs = 86_400_000;
     const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
@@ -4578,7 +4655,7 @@ try {
     return { ok: true, seeded: shape.logs.length };
   })()`);
   await reloadAndWait();
-  await clickDock("System");
+  await clickDock('System');
   const errorLogTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chart = () => document.querySelector("[data-error-log-chart]");
@@ -4974,7 +5051,7 @@ try {
   results.autoSync = autoSyncCheck;
 
   await setViewport(390, 844);
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
   results.motion.mobileOverflowX = await evaluate(
     `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
@@ -4985,7 +5062,7 @@ try {
 
   await setViewport(1440, 900);
   await reloadAndWait();
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   const sessionPersistence = await evaluate(`(async () => {
     let pill = 0;
     for (let i = 0; i < 30; i++) {
@@ -5008,7 +5085,9 @@ try {
     !sessionPersistence.hasAssistantReply ||
     !sessionPersistence.hasStoppedMessage
   ) {
-    throw new Error(`AI Studio session persistence assertion failed: ${JSON.stringify(sessionPersistence)}`);
+    throw new Error(
+      `AI Studio session persistence assertion failed: ${JSON.stringify(sessionPersistence)}`,
+    );
   }
   results.sessionPersistence = sessionPersistence;
 
@@ -5086,11 +5165,13 @@ try {
     !sessionManagement.deletedGone ||
     sessionManagement.persistedMessages !== 0
   ) {
-    throw new Error(`AI Studio session management assertion failed: ${JSON.stringify(sessionManagement)}`);
+    throw new Error(
+      `AI Studio session management assertion failed: ${JSON.stringify(sessionManagement)}`,
+    );
   }
   results.sessionManagement = sessionManagement;
 
-  const sessionWorkspaceSeed = await evaluate(`(() => {
+  await evaluate(`(() => {
     const now = Date.now();
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
     shape.sessions = [
@@ -5122,7 +5203,7 @@ try {
     return true;
   })()`);
   await reloadAndWait();
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   const sessionWorkspace = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const rows = () =>
@@ -5230,7 +5311,7 @@ try {
   }
   results.sessionWorkspace = sessionWorkspace;
 
-  await clickDock("System");
+  await clickDock('System');
   const providerToggled = await evaluate(`(async () => {
     const card = [...document.querySelectorAll(".provider-card")].find((c) => c.textContent?.includes("OpenAI"));
     if (!card) return { ok: false, reason: "openai card missing" };
@@ -5240,10 +5321,10 @@ try {
     await new Promise((r) => setTimeout(r, 350));
     return { ok: true, text: card.textContent };
   })()`);
-  if (!providerToggled.ok || !providerToggled.text.includes("Enable")) {
+  if (!providerToggled.ok || !providerToggled.text.includes('Enable')) {
     throw new Error(`provider toggle assertion failed: ${JSON.stringify(providerToggled)}`);
   }
-  await clickDock("AI Studio");
+  await clickDock('AI Studio');
   const autoRoute = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const autoBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Auto");
@@ -5296,7 +5377,7 @@ try {
     btn.click();
     return true;
   })()`);
-  if (!singleBtn) throw new Error("Single mode button missing before edit test");
+  if (!singleBtn) throw new Error('Single mode button missing before edit test');
   const messageEdit = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const setValue = (el, value) => {
@@ -5522,14 +5603,16 @@ try {
     !messageEdit.historySeen ||
     !messageEdit.graphOk ||
     !messageEdit.diffSeen ||
-    messageEdit.diffCounts !== "+1 -1" ||
+    messageEdit.diffCounts !== '+1 -1' ||
     !messageEdit.restoredVisible ||
     !messageEdit.editedGoneAfterRestore ||
     !messageEdit.finalEditedVisible ||
     !messageEdit.finalOldTextGone ||
     !messageEdit.regenerated
   ) {
-    throw new Error(`AI Studio message edit/regenerate assertion failed: ${JSON.stringify(messageEdit)}`);
+    throw new Error(
+      `AI Studio message edit/regenerate assertion failed: ${JSON.stringify(messageEdit)}`,
+    );
   }
   results.messageEdit = messageEdit;
 
@@ -5589,35 +5672,37 @@ try {
     !streamError.placeholderGone ||
     !streamError.hasRetry
   ) {
-    throw new Error(`AI Studio stream error mapping assertion failed: ${JSON.stringify(streamError)}`);
+    throw new Error(
+      `AI Studio stream error mapping assertion failed: ${JSON.stringify(streamError)}`,
+    );
   }
   results.streamError = streamError;
 
   let liveServer = null;
   try {
     liveServer = http.createServer((req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      if (req.method === "OPTIONS") {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
         return;
       }
-      if (req.url === "/v1/chat/completions") {
-        let raw = "";
-        req.on("data", (chunk) => (raw += chunk));
-        req.on("end", () => {
-          const parsed = JSON.parse(raw || "{}");
+      if (req.url === '/v1/chat/completions') {
+        let raw = '';
+        req.on('data', (chunk) => (raw += chunk));
+        req.on('end', () => {
+          const parsed = JSON.parse(raw || '{}');
           res.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
           });
           res.write(`data: {"choices":[{"delta":{"content":"Live provider "}}]}\n\n`);
           res.write(`data: {"choices":[{"delta":{"content":"stream ok "}}]}\n\n`);
           res.write(`data: {"choices":[{"delta":{"content":"model=${parsed.model}"}}]}\n\n`);
-          res.write("data: [DONE]\n\n");
+          res.write('data: [DONE]\n\n');
           res.end();
         });
         return;
@@ -5625,7 +5710,7 @@ try {
       res.writeHead(404);
       res.end();
     });
-    await new Promise((resolve) => liveServer.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => liveServer.listen(0, '127.0.0.1', resolve));
     const livePort = liveServer.address().port;
     await evaluate(`(() => {
       const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
@@ -5684,7 +5769,9 @@ try {
       };
     })()`);
     if (!providerLiveStream.ok || !providerLiveStream.busyGone) {
-      throw new Error(`Provider live stream assertion failed: ${JSON.stringify(providerLiveStream)}`);
+      throw new Error(
+        `Provider live stream assertion failed: ${JSON.stringify(providerLiveStream)}`,
+      );
     }
     results.providerLiveStream = providerLiveStream;
   } finally {
@@ -5694,23 +5781,23 @@ try {
   let modelsServer = null;
   try {
     modelsServer = http.createServer((req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-      if (req.method === "OPTIONS") {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
         return;
       }
-      if (req.url === "/v1/models") {
-        res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            object: "list",
+            object: 'list',
             data: [
-              { id: "mock-gpt-4o", owned_by: "mockai" },
-              { id: "mock-gpt-mini", owned_by: "mockai" },
-              { id: "mock-reasoner", owned_by: "mockai" },
+              { id: 'mock-gpt-4o', owned_by: 'mockai' },
+              { id: 'mock-gpt-mini', owned_by: 'mockai' },
+              { id: 'mock-reasoner', owned_by: 'mockai' },
             ],
           }),
         );
@@ -5719,7 +5806,7 @@ try {
       res.writeHead(404);
       res.end();
     });
-    await new Promise((resolve) => modelsServer.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => modelsServer.listen(0, '127.0.0.1', resolve));
     const modelsPort = modelsServer.address().port;
     await evaluate(`(() => {
       const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
@@ -5822,36 +5909,36 @@ try {
     let active = 0;
     let maxActive = 0;
     moaServer = http.createServer((req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      if (req.method === "OPTIONS") {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
         return;
       }
       active += 1;
       if (active > maxActive) maxActive = active;
-      const route = req.url ?? "";
-      const tag = route.includes("provider-a")
-        ? "Alpha"
-        : route.includes("provider-b")
-          ? "Beta"
-          : "Gamma";
+      const route = req.url ?? '';
+      const tag = route.includes('provider-a')
+        ? 'Alpha'
+        : route.includes('provider-b')
+          ? 'Beta'
+          : 'Gamma';
       res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
       });
       res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
       setTimeout(() => {
         res.write(`data: {"choices":[{"delta":{"content":"part2"}}]}\n\n`);
-        res.write("data: [DONE]\n\n");
+        res.write('data: [DONE]\n\n');
         res.end();
         active -= 1;
       }, 400);
     });
-    await new Promise((resolve) => moaServer.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => moaServer.listen(0, '127.0.0.1', resolve));
     const moaPort = moaServer.address().port;
     await evaluate(`(() => {
       const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
@@ -5952,7 +6039,7 @@ try {
         snippet: text.slice(0, 400),
       };
     })()`);
-    await clickDock("System");
+    await clickDock('System');
     const moaParallel = {
       ...moaUi,
       maxActive,
@@ -6069,8 +6156,10 @@ try {
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {
-    if (ws && ws.readyState === WebSocket.OPEN) await send("Browser.close");
-  } catch {}
+    if (ws && ws.readyState === WebSocket.OPEN) await send('Browser.close');
+  } catch {
+    /* ignore close errors */
+  }
   await delay(500);
   if (edge && !edge.killed) edge.kill();
   const resolved = path.resolve(profile);
@@ -6082,7 +6171,9 @@ try {
       await delay(1000);
       try {
         fs.rmSync(resolved, { recursive: true, force: true });
-      } catch {}
+      } catch {
+        /* ignore cleanup errors */
+      }
     }
   }
 }
