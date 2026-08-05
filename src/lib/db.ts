@@ -308,6 +308,11 @@ export type IndexResult = {
   ignored: number;
 };
 
+export type RecommendedConcurrency = {
+  recommended: number;
+  cores: number;
+};
+
 const LS_KEY = "ai-workbench:db:v1";
 const VAULT_LS_KEY = "ai-workbench:vault:v1";
 const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
@@ -1592,6 +1597,12 @@ export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
   if (isTauri()) return invoke<KnowledgeIndexStatus>("get_knowledge_index_status");
   const files = readVaultFiles();
   return { files: files.length, indexedAt: files.length ? Date.now() : 0 };
+}
+
+export async function recommendIndexConcurrency(): Promise<RecommendedConcurrency> {
+  if (isTauri()) return invoke<RecommendedConcurrency>("recommend_index_concurrency");
+  const cores = navigator.hardwareConcurrency || 4;
+  return { recommended: Math.max(1, Math.min(16, cores)), cores };
 }
 
 export async function startVaultWatch(

@@ -99,6 +99,8 @@ Sprint 44 新增命令：`list_vault_watch_targets` / `upsert_vault_watch_target
 
 Sprint 45 新增命令：`list_sync_audit` / `clear_sync_audit`；`sync_audit_log` 表持久化 merge / resolve / history.clear 事件，System Sync card 新增审计面板。
 
+Sprint 46 新增命令：`recommend_index_concurrency`；Knowledge Vault Index 提供 Auto 开关，按设备并行度推荐 1~16 并发并允许手动覆盖。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

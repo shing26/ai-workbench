@@ -1382,6 +1382,31 @@ fn get_knowledge_index_status(
     db::knowledge_index_status(&conn).map_err(|e| e.to_string())
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendedConcurrency {
+    recommended: usize,
+    cores: usize,
+}
+
+fn recommended_index_concurrency() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4);
+    cores.clamp(1, 16)
+}
+
+#[tauri::command]
+fn recommend_index_concurrency() -> RecommendedConcurrency {
+    let cores = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4);
+    RecommendedConcurrency {
+        recommended: recommended_index_concurrency(),
+        cores,
+    }
+}
+
 fn start_vault_watch_impl(
     app: tauri::AppHandle,
     state: State<'_, VaultWatchState>,
@@ -2789,6 +2814,7 @@ pub fn run() {
             index_vault,
             index_vault_ex,
             get_knowledge_index_status,
+            recommend_index_concurrency,
             start_vault_watch,
             start_vault_watch_ex,
             stop_vault_watch,
@@ -3057,6 +3083,13 @@ mod tests {
         }
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn recommended_index_concurrency_bounds_and_matches_cores() {
+        let info = recommend_index_concurrency();
+        assert!((1..=16).contains(&info.recommended));
+        assert!(info.recommended <= info.cores.max(1));
     }
 
     fn wait_until(mut check: impl FnMut() -> bool, timeout: Duration) -> bool {
