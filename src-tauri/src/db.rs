@@ -227,6 +227,20 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
+CREATE TABLE IF NOT EXISTS quick_prompts (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    category TEXT NOT NULL,
+    text TEXT NOT NULL,
+    custom INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quick_prompt_usage (
+    id TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -260,6 +274,30 @@ pub struct Thought {
     #[serde(rename = "type")]
     pub kind: String,
     pub created_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickPrompt {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+    pub text: String,
+    #[serde(default)]
+    pub custom: bool,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickPromptUsageEntry {
+    pub id: String,
+    pub count: i64,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -400,6 +438,10 @@ pub struct SyncSnapshot {
     pub clipboard: Vec<ClipboardItem>,
     #[serde(default)]
     pub logs: Vec<ErrorLog>,
+    #[serde(default)]
+    pub quick_prompts: Vec<QuickPrompt>,
+    #[serde(default)]
+    pub quick_prompt_usage: Vec<QuickPromptUsageEntry>,
 }
 
 #[derive(Clone, Serialize)]
@@ -411,6 +453,9 @@ pub struct SyncResult {
     pub clipboard_updated: usize,
     pub logs_added: usize,
     pub logs_updated: usize,
+    pub quick_prompts_added: usize,
+    pub quick_prompts_updated: usize,
+    pub quick_prompt_usage_updated: usize,
     pub conflicts: Vec<SyncConflictItem>,
 }
 
@@ -1221,6 +1266,89 @@ pub fn create_thought(conn: &Connection, content: &str, tags: &str, kind: &str) 
     })
 }
 
+pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, label, category, text, custom, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(QuickPrompt {
+            id: row.get(0)?,
+            label: row.get(1)?,
+            category: row.get(2)?,
+            text: row.get(3)?,
+            custom: row.get::<_, i64>(4)? != 0,
+            updated_at: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn upsert_quick_prompt(conn: &Connection, prompt: &QuickPrompt) -> Result<()> {
+    conn.execute(
+        "INSERT INTO quick_prompts (id, label, category, text, custom, updated_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET label = ?2, category = ?3, text = ?4, custom = ?5, updated_at = ?6",
+        params![
+            prompt.id,
+            prompt.label,
+            prompt.category,
+            prompt.text,
+            prompt.custom as i64,
+            prompt.updated_at,
+            prompt.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_quick_prompt(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM quick_prompts WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn list_quick_prompt_usage(conn: &Connection) -> Result<Vec<QuickPromptUsageEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, count, updated_at FROM quick_prompt_usage WHERE count > 0 ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(QuickPromptUsageEntry {
+            id: row.get(0)?,
+            count: row.get(1)?,
+            updated_at: row.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn upsert_quick_prompt_usage(
+    conn: &Connection,
+    id: &str,
+    count: i64,
+    updated_at: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO quick_prompt_usage (id, count, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET count = ?2, updated_at = ?3",
+        params![id, count, updated_at],
+    )?;
+    Ok(())
+}
+
+pub fn record_quick_prompt_usage(conn: &Connection, id: &str) -> Result<i64> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO quick_prompt_usage (id, count, updated_at) VALUES (?1, 1, ?2)
+         ON CONFLICT(id) DO UPDATE SET count = count + 1, updated_at = ?2",
+        params![id, now],
+    )?;
+    conn.query_row(
+        "SELECT count FROM quick_prompt_usage WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+}
+
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, base_url, api_key, is_active FROM providers ORDER BY created_at DESC",
@@ -1683,6 +1811,8 @@ pub fn build_sync_snapshot(conn: &Connection) -> Result<SyncSnapshot, String> {
         exported_at: now_millis(),
         clipboard: list_clipboard(conn).map_err(|e| e.to_string())?,
         logs: list_error_logs(conn).map_err(|e| e.to_string())?,
+        quick_prompts: list_quick_prompts(conn).map_err(|e| e.to_string())?,
+        quick_prompt_usage: list_quick_prompt_usage(conn).map_err(|e| e.to_string())?,
     })
 }
 
@@ -1787,6 +1917,77 @@ pub fn merge_sync_snapshot(
             }
         }
     }
+    let mut quick_prompts_added = 0;
+    let mut quick_prompts_updated = 0;
+    for prompt in snapshot.quick_prompts {
+        let local_prompt: Option<QuickPrompt> = conn
+            .query_row(
+                "SELECT id, label, category, text, custom, updated_at, created_at FROM quick_prompts WHERE id = ?1",
+                params![prompt.id],
+                |row| {
+                    Ok(QuickPrompt {
+                        id: row.get(0)?,
+                        label: row.get(1)?,
+                        category: row.get(2)?,
+                        text: row.get(3)?,
+                        custom: row.get::<_, i64>(4)? != 0,
+                        updated_at: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match local_prompt {
+            None => {
+                upsert_quick_prompt(conn, &prompt).map_err(|e| e.to_string())?;
+                quick_prompts_added += 1;
+            }
+            Some(local) if local.updated_at < prompt.updated_at => {
+                upsert_quick_prompt(conn, &prompt).map_err(|e| e.to_string())?;
+                quick_prompts_updated += 1;
+                conflicts.push(SyncConflictItem {
+                    id: prompt.id.clone(),
+                    kind: "quick_prompt".to_string(),
+                    local_updated_at: local.updated_at,
+                    remote_updated_at: prompt.updated_at,
+                    resolved_to: "remote".to_string(),
+                    preview: prompt.text.chars().take(120).collect(),
+                    local_content: serde_json::to_string(&local).unwrap_or_default(),
+                    remote_content: serde_json::to_string(&prompt).unwrap_or_default(),
+                });
+            }
+            Some(local) if local.updated_at > prompt.updated_at => {
+                conflicts.push(SyncConflictItem {
+                    id: prompt.id.clone(),
+                    kind: "quick_prompt".to_string(),
+                    local_updated_at: local.updated_at,
+                    remote_updated_at: prompt.updated_at,
+                    resolved_to: "local".to_string(),
+                    preview: prompt.text.chars().take(120).collect(),
+                    local_content: serde_json::to_string(&local).unwrap_or_default(),
+                    remote_content: serde_json::to_string(&prompt).unwrap_or_default(),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    let mut quick_prompt_usage_updated = 0;
+    for entry in snapshot.quick_prompt_usage {
+        let local_count: Option<i64> = conn
+            .query_row(
+                "SELECT count FROM quick_prompt_usage WHERE id = ?1",
+                params![entry.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if local_count.unwrap_or(0) < entry.count {
+            upsert_quick_prompt_usage(conn, &entry.id, entry.count, entry.updated_at)
+                .map_err(|e| e.to_string())?;
+            quick_prompt_usage_updated += 1;
+        }
+    }
     for conflict in &conflicts {
         persist_conflict(conn, conflict)?;
     }
@@ -1794,11 +1995,14 @@ pub fn merge_sync_snapshot(
         conn,
         "sync.merge",
         &format!(
-            "clips +{} / updated {} / logs +{} / updated {} / conflicts {}",
+            "clips +{} / updated {} / logs +{} / updated {} / prompts +{} / updated {} / usage {} / conflicts {}",
             clipboard_added,
             clipboard_updated,
             logs_added,
             logs_updated,
+            quick_prompts_added,
+            quick_prompts_updated,
+            quick_prompt_usage_updated,
             conflicts.len()
         ),
         &snapshot.device_id,
@@ -1810,6 +2014,9 @@ pub fn merge_sync_snapshot(
         clipboard_updated,
         logs_added,
         logs_updated,
+        quick_prompts_added,
+        quick_prompts_updated,
+        quick_prompt_usage_updated,
         conflicts,
     })
 }
@@ -2652,6 +2859,12 @@ fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
     }
 }
 
+fn apply_quick_prompt_resolution(conn: &Connection, content: &str) -> Result<(), String> {
+    let mut prompt: QuickPrompt = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    prompt.updated_at = now_millis();
+    upsert_quick_prompt(conn, &prompt).map_err(|e| e.to_string())
+}
+
 pub fn resolve_conflict(
     conn: &Connection,
     conflict: &SyncConflictItem,
@@ -2677,6 +2890,9 @@ pub fn resolve_conflict(
                 params![content, now, conflict.id],
             )
             .map_err(|e| e.to_string())?;
+        }
+        "quick_prompt" => {
+            apply_quick_prompt_resolution(conn, &content)?;
         }
         _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
     }
@@ -2929,7 +3145,15 @@ pub fn resolve_conflict_union(
     conn: &Connection,
     conflict: &SyncConflictItem,
 ) -> Result<String, String> {
-    let content = union_merge_content(&conflict.local_content, &conflict.remote_content);
+    let content = if conflict.kind == "quick_prompt" {
+        structured_merge_content(
+            &conflict.local_content,
+            &conflict.remote_content,
+            conflict.local_updated_at >= conflict.remote_updated_at,
+        )
+    } else {
+        union_merge_content(&conflict.local_content, &conflict.remote_content)
+    };
     let now = now_millis();
     match conflict.kind.as_str() {
         "clipboard" => {
@@ -2945,6 +3169,9 @@ pub fn resolve_conflict_union(
                 params![content, now, conflict.id],
             )
             .map_err(|e| e.to_string())?;
+        }
+        "quick_prompt" => {
+            apply_quick_prompt_resolution(conn, &content)?;
         }
         _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
     }
@@ -3007,6 +3234,9 @@ pub fn resolve_conflict_structured(
                 params![content, now, conflict.id],
             )
             .map_err(|e| e.to_string())?;
+        }
+        "quick_prompt" => {
+            apply_quick_prompt_resolution(conn, &content)?;
         }
         _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
     }
@@ -4069,6 +4299,8 @@ mod tests {
                 updated_at: local_updated + 1000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let first = merge_sync_snapshot(&conn, remote_newer).unwrap();
         assert_eq!(first.clipboard_updated, 1);
@@ -4089,6 +4321,8 @@ mod tests {
                 updated_at: local_updated + 500,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let second = merge_sync_snapshot(&conn, remote_stale).unwrap();
         assert_eq!(second.clipboard_updated, 0);
@@ -4106,9 +4340,63 @@ mod tests {
                 updated_at: local_updated + 1000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let third = merge_sync_snapshot(&conn, remote_equal).unwrap();
         assert_eq!(third.conflicts.len(), 0);
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_quick_prompt_conflict_restores_chosen_side() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-quick-resolve-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        upsert_quick_prompt(
+            &conn,
+            &QuickPrompt {
+                id: "custom-conflict".to_string(),
+                label: "Local prompt".to_string(),
+                category: "work".to_string(),
+                text: "local text".to_string(),
+                custom: true,
+                updated_at: 1000,
+                created_at: 500,
+            },
+        )
+        .unwrap();
+        let remote = SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 3000,
+            clipboard: Vec::new(),
+            logs: Vec::new(),
+            quick_prompts: vec![QuickPrompt {
+                id: "custom-conflict".to_string(),
+                label: "Remote prompt".to_string(),
+                category: "life".to_string(),
+                text: "remote text".to_string(),
+                custom: true,
+                updated_at: 2000,
+                created_at: 500,
+            }],
+            quick_prompt_usage: Vec::new(),
+        };
+        let merged = merge_sync_snapshot(&conn, remote).unwrap();
+        assert_eq!(merged.quick_prompts_updated, 1);
+        assert_eq!(merged.conflicts.len(), 1);
+        assert_eq!(merged.conflicts[0].kind, "quick_prompt");
+        let conflict = merged.conflicts[0].clone();
+        let parsed: QuickPrompt = serde_json::from_str(&conflict.remote_content).unwrap();
+        assert_eq!(parsed.label, "Remote prompt");
+
+        resolve_conflict(&conn, &conflict, "remote").unwrap();
+        let prompts = list_quick_prompts(&conn).unwrap();
+        let prompt = prompts.iter().find(|p| p.id == "custom-conflict").unwrap();
+        assert_eq!(prompt.label, "Remote prompt");
+        assert_eq!(prompt.category, "life");
+        assert!(prompt.updated_at >= 2000);
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4131,6 +4419,8 @@ mod tests {
                 updated_at: local_updated + 1000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let merged = merge_sync_snapshot(&conn, remote).unwrap();
         let conflict = merged.conflicts[0].clone();
@@ -4181,6 +4471,8 @@ mod tests {
                 updated_at: log_updated + 1000,
                 device_id: "device-remote".to_string(),
             }],
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let merged = merge_sync_snapshot(&conn, remote).unwrap();
         assert_eq!(merged.conflicts.len(), 2);
@@ -4434,6 +4726,8 @@ mod tests {
                 updated_at: local_updated + 1000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
 
         merge_sync_snapshot(&conn, remote).unwrap();
@@ -4732,6 +5026,8 @@ mod tests {
                 updated_at: local_updated + 1000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let merged = merge_sync_snapshot(&conn, remote).unwrap();
         assert_eq!(merged.conflicts.len(), 1);
@@ -4763,6 +5059,8 @@ mod tests {
                 updated_at: local_updated + 2000,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let merged2 = merge_sync_snapshot(&conn, next_remote).unwrap();
         assert_eq!(merged2.conflicts.len(), 1);

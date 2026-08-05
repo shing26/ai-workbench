@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 87
+
+### What went well?
+
+- Rust 新增 `quick_prompts` / `quick_prompt_usage` 表与完整模型：list / upsert / delete / record 覆盖本地读写，Sync Snapshot 导出与合并完整接入，usage 按 max count 合并且不回退。
+- `quick_prompt` 冲突 local / remote 内容改为完整 JSON，`resolve_conflict` / union / structured 三种仲裁均支持该 kind；新增单测覆盖“远端 prompt 更新 + 选择 remote 恢复”链路。
+- TS 侧把 AIStudioView 从同步 `quickPrompts.ts` 调用迁移到 `db.*` 异步 API，浏览器 fallback 继续使用同一对 localStorage key；`verify:ui` / `verify:preview` 新增 `quickPromptSync` / `quickPromptSyncVisible` / `quickPromptSyncPersist` lane，导入 snapshot 后断言 AI Studio 可见、排序与持久化均通过。
+
+### What went wrong?
+
+- 初次实现时 TS `SyncSnapshot` 未预留新字段，`db.ts` 顶层残留了破损的重复类型片段；清理后把 `quickPrompts` / `quickPromptUsage` 设为可选，兼容既有构造点。
+- Rust 测试里多处 `SyncSnapshot` 字面量未补新字段，`cargo test` 编译失败；逐一补齐空数组后 94/94 通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Quick Prompt 编辑与拖拽排序、真实 Provider 端到端流式联调。
+- 行内着色与 diff 编辑器、整文件对比视图继续留在 Backlog。
+
 ## Sprint 86
 
 ### What went well?

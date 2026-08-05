@@ -1292,6 +1292,54 @@ fn create_thought(
 }
 
 #[tauri::command]
+fn list_quick_prompts(state: State<'_, db::Db>) -> Result<Vec<db::QuickPrompt>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_quick_prompts(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_custom_quick_prompt(
+    state: State<'_, db::Db>,
+    label: String,
+    category: String,
+    text: String,
+) -> Result<db::QuickPrompt, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let now = now_millis();
+    let prompt = db::QuickPrompt {
+        id: uuid::Uuid::new_v4().to_string(),
+        label,
+        category,
+        text,
+        custom: true,
+        updated_at: now,
+        created_at: now,
+    };
+    db::upsert_quick_prompt(&conn, &prompt).map_err(|e| e.to_string())?;
+    Ok(prompt)
+}
+
+#[tauri::command]
+fn delete_custom_quick_prompt(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_quick_prompt(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_quick_prompt_usage(
+    state: State<'_, db::Db>,
+) -> Result<Vec<db::QuickPromptUsageEntry>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_quick_prompt_usage(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn record_quick_prompt_usage(state: State<'_, db::Db>, id: String) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::record_quick_prompt_usage(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_providers(state: State<'_, db::Db>) -> Result<Vec<db::Provider>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_providers(&conn).map_err(|e| e.to_string())
@@ -4165,6 +4213,11 @@ pub fn run() {
             create_project,
             list_thoughts,
             create_thought,
+            list_quick_prompts,
+            add_custom_quick_prompt,
+            delete_custom_quick_prompt,
+            list_quick_prompt_usage,
+            record_quick_prompt_usage,
             list_providers,
             create_provider,
             set_provider_active,
@@ -5603,6 +5656,8 @@ mod tests {
             exported_at: 1234,
             clipboard: Vec::new(),
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let result =
             push_sync_snapshot_http(&snapshot, &format!("http://{}", addr), Some("test-token"))
@@ -5628,6 +5683,8 @@ mod tests {
                 updated_at: 5678,
             }],
             logs: Vec::new(),
+            quick_prompts: Vec::new(),
+            quick_prompt_usage: Vec::new(),
         };
         let body = serde_json::to_string(&snapshot).unwrap();
         let body_len = body.len();
@@ -5658,6 +5715,74 @@ mod tests {
         let result = db::merge_sync_snapshot(&conn, pulled).unwrap();
         assert_eq!(result.clipboard_added, 1);
         assert_eq!(result.device_id, "device-remote");
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn sync_snapshot_merges_quick_prompts_and_usage() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-quick-prompt-sync-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        db::upsert_quick_prompt(
+            &conn,
+            &db::QuickPrompt {
+                id: "custom-local".to_string(),
+                label: "Local prompt".to_string(),
+                category: "work".to_string(),
+                text: "local".to_string(),
+                custom: true,
+                updated_at: 1000,
+                created_at: 500,
+            },
+        )
+        .unwrap();
+        db::upsert_quick_prompt_usage(&conn, "custom-local", 1, 1000).unwrap();
+
+        let snapshot = db::SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 3000,
+            clipboard: Vec::new(),
+            logs: Vec::new(),
+            quick_prompts: vec![
+                db::QuickPrompt {
+                    id: "custom-local".to_string(),
+                    label: "Remote prompt".to_string(),
+                    category: "work".to_string(),
+                    text: "remote".to_string(),
+                    custom: true,
+                    updated_at: 2000,
+                    created_at: 500,
+                },
+                db::QuickPrompt {
+                    id: "custom-remote-only".to_string(),
+                    label: "Remote only".to_string(),
+                    category: "life".to_string(),
+                    text: "only remote".to_string(),
+                    custom: true,
+                    updated_at: 2500,
+                    created_at: 2500,
+                },
+            ],
+            quick_prompt_usage: vec![db::QuickPromptUsageEntry {
+                id: "custom-local".to_string(),
+                count: 3,
+                updated_at: 2000,
+            }],
+        };
+        let result = db::merge_sync_snapshot(&conn, snapshot).unwrap();
+        assert_eq!(result.quick_prompts_added, 1);
+        assert_eq!(result.quick_prompts_updated, 1);
+        assert_eq!(result.quick_prompt_usage_updated, 1);
+        let prompts = db::list_quick_prompts(&conn).unwrap();
+        assert!(prompts.iter().any(|p| p.label == "Remote prompt"));
+        assert!(prompts.iter().any(|p| p.id == "custom-remote-only"));
+        let usage = db::list_quick_prompt_usage(&conn).unwrap();
+        assert_eq!(
+            usage.iter().find(|e| e.id == "custom-local").unwrap().count,
+            3
+        );
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }

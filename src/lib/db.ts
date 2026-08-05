@@ -1,3 +1,16 @@
+import {
+  QUICK_PROMPTS,
+  addCustomQuickPrompt as addCustomQuickPromptLocal,
+  deleteCustomQuickPrompt as deleteCustomQuickPromptLocal,
+  getQuickPromptUsage as getQuickPromptUsageLocal,
+  listCustomQuickPrompts as listCustomQuickPromptsLocal,
+  recordQuickPromptUsage as recordQuickPromptUsageLocal,
+  type CustomQuickPrompt,
+  type QuickPrompt,
+} from "./quickPrompts";
+
+export type { CustomQuickPrompt, QuickPrompt };
+
 export type TaskStatus = "todo" | "in_progress" | "done";
 
 export type Task = {
@@ -26,6 +39,12 @@ export type Thought = {
   tags: string;
   type: ThoughtType;
   createdAt: number;
+};
+
+export type QuickPromptUsageEntry = {
+  id: string;
+  count: number;
+  updatedAt: number;
 };
 
 export type Session = {
@@ -160,6 +179,8 @@ export type SyncSnapshot = {
   exportedAt: number;
   clipboard: ClipboardItem[];
   logs: ErrorLog[];
+  quickPrompts?: QuickPrompt[];
+  quickPromptUsage?: QuickPromptUsageEntry[];
 };
 
 export type SyncResult = {
@@ -169,12 +190,15 @@ export type SyncResult = {
   clipboardUpdated: number;
   logsAdded: number;
   logsUpdated: number;
+  quickPromptsAdded: number;
+  quickPromptsUpdated: number;
+  quickPromptUsageUpdated: number;
   conflicts: SyncConflictItem[];
 };
 
 export type SyncConflictItem = {
   id: string;
-  kind: "clipboard" | "log";
+  kind: "clipboard" | "log" | "quick_prompt";
   localUpdatedAt: number;
   remoteUpdatedAt: number;
   resolvedTo: "remote" | "local";
@@ -1215,6 +1239,64 @@ export async function toggleEventDone(id: string): Promise<void> {
   writeLocal(shape);
 }
 
+export async function listQuickPrompts(): Promise<QuickPrompt[]> {
+  if (isTauri()) return invoke<QuickPrompt[]>("list_quick_prompts");
+  return [...QUICK_PROMPTS, ...listCustomQuickPromptsLocal()];
+}
+
+export async function listCustomQuickPrompts(): Promise<CustomQuickPrompt[]> {
+  if (isTauri()) {
+    const prompts = await listQuickPrompts();
+    return prompts.filter((prompt) => prompt.custom === true) as CustomQuickPrompt[];
+  }
+  return listCustomQuickPromptsLocal();
+}
+
+export async function loadQuickPromptsByUsage(): Promise<QuickPrompt[]> {
+  const [usage, prompts] = await Promise.all([getQuickPromptUsage(), listQuickPrompts()]);
+  const byId = new Map<string, QuickPrompt>();
+  for (const prompt of prompts) byId.set(prompt.id, prompt);
+  for (const builtin of QUICK_PROMPTS) {
+    if (!byId.has(builtin.id)) byId.set(builtin.id, builtin);
+  }
+  return [...byId.values()]
+    .map((prompt, index) => ({ prompt, index, count: usage[prompt.id] ?? 0 }))
+    .sort((a, b) => b.count - a.count || a.index - b.index)
+    .map((entry) => entry.prompt);
+}
+
+export async function getQuickPromptUsage(): Promise<Record<string, number>> {
+  if (isTauri()) {
+    const entries = await invoke<QuickPromptUsageEntry[]>("list_quick_prompt_usage");
+    return Object.fromEntries(entries.map((entry) => [entry.id, entry.count]));
+  }
+  return getQuickPromptUsageLocal();
+}
+
+export async function recordQuickPromptUsage(id: string): Promise<number> {
+  if (isTauri()) return invoke<number>("record_quick_prompt_usage", { id });
+  return recordQuickPromptUsageLocal(id);
+}
+
+export async function addCustomQuickPrompt(
+  label: string,
+  category: string,
+  text: string,
+): Promise<CustomQuickPrompt> {
+  if (isTauri()) {
+    return invoke<CustomQuickPrompt>("add_custom_quick_prompt", { label, category, text });
+  }
+  return addCustomQuickPromptLocal(label, category as "life" | "work", text);
+}
+
+export async function deleteCustomQuickPrompt(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("delete_custom_quick_prompt", { id });
+    return;
+  }
+  deleteCustomQuickPromptLocal(id);
+}
+
 export async function listClipboard(): Promise<ClipboardItem[]> {
   return isTauri() ? invoke<ClipboardItem[]>("list_clipboard") : readLocal().clipboard;
 }
@@ -1296,6 +1378,14 @@ export async function setSyncAutoConfig(config: SyncAutoConfig): Promise<SyncAut
   return config;
 }
 
+function readQuickPromptUsageEntriesLocal(): QuickPromptUsageEntry[] {
+  return Object.entries(getQuickPromptUsageLocal()).map(([id, count]) => ({
+    id,
+    count,
+    updatedAt: Date.now(),
+  }));
+}
+
 export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
   if (isTauri()) return invoke<SyncSnapshot>("export_sync_snapshot");
   const shape = readLocal();
@@ -1304,6 +1394,8 @@ export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
     exportedAt: Date.now(),
     clipboard: shape.clipboard,
     logs: shape.logs,
+    quickPrompts: [...QUICK_PROMPTS, ...listCustomQuickPromptsLocal()],
+    quickPromptUsage: readQuickPromptUsageEntriesLocal(),
   };
   localStorage.setItem(SYNC_LS_KEY, JSON.stringify(snapshot));
   return snapshot;
@@ -1357,6 +1449,20 @@ export async function pullSyncSnapshot(
       },
     ],
     logs: [],
+    quickPrompts: [
+      {
+        id: "sync-quick-prompt-remote",
+        label: "Sync quick",
+        category: "work",
+        text: "sprint 87 remote quick prompt",
+        custom: true,
+        updatedAt: Date.now() + 1000,
+        createdAt: Date.now() + 1000,
+      },
+    ],
+    quickPromptUsage: [
+      { id: "sync-quick-prompt-remote", count: 1, updatedAt: Date.now() + 1000 },
+    ],
   };
   const shape = readLocal();
   const baseClip = shape.clipboard[0];
@@ -1445,6 +1551,57 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
       });
     }
   }
+  const localPrompts = [...QUICK_PROMPTS, ...listCustomQuickPromptsLocal()];
+  const customPrompts = listCustomQuickPromptsLocal();
+  let quickPromptsAdded = 0;
+  let quickPromptsUpdated = 0;
+  for (const prompt of remote.quickPrompts ?? []) {
+    if (prompt.custom !== true) continue;
+    const local = localPrompts.find((p) => p.id === prompt.id);
+    if (!local) {
+      customPrompts.push(prompt as CustomQuickPrompt);
+      quickPromptsAdded++;
+    } else if ((local.updatedAt ?? 0) < (prompt.updatedAt ?? 0)) {
+      const index = customPrompts.findIndex((p) => p.id === prompt.id);
+      if (index >= 0) {
+        customPrompts[index] = { ...customPrompts[index], ...prompt } as CustomQuickPrompt;
+      } else {
+        customPrompts.push(prompt as CustomQuickPrompt);
+      }
+      quickPromptsUpdated++;
+      conflicts.push({
+        id: prompt.id,
+        kind: "quick_prompt",
+        localUpdatedAt: local.updatedAt ?? 0,
+        remoteUpdatedAt: prompt.updatedAt ?? 0,
+        resolvedTo: "remote",
+        preview: prompt.text.slice(0, 120),
+        localContent: JSON.stringify(local),
+        remoteContent: JSON.stringify(prompt),
+      });
+    } else if ((local.updatedAt ?? 0) > (prompt.updatedAt ?? 0)) {
+      conflicts.push({
+        id: prompt.id,
+        kind: "quick_prompt",
+        localUpdatedAt: local.updatedAt ?? 0,
+        remoteUpdatedAt: prompt.updatedAt ?? 0,
+        resolvedTo: "local",
+        preview: prompt.text.slice(0, 120),
+        localContent: JSON.stringify(local),
+        remoteContent: JSON.stringify(prompt),
+      });
+    }
+  }
+  localStorage.setItem("ai-workbench:quick-prompts:v1", JSON.stringify(customPrompts));
+  let quickPromptUsageUpdated = 0;
+  const usage = getQuickPromptUsageLocal();
+  for (const entry of remote.quickPromptUsage ?? []) {
+    if ((usage[entry.id] ?? 0) < entry.count) {
+      usage[entry.id] = entry.count;
+      quickPromptUsageUpdated++;
+    }
+  }
+  localStorage.setItem("ai-workbench:quick-prompt-usage:v1", JSON.stringify(usage));
   shape.clipboard.sort((a, b) => b.updatedAt - a.updatedAt);
   shape.logs.sort((a, b) => b.updatedAt - a.updatedAt);
   const result: SyncResult = {
@@ -1454,6 +1611,9 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
     clipboardUpdated,
     logsAdded,
     logsUpdated,
+    quickPromptsAdded,
+    quickPromptsUpdated,
+    quickPromptUsageUpdated,
     conflicts,
   };
   shape.lastSyncedAt = result.syncedAt;
@@ -1461,7 +1621,7 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   persistFallbackConflicts(conflicts);
   appendSyncAudit(
     "sync.merge",
-    `clips +${clipboardAdded} / updated ${clipboardUpdated} / logs +${logsAdded} / updated ${logsUpdated} / conflicts ${conflicts.length}`,
+    `clips +${clipboardAdded} / updated ${clipboardUpdated} / logs +${logsAdded} / updated ${logsUpdated} / prompts +${quickPromptsAdded} / updated ${quickPromptsUpdated} / usage ${quickPromptUsageUpdated} / conflicts ${conflicts.length}`,
   );
   return result;
 }
@@ -1541,12 +1701,20 @@ export async function resolveSyncConflict(
     item.content = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
-  } else {
+  } else if (conflict.kind === "log") {
     const item = shape.logs.find((l) => l.id === conflict.id);
     if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
     item.message = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
+  } else {
+    const prompt = JSON.parse(content) as CustomQuickPrompt;
+    prompt.updatedAt = updatedAt;
+    const prompts = listCustomQuickPromptsLocal();
+    const index = prompts.findIndex((p) => p.id === conflict.id);
+    if (index >= 0) prompts[index] = prompt;
+    else prompts.push(prompt);
+    localStorage.setItem("ai-workbench:quick-prompts:v1", JSON.stringify(prompts));
   }
   writeLocal(shape);
   const records = readSyncConflictRecords().map((record) =>
@@ -1595,7 +1763,16 @@ export async function resolveSyncConflictUnion(conflict: SyncConflictItem): Prom
     return invoke<string>("resolve_sync_conflict_union", { conflict });
   }
   const shape = readLocal();
-  const content = unionMergeContent(conflict.localContent, conflict.remoteContent);
+  const content =
+    conflict.kind === "quick_prompt"
+      ? JSON.stringify(
+          mergeJsonValue(
+            JSON.parse(conflict.localContent),
+            JSON.parse(conflict.remoteContent),
+            conflict.localUpdatedAt >= conflict.remoteUpdatedAt,
+          ),
+        )
+      : unionMergeContent(conflict.localContent, conflict.remoteContent);
   const updatedAt = Date.now();
   if (conflict.kind === "clipboard") {
     const item = shape.clipboard.find((c) => c.id === conflict.id);
@@ -1603,12 +1780,20 @@ export async function resolveSyncConflictUnion(conflict: SyncConflictItem): Prom
     item.content = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
-  } else {
+  } else if (conflict.kind === "log") {
     const item = shape.logs.find((l) => l.id === conflict.id);
     if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
     item.message = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
+  } else {
+    const prompt = JSON.parse(content) as CustomQuickPrompt;
+    prompt.updatedAt = updatedAt;
+    const prompts = listCustomQuickPromptsLocal();
+    const index = prompts.findIndex((p) => p.id === conflict.id);
+    if (index >= 0) prompts[index] = prompt;
+    else prompts.push(prompt);
+    localStorage.setItem("ai-workbench:quick-prompts:v1", JSON.stringify(prompts));
   }
   writeLocal(shape);
   const records = readSyncConflictRecords().map((record) =>
@@ -1785,12 +1970,20 @@ export async function resolveSyncConflictStructured(conflict: SyncConflictItem):
     item.content = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
-  } else {
+  } else if (conflict.kind === "log") {
     const item = shape.logs.find((l) => l.id === conflict.id);
     if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
     item.message = content;
     item.timestamp = updatedAt;
     item.updatedAt = updatedAt;
+  } else {
+    const prompt = JSON.parse(content) as CustomQuickPrompt;
+    prompt.updatedAt = updatedAt;
+    const prompts = listCustomQuickPromptsLocal();
+    const index = prompts.findIndex((p) => p.id === conflict.id);
+    if (index >= 0) prompts[index] = prompt;
+    else prompts.push(prompt);
+    localStorage.setItem("ai-workbench:quick-prompts:v1", JSON.stringify(prompts));
   }
   writeLocal(shape);
   const records = readSyncConflictRecords().map((record) =>
