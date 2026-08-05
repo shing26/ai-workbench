@@ -337,3 +337,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `git_change_paths` 剥离 `git status --short` 的 XY 状态前缀并处理 rename 箭头，`GitActivityItem` 新增 `changed_paths`；Projects 的 dirty 行支持 Preview 展开 / 收起实际文件列表。
 - `build_commit_trend` 聚合 reflog 全部时间戳为 UTC 日粒度 `commit_trend`，最多保留最近 7 个有提交的日桶；Git activity 卡片新增 7 日趋势条。
 - TS fallback 镜像同一预览与趋势语义；`verify:ui` / `verify:preview` 新增 `gitDirtyPreview` / `gitCommitTrend` lane。
+
+## Sprint 74：索引队列指数退避
+
+- `vault_index_retry_delay_ms(attempts)` 以 500ms 为基数、2 倍增长、4000ms 封顶；worker 按 `retry.attempts` 计算并 sleep，替代固定 800ms。
+- `VaultIndexQueueEntry` 新增 `retry_delay_ms`，active / queued 快照均携带；Knowledge 队列行显示 `retry N · NNNms` 并暴露 `retry-delay` 数据属性。
+- TS fallback 用同一 `indexRetryDelayMs` 公式调度与展示；`verify:ui` / `verify:preview` 的 `indexQueueRetry` 断言 500 / 1000ms，新增 `indexQueueBackoff` lane。

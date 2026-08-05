@@ -164,6 +164,22 @@ async function clickDock(label) {
   await delay(450);
 }
 
+async function clickDockFast(label) {
+  let clicked = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    clicked = await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute('aria-label') === ${JSON.stringify(label)});
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (clicked) break;
+    await delay(150);
+  }
+  if (!clicked) throw new Error(`dock button missing: ${label}`);
+}
+
 async function sampleTokens() {
   return evaluate(`(() => {
     const bodyBg = getComputedStyle(document.body).backgroundColor;
@@ -1334,22 +1350,29 @@ try {
   })()`);
   await send("Page.reload", { ignoreCache: true });
   await waitForApp();
-  await clickDock("Knowledge");
+  await clickDockFast("Knowledge");
   const indexQueueRetry = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const attemptsSeen = new Set();
+    const delaysSeen = new Set();
     let errorSeen = false;
     let drained = false;
-    for (let i = 0; i < 160; i++) {
+    for (let i = 0; i < 240; i++) {
       await sleep(20);
       for (const el of document.querySelectorAll("[data-vault-index-queued-path]")) {
         const attempts = Number(el.getAttribute("data-vault-index-queue-attempts") ?? 0);
         if (attempts > 0) attemptsSeen.add(attempts);
+        const delay = Number(el.getAttribute("data-vault-index-queue-retry-delay") ?? 0);
+        if (attempts > 0 && delay > 0) delaysSeen.add(delay);
       }
       const activeAttempts = Number(
         document.querySelector("[data-vault-index-queue-active-attempts]")?.getAttribute("data-vault-index-queue-active-attempts") ?? 0,
       );
       if (activeAttempts > 0) attemptsSeen.add(activeAttempts);
+      const activeDelay = Number(
+        document.querySelector("[data-vault-index-queue-active-retry-delay]")?.getAttribute("data-vault-index-queue-active-retry-delay") ?? 0,
+      );
+      if (activeAttempts > 0 && activeDelay > 0) delaysSeen.add(activeDelay);
       const status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
       if (status.includes("simulated failure")) errorSeen = true;
       const active =
@@ -1366,8 +1389,15 @@ try {
       }
     }
     return {
-      ok: attemptsSeen.has(1) && attemptsSeen.has(2) && errorSeen && drained,
+      ok:
+        attemptsSeen.has(1) &&
+        attemptsSeen.has(2) &&
+        delaysSeen.has(500) &&
+        delaysSeen.has(1000) &&
+        errorSeen &&
+        drained,
       attemptsSeen: [...attemptsSeen],
+      retryDelays: [...delaysSeen],
       errorSeen,
       drained,
     };
@@ -1376,6 +1406,76 @@ try {
     throw new Error(`Index queue retry assertion failed: ${JSON.stringify(indexQueueRetry)}`);
   }
   results.indexQueueRetry = indexQueueRetry;
+
+  await evaluate(`(() => {
+    localStorage.setItem(
+      "ai-workbench:vault-index-queue:v1",
+      JSON.stringify([
+        {
+          runId: "backoff-run",
+          path: "C:/backoff-retry-vault",
+          ignorePatterns: [],
+          concurrency: 4,
+          priority: 1,
+          attempts: 0,
+          lastError: "",
+          status: "queued",
+        },
+      ]),
+    );
+    return { ok: true };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("Knowledge");
+  results.indexQueueBackoff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const attemptsSeen = new Set();
+    const delaysSeen = new Set();
+    let drained = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(20);
+      for (const el of document.querySelectorAll("[data-vault-index-queued-path]")) {
+        const attempts = Number(el.getAttribute("data-vault-index-queue-attempts") ?? 0);
+        if (attempts > 0) attemptsSeen.add(attempts);
+        const delay = Number(el.getAttribute("data-vault-index-queue-retry-delay") ?? 0);
+        if (attempts > 0 && delay > 0) delaysSeen.add(delay);
+      }
+      const activeAttempts = Number(
+        document.querySelector("[data-vault-index-queue-active-attempts]")?.getAttribute("data-vault-index-queue-active-attempts") ?? 0,
+      );
+      if (activeAttempts > 0) attemptsSeen.add(activeAttempts);
+      const activeDelay = Number(
+        document.querySelector("[data-vault-index-queue-active-retry-delay]")?.getAttribute("data-vault-index-queue-active-retry-delay") ?? 0,
+      );
+      if (activeAttempts > 0 && activeDelay > 0) delaysSeen.add(activeDelay);
+      const active = document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok:
+        attemptsSeen.has(1) &&
+        attemptsSeen.has(2) &&
+        delaysSeen.has(500) &&
+        delaysSeen.has(1000) &&
+        drained,
+      attemptsSeen: [...attemptsSeen],
+      retryDelays: [...delaysSeen],
+      drained,
+    };
+  })()`);
+  if (!results.indexQueueBackoff.ok) {
+    throw new Error(`Index queue backoff assertion failed: ${JSON.stringify(results.indexQueueBackoff)}`);
+  }
 
   await evaluate(`(() => {
     const input = document.querySelector('input[placeholder="Vault path..."]');

@@ -452,6 +452,7 @@ export type VaultIndexQueueEntry = {
   priority: number;
   attempts: number;
   lastError: string;
+  retryDelayMs: number;
 };
 
 export type VaultIndexQueueStatus = {
@@ -2476,6 +2477,14 @@ type PersistedIndexQueueRecord = IndexQueueRequest & {
 };
 
 const VAULT_INDEX_MAX_ATTEMPTS = 3;
+const VAULT_INDEX_RETRY_BASE_MS = 500;
+const VAULT_INDEX_RETRY_MAX_MS = 4000;
+
+function indexRetryDelayMs(attempts: number): number {
+  if (attempts <= 0) return 0;
+  const exponent = Math.min(3, Math.max(0, attempts - 1));
+  return Math.min(VAULT_INDEX_RETRY_MAX_MS, VAULT_INDEX_RETRY_BASE_MS * 2 ** exponent);
+}
 
 function enqueueIndexRequest(request: IndexQueueRequest) {
   const index = vaultIndexQueue.findIndex((queued) => queued.priority < request.priority);
@@ -2494,6 +2503,7 @@ function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
           priority: vaultIndexActive.priority,
           attempts: vaultIndexActive.attempts,
           lastError: vaultIndexActive.lastError,
+          retryDelayMs: indexRetryDelayMs(vaultIndexActive.attempts),
         }
       : null,
     queue: vaultIndexQueue.map((request, index) => ({
@@ -2504,6 +2514,7 @@ function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
       priority: request.priority,
       attempts: request.attempts,
       lastError: request.lastError,
+      retryDelayMs: indexRetryDelayMs(request.attempts),
     })),
   };
 }
@@ -2622,7 +2633,7 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
     enqueueIndexRequest(active);
     writePersistedVaultIndexQueue();
     emitVaultIndexQueue();
-    setTimeout(() => pumpVaultIndexQueue(), 800);
+    setTimeout(() => pumpVaultIndexQueue(), indexRetryDelayMs(active.attempts));
   };
   const tick = () => {
     step += 1;
@@ -2665,7 +2676,7 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
     setTimeout(tick, 120);
   };
   if (retryable) {
-    setTimeout(failAttempt, 30);
+    setTimeout(failAttempt, request.attempts === 0 ? 1200 : 30);
     return;
   }
   setTimeout(tick, 30);

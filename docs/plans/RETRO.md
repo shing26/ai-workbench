@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 74
+
+### What went well?
+
+- 索引队列重试从固定 800ms 升级为按 `attempts` 指数退避：500ms 基数、2 倍增长、4000ms 封顶，`retry_delay_ms` 进入 active / queued 快照，Knowledge 队列行显示 `retry N · NNNms`。
+- TS fallback 与 Rust 共用同一退避公式；`indexQueueRetry` 断言 500 / 1000ms，新增 `indexQueueBackoff` lane 独立验证 attempts 1/2 与退避递增。
+- 验证覆盖：`cargo test --lib` 82/82，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `indexQueueRetry` / `indexQueueBackoff` 均为 true。
+
+### What went wrong?
+
+- 固定 800ms 改退避后，第一段 500ms 窗口被 `clickDock` 的 450ms 等待吃掉，`attempts=1` 一度捕获不到；新增 `clickDockFast` 并把 mock 首次失败延后到 1200ms，后续重试立即失败，稳定捕获完整退避链。
+- `indexQueueBackoff` 种子路径首次写成 `C:/backoff-vault`，不包含 retry 关键字，跑成了正常索引直接 drain；改为 `C:/backoff-retry-vault` 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Git dirty 逐文件 diff 预览、真实 Provider 端到端流式联调、围绕 5 大主视图补日常高频能力。
+
 ## Sprint 73
 
 ### What went well?

@@ -152,6 +152,16 @@ struct VaultIndexRequest {
 }
 
 const VAULT_INDEX_MAX_ATTEMPTS: usize = 3;
+const VAULT_INDEX_RETRY_BASE_MS: u64 = 500;
+const VAULT_INDEX_RETRY_MAX_MS: u64 = 4000;
+
+fn vault_index_retry_delay_ms(attempts: usize) -> u64 {
+    if attempts == 0 {
+        return 0;
+    }
+    let exponent = attempts.saturating_sub(1).min(3) as u32;
+    (VAULT_INDEX_RETRY_BASE_MS << exponent).min(VAULT_INDEX_RETRY_MAX_MS)
+}
 
 #[derive(Default)]
 struct VaultIndexState {
@@ -175,6 +185,7 @@ struct VaultIndexQueueEntry {
     priority: usize,
     attempts: usize,
     last_error: String,
+    retry_delay_ms: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -283,6 +294,7 @@ impl VaultIndexState {
                 priority: request.priority,
                 attempts: request.attempts,
                 last_error: request.last_error.clone(),
+                retry_delay_ms: vault_index_retry_delay_ms(request.attempts),
             }),
             queue: guard
                 .queue
@@ -296,6 +308,7 @@ impl VaultIndexState {
                     priority: request.priority,
                     attempts: request.attempts,
                     last_error: request.last_error.clone(),
+                    retry_delay_ms: vault_index_retry_delay_ms(request.attempts),
                 })
                 .collect(),
         })
@@ -1758,7 +1771,9 @@ fn spawn_vault_index_worker(
             };
             if let Some(retry) = retry {
                 persist_vault_index_request(&app_clone, &retry, "queued");
-                thread::sleep(Duration::from_millis(800));
+                thread::sleep(Duration::from_millis(vault_index_retry_delay_ms(
+                    retry.attempts,
+                )));
                 emit_vault_index_queue(&app_clone);
             } else {
                 delete_vault_index_request(&app_clone, &thread_run_id);
@@ -4469,6 +4484,7 @@ mod tests {
         assert_eq!(retry_one.last_error, "boom");
         assert!(state.snapshot().unwrap().active.is_none());
         assert_eq!(state.snapshot().unwrap().queue.len(), 1);
+        assert_eq!(state.snapshot().unwrap().queue[0].retry_delay_ms, 500);
 
         let second = state.claim_next().unwrap().expect("second attempt");
         assert_eq!(second.attempts, 1);
@@ -4478,12 +4494,22 @@ mod tests {
             .expect("retry twice");
         assert_eq!(retry_two.attempts, 2);
         assert_eq!(retry_two.last_error, "boom again");
+        assert_eq!(state.snapshot().unwrap().queue[0].retry_delay_ms, 1000);
 
         let third = state.claim_next().unwrap().expect("third attempt");
         assert_eq!(third.attempts, 2);
         assert!(state.retry_failed("run-1", "boom final").unwrap().is_none());
         assert!(state.snapshot().unwrap().active.is_none());
         assert!(state.snapshot().unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn vault_index_retry_delay_grows_exponentially_and_caps() {
+        assert_eq!(vault_index_retry_delay_ms(0), 0);
+        assert_eq!(vault_index_retry_delay_ms(1), 500);
+        assert_eq!(vault_index_retry_delay_ms(2), 1000);
+        assert_eq!(vault_index_retry_delay_ms(3), 2000);
+        assert_eq!(vault_index_retry_delay_ms(8), 4000);
     }
 
     #[test]
