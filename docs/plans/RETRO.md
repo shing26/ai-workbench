@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 51
+
+### What went well?
+
+- 审计筛选从单事件维度扩展为事件 + 时间范围 + 设备组合：`list_sync_audit` 与 `export_sync_audit` 共用 SQL 条件，导出所见即列表所见。
+- System Sync audit 新增 Today / Last 7 days 与 All / Current device 下拉框，浏览器 fallback 在 localStorage 上按同一语义过滤。
+- 验证覆盖：`cargo test --lib` 54/54，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言 Today 范围筛选与导出链路，两条 lane 全绿。
+
+### What went wrong?
+
+- SQL 初版把 LIMIT 占位符误写为 `?2`，编译测试暴露后改为 `?4`。
+- 前端时间档位切换若直接读 state 会拿到旧值，改为 `loadAudit(filter, since, device)` 显式传参。
+
+### Action Items
+
+- 下一 Sprint 候选：watch 目标级事件隔离、索引进度与取消队列、结构化字段级合并、自定义审计日期范围。
+- 后续扩展审计查询时，保持列表与导出共用过滤函数。
+
 ## Sprint 50
 
 ### What went well?

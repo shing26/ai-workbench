@@ -1610,17 +1610,21 @@ pub fn list_sync_audit(
     conn: &Connection,
     limit: i64,
     event: Option<&str>,
+    since: Option<i64>,
+    device_id: Option<&str>,
 ) -> Result<Vec<SyncAuditEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, event, detail, device_id, created_at
              FROM sync_audit_log
              WHERE (?1 IS NULL OR event = ?1)
-             ORDER BY created_at DESC, id DESC LIMIT ?2",
+               AND (?2 IS NULL OR created_at >= ?2)
+               AND (?3 IS NULL OR device_id = ?3)
+             ORDER BY created_at DESC, id DESC LIMIT ?4",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![event, limit], |row| {
+        .query_map(params![event, since, device_id, limit], |row| {
             Ok(SyncAuditEntry {
                 id: row.get(0)?,
                 event: row.get(1)?,
@@ -1649,8 +1653,10 @@ pub fn export_sync_audit(
     conn: &Connection,
     format: &str,
     event: Option<&str>,
+    since: Option<i64>,
+    device_id: Option<&str>,
 ) -> Result<String, String> {
-    let entries = list_sync_audit(conn, 10_000, event)?;
+    let entries = list_sync_audit(conn, 10_000, event, since, device_id)?;
     match format {
         "json" => serde_json::to_string_pretty(&entries).map_err(|e| e.to_string()),
         "csv" => {
@@ -3015,7 +3021,7 @@ mod tests {
         assert_eq!(clips[0].content, merged);
         let records = list_sync_conflicts(&conn, "resolved").unwrap();
         assert_eq!(records[0].resolved_choice.as_deref(), Some("union"));
-        let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union")).unwrap();
+        let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union"), None, None).unwrap();
         assert_eq!(audit.len(), 1);
         assert!(audit[0].detail.contains("-> union"));
 
@@ -3064,7 +3070,8 @@ mod tests {
         assert!(records
             .iter()
             .all(|r| r.resolved_choice.as_deref() == Some("union")));
-        let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union.batch")).unwrap();
+        let audit =
+            list_sync_audit(&conn, 10, Some("sync.resolve.union.batch"), None, None).unwrap();
         assert_eq!(audit.len(), 1);
         assert!(audit[0].detail.contains("batch merged 2"));
 
@@ -3093,7 +3100,7 @@ mod tests {
         };
 
         merge_sync_snapshot(&conn, remote).unwrap();
-        let entries = list_sync_audit(&conn, 20, None).unwrap();
+        let entries = list_sync_audit(&conn, 20, None, None, None).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event, "sync.merge");
         assert_eq!(entries[0].device_id, "device-audit");
@@ -3111,19 +3118,21 @@ mod tests {
             remote_content: unresolved[0].remote_content.clone(),
         };
         resolve_conflict(&conn, &conflict, "remote").unwrap();
-        let entries = list_sync_audit(&conn, 20, None).unwrap();
+        let entries = list_sync_audit(&conn, 20, None, None, None).unwrap();
         assert_eq!(entries[0].event, "sync.resolve");
         assert!(entries[0].detail.contains("clipboard"));
 
         let cleared = clear_resolved_sync_conflicts(&conn).unwrap();
         assert!(cleared > 0);
-        let entries = list_sync_audit(&conn, 20, None).unwrap();
+        let entries = list_sync_audit(&conn, 20, None, None, None).unwrap();
         assert_eq!(entries[0].event, "sync.history.cleared");
         assert!(entries[0].detail.contains("cleared"));
 
         let removed = clear_sync_audit(&conn).unwrap();
         assert!(removed > 0);
-        assert!(list_sync_audit(&conn, 20, None).unwrap().is_empty());
+        assert!(list_sync_audit(&conn, 20, None, None, None)
+            .unwrap()
+            .is_empty());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -3138,13 +3147,13 @@ mod tests {
         append_sync_audit(&conn, "sync.resolve", "clipboard -> remote", "device-a").unwrap();
         append_sync_audit(&conn, "sync.history.cleared", "cleared 2", "device-b").unwrap();
 
-        let all = list_sync_audit(&conn, 10, None).unwrap();
+        let all = list_sync_audit(&conn, 10, None, None, None).unwrap();
         assert_eq!(all.len(), 3);
-        let resolved = list_sync_audit(&conn, 10, Some("sync.resolve")).unwrap();
+        let resolved = list_sync_audit(&conn, 10, Some("sync.resolve"), None, None).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].event, "sync.resolve");
 
-        let json = export_sync_audit(&conn, "json", Some("sync.merge")).unwrap();
+        let json = export_sync_audit(&conn, "json", Some("sync.merge"), None, None).unwrap();
         assert!(json.contains("\"event\": \"sync.merge\""));
         assert!(!json.contains("sync.resolve"));
 
@@ -3155,11 +3164,45 @@ mod tests {
             "device-a",
         )
         .unwrap();
-        let csv = export_sync_audit(&conn, "csv", None).unwrap();
+        let csv = export_sync_audit(&conn, "csv", None, None, None).unwrap();
         assert!(csv.starts_with("id,event,detail,device_id,created_at\n"));
         assert!(csv.contains("\"quoted \"\"detail\"\", line1\nline2\""));
 
-        assert!(export_sync_audit(&conn, "yaml", None).is_err());
+        assert!(export_sync_audit(&conn, "yaml", None, None, None).is_err());
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_audit_filters_by_since_and_device() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-audit-filter-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        append_sync_audit(&conn, "sync.merge", "merged a", "device-a").unwrap();
+        append_sync_audit(&conn, "sync.resolve", "resolved b", "device-b").unwrap();
+
+        let all = list_sync_audit(&conn, 10, None, None, None).unwrap();
+        assert_eq!(all.len(), 2);
+        let device_a = list_sync_audit(&conn, 10, None, None, Some("device-a")).unwrap();
+        assert_eq!(device_a.len(), 1);
+        assert_eq!(device_a[0].event, "sync.merge");
+
+        let past = now_millis() - 10_000;
+        let future = now_millis() + 10_000;
+        assert!(list_sync_audit(&conn, 10, None, Some(future), None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            list_sync_audit(&conn, 10, None, Some(past), None)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let json = export_sync_audit(&conn, "json", None, Some(past), Some("device-b")).unwrap();
+        assert!(json.contains("device-b"));
+        assert!(!json.contains("device-a"));
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

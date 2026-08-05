@@ -1453,23 +1453,45 @@ export async function clearResolvedSyncConflicts(): Promise<number> {
   return cleared;
 }
 
-export async function listSyncAudit(limit = 50, event?: string): Promise<SyncAuditEntry[]> {
+export async function listSyncAudit(
+  limit = 50,
+  event?: string,
+  since?: number,
+  deviceId?: string,
+): Promise<SyncAuditEntry[]> {
   if (isTauri()) {
-    return invoke<SyncAuditEntry[]>("list_sync_audit", { limit, event: event ?? null });
+    return invoke<SyncAuditEntry[]>("list_sync_audit", {
+      limit,
+      event: event ?? null,
+      since: since ?? null,
+      deviceId: deviceId ?? null,
+    });
   }
   return readSyncAudit()
     .filter((entry) => !event || entry.event === event)
+    .filter((entry) => since == null || entry.createdAt >= since)
+    .filter((entry) => !deviceId || entry.deviceId === deviceId)
     .slice(0, Math.max(1, Math.min(200, limit)));
 }
 
 export async function exportSyncAudit(
   format: "json" | "csv" = "json",
   event?: string,
+  since?: number,
+  deviceId?: string,
 ): Promise<string> {
   if (isTauri()) {
-    return invoke<string>("export_sync_audit", { format, event: event ?? null });
+    return invoke<string>("export_sync_audit", {
+      format,
+      event: event ?? null,
+      since: since ?? null,
+      deviceId: deviceId ?? null,
+    });
   }
-  const entries = readSyncAudit().filter((entry) => !event || entry.event === event);
+  const entries = readSyncAudit()
+    .filter((entry) => !event || entry.event === event)
+    .filter((entry) => since == null || entry.createdAt >= since)
+    .filter((entry) => !deviceId || entry.deviceId === deviceId);
   if (format === "json") return JSON.stringify(entries, null, 2);
   const escapeCsv = (value: string) =>
     /[,"\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
