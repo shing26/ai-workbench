@@ -1657,12 +1657,12 @@ fn start_vault_watch_impl(
     let canonical_for_events = canonical.clone();
     let patterns_for_config = ignore_patterns.clone();
     let on_event = move |event: &Event| {
-        if !matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        ) {
-            return;
-        }
+        let event_kind = match &event.kind {
+            EventKind::Create(_) => "created",
+            EventKind::Modify(_) => "modified",
+            EventKind::Remove(_) => "removed",
+            _ => return,
+        };
         let Some(db_state) = app_clone.try_state::<db::Db>() else {
             return;
         };
@@ -1672,8 +1672,11 @@ fn start_vault_watch_impl(
         let changed =
             sync_vault_event(&conn, &event.paths, &canonical_for_events, &ignore_patterns);
         if changed {
-            let _ =
-                db::touch_vault_watch_event(&conn, canonical_for_events.to_string_lossy().as_ref());
+            let _ = db::touch_vault_watch_event(
+                &conn,
+                canonical_for_events.to_string_lossy().as_ref(),
+                event_kind,
+            );
             if let Ok(status) = vault_watch_status(&app_clone, &conn) {
                 let _ = app_clone.emit("vault-watch-update", status);
             }

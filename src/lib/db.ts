@@ -296,6 +296,9 @@ export type VaultWatchTarget = {
   updatedAt: number;
   lastEventAt: number;
   eventCount: number;
+  createdEvents: number;
+  modifiedEvents: number;
+  removedEvents: number;
 };
 
 export type VaultTargetStats = {
@@ -304,6 +307,9 @@ export type VaultTargetStats = {
   lastIndexedAt: number;
   lastEventAt: number;
   eventCount: number;
+  createdEvents: number;
+  modifiedEvents: number;
+  removedEvents: number;
 };
 
 export type VaultWatchConfig = {
@@ -1772,6 +1778,9 @@ function readVaultWatchTargets(): VaultWatchTarget[] {
         ...target,
         lastEventAt: target.lastEventAt ?? 0,
         eventCount: target.eventCount ?? 0,
+        createdEvents: target.createdEvents ?? 0,
+        modifiedEvents: target.modifiedEvents ?? 0,
+        removedEvents: target.removedEvents ?? 0,
       }));
     }
   } catch {
@@ -1787,6 +1796,9 @@ function readVaultWatchTargets(): VaultWatchTarget[] {
         updatedAt: legacy.updatedAt,
         lastEventAt: 0,
         eventCount: 0,
+        createdEvents: 0,
+        modifiedEvents: 0,
+        removedEvents: 0,
       },
     ];
   }
@@ -1866,6 +1878,9 @@ export async function upsertVaultWatchTarget(
     updatedAt: target.updatedAt || Date.now(),
     lastEventAt: target.lastEventAt ?? 0,
     eventCount: target.eventCount ?? 0,
+    createdEvents: target.createdEvents ?? 0,
+    modifiedEvents: target.modifiedEvents ?? 0,
+    removedEvents: target.removedEvents ?? 0,
   };
   if (index >= 0) {
     targets[index] = next;
@@ -1898,6 +1913,9 @@ export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
     lastIndexedAt: 0,
     lastEventAt: target.lastEventAt ?? 0,
     eventCount: target.eventCount ?? 0,
+    createdEvents: target.createdEvents ?? 0,
+    modifiedEvents: target.modifiedEvents ?? 0,
+    removedEvents: target.removedEvents ?? 0,
   }));
 }
 
@@ -2041,10 +2059,18 @@ export async function startVaultWatch(
     updatedAt: Date.now(),
     lastEventAt: 0,
     eventCount: 0,
+    createdEvents: 0,
+    modifiedEvents: 0,
+    removedEvents: 0,
   });
   const targets = readVaultWatchTargets().map((target) =>
     target.path === vaultPath
-      ? { ...target, lastEventAt: Date.now(), eventCount: target.eventCount + 1 }
+      ? {
+          ...target,
+          lastEventAt: Date.now(),
+          eventCount: target.eventCount + 1,
+          createdEvents: target.createdEvents + 1,
+        }
       : target,
   );
   writeVaultWatchTargets(targets);
