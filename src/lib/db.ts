@@ -210,12 +210,20 @@ export type KnowledgeIndexStatus = {
   indexedAt: number;
 };
 
+export type VaultWatchStatus = {
+  watching: boolean;
+  path: string | null;
+  files: number;
+  updatedAt: number;
+};
+
 export type IndexResult = {
   files: number;
 };
 
 const LS_KEY = "ai-workbench:db:v1";
 const VAULT_LS_KEY = "ai-workbench:vault:v1";
+const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -1053,10 +1061,8 @@ function readVaultFiles(): VaultFileRecord[] {
   }
 }
 
-export async function indexVault(vaultPath: string): Promise<IndexResult> {
-  if (isTauri()) return invoke<IndexResult>("index_vault", { vaultPath });
-  const existing = readVaultFiles();
-  const sample: VaultFileRecord[] = [
+function sampleVaultFiles(vaultPath: string): VaultFileRecord[] {
+  return [
     {
       path: `${vaultPath}\\Obsidian Roadmap.md`,
       title: "Obsidian Roadmap",
@@ -1070,6 +1076,27 @@ export async function indexVault(vaultPath: string): Promise<IndexResult> {
       content: "# 每日闪念\n\n- vault 索引让 AI 能引用本地文件",
     },
   ];
+}
+
+type VaultWatchRecord = {
+  watching: boolean;
+  path: string | null;
+  updatedAt: number;
+};
+
+function readVaultWatch(): VaultWatchRecord {
+  try {
+    const record = JSON.parse(localStorage.getItem(VAULT_WATCH_LS_KEY) ?? "null") as VaultWatchRecord | null;
+    return record ?? { watching: false, path: null, updatedAt: 0 };
+  } catch {
+    return { watching: false, path: null, updatedAt: 0 };
+  }
+}
+
+export async function indexVault(vaultPath: string): Promise<IndexResult> {
+  if (isTauri()) return invoke<IndexResult>("index_vault", { vaultPath });
+  const existing = readVaultFiles();
+  const sample = sampleVaultFiles(vaultPath);
   const merged = existing.length > 0 ? existing : sample;
   localStorage.setItem(VAULT_LS_KEY, JSON.stringify(merged));
   return { files: merged.length };
@@ -1079,6 +1106,48 @@ export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
   if (isTauri()) return invoke<KnowledgeIndexStatus>("get_knowledge_index_status");
   const files = readVaultFiles();
   return { files: files.length, indexedAt: files.length ? Date.now() : 0 };
+}
+
+export async function startVaultWatch(vaultPath: string): Promise<VaultWatchStatus> {
+  if (isTauri()) return invoke<VaultWatchStatus>("start_vault_watch", { vaultPath });
+  const existing = readVaultFiles();
+  const merged = existing.length > 0 ? existing : sampleVaultFiles(vaultPath);
+  const syncPath = `${vaultPath}\\Watch Sync Note.md`;
+  if (!merged.some((file) => file.path === syncPath)) {
+    merged.push({
+      path: syncPath,
+      title: "Watch Sync Note",
+      tags: "#work,#vault",
+      content: "# Watch Sync Note\n\n- 文件监听会自动把新 Markdown 纳入 RAG",
+    });
+  }
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(merged));
+  const record: VaultWatchRecord = { watching: true, path: vaultPath, updatedAt: Date.now() };
+  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  return { ...record, files: merged.length };
+}
+
+export async function stopVaultWatch(): Promise<VaultWatchStatus> {
+  if (isTauri()) return invoke<VaultWatchStatus>("stop_vault_watch");
+  const record: VaultWatchRecord = { watching: false, path: null, updatedAt: Date.now() };
+  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  return { ...record, files: readVaultFiles().length };
+}
+
+export async function getVaultWatchStatus(): Promise<VaultWatchStatus> {
+  if (isTauri()) return invoke<VaultWatchStatus>("get_vault_watch_status");
+  const record = readVaultWatch();
+  return { ...record, files: readVaultFiles().length };
+}
+
+export async function listenVaultWatchUpdated(
+  handler: (status: VaultWatchStatus) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<VaultWatchStatus>("vault-watch-update", (event) => handler(event.payload));
+  }
+  return () => {};
 }
 
 export async function searchThoughts(query: string, limit = 5): Promise<RagSearchResult[]> {

@@ -1,4 +1,4 @@
-import { BookOpen, FolderOpen, Plus, Search } from "lucide-react";
+import { BookOpen, FolderOpen, Plus, RefreshCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import * as db from "../lib/db";
@@ -18,6 +18,7 @@ export default function KnowledgeView() {
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
   const [vaultPath, setVaultPath] = useState("");
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
+  const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -37,6 +38,34 @@ export default function KnowledgeView() {
 
   useEffect(() => {
     void db.getKnowledgeIndexStatus().then(setVaultStatus);
+  }, []);
+
+  useEffect(() => {
+    void db.getVaultWatchStatus().then(setWatchStatus);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db
+      .listenVaultWatchUpdated((status) => {
+        if (disposed) return;
+        setWatchStatus(status);
+        void db.getKnowledgeIndexStatus().then((next) => {
+          if (!disposed) setVaultStatus(next);
+        });
+        void db.getRagIndexStatus().then((next) => {
+          if (!disposed) setIndexStatus(next);
+        });
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten();
+    };
   }, []);
 
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
@@ -61,6 +90,15 @@ export default function KnowledgeView() {
   const runIndex = async () => {
     if (!vaultPath.trim()) return;
     await db.indexVault(vaultPath.trim());
+    setVaultStatus(await db.getKnowledgeIndexStatus());
+    setIndexStatus(await db.getRagIndexStatus());
+  };
+
+  const toggleWatch = async () => {
+    if (!vaultPath.trim() && !watchStatus?.watching) return;
+    setWatchStatus(
+      watchStatus?.watching ? await db.stopVaultWatch() : await db.startVaultWatch(vaultPath.trim()),
+    );
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -120,11 +158,30 @@ export default function KnowledgeView() {
           >
             Index vault
           </button>
-          <ModelBadge
-            label="Vault"
-            tone="blue"
-            status={vaultStatus ? `${vaultStatus.files} files` : "pending"}
-          />
+          <button
+            type="button"
+            onClick={() => void toggleWatch()}
+            data-vault-watch={watchStatus?.watching ? "on" : "off"}
+            className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
+          >
+            <RefreshCw size={14} className={watchStatus?.watching ? "animate-spin" : ""} />
+            {watchStatus?.watching ? "Stop watch" : "Watch vault"}
+          </button>
+          <span data-vault-watch-status={watchStatus?.watching ? "on" : "off"}>
+            <ModelBadge
+              label="Watch"
+              tone="green"
+              status={watchStatus?.watching ? "watching" : "off"}
+              pulse={watchStatus?.watching}
+            />
+          </span>
+          <span data-vault-files={vaultStatus?.files ?? 0}>
+            <ModelBadge
+              label="Vault"
+              tone="blue"
+              status={vaultStatus ? `${vaultStatus.files} files` : "pending"}
+            />
+          </span>
         </div>
       </BentoCard>
 

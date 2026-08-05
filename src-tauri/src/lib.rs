@@ -1,4 +1,5 @@
 use keyring::Entry;
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -6,6 +7,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
@@ -131,6 +133,35 @@ struct ProviderHeartbeatSnapshot {
     providers: Vec<ProviderHeartbeatEntry>,
     alerts: Vec<ProviderHeartbeatEntry>,
     checked_at: u128,
+}
+
+#[derive(Default)]
+struct VaultWatchState {
+    active: std::sync::Mutex<Option<ActiveVaultWatch>>,
+}
+
+struct ActiveVaultWatch {
+    path: String,
+    stop: Sender<()>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ActiveVaultWatch {
+    fn stop(self) {
+        let _ = self.stop.send(());
+        if let Some(join) = self.join {
+            let _ = join.join();
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultWatchStatus {
+    watching: bool,
+    path: Option<String>,
+    files: i64,
+    updated_at: i64,
 }
 
 fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
@@ -616,6 +647,94 @@ fn index_vault_files(
     Ok(db::IndexResult { files: indexed })
 }
 
+fn upsert_markdown_path(conn: &rusqlite::Connection, path: &Path) -> Result<(), String> {
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Read {} failed: {}", path.display(), e))?;
+    let (frontmatter, body) = parse_frontmatter(&content);
+    let title = frontmatter
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let tags = frontmatter
+        .get("tags")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    db::upsert_knowledge_file(conn, &path.to_string_lossy(), &title, &tags, &body)
+        .map_err(|e| e.to_string())
+}
+
+fn sync_vault_path(conn: &rusqlite::Connection, path: &Path) -> Result<bool, String> {
+    if path.extension().is_none_or(|ext| ext != "md") {
+        return Ok(false);
+    }
+    if path.exists() {
+        upsert_markdown_path(conn, path)?;
+        Ok(true)
+    } else {
+        db::delete_knowledge_file(conn, &path.to_string_lossy()).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+}
+
+fn start_vault_watcher(
+    vault_path: String,
+    mut on_event: impl FnMut(&Event) + Send + 'static,
+) -> Result<ActiveVaultWatch, String> {
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let (event_tx, event_rx) = mpsc::channel();
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(event_tx).map_err(|e| e.to_string())?;
+    watcher
+        .watch(Path::new(&vault_path), RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+    let join = thread::Builder::new()
+        .name("vault-watcher".to_string())
+        .spawn(move || {
+            let _keepalive = watcher;
+            loop {
+                if stop_rx.recv_timeout(Duration::from_millis(200)).is_ok() {
+                    break;
+                }
+                while let Ok(event) = event_rx.try_recv() {
+                    if let Ok(event) = event {
+                        on_event(&event);
+                    }
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(ActiveVaultWatch {
+        path: vault_path,
+        stop: stop_tx,
+        join: Some(join),
+    })
+}
+
+fn vault_watch_status(
+    app: &tauri::AppHandle,
+    conn: &rusqlite::Connection,
+) -> Result<VaultWatchStatus, String> {
+    let (watching, path) = match app.try_state::<VaultWatchState>() {
+        Some(state) => match state.active.lock() {
+            Ok(active) => active
+                .as_ref()
+                .map(|handle| (true, Some(handle.path.clone())))
+                .unwrap_or((false, None)),
+            Err(_) => (false, None),
+        },
+        None => (false, None),
+    };
+    let status = db::knowledge_index_status(conn).map_err(|e| e.to_string())?;
+    Ok(VaultWatchStatus {
+        watching,
+        path,
+        files: status.files,
+        updated_at: status.indexed_at,
+    })
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -1092,6 +1211,92 @@ fn get_knowledge_index_status(
 ) -> Result<db::KnowledgeIndexStatus, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::knowledge_index_status(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn start_vault_watch(
+    app: tauri::AppHandle,
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+    vault_path: String,
+) -> Result<VaultWatchStatus, String> {
+    let dir = Path::new(&vault_path);
+    if !dir.is_dir() {
+        return Err("Vault path not a directory".into());
+    }
+    let canonical =
+        fs::canonicalize(dir).map_err(|e| format!("Vault path not accessible: {}", e))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
+    {
+        let mut active = state.active.lock().map_err(|e| e.to_string())?;
+        if let Some(handle) = active.take() {
+            handle.stop();
+        }
+    }
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        index_vault_files(&conn, &canonical_str)?;
+    }
+    let app_clone = app.clone();
+    let on_event = move |event: &Event| {
+        if !matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+        ) {
+            return;
+        }
+        let Some(db_state) = app_clone.try_state::<db::Db>() else {
+            return;
+        };
+        let Ok(conn) = db_state.0.lock() else {
+            return;
+        };
+        let mut changed = false;
+        for path in &event.paths {
+            if let Ok(synced) = sync_vault_path(&conn, path) {
+                changed |= synced;
+            }
+        }
+        if changed {
+            if let Ok(status) = vault_watch_status(&app_clone, &conn) {
+                let _ = app_clone.emit("vault-watch-update", status);
+            }
+        }
+    };
+    let handle = start_vault_watcher(canonical_str.clone(), on_event)?;
+    *state.active.lock().map_err(|e| e.to_string())? = Some(handle);
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    let status = vault_watch_status(&app, &conn)?;
+    let _ = app.emit("vault-watch-update", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn stop_vault_watch(
+    app: tauri::AppHandle,
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+) -> Result<VaultWatchStatus, String> {
+    {
+        let mut active = state.active.lock().map_err(|e| e.to_string())?;
+        if let Some(handle) = active.take() {
+            handle.stop();
+        }
+    }
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    let status = vault_watch_status(&app, &conn)?;
+    let _ = app.emit("vault-watch-update", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn get_vault_watch_status(
+    app: tauri::AppHandle,
+    _state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+) -> Result<VaultWatchStatus, String> {
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    vault_watch_status(&app, &conn)
 }
 
 fn spawn_clipboard_monitor(app: tauri::AppHandle) {
@@ -1633,6 +1838,7 @@ pub fn run() {
             app.manage(db::Db(std::sync::Mutex::new(conn)));
             app.manage(StreamCancellation::default());
             app.manage(ProviderHeartbeat::default());
+            app.manage(VaultWatchState::default());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
             Ok(())
@@ -1695,6 +1901,9 @@ pub fn run() {
             get_rag_index_status,
             index_vault,
             get_knowledge_index_status,
+            start_vault_watch,
+            stop_vault_watch,
+            get_vault_watch_status,
             get_project_git_context,
             generate_commit_pr_draft,
             build_team_summary,
@@ -1898,6 +2107,62 @@ mod tests {
         let results = db::search_thoughts(&conn, "obsidian vault", 5).unwrap();
         assert!(results.iter().any(|r| r.content.contains("Obsidian")));
         assert!(results.iter().any(|r| r.kind == "doc"));
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    fn wait_until(mut check: impl FnMut() -> bool, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(60));
+        }
+        check()
+    }
+
+    #[test]
+    fn vault_watch_incrementally_syncs_files() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-vault-watch-test-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("seed.md"), "# Seed\n\ninitial note").unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(
+            db::init_connection(&temp.join("workbench.db")).unwrap(),
+        ));
+        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap()).unwrap();
+        let db_for_event = conn.clone();
+        let on_event = move |event: &Event| {
+            for path in &event.paths {
+                let _ = sync_vault_path(&db_for_event.lock().unwrap(), path);
+            }
+        };
+        let handle = start_vault_watcher(vault.to_string_lossy().to_string(), on_event).unwrap();
+        std::fs::write(vault.join("new.md"), "# New\n\nfresh note").unwrap();
+        let added = wait_until(
+            || {
+                db::knowledge_index_status(&conn.lock().unwrap())
+                    .map(|status| status.files)
+                    .unwrap_or(0)
+                    == 2
+            },
+            Duration::from_secs(8),
+        );
+        assert!(added, "watcher did not index new markdown file");
+        std::fs::remove_file(vault.join("seed.md")).unwrap();
+        let removed = wait_until(
+            || {
+                db::knowledge_index_status(&conn.lock().unwrap())
+                    .map(|status| status.files)
+                    .unwrap_or(0)
+                    == 1
+            },
+            Duration::from_secs(8),
+        );
+        assert!(removed, "watcher did not remove deleted markdown file");
+        handle.stop();
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }

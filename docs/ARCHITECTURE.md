@@ -73,7 +73,8 @@ Sprint 14 新增命令：`update_chat_message`、`truncate_chat_messages`。
 
 - SQLite 新增 `knowledge_files` 表（path 唯一、title、tags、content、indexed_at），`index_vault(vault_path)` 递归扫描 `.md` 文件并解析 frontmatter，按 path upsert。
 - `get_knowledge_index_status` 返回已索引文件数；`search_thoughts` 同时检索 thoughts 与 knowledge_files，文件命中以 `type: doc` 返回。
-- Knowledge 视图提供 Vault 路径输入与 Index 按钮，文件数 badge 展示索引状态；AI Studio RAG 注入自动覆盖本地 Markdown 文件。
+- `start_vault_watch` 先用全量索引建立基线，再通过 `notify` 递归监听；新增/修改自动 upsert，删除自动清理，变更经 `vault-watch-update` 事件推送状态。
+- Knowledge 视图提供 Vault 路径输入、Index 按钮与 Watch/Stop 开关，文件数与 Watch 状态 badge 实时展示；AI Studio RAG 注入自动覆盖本地 Markdown 文件。
 - 浏览器 fallback 用 localStorage 模拟 Vault 文件，保证 UI 验证可运行。
 
 ## AI Studio RAG 上下文注入
