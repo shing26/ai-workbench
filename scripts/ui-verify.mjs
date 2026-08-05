@@ -841,12 +841,59 @@ try {
         persistedPrompt =
           storedAgent?.systemPrompt ===
           "You are a QA agent that verifies work with evidence.";
+
+        const editBtn2 = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        if (editBtn2) {
+          editBtn2.click();
+          await sleep(120);
+          const textarea2 = section.querySelector('textarea[aria-label="Agent system prompt"]');
+          if (textarea2) {
+            const textSetter2 = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+            textSetter2.call(textarea2, "v2 QA prompt");
+            textarea2.dispatchEvent(new Event("input", { bubbles: true }));
+            await sleep(80);
+            section.querySelector('button[aria-label="Save agent prompt"]')?.click();
+            await sleep(250);
+          }
+        }
+        const editBtn3 = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        if (editBtn3) {
+          editBtn3.click();
+          await sleep(120);
+          section.querySelector('button[aria-label="Show prompt versions"]')?.click();
+          await sleep(200);
+        }
+        const versionRows = section.querySelectorAll(".prompt-version-list > div").length;
+        section.querySelector('button[aria-label="Restore prompt version 2"]')?.click();
+        await sleep(250);
+        section.querySelector('button[aria-label="Cancel agent prompt"]')?.click();
+        await sleep(150);
+        const restoredEditBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        const restoredContainer = restoredEditBtn?.closest("div")?.parentElement;
+        const restoredToV1 =
+          !!restoredContainer &&
+          restoredContainer.textContent.includes("You are a QA agent that verifies work with evidence.") &&
+          !restoredContainer.textContent.includes("v2 QA prompt");
+        const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") || "{}");
+        const storedQa = (storedAfter.agents ?? []).find((a) => a.name === "QA Agent");
+        const versionsPersisted =
+          (storedAfter.promptVersions ?? []).filter((v) => v.agentId === storedQa?.id).length >= 3;
         return {
-          ok: designVisible && created && promptSaved && persistedPrompt,
+          ok:
+            designVisible &&
+            created &&
+            promptSaved &&
+            persistedPrompt &&
+            versionRows >= 2 &&
+            restoredToV1 &&
+            versionsPersisted,
           designVisible,
           created,
           promptSaved,
           persistedPrompt,
+          versionRows,
+          restoredToV1,
+          versionsPersisted,
         };
       }
     }
@@ -856,6 +903,9 @@ try {
       created,
       promptSaved,
       persistedPrompt,
+      versionRows: 0,
+      restoredToV1: false,
+      versionsPersisted: false,
     };
   })()`);
   if (!results.agentDirectory.ok) {

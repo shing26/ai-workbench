@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS agents (
     FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_agents_department ON agents(department_id, is_active);
+CREATE TABLE IF NOT EXISTS agent_prompt_versions (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    content TEXT,
+    created_at INTEGER,
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_prompt_versions_agent ON agent_prompt_versions(agent_id, created_at);
 CREATE TABLE IF NOT EXISTS habits (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -242,6 +250,15 @@ pub struct Agent {
     pub provider_id: Option<String>,
     pub system_prompt: String,
     pub is_active: bool,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPromptVersion {
+    pub id: String,
+    pub agent_id: String,
+    pub content: String,
     pub created_at: i64,
 }
 
@@ -917,11 +934,81 @@ pub fn update_agent_system_prompt(
     id: &str,
     system_prompt: &str,
 ) -> Result<Agent> {
-    conn.execute(
-        "UPDATE agents SET system_prompt = ?1 WHERE id = ?2",
-        params![system_prompt, id],
-    )?;
+    let current = get_agent(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    if current.system_prompt != system_prompt {
+        save_agent_prompt_version(conn, id, &current.system_prompt)?;
+        conn.execute(
+            "UPDATE agents SET system_prompt = ?1 WHERE id = ?2",
+            params![system_prompt, id],
+        )?;
+    }
     get_agent(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn save_agent_prompt_version(
+    conn: &Connection,
+    agent_id: &str,
+    content: &str,
+) -> Result<AgentPromptVersion> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO agent_prompt_versions (id, agent_id, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, agent_id, content, now],
+    )?;
+    Ok(AgentPromptVersion {
+        id,
+        agent_id: agent_id.to_string(),
+        content: content.to_string(),
+        created_at: now,
+    })
+}
+
+pub fn list_agent_prompt_versions(
+    conn: &Connection,
+    agent_id: &str,
+) -> Result<Vec<AgentPromptVersion>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_id, content, created_at FROM agent_prompt_versions
+         WHERE agent_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![agent_id], |row| {
+        Ok(AgentPromptVersion {
+            id: row.get(0)?,
+            agent_id: row.get(1)?,
+            content: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn restore_agent_prompt(conn: &Connection, agent_id: &str, version_id: &str) -> Result<Agent> {
+    let version = conn
+        .query_row(
+            "SELECT id, agent_id, content, created_at FROM agent_prompt_versions
+             WHERE id = ?1 AND agent_id = ?2",
+            params![version_id, agent_id],
+            |row| {
+                Ok(AgentPromptVersion {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    content: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    let current = get_agent(conn, agent_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    if current.system_prompt != version.content {
+        save_agent_prompt_version(conn, agent_id, &current.system_prompt)?;
+        conn.execute(
+            "UPDATE agents SET system_prompt = ?1 WHERE id = ?2",
+            params![version.content, agent_id],
+        )?;
+    }
+    get_agent(conn, agent_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
@@ -1691,6 +1778,33 @@ mod tests {
             .unwrap()
             .expect("agent should still exist");
         assert_eq!(reloaded.system_prompt, updated.system_prompt);
+    }
+
+    #[test]
+    fn agent_prompt_versions_track_and_restore_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        seed_agents_if_empty(&conn).unwrap();
+
+        let ui_designer = list_agents(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.name == "UI Designer")
+            .expect("UI Designer should be seeded");
+        let seed_prompt = ui_designer.system_prompt.clone();
+
+        update_agent_system_prompt(&conn, &ui_designer.id, "v2 prompt").unwrap();
+        update_agent_system_prompt(&conn, &ui_designer.id, "v3 prompt").unwrap();
+        let versions = list_agent_prompt_versions(&conn, &ui_designer.id).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].content, seed_prompt);
+        assert_eq!(versions[1].content, "v2 prompt");
+
+        let restored = restore_agent_prompt(&conn, &ui_designer.id, &versions[0].id).unwrap();
+        assert_eq!(restored.system_prompt, seed_prompt);
+        let after = list_agent_prompt_versions(&conn, &ui_designer.id).unwrap();
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[2].content, "v3 prompt");
     }
 
     #[test]

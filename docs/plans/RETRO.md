@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 27
+
+### What went well?
+
+- Prompt 版本闭环：`agent_prompt_versions` 表保存每次更新前的旧 Prompt；恢复前再把当前 Prompt 留档，历史血缘完整，可回滚到任意版本。
+- System Agent directory 的 Prompt 编辑器新增 Versions 列表与 Restore 按钮，保存即留档。
+- 验证覆盖：`cargo test --lib` 22/22，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增版本行、恢复结果与 localStorage 持久化断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 验收恢复断言最初检查整段容器文本，恢复后编辑器里的 v2 草稿仍在，导致“不含 v2”误判；改为恢复后关闭编辑器再检查预览。
+- 首轮版本断言依赖 `.prompt-version-list > div`，需等异步加载完成后再计数。
+
+### Action Items
+
+- 下一 Sprint 候选：自动文件监听同步、真实 Provider 端到端流式联调。
+- 后续改动 Prompt 或 Agent 目录时，保留版本与恢复断言。
+
 ## Sprint 26
 
 ### What went well?
