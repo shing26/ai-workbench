@@ -424,7 +424,12 @@ fn get_api_key(name: &str) -> Result<String, String> {
 
 fn chat_openai(messages_json: &str) -> Result<String, String> {
     let api_key = get_api_key("OPENAI_API_KEY")?;
-    chat_openai_compatible("https://api.openai.com/v1", &api_key, messages_json)
+    chat_openai_compatible(
+        "https://api.openai.com/v1",
+        &api_key,
+        messages_json,
+        "gpt-4o-mini",
+    )
 }
 
 fn stream_openai_compatible_with(
@@ -432,6 +437,7 @@ fn stream_openai_compatible_with(
     base_url: &str,
     api_key: &str,
     messages_json: &str,
+    model: &str,
     is_cancelled: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&StreamChunk),
 ) -> Result<(), String> {
@@ -442,7 +448,7 @@ fn stream_openai_compatible_with(
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": model,
             "messages": body,
             "stream": true
         }))
@@ -505,6 +511,7 @@ fn stream_openai_compatible(
     base_url: &str,
     api_key: &str,
     messages_json: &str,
+    model: &str,
 ) -> Result<(), String> {
     let app = app.clone();
     let run_id_owned = run_id.to_string();
@@ -518,6 +525,7 @@ fn stream_openai_compatible(
         base_url,
         api_key,
         messages_json,
+        model,
         &is_cancelled,
         &mut emit,
     )
@@ -525,6 +533,7 @@ fn stream_openai_compatible(
 
 fn stream_ollama_with(
     run_id: &str,
+    base_url: &str,
     messages_json: &str,
     model_name: &str,
     is_cancelled: &dyn Fn() -> bool,
@@ -532,8 +541,9 @@ fn stream_ollama_with(
 ) -> Result<(), String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let client = stream_client();
+    let endpoint = format!("{}/api/chat", base_url.trim_end_matches('/'));
     let resp = client
-        .post("http://localhost:11434/api/chat")
+        .post(&endpoint)
         .json(&serde_json::json!({
             "model": model_name,
             "messages": messages,
@@ -592,6 +602,7 @@ fn stream_ollama_with(
 fn stream_ollama(
     app: &tauri::AppHandle,
     run_id: &str,
+    base_url: &str,
     messages_json: &str,
     model_name: &str,
 ) -> Result<(), String> {
@@ -602,13 +613,21 @@ fn stream_ollama(
     let mut emit = |chunk: &StreamChunk| {
         let _ = app.emit("stream-chunk", chunk.clone());
     };
-    stream_ollama_with(run_id, messages_json, model_name, &is_cancelled, &mut emit)
+    stream_ollama_with(
+        run_id,
+        base_url,
+        messages_json,
+        model_name,
+        &is_cancelled,
+        &mut emit,
+    )
 }
 
 fn chat_openai_compatible(
     base_url: &str,
     api_key: &str,
     messages_json: &str,
+    model: &str,
 ) -> Result<String, String> {
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -617,7 +636,7 @@ fn chat_openai_compatible(
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": model,
             "messages": body
         }))
         .send()
@@ -636,11 +655,12 @@ fn chat_openai_compatible(
         .ok_or_else(|| "AI returned empty content".into())
 }
 
-fn chat_ollama(messages_json: &str, model_name: &str) -> Result<String, String> {
+fn chat_ollama(base_url: &str, messages_json: &str, model_name: &str) -> Result<String, String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let client = reqwest::blocking::Client::new();
+    let endpoint = format!("{}/api/chat", base_url.trim_end_matches('/'));
     let resp = client
-        .post("http://localhost:11434/api/chat")
+        .post(&endpoint)
         .json(&serde_json::json!({
             "model": model_name,
             "messages": messages,
@@ -685,7 +705,12 @@ fn is_ollama_provider(name: &str, url: &str) -> bool {
 
 fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String, String> {
     if is_ollama_provider(&provider.name, &provider.base_url) {
-        chat_ollama(messages_json, "qwen2.5:3b")
+        let model = if provider.model.is_empty() {
+            "qwen2.5:3b"
+        } else {
+            &provider.model
+        };
+        chat_ollama(&provider.base_url, messages_json, model)
     } else {
         let key_ref = if provider.api_key.is_empty() {
             "OPENAI_API_KEY"
@@ -693,7 +718,12 @@ fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String,
             &provider.api_key
         };
         let api_key = get_api_key(key_ref)?;
-        chat_openai_compatible(&provider.base_url, &api_key, messages_json)
+        let model = if provider.model.is_empty() {
+            "gpt-4o-mini"
+        } else {
+            &provider.model
+        };
+        chat_openai_compatible(&provider.base_url, &api_key, messages_json, model)
     }
 }
 
@@ -1195,7 +1225,7 @@ fn send_chat_message(
     let model = model.to_lowercase();
     match model.as_str() {
         "cloud" => chat_openai(&messages_json),
-        "ollama" => chat_ollama(&messages_json, &ollama_model),
+        "ollama" => chat_ollama("http://localhost:11434", &messages_json, &ollama_model),
         "codex" => {
             let msgs: Value = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
             let last = msgs
@@ -1205,9 +1235,8 @@ fn send_chat_message(
                 .unwrap_or("");
             chat_codex(last)
         }
-        "auto" => {
-            chat_openai(&messages_json).or_else(|_| chat_ollama(&messages_json, &ollama_model))
-        }
+        "auto" => chat_openai(&messages_json)
+            .or_else(|_| chat_ollama("http://localhost:11434", &messages_json, &ollama_model)),
         _ => Err(format!("Unknown model: {}", model)),
     }
 }
@@ -1380,9 +1409,17 @@ fn create_provider(
     name: String,
     base_url: String,
     api_key: String,
+    model: Option<String>,
 ) -> Result<db::Provider, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_provider(&conn, &name, &base_url, &api_key).map_err(|e| e.to_string())
+    db::create_provider(
+        &conn,
+        &name,
+        &base_url,
+        &api_key,
+        &model.unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1393,6 +1430,16 @@ fn set_provider_active(
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::set_provider_active(&conn, &id, is_active).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_provider_model(
+    state: State<'_, db::Db>,
+    id: String,
+    model: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_provider_model(&conn, &id, &model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2717,6 +2764,11 @@ fn run_provider_stream_smoke_test(
     let mut chunks = 0usize;
     let is_cancelled = || false;
     let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+        let model = if provider.model.is_empty() {
+            "qwen2.5:3b"
+        } else {
+            &provider.model
+        };
         let mut emit = |chunk: &StreamChunk| {
             if !chunk.delta.is_empty() {
                 chunks += 1;
@@ -2724,8 +2776,9 @@ fn run_provider_stream_smoke_test(
         };
         stream_ollama_with(
             "smoke",
+            &provider.base_url,
             &messages_json,
-            "qwen2.5:3b",
+            model,
             &is_cancelled,
             &mut emit,
         )
@@ -2741,11 +2794,17 @@ fn run_provider_stream_smoke_test(
                 chunks += 1;
             }
         };
+        let model = if provider.model.is_empty() {
+            "gpt-4o-mini"
+        } else {
+            &provider.model
+        };
         stream_openai_compatible_with(
             "smoke",
             &provider.base_url,
             &api_key,
             &messages_json,
+            model,
             &is_cancelled,
             &mut emit,
         )
@@ -2795,6 +2854,7 @@ async fn stream_ai_message(
                     "https://api.openai.com/v1",
                     &api_key,
                     &messages_json,
+                    "gpt-4o-mini",
                 )?;
             }
             Ok::<(), String>(())
@@ -2813,7 +2873,18 @@ async fn stream_ai_message(
             }
             let provider = selected[0].clone();
             if is_ollama_provider(&provider.name, &provider.base_url) {
-                stream_ollama(&app_clone, &run_id_clone, &messages_json, "qwen2.5:3b")
+                let model = if provider.model.is_empty() {
+                    "qwen2.5:3b"
+                } else {
+                    &provider.model
+                };
+                stream_ollama(
+                    &app_clone,
+                    &run_id_clone,
+                    &provider.base_url,
+                    &messages_json,
+                    model,
+                )
             } else {
                 let key_ref = if provider.api_key.is_empty() {
                     "OPENAI_API_KEY"
@@ -2821,12 +2892,18 @@ async fn stream_ai_message(
                     &provider.api_key
                 };
                 let api_key = get_api_key(key_ref)?;
+                let model = if provider.model.is_empty() {
+                    "gpt-4o-mini"
+                } else {
+                    &provider.model
+                };
                 stream_openai_compatible(
                     &app_clone,
                     &run_id_clone,
                     &provider.base_url,
                     &api_key,
                     &messages_json,
+                    model,
                 )
             }
         }
@@ -4554,6 +4631,7 @@ pub fn run() {
             list_providers,
             create_provider,
             set_provider_active,
+            update_provider_model,
             list_departments,
             list_agents,
             create_department,
@@ -5052,6 +5130,7 @@ mod tests {
             name: name.to_string(),
             base_url: "http://localhost:11434".to_string(),
             api_key: String::new(),
+            model: String::new(),
             is_active: true,
         };
         heartbeat.record(
@@ -5931,13 +6010,15 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
+            let read = stream.read(&mut buf).unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]).to_string();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body_owned.len(),
                 body_owned
             );
             let _ = stream.write_all(response.as_bytes());
+            request
         });
         let deltas = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let deltas_for_emit = deltas.clone();
@@ -5953,11 +6034,22 @@ mod tests {
             &format!("http://{}", addr),
             "dummy-key",
             &messages,
+            "mock-gpt",
             &is_cancelled,
             &mut emit,
         );
-        server.join().unwrap();
+        let request = server.join().unwrap();
         assert!(result.is_ok(), "stream failed: {:?}", result);
+        assert!(
+            request.contains("\"model\":\"mock-gpt\""),
+            "request model missing: {}",
+            request
+        );
+        assert!(
+            request.contains("\"stream\":true"),
+            "request stream flag missing: {}",
+            request
+        );
         assert_eq!(
             *deltas.lock().unwrap(),
             vec!["Hello ".to_string(), "world".to_string()]
@@ -5990,6 +6082,7 @@ mod tests {
             &format!("http://{}", addr),
             "dummy-key",
             &messages,
+            "gpt-4o-mini",
             &is_cancelled,
             &mut emit,
         );

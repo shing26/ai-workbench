@@ -664,3 +664,14 @@ ALTER TABLE knowledge_files ADD COLUMN embedding TEXT DEFAULT '';
 - 新库的 `knowledge_files` 建表语句已直接包含 `embedding TEXT DEFAULT ''`；`migrate_knowledge_embedding` 按列存在性幂等补列并把 `NULL` 回写为空串，已加入 `init_connection` 迁移链。
 - `upsert_knowledge_file` 在写入文档内容时同步生成 256 维确定性向量并序列化为 JSON 存入 `embedding`；`search_thoughts` 读取该列，为空时回退按内容即时计算。
 - 向量不参与同步快照：`SyncSnapshot` 结构与协议不变，跨设备仍只同步文档内容，检索端各自生成等价 embedding。
+
+## Sprint 95：Provider 模型配置
+
+```sql
+-- Sprint 95 建表后，旧库由 migrate_provider_model 补充该列
+ALTER TABLE providers ADD COLUMN model TEXT DEFAULT '';
+```
+
+- 新库的 `providers` 建表语句已直接包含 `model TEXT DEFAULT ''`；`migrate_provider_model` 按列存在性幂等补列并把 `NULL` 回写为空串，已加入 `init_connection` 迁移链。
+- `list_providers` / `get_provider` / `create_provider` 均读写 `model`；新增 `update_provider_model` Tauri 命令用于编辑既有 Provider 的模型名。
+- `model` 属于本地 Provider 配置，不进入 `SyncSnapshot`：同步协议无变化，浏览器 fallback 继续保存在 `ai-workbench:db:v1` 的 `providers` 数组中。

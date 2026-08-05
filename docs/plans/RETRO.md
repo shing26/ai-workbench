@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 95
+
+### What went well?
+
+- Provider 模型配置上线：`providers.model` 新库建列 / 旧库幂等迁移，`update_provider_model` 命令与 System 卡片编辑打通，`data-provider-model` 徽标区分 live / fallback。
+- Rust 流式链路全面使用 `provider.model`：`stream_ai_message`、`run_provider_stream_smoke_test` 与非流式 `call_provider` 都优先配置模型，空值回退默认。
+- 修复 Ollama 固定端口的隐患：`stream_ollama` / `chat_ollama` 改用 `provider.base_url`，自定义 Ollama 地址不再失效。
+- 浏览器 fallback 补齐真实流式：配置 model 的 http(s) Provider 走 fetch SSE / NDJSON，逐 chunk 转发、支持取消；未配置时保留模拟流，既有 UI lane 全部不受影响。
+- `verify:ui` / `verify:preview` 新增 `providerLiveStream` lane：本地 SSE mock 证明浏览器真实发起请求并渲染 `Live provider stream ok model=mock-gpt`；Rust 107 个单测通过，clippy 零告警。
+
+### What went wrong?
+
+- 给 `db::Provider` 增加 `model` 字段后，测试里的闭包构造器漏填新字段，首次 `cargo test` 编译失败；补齐后通过。
+- MOA 分支调用 `stream_openai_compatible` 时首轮漏传 model 参数，由编译器直接拦截；补 `gpt-4o-mini` 默认值后通过。
+- 浏览器实时流需要 CORS 预检，verify 的本地 mock 必须处理 OPTIONS；补 `Access-Control-Allow-*` 后稳定通过。
+
+### Action Items
+
+- 下一 Sprint 候选：复杂 Webhook 触发器 / 消息队列式投递、前端 ESLint/Prettier + husky/lint-staged、Provider `/models` 探测与下拉选择。
+- 模型编辑目前是自由文本，后续可做模型列表探测与最近使用排序。
+- 保留 `providerLiveStream` lane，改动 Provider 或流式链路时重跑 `verify:ui`。
+
 ## Sprint 94
 
 ### What went well?

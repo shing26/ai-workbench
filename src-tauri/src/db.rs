@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS providers (
     name TEXT NOT NULL,
     base_url TEXT NOT NULL,
     api_key TEXT,
+    model TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS departments (
@@ -350,6 +351,7 @@ pub struct Provider {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    pub model: String,
     pub is_active: bool,
 }
 
@@ -851,6 +853,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_watch_event_stats(&conn)?;
     migrate_knowledge_vault_path(&conn)?;
     migrate_knowledge_embedding(&conn)?;
+    migrate_provider_model(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
@@ -914,6 +917,14 @@ fn migrate_knowledge_embedding(conn: &Connection) -> Result<()> {
         "UPDATE knowledge_files SET embedding = '' WHERE embedding IS NULL",
         [],
     )?;
+    Ok(())
+}
+
+fn migrate_provider_model(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "providers", "model")? {
+        conn.execute_batch("ALTER TABLE providers ADD COLUMN model TEXT DEFAULT '';")?;
+    }
+    conn.execute("UPDATE providers SET model = '' WHERE model IS NULL", [])?;
     Ok(())
 }
 
@@ -1482,7 +1493,7 @@ pub fn record_quick_prompt_usage(conn: &Connection, id: &str) -> Result<i64> {
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, is_active FROM providers ORDER BY created_at DESC",
+        "SELECT id, name, base_url, api_key, model, is_active FROM providers ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Provider {
@@ -1490,22 +1501,25 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
             name: row.get(1)?,
             base_url: row.get(2)?,
             api_key: row.get(3)?,
-            is_active: row.get::<_, i64>(4)? != 0,
+            model: row.get(4)?,
+            is_active: row.get::<_, i64>(5)? != 0,
         })
     })?;
     rows.collect()
 }
 
 pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
-    let mut stmt =
-        conn.prepare("SELECT id, name, base_url, api_key, is_active FROM providers WHERE id = ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, base_url, api_key, model, is_active FROM providers WHERE id = ?1",
+    )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(Provider {
             id: row.get(0)?,
             name: row.get(1)?,
             base_url: row.get(2)?,
             api_key: row.get(3)?,
-            is_active: row.get::<_, i64>(4)? != 0,
+            model: row.get(4)?,
+            is_active: row.get::<_, i64>(5)? != 0,
         })
     })?;
     rows.next().transpose()
@@ -1516,17 +1530,19 @@ pub fn create_provider(
     name: &str,
     base_url: &str,
     api_key: &str,
+    model: &str,
 ) -> Result<Provider> {
     let id = uid();
     conn.execute(
-        "INSERT INTO providers (id, name, base_url, api_key, is_active) VALUES (?1, ?2, ?3, ?4, 0)",
-        params![id, name, base_url, api_key],
+        "INSERT INTO providers (id, name, base_url, api_key, model, is_active) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        params![id, name, base_url, api_key, model],
     )?;
     Ok(Provider {
         id,
         name: name.to_string(),
         base_url: base_url.to_string(),
         api_key: api_key.to_string(),
+        model: model.to_string(),
         is_active: false,
     })
 }
@@ -1535,6 +1551,14 @@ pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Resu
     conn.execute(
         "UPDATE providers SET is_active = ?1 WHERE id = ?2",
         params![is_active as i64, id],
+    )?;
+    Ok(())
+}
+
+pub fn update_provider_model(conn: &Connection, id: &str, model: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET model = ?1 WHERE id = ?2",
+        params![model, id],
     )?;
     Ok(())
 }
@@ -5999,5 +6023,28 @@ mod tests {
         assert!(results[0].vector_score > 0.0);
         let status = rag_index_status(&conn).unwrap();
         assert!(status.vector_indexed);
+    }
+
+    #[test]
+    fn provider_model_migration_adds_column_and_persists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                is_active INTEGER DEFAULT 1
+            );",
+        )
+        .unwrap();
+        migrate_provider_model(&conn).unwrap();
+        assert!(column_exists(&conn, "providers", "model").unwrap());
+        let provider =
+            create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
+        assert_eq!(provider.model, "qwen2.5:3b");
+        update_provider_model(&conn, &provider.id, "qwen3:8b").unwrap();
+        let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
+        assert_eq!(updated.model, "qwen3:8b");
     }
 }
