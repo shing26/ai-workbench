@@ -789,11 +789,16 @@ export default function SystemView() {
   useEffect(() => {
     void loadWebhookRules();
     void loadWebhookDeliveries();
+    const onWebhooksUpdated = () => void loadWebhookDeliveries();
+    window.addEventListener("workbench:webhook-deliveries-updated", onWebhooksUpdated);
     const timer = window.setInterval(() => {
       void loadWebhookRules();
       void loadWebhookDeliveries();
     }, 5000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("workbench:webhook-deliveries-updated", onWebhooksUpdated);
+    };
   }, []);
 
   useEffect(() => {

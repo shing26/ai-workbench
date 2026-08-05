@@ -1449,30 +1449,44 @@ export async function reportFrontendError(input: {
   const deviceId = status.deviceId;
   if (isTauri()) {
     await invoke("report_frontend_error", { ...input, deviceId });
-    return;
+  } else {
+    const shape = readLocal();
+    const log: ErrorLog = {
+      id: makeId(),
+      source: input.source,
+      message: input.message,
+      stack: input.stack,
+      severity: input.severity,
+      timestamp: Date.now(),
+      updatedAt: Date.now(),
+      deviceId,
+    };
+    shape.logs.unshift(log);
+    writeLocal(shape);
   }
-  const shape = readLocal();
-  const log: ErrorLog = {
-    id: makeId(),
+  void emitWorkbenchEvent("error.reported", {
     source: input.source,
     message: input.message,
-    stack: input.stack,
     severity: input.severity,
-    timestamp: Date.now(),
-    updatedAt: Date.now(),
     deviceId,
-  };
-  shape.logs.unshift(log);
-  writeLocal(shape);
+  });
 }
 
 export async function captureClipboard(content: string): Promise<ClipboardItem> {
-  if (isTauri()) return invoke<ClipboardItem>("capture_clipboard", { content });
-  const shape = readLocal();
-  const now = Date.now();
-  const item: ClipboardItem = { id: makeId(), content, source: "system", timestamp: now, updatedAt: now };
-  shape.clipboard.unshift(item);
-  writeLocal(shape);
+  let item: ClipboardItem;
+  if (isTauri()) {
+    item = await invoke<ClipboardItem>("capture_clipboard", { content });
+  } else {
+    const shape = readLocal();
+    const now = Date.now();
+    item = { id: makeId(), content, source: "system", timestamp: now, updatedAt: now };
+    shape.clipboard.unshift(item);
+    writeLocal(shape);
+  }
+  void emitWorkbenchEvent("clipboard.captured", {
+    content: item.content,
+    source: item.source,
+  });
   return item;
 }
 
@@ -1481,7 +1495,13 @@ export async function listenClipboardUpdated(
 ): Promise<() => void> {
   if (isTauri()) {
     const { listen } = await import("@tauri-apps/api/event");
-    return listen<ClipboardItem>("clipboard-updated", (event) => handler(event.payload));
+    return listen<ClipboardItem>("clipboard-updated", (event) => {
+      void emitWorkbenchEvent("clipboard.captured", {
+        content: event.payload.content,
+        source: event.payload.source,
+      });
+      handler(event.payload);
+    });
   }
   return () => {};
 }
@@ -1537,10 +1557,16 @@ export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
 }
 
 export async function importSyncSnapshot(): Promise<SyncResult> {
-  if (isTauri()) return invoke<SyncResult>("import_sync_snapshot");
-  const raw = localStorage.getItem(SYNC_LS_KEY);
-  if (!raw) throw new Error("sync snapshot not found");
-  return mergeSnapshotIntoLocal(JSON.parse(raw) as SyncSnapshot);
+  let result: SyncResult;
+  if (isTauri()) {
+    result = await invoke<SyncResult>("import_sync_snapshot");
+  } else {
+    const raw = localStorage.getItem(SYNC_LS_KEY);
+    if (!raw) throw new Error("sync snapshot not found");
+    result = mergeSnapshotIntoLocal(JSON.parse(raw) as SyncSnapshot);
+  }
+  void emitWorkbenchEvent("sync.completed", { action: "import", deviceId: result.deviceId });
+  return result;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -1639,13 +1665,17 @@ export async function exportEncryptedSyncSnapshot(passphrase: string): Promise<s
 }
 
 export async function importEncryptedSyncSnapshot(passphrase: string): Promise<SyncResult> {
+  let result: SyncResult;
   if (isTauri()) {
-    return invoke<SyncResult>("import_encrypted_sync_snapshot", { passphrase });
+    result = await invoke<SyncResult>("import_encrypted_sync_snapshot", { passphrase });
+  } else {
+    const raw = localStorage.getItem(SYNC_ENCRYPTED_LS_KEY);
+    if (!raw) throw new Error("Encrypted sync snapshot not found");
+    const payload = await decryptSyncPayload(raw, passphrase);
+    result = mergeSnapshotIntoLocal(JSON.parse(payload) as SyncSnapshot);
   }
-  const raw = localStorage.getItem(SYNC_ENCRYPTED_LS_KEY);
-  if (!raw) throw new Error("Encrypted sync snapshot not found");
-  const payload = await decryptSyncPayload(raw, passphrase);
-  return mergeSnapshotIntoLocal(JSON.parse(payload) as SyncSnapshot);
+  void emitWorkbenchEvent("sync.completed", { action: "import", deviceId: result.deviceId });
+  return result;
 }
 
 export async function pushSyncSnapshot(
@@ -1653,21 +1683,25 @@ export async function pushSyncSnapshot(
   token?: string,
   passphrase?: string,
 ): Promise<RemoteSyncPushResult> {
+  let result: RemoteSyncPushResult;
   if (isTauri()) {
-    return invoke<RemoteSyncPushResult>("push_sync_snapshot", {
+    result = await invoke<RemoteSyncPushResult>("push_sync_snapshot", {
       remoteUrl,
       token: token?.trim() ? token.trim() : null,
       passphrase: passphrase?.trim() ? passphrase.trim() : null,
     });
+  } else {
+    const snapshot = await exportSyncSnapshot();
+    result = {
+      ok: true,
+      syncedAt: snapshot.exportedAt,
+      message: passphrase?.trim()
+        ? "Pushed encrypted snapshot to remote"
+        : "Pushed snapshot to remote",
+    };
   }
-  const snapshot = await exportSyncSnapshot();
-  return {
-    ok: true,
-    syncedAt: snapshot.exportedAt,
-    message: passphrase?.trim()
-      ? "Pushed encrypted snapshot to remote"
-      : "Pushed snapshot to remote",
-  };
+  void emitWorkbenchEvent("sync.completed", { action: "push", ok: result.ok });
+  return result;
 }
 
 export async function pullSyncSnapshot(
@@ -1675,58 +1709,62 @@ export async function pullSyncSnapshot(
   token?: string,
   passphrase?: string,
 ): Promise<SyncResult> {
+  let result: SyncResult;
   if (isTauri()) {
-    return invoke<SyncResult>("pull_sync_snapshot", {
+    result = await invoke<SyncResult>("pull_sync_snapshot", {
       remoteUrl,
       token: token?.trim() ? token.trim() : null,
       passphrase: passphrase?.trim() ? passphrase.trim() : null,
     });
-  }
-  const remote: SyncSnapshot = {
-    deviceId: "device-remote-fallback",
-    exportedAt: Date.now(),
-    clipboard: [
-      {
-        id: "sync-clip-remote-fallback",
-        content: "sprint 33 remote clipboard",
+  } else {
+    const remote: SyncSnapshot = {
+      deviceId: "device-remote-fallback",
+      exportedAt: Date.now(),
+      clipboard: [
+        {
+          id: "sync-clip-remote-fallback",
+          content: "sprint 33 remote clipboard",
+          source: "remote",
+          timestamp: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+      logs: [],
+      quickPrompts: [
+        {
+          id: "sync-quick-prompt-remote",
+          label: "Sync quick",
+          category: "work",
+          text: "sprint 87 remote quick prompt",
+          custom: true,
+          updatedAt: Date.now() + 1000,
+          createdAt: Date.now() + 1000,
+        },
+      ],
+      quickPromptUsage: [
+        { id: "sync-quick-prompt-remote", count: 1, updatedAt: Date.now() + 1000 },
+      ],
+    };
+    const shape = readLocal();
+    const baseClip = shape.clipboard[0];
+    if (baseClip) {
+      remote.clipboard.push({
+        id: baseClip.id,
+        content: "sprint 38 conflict override",
         source: "remote",
         timestamp: Date.now(),
-        updatedAt: Date.now(),
-      },
-    ],
-    logs: [],
-    quickPrompts: [
-      {
-        id: "sync-quick-prompt-remote",
-        label: "Sync quick",
-        category: "work",
-        text: "sprint 87 remote quick prompt",
-        custom: true,
-        updatedAt: Date.now() + 1000,
-        createdAt: Date.now() + 1000,
-      },
-    ],
-    quickPromptUsage: [
-      { id: "sync-quick-prompt-remote", count: 1, updatedAt: Date.now() + 1000 },
-    ],
-  };
-  const shape = readLocal();
-  const baseClip = shape.clipboard[0];
-  if (baseClip) {
-    remote.clipboard.push({
-      id: baseClip.id,
-      content: "sprint 38 conflict override",
-      source: "remote",
-      timestamp: Date.now(),
-      updatedAt: baseClip.updatedAt + 1,
-    });
+        updatedAt: baseClip.updatedAt + 1,
+      });
+    }
+    if (passphrase?.trim()) {
+      const envelope = await encryptSyncPayload(JSON.stringify(remote), passphrase);
+      const payload = await decryptSyncPayload(envelope, passphrase);
+      Object.assign(remote, JSON.parse(payload) as SyncSnapshot);
+    }
+    result = mergeSnapshotIntoLocal(remote);
   }
-  if (passphrase?.trim()) {
-    const envelope = await encryptSyncPayload(JSON.stringify(remote), passphrase);
-    const payload = await decryptSyncPayload(envelope, passphrase);
-    Object.assign(remote, JSON.parse(payload) as SyncSnapshot);
-  }
-  return mergeSnapshotIntoLocal(remote);
+  void emitWorkbenchEvent("sync.completed", { action: "pull", deviceId: result.deviceId });
+  return result;
 }
 
 function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
@@ -2936,28 +2974,39 @@ export async function indexVault(
   ignorePatterns: string[] = [],
   concurrency = 4,
 ): Promise<IndexResult> {
+  let result: IndexResult;
   if (isTauri()) {
-    return invoke<IndexResult>("index_vault_ex", {
+    result = await invoke<IndexResult>("index_vault_ex", {
       vaultPath,
       ignorePatterns,
       concurrency,
     });
+  } else {
+    const existing = readVaultFiles();
+    const sample = sampleVaultFiles(vaultPath);
+    const merged = existing.length > 0 ? existing : sample;
+    const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
+    const filtered = merged.filter(
+      (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
+    );
+    localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
+    const cores = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
+    const concurrencyUsed = Math.min(
+      filtered.length || 1,
+      filtered.length <= 32 ? 1 : Math.min(4, cores),
+    );
+    result = {
+      files: filtered.length,
+      ignored: merged.length - filtered.length,
+      concurrencyUsed,
+    };
   }
-  const existing = readVaultFiles();
-  const sample = sampleVaultFiles(vaultPath);
-  const merged = existing.length > 0 ? existing : sample;
-  const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
-  const filtered = merged.filter(
-    (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
-  );
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
-  const cores = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
-  const concurrencyUsed = Math.min(filtered.length || 1, filtered.length <= 32 ? 1 : Math.min(4, cores));
-  return {
-    files: filtered.length,
-    ignored: merged.length - filtered.length,
-    concurrencyUsed,
-  };
+  void emitWorkbenchEvent("knowledge.indexed", {
+    path: vaultPath,
+    files: result.files,
+    ignored: result.ignored,
+  });
+  return result;
 }
 
 const vaultIndexProgressHandlers: ((progress: IndexProgress) => void)[] = [];
@@ -4205,6 +4254,19 @@ export async function triggerWebhookEvent(
   }));
   writeWebhookDeliveries([...readWebhookDeliveries(), ...deliveries]);
   return deliveries.length;
+}
+
+export async function emitWorkbenchEvent(
+  event: string,
+  context?: Record<string, unknown>,
+): Promise<number> {
+  try {
+    const count = await triggerWebhookEvent(event, context);
+    window.dispatchEvent(new CustomEvent("workbench:webhook-deliveries-updated"));
+    return count;
+  } catch {
+    return 0;
+  }
 }
 
 export async function retryWebhookDelivery(id: string): Promise<WebhookDelivery> {

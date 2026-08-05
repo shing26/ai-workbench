@@ -717,3 +717,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 98：Webhook payload 模板渲染
 
 无表结构变更。模板渲染发生在入队 / 投递时：`webhook_rules.payload` 保存模板原文，`webhook_deliveries.payload` 保存渲染后的最终 JSON；浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 与 `ai-workbench:webhook-deliveries:v1`，不新增字段或 key。
+
+## Sprint 99：系统事件总线与投递刷新
+
+无表结构变更。系统事件不新增表或字段：`webhook_rules.trigger_event` 继续作为事件匹配键，`webhook_deliveries` 承接事件投递；`workbench:webhook-deliveries-updated` 只是前端刷新信号，不落库。浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 与 `ai-workbench:webhook-deliveries:v1`。

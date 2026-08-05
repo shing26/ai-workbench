@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 99
+
+### What went well?
+
+- 系统事件总线上线：`emitWorkbenchEvent(event, context?)` 统一入口，剪贴板、错误、同步、知识索引四类生命周期事件接入 Webhook 触发器。
+- 投递写入后派发 `workbench:webhook-deliveries-updated`，SystemView 即时刷新投递队列，5 秒轮询降级为兜底。
+- `verify:ui` / `verify:preview` 新增 `webhookSystemEvents` lane：真实 Pull 触发 `sync.completed`，真实 `ErrorEvent` 触发 `error.reported`，payload 与 DOM 展示端到端断言通过。
+- `npm run build`、`verify:ui`、`verify:preview` 全绿；本 Sprint 纯前端改动，Rust 无变更。
+
+### What went wrong?
+
+- 首版 error 断言失败不是链路错误：投递与错误日志均已写入，但 SystemView 5 秒轮询晚于断言 4 秒等待窗口，导致 DOM 断言取空。
+- 通过临时诊断字段确认后，改为事件入队即时刷新 UI，并把 error 轮询窗口延长到 6 秒，测试与真实体验同时稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 MOA 并行、前端 ESLint/Prettier + husky/lint-staged、AI Studio 会话增强。
+- Connection Layer 与 Monetization Workbench 已按用户要求搁置，后续有需要再开发。
+- 保留 `webhookSystemEvents` lane，改动事件链路或投递面板时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 98
 
 ### What went well?

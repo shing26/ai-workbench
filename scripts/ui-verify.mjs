@@ -5660,6 +5660,107 @@ try {
     if (modelsServer) modelsServer.close();
   }
 
+  const webhookSystemEvents = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        {
+          id: "sys-sync-rule",
+          name: "System sync hook",
+          url: "https://hooks.example.test/system",
+          payload:
+            '{"event":{{event}},"action":{{context.action}},"device":{{context.deviceId}}}',
+          method: "POST",
+          token: "",
+          secret: "",
+          retries: 1,
+          intervalSeconds: 60,
+          triggerEvent: "sync.completed",
+          enabled: true,
+          lastRunAt: 0,
+          lastStatus: 0,
+          lastMessage: "",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "sys-error-rule",
+          name: "System error hook",
+          url: "https://hooks.example.test/system",
+          payload:
+            '{"event":{{event}},"source":{{context.source}},"severity":{{context.severity}},"message":{{context.message}}}',
+          method: "POST",
+          token: "",
+          secret: "",
+          retries: 1,
+          intervalSeconds: 60,
+          triggerEvent: "error.reported",
+          enabled: true,
+          lastRunAt: 0,
+          lastStatus: 0,
+          lastMessage: "",
+          createdAt: now + 1,
+          updatedAt: now + 1,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let syncPayload = "";
+    for (let i = 0; i < 60; i++) {
+      syncPayload =
+        [...document.querySelectorAll("[data-webhook-delivery-item]")]
+          .map((el) => el.querySelector("[data-webhook-delivery-payload]")?.textContent ?? "")
+          .find(
+            (t) =>
+              t.includes('"event":"sync.completed"') && t.includes('"action":"pull"'),
+          ) ?? "";
+      if (syncPayload) break;
+      await sleep(100);
+    }
+    const syncOk =
+      syncPayload.includes('"action":"pull"') &&
+      syncPayload.includes('"device":"device-remote-fallback"');
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        message: "sprint 99 system event",
+        error: new Error("boom"),
+      }),
+    );
+    let errorPayload = "";
+    for (let i = 0; i < 60; i++) {
+      errorPayload =
+        [...document.querySelectorAll("[data-webhook-delivery-item]")]
+          .map((el) => el.querySelector("[data-webhook-delivery-payload]")?.textContent ?? "")
+          .find(
+            (t) =>
+              t.includes('"event":"error.reported"') &&
+              t.includes('"severity":"error"'),
+          ) ?? "";
+      if (errorPayload) break;
+      await sleep(100);
+    }
+    const errorOk =
+      errorPayload.includes('"source":"frontend"') &&
+      errorPayload.includes('"severity":"error"') &&
+      errorPayload.includes("sprint 99 system event");
+    return {
+      ok: syncOk && errorOk,
+      syncPayload,
+      errorPayload,
+      syncOk,
+      errorOk,
+    };
+  })()`);
+  if (!webhookSystemEvents.ok) {
+    throw new Error(
+      `Webhook system events assertion failed: ${JSON.stringify(webhookSystemEvents)}`,
+    );
+  }
+  results.webhookSystemEvents = webhookSystemEvents;
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {
