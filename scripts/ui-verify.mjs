@@ -1058,6 +1058,23 @@ try {
   }
   results.heartbeat = heartbeatCheck;
 
+  const streamSmokeCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-stream-test]');
+    if (!btn) return { ok: false, reason: "no stream test button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-stream-smoke-result]')) break;
+      await sleep(100);
+    }
+    const text = document.querySelector('[data-stream-smoke-result]')?.textContent ?? "";
+    return { ok: text.includes("2 chunk"), text };
+  })()`);
+  if (!streamSmokeCheck.ok) {
+    throw new Error(`Provider stream smoke assertion failed: ${JSON.stringify(streamSmokeCheck)}`);
+  }
+  results.streamSmoke = streamSmokeCheck;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

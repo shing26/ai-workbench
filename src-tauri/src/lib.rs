@@ -234,12 +234,13 @@ fn chat_openai(messages_json: &str) -> Result<String, String> {
     chat_openai_compatible("https://api.openai.com/v1", &api_key, messages_json)
 }
 
-fn stream_openai_compatible(
-    app: &tauri::AppHandle,
+fn stream_openai_compatible_with(
     run_id: &str,
     base_url: &str,
     api_key: &str,
     messages_json: &str,
+    is_cancelled: &dyn Fn() -> bool,
+    emit: &mut dyn FnMut(&StreamChunk),
 ) -> Result<(), String> {
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -270,7 +271,7 @@ fn stream_openai_compatible(
         if read == 0 {
             break;
         }
-        if is_stream_cancelled(app, run_id) {
+        if is_cancelled() {
             return Ok(());
         }
         let line = line.trim();
@@ -285,21 +286,18 @@ fn stream_openai_compatible(
             }
             if let Ok(json) = serde_json::from_str::<Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                    let _ = app.emit(
-                        "stream-chunk",
-                        StreamChunk {
-                            id: run_id.to_string(),
-                            delta: delta.to_string(),
-                            done: false,
-                            error: None,
-                            cancelled: false,
-                        },
-                    );
+                    emit(&StreamChunk {
+                        id: run_id.to_string(),
+                        delta: delta.to_string(),
+                        done: false,
+                        error: None,
+                        cancelled: false,
+                    });
                 }
             }
         }
     }
-    if is_stream_cancelled(app, run_id) {
+    if is_cancelled() {
         return Ok(());
     }
     if !finished {
@@ -308,11 +306,36 @@ fn stream_openai_compatible(
     Ok(())
 }
 
-fn stream_ollama(
+fn stream_openai_compatible(
     app: &tauri::AppHandle,
+    run_id: &str,
+    base_url: &str,
+    api_key: &str,
+    messages_json: &str,
+) -> Result<(), String> {
+    let app = app.clone();
+    let run_id_owned = run_id.to_string();
+    let app_for_cancel = app.clone();
+    let is_cancelled = move || is_stream_cancelled(&app_for_cancel, &run_id_owned);
+    let mut emit = |chunk: &StreamChunk| {
+        let _ = app.emit("stream-chunk", chunk.clone());
+    };
+    stream_openai_compatible_with(
+        run_id,
+        base_url,
+        api_key,
+        messages_json,
+        &is_cancelled,
+        &mut emit,
+    )
+}
+
+fn stream_ollama_with(
     run_id: &str,
     messages_json: &str,
     model_name: &str,
+    is_cancelled: &dyn Fn() -> bool,
+    emit: &mut dyn FnMut(&StreamChunk),
 ) -> Result<(), String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let client = stream_client();
@@ -341,7 +364,7 @@ fn stream_ollama(
         if read == 0 {
             break;
         }
-        if is_stream_cancelled(app, run_id) {
+        if is_cancelled() {
             return Ok(());
         }
         let line = line.trim();
@@ -350,16 +373,13 @@ fn stream_ollama(
         }
         if let Ok(json) = serde_json::from_str::<Value>(line) {
             if let Some(delta) = json["message"]["content"].as_str() {
-                let _ = app.emit(
-                    "stream-chunk",
-                    StreamChunk {
-                        id: run_id.to_string(),
-                        delta: delta.to_string(),
-                        done: false,
-                        error: None,
-                        cancelled: false,
-                    },
-                );
+                emit(&StreamChunk {
+                    id: run_id.to_string(),
+                    delta: delta.to_string(),
+                    done: false,
+                    error: None,
+                    cancelled: false,
+                });
             }
             if json["done"].as_bool() == Some(true) {
                 finished = true;
@@ -367,13 +387,29 @@ fn stream_ollama(
             }
         }
     }
-    if is_stream_cancelled(app, run_id) {
+    if is_cancelled() {
         return Ok(());
     }
     if !finished {
         return Err("Ollama stream ended without done: true".into());
     }
     Ok(())
+}
+
+fn stream_ollama(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    messages_json: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let app = app.clone();
+    let run_id_owned = run_id.to_string();
+    let app_for_cancel = app.clone();
+    let is_cancelled = move || is_stream_cancelled(&app_for_cancel, &run_id_owned);
+    let mut emit = |chunk: &StreamChunk| {
+        let _ = app.emit("stream-chunk", chunk.clone());
+    };
+    stream_ollama_with(run_id, messages_json, model_name, &is_cancelled, &mut emit)
 }
 
 fn chat_openai_compatible(
@@ -1367,6 +1403,14 @@ struct StreamChunk {
     cancelled: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamSmokeResult {
+    ok: bool,
+    chunks: usize,
+    message: String,
+}
+
 #[tauri::command]
 fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Result<(), String> {
     state.mark(&run_id);
@@ -1470,6 +1514,67 @@ fn run_provider_heartbeat(
     let snapshot = heartbeat.snapshot(&all);
     let _ = app.emit("provider-heartbeat", snapshot.clone());
     Ok(snapshot)
+}
+
+#[tauri::command]
+fn run_provider_stream_smoke_test(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<StreamSmokeResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let provider = db::get_provider(&conn, &provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Provider not found".to_string())?;
+    drop(conn);
+    let messages_json = serde_json::json!([{ "role": "user", "content": "ping" }]).to_string();
+    let mut chunks = 0usize;
+    let is_cancelled = || false;
+    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+        let mut emit = |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                chunks += 1;
+            }
+        };
+        stream_ollama_with(
+            "smoke",
+            &messages_json,
+            "qwen2.5:3b",
+            &is_cancelled,
+            &mut emit,
+        )
+    } else {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        let api_key = get_api_key(key_ref)?;
+        let mut emit = |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                chunks += 1;
+            }
+        };
+        stream_openai_compatible_with(
+            "smoke",
+            &provider.base_url,
+            &api_key,
+            &messages_json,
+            &is_cancelled,
+            &mut emit,
+        )
+    };
+    match result {
+        Ok(()) => Ok(StreamSmokeResult {
+            ok: true,
+            chunks,
+            message: format!("Streamed {chunks} chunk(s)"),
+        }),
+        Err(err) => Ok(StreamSmokeResult {
+            ok: false,
+            chunks,
+            message: err,
+        }),
+    }
 }
 
 #[tauri::command]
@@ -2137,7 +2242,8 @@ pub fn run() {
             stream_ai_message,
             cancel_ai_stream,
             check_provider_health,
-            run_provider_heartbeat
+            run_provider_heartbeat,
+            run_provider_stream_smoke_test
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2523,5 +2629,88 @@ mod tests {
         assert!(aborted.contains("Rebase aborted"));
         assert_eq!(git_branch(&path), "feature");
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn openai_compatible_stream_parses_sse_end_to_end() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        let body_owned = body.to_string();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_owned.len(),
+                body_owned
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let deltas = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let deltas_for_emit = deltas.clone();
+        let mut emit = move |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                deltas_for_emit.lock().unwrap().push(chunk.delta.clone());
+            }
+        };
+        let is_cancelled = || false;
+        let messages = serde_json::json!([{ "role": "user", "content": "ping" }]).to_string();
+        let result = stream_openai_compatible_with(
+            "test-run",
+            &format!("http://{}", addr),
+            "dummy-key",
+            &messages,
+            &is_cancelled,
+            &mut emit,
+        );
+        server.join().unwrap();
+        assert!(result.is_ok(), "stream failed: {:?}", result);
+        assert_eq!(
+            *deltas.lock().unwrap(),
+            vec!["Hello ".to_string(), "world".to_string()]
+        );
+    }
+
+    #[test]
+    fn openai_compatible_stream_requires_done_marker() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let body_owned = body.to_string();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_owned.len(),
+                body_owned
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let is_cancelled = || false;
+        let mut emit = |_chunk: &StreamChunk| {};
+        let messages = serde_json::json!([{ "role": "user", "content": "ping" }]).to_string();
+        let result = stream_openai_compatible_with(
+            "test-run",
+            &format!("http://{}", addr),
+            "dummy-key",
+            &messages,
+            &is_cancelled,
+            &mut emit,
+        );
+        server.join().unwrap();
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ended without [DONE]"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

@@ -22,6 +22,7 @@ export default function SystemView() {
   const [apiKey, setApiKey] = useState("");
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
+  const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
   const [deviceId, setDeviceId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
@@ -111,6 +112,11 @@ export default function SystemView() {
       providers.map(async (p) => [p.id, await db.checkProviderHealth(p.id)] as const),
     );
     setHealth(Object.fromEntries(entries));
+  };
+
+  const runStreamSmoke = async (id: string) => {
+    const result = await db.runProviderStreamSmokeTest(id);
+    setStreamSmoke((prev) => ({ ...prev, [id]: result }));
   };
 
   useEffect(() => {
@@ -206,6 +212,28 @@ export default function SystemView() {
                   >
                     Check
                   </button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-stream-test
+                    onClick={() => void runStreamSmoke(p.id)}
+                    className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
+                  >
+                    <Radio size={9} /> Stream test
+                  </button>
+                  {streamSmoke[p.id] && (
+                    <span
+                      data-stream-smoke-result
+                      className={`rounded-md px-1.5 py-0.5 text-[9px] ${
+                        streamSmoke[p.id].ok
+                          ? "bg-emerald-500/10 text-emerald-300"
+                          : "bg-rose-500/10 text-rose-300"
+                      }`}
+                    >
+                      {streamSmoke[p.id].message}
+                    </span>
+                  )}
                 </div>
               </div>
             );

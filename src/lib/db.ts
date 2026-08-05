@@ -214,6 +214,12 @@ export type GitRebaseResult = {
   head: string;
 };
 
+export type StreamSmokeResult = {
+  ok: boolean;
+  chunks: number;
+  message: string;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -1417,6 +1423,13 @@ export async function rebaseBranch(path: string, base: string): Promise<GitRebas
 export async function abortRebase(path: string): Promise<string> {
   if (isTauri()) return invoke<string>("abort_rebase", { path });
   return "Rebase aborted on feature/sprint-31";
+}
+
+export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {
+  if (isTauri()) {
+    return invoke<StreamSmokeResult>("run_provider_stream_smoke_test", { providerId });
+  }
+  return { ok: true, chunks: 2, message: "Streamed 2 chunk(s)" };
 }
 
 export async function buildTeamSummary(contents: string[]): Promise<string> {
