@@ -603,6 +603,82 @@ try {
   if (!results.aiDailyRecap.ok) {
     throw new Error(`AI daily recap assertion failed: ${JSON.stringify(results.aiDailyRecap)}`);
   }
+  results.aiRecapSave = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-ai-daily-recap]");
+    if (!btn) return { ok: false, reason: "no recap button" };
+    btn.click();
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      reply =
+        bubbles.find((t) => t.includes("Streaming fallback") && !t.includes("请帮我生成今日复盘")) ??
+        "";
+      if (reply) break;
+      await sleep(100);
+    }
+    if (!reply) return { ok: false, reason: "recap reply missing" };
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const saveBtn = document.querySelector("[data-ai-recap-save]");
+    if (!saveBtn) return { ok: false, reason: "no save button" };
+    if (saveBtn.disabled) return { ok: false, reason: "save button disabled", idle };
+    saveBtn.click();
+    let result = "";
+    for (let i = 0; i < 30; i++) {
+      result = document.querySelector("[data-ai-recap-save-result]")?.textContent ?? "";
+      if (result.includes("Saved")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const saved = (stored.thoughts ?? []).find((t) => (t.content ?? "").includes("# 今日复盘"));
+    const ok =
+      result.includes("Saved") &&
+      !!saved &&
+      saved.tags === "#daily,#recap" &&
+      saved.type === "note";
+    return {
+      ok,
+      idle,
+      result,
+      savedTags: saved?.tags,
+      savedType: saved?.type,
+      replyPreview: reply.slice(0, 60),
+    };
+  })()`);
+  if (!results.aiRecapSave.ok) {
+    throw new Error(`AI recap save assertion failed: ${JSON.stringify(results.aiRecapSave)}`);
+  }
+  await clickDock("Knowledge");
+  results.aiRecapKnowledgeVisible = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const body = document.body.innerText;
+      if (body.includes("# 今日复盘") || body.includes("今日复盘")) {
+        return { ok: true, visible: true };
+      }
+      await sleep(100);
+    }
+    return { ok: false, visible: false, body: document.body.innerText.slice(0, 200) };
+  })()`);
+  if (!results.aiRecapKnowledgeVisible.ok) {
+    throw new Error(
+      `AI recap knowledge visibility assertion failed: ${JSON.stringify(results.aiRecapKnowledgeVisible)}`,
+    );
+  }
+  await clickDock("AI Studio");
+  await evaluate(`[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`);
+  await delay(200);
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };

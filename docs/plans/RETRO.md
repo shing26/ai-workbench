@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 86
+
+### What went well?
+
+- AI Studio 新增“保存复盘”按钮（`data-ai-recap-save`）：复盘流式结束后按钮启用，取最近一条 assistant 回复组装为 `# 今日复盘 YYYY-MM-DD`，以 `#daily,#recap` / `note` 写入知识库，并回显 `data-ai-recap-save-result`。
+- 普通发送与 New chat 都会重置保存入口，避免把非复盘回复误存为复盘笔记；保存期间防重复点击并回显错误。
+- `npm run build` 全绿；`verify:ui` / `verify:preview` 新增 `aiRecapSave` / `aiRecapKnowledgeVisible` lane：断言 localStorage 内容（tags / type）与 Knowledge 视图可见性均通过。
+
+### What went wrong?
+
+- 首次实现时保存入口只要流式结束就可用，未区分普通对话回复；补上发送前重置 `recapReady` 后语义收紧。
+- 保存内容按“最近一条 assistant 回复”定位，尚未绑定复盘消息 id；当前入口已足够收敛，精确绑定留给候选池。
+
+### Action Items
+
+- 下一 Sprint 候选：多端同步自定义 prompt 与使用次数。
+- 行内着色与 diff 编辑器、整文件对比视图继续留在 Backlog。
+
 ## Sprint 85
 
 ### What went well?

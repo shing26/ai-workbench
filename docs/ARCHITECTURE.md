@@ -412,3 +412,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Projects dirty 预览按四个分组渲染（`data-git-change-group` / `data-git-change-group-header`）；Commit selected 前先调 `db.runCommitLintGate`，失败时展示 `data-git-lint-gate` / `data-git-lint-gate-issues`。
 - `db.ts` 新增 `GitChangeGroup` / `GitLintIssue` / `changeGroups` / `runCommitLintGate`；浏览器 fallback 对 broken / conflict 文件返回确定性问题，其余文件放行。
 - `verify:ui` / `verify:preview` 新增 `gitStagedUnstaged` / `gitCommitLintGate` lane；Rust 单测覆盖 XY 分组与冲突标记 / 非法 JSON 拦截。
+
+## Sprint 86：AI 复盘结果一键保存为知识笔记
+
+- AIStudioView 新增 `recapReady` / `recapSaving` / `recapSaveResult` 与“保存复盘”按钮（`data-ai-recap-save`）：点击“今日复盘”并等待流式结束后按钮才可用，普通发送与 New chat 重置状态。
+- 保存逻辑取最近一条非占位 assistant 回复，组装为 `# 今日复盘 YYYY-MM-DD\n\n回复`，通过 store `addThought(..., "#daily,#recap", "note")` 写入既有 thoughts 链路；成功回显 `data-ai-recap-save-result`，失败回显错误，保存期间防重复点击。
+- 保存后 store 刷新 `thoughts`，Knowledge Thought Inbox 立即可见新笔记，RAG 文档数同步更新。
+- `verify:ui` / `verify:preview` 新增 `aiRecapSave` / `aiRecapKnowledgeVisible` lane，断言 localStorage 内容（tags / type）与 Knowledge 视图可见性。
