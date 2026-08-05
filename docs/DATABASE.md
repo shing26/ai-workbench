@@ -267,3 +267,28 @@ watch 场景与全量扫描对齐 ignore 语义。新增 `start_vault_watch_ex(v
 - Tauri 命令 `resolve_sync_conflict(conflict, choice)`：透传冲突明细与选择，返回 `Resolved <kind> conflict <id> with <choice>`。
 
 浏览器 fallback 与 Rust 行为一致：按 kind 写回内容并更新时间戳。表结构与数据迁移不变。
+
+## Sprint 40：冲突明细持久化与历史仲裁记录
+
+```sql
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    local_content TEXT NOT NULL,
+    remote_content TEXT NOT NULL,
+    local_updated_at INTEGER NOT NULL,
+    remote_updated_at INTEGER NOT NULL,
+    resolved_to TEXT NOT NULL,
+    preview TEXT NOT NULL,
+    resolved_choice TEXT,
+    resolved_at INTEGER,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (id, kind, created_at)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolved_at, created_at);
+```
+
+- `merge_sync_snapshot` 将每条冲突明细持久化：同 id/kind 已有未解决记录时更新内容与时间戳，否则插入新记录。
+- `resolve_conflict` 裁决后把 `resolved_choice` / `resolved_at` 写回对应未解决记录，保留历史。
+- 新命令：`list_sync_conflicts(status)` 支持 `unresolved` / `resolved` / `all`；`clear_resolved_sync_conflicts` 只清理已解决记录。
+- 浏览器 fallback 用 `ai-workbench:sync-conflicts:v1` 模拟同一行为。

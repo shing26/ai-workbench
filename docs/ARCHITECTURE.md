@@ -87,6 +87,8 @@ Sprint 38 扩展同步协议：`SyncResult.conflicts` 返回 `SyncConflictItem` 
 
 Sprint 39 新增命令：`resolve_sync_conflict`；`SyncConflictItem` 携带 `localContent` / `remoteContent`，System card 对每条冲突提供 Keep local / Keep remote 人工仲裁，仲裁后写回内容并以当前时间戳标记，使裁决在下次同步中胜出。
 
+Sprint 40 新增命令：`list_sync_conflicts`、`clear_resolved_sync_conflicts`；`sync_conflicts` 表持久化冲突明细与仲裁历史，System card 支持查看与清理已解决记录，重启后仍保留。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

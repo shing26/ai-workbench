@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 40
+
+### What went well?
+
+- 冲突从内存结果升级为持久化记录：`sync_conflicts` 表保存 local/remote 完整内容、两端时间戳与仲裁状态，同 id/kind 的未解决冲突合并时原位更新，已解决后新冲突重新入表。
+- `list_sync_conflicts` 支持 unresolved / resolved / all 三种视图，`clear_resolved_sync_conflicts` 只清理已解决记录；Rust 单测覆盖新一轮冲突与历史共存、清理不误删。
+- System Sync snapshot 卡片改用持久化未解决列表，新增 Show resolved history / Clear resolved；Keep remote 后历史带 choice 与时间戳，reload 后仍可见。
+- 验证覆盖：`cargo test --lib` 40/40，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增历史可见与 reload 持久化断言，两条 lane 全绿。
+
+### What went wrong?
+
+- UI 验证把 auto sync 断言移到了 reload 之后，配置恢复前点击开关会因远端 URL 为空而失败；断言先自行写入 URL 再操作开关，同时保留配置恢复的等待。
+- headless 冷启动仍偶发 motion 断言抖动，重跑后全绿，未进入代码修复。
+
+### Action Items
+
+- 下一 Sprint 候选：Vault 索引并发数可配置、watch 状态 ignore 列表持久化、批量仲裁与三方合并策略。
+- 后续改动同步协议时，保留持久化冲突列表与 reload 历史两条 UI 断言。
+
 ## Sprint 39
 
 ### What went well?

@@ -32,7 +32,9 @@ export default function SystemView() {
   const [remoteToken, setRemoteToken] = useState("");
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
   const [autoSyncInterval, setAutoSyncInterval] = useState("60");
-  const [lastSyncResult, setLastSyncResult] = useState<db.SyncResult | null>(null);
+  const [syncConflicts, setSyncConflicts] = useState<db.SyncConflictRecord[]>([]);
+  const [resolvedConflicts, setResolvedConflicts] = useState<db.SyncConflictRecord[]>([]);
+  const [showResolved, setShowResolved] = useState(false);
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -48,6 +50,7 @@ export default function SystemView() {
       setDeviceId(status.deviceId);
       setLastSyncedAt(status.lastSyncedAt);
     });
+    void db.listSyncConflicts("unresolved").then(setSyncConflicts);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -109,10 +112,10 @@ export default function SystemView() {
   const importSync = async () => {
     const result = await db.importSyncSnapshot();
     await refreshSystem();
+    await loadConflicts();
     setSyncError(false);
     setLastSyncedAt(result.syncedAt);
     setLastRemoteDevice(result.deviceId);
-    setLastSyncResult(result);
     setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
   };
 
@@ -142,10 +145,10 @@ export default function SystemView() {
     try {
       const result = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
       await refreshSystem();
+      await loadConflicts();
       setSyncError(false);
       setLastSyncedAt(result.syncedAt);
       setLastRemoteDevice(result.deviceId);
-      setLastSyncResult(result);
       setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
     } catch (err) {
       setSyncError(true);
@@ -158,15 +161,19 @@ export default function SystemView() {
     try {
       const pulled = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
       await refreshSystem();
+      await loadConflicts();
       const pushed = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
       setSyncError(false);
       setLastSyncedAt(pushed.syncedAt);
       setLastRemoteDevice(pulled.deviceId);
-      setLastSyncResult(pulled);
     } catch (err) {
       setSyncError(true);
       setSyncMessage(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const loadConflicts = async () => {
+    setSyncConflicts(await db.listSyncConflicts("unresolved"));
   };
 
   const resolveConflictItem = async (
@@ -176,22 +183,29 @@ export default function SystemView() {
     try {
       const message = await db.resolveSyncConflict(conflict, choice);
       await refreshSystem();
-      setLastSyncResult((current) =>
-        current
-          ? {
-              ...current,
-              conflicts: current.conflicts.filter(
-                (c) => c.kind !== conflict.kind || c.id !== conflict.id,
-              ),
-            }
-          : current,
-      );
+      await loadConflicts();
       setSyncError(false);
       setSyncMessage(message);
     } catch (err) {
       setSyncError(true);
       setSyncMessage(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const toggleResolvedHistory = async () => {
+    if (showResolved) {
+      setShowResolved(false);
+      return;
+    }
+    setResolvedConflicts(await db.listSyncConflicts("resolved"));
+    setShowResolved(true);
+  };
+
+  const clearResolvedHistory = async () => {
+    const cleared = await db.clearResolvedSyncConflicts();
+    setResolvedConflicts(await db.listSyncConflicts("resolved"));
+    setSyncError(false);
+    setSyncMessage(`Cleared ${cleared} resolved conflict(s)`);
   };
 
   const toggleAutoSync = async () => {
@@ -425,12 +439,12 @@ export default function SystemView() {
               {syncMessage}
             </span>
           )}
-          {lastSyncResult && lastSyncResult.conflicts.length > 0 && (
+          {syncConflicts.length > 0 && (
             <span
               data-sync-conflicts
               className="rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-amber-300"
             >
-              {lastSyncResult.conflicts.length} conflict(s) auto-resolved
+              {syncConflicts.length} conflict(s) pending review
             </span>
           )}
           <span className="ml-auto flex gap-1.5">
@@ -452,9 +466,9 @@ export default function SystemView() {
             </button>
           </span>
         </div>
-        {lastSyncResult && lastSyncResult.conflicts.length > 0 && (
+        {syncConflicts.length > 0 && !showResolved && (
           <div data-sync-resolve-list className="mt-3 space-y-1.5">
-            {lastSyncResult.conflicts.map((conflict) => (
+            {syncConflicts.map((conflict) => (
               <div
                 key={`${conflict.kind}:${conflict.id}`}
                 data-sync-conflict-item
@@ -486,6 +500,61 @@ export default function SystemView() {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            aria-label="Toggle resolved sync conflict history"
+            data-sync-history-toggle
+            onClick={() => void toggleResolvedHistory()}
+            className="flex h-7 items-center gap-1 rounded-lg accent-bg-15 px-2 text-[10px] accent-text-strong accent-hover-bg-25"
+          >
+            <History size={11} />
+            {showResolved ? "Hide resolved" : "Show resolved history"}
+          </button>
+          {showResolved && resolvedConflicts.length > 0 && (
+            <button
+              type="button"
+              aria-label="Clear resolved sync conflict history"
+              data-clear-resolved-history
+              onClick={() => void clearResolvedHistory()}
+              className="flex h-7 items-center gap-1 rounded-lg bg-rose-500/15 px-2 text-[10px] text-rose-300 hover:bg-rose-500/25"
+            >
+              Clear resolved
+            </button>
+          )}
+        </div>
+        {showResolved && (
+          <div data-sync-resolved-list className="mt-2 space-y-1.5">
+            {resolvedConflicts.map((conflict) => (
+              <div
+                key={`${conflict.kind}:${conflict.id}:${conflict.createdAt}`}
+                data-sync-resolved-item
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-500/15 bg-emerald-500/5 px-3 py-2"
+              >
+                <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[9px] uppercase text-emerald-300">
+                  {conflict.kind}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">
+                  {conflict.preview}
+                </span>
+                <span
+                  data-resolved-choice={conflict.resolvedChoice ?? ""}
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-300"
+                >
+                  {conflict.resolvedChoice ?? "unknown"}
+                </span>
+                <span className="text-[9px] text-slate-600">
+                  {conflict.resolvedAt ? formatTime(conflict.resolvedAt) : ""}
+                </span>
+              </div>
+            ))}
+            {resolvedConflicts.length === 0 && (
+              <div className="rounded-xl border border-white/5 px-3 py-2 text-[10px] text-slate-600">
+                No resolved conflicts
+              </div>
+            )}
           </div>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-2">

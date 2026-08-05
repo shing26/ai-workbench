@@ -182,6 +182,12 @@ export type SyncConflictItem = {
   remoteContent: string;
 };
 
+export type SyncConflictRecord = SyncConflictItem & {
+  resolvedChoice: string | null;
+  resolvedAt: number | null;
+  createdAt: number;
+};
+
 export type SyncStatus = {
   deviceId: string;
   lastSyncedAt: number | null;
@@ -1026,6 +1032,7 @@ export async function listenClipboardUpdated(
 
 const SYNC_LS_KEY = "ai-workbench:sync-snapshot:v1";
 const SYNC_AUTO_LS_KEY = "ai-workbench:sync-auto:v1";
+const SYNC_CONFLICTS_LS_KEY = "ai-workbench:sync-conflicts:v1";
 
 export type SyncAutoConfig = {
   enabled: boolean;
@@ -1210,7 +1217,43 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   };
   shape.lastSyncedAt = result.syncedAt;
   writeLocal(shape);
+  persistFallbackConflicts(conflicts);
   return result;
+}
+
+function readSyncConflictRecords(): SyncConflictRecord[] {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_CONFLICTS_LS_KEY) ?? "[]") as SyncConflictRecord[];
+  } catch {
+    return [];
+  }
+}
+
+function writeSyncConflictRecords(records: SyncConflictRecord[]) {
+  localStorage.setItem(SYNC_CONFLICTS_LS_KEY, JSON.stringify(records));
+}
+
+function persistFallbackConflicts(conflicts: SyncConflictItem[]): SyncConflictRecord[] {
+  const records = readSyncConflictRecords();
+  const createdAt = Date.now();
+  for (const conflict of conflicts) {
+    const index = records.findIndex(
+      (record) =>
+        record.id === conflict.id && record.kind === conflict.kind && !record.resolvedChoice,
+    );
+    if (index >= 0) {
+      records[index] = {
+        ...conflict,
+        resolvedChoice: null,
+        resolvedAt: null,
+        createdAt: records[index].createdAt,
+      };
+    } else {
+      records.push({ ...conflict, resolvedChoice: null, resolvedAt: null, createdAt });
+    }
+  }
+  writeSyncConflictRecords(records);
+  return records;
 }
 
 export async function resolveSyncConflict(
@@ -1237,7 +1280,37 @@ export async function resolveSyncConflict(
     item.updatedAt = updatedAt;
   }
   writeLocal(shape);
+  const records = readSyncConflictRecords().map((record) =>
+    record.id === conflict.id && record.kind === conflict.kind && !record.resolvedChoice
+      ? { ...record, resolvedChoice: choice, resolvedAt: updatedAt }
+      : record,
+  );
+  writeSyncConflictRecords(records);
   return `Resolved ${conflict.kind} conflict ${conflict.id} with ${choice}`;
+}
+
+export async function listSyncConflicts(
+  status: "unresolved" | "resolved" | "all" = "unresolved",
+): Promise<SyncConflictRecord[]> {
+  if (isTauri()) return invoke<SyncConflictRecord[]>("list_sync_conflicts", { status });
+  const records = readSyncConflictRecords();
+  if (status === "unresolved") {
+    return records.filter((record) => !record.resolvedChoice).sort((a, b) => b.createdAt - a.createdAt);
+  }
+  if (status === "resolved") {
+    return records
+      .filter((record) => record.resolvedChoice)
+      .sort((a, b) => (b.resolvedAt ?? 0) - (a.resolvedAt ?? 0));
+  }
+  return records.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function clearResolvedSyncConflicts(): Promise<number> {
+  if (isTauri()) return invoke<number>("clear_resolved_sync_conflicts");
+  const records = readSyncConflictRecords();
+  const remaining = records.filter((record) => !record.resolvedChoice);
+  writeSyncConflictRecords(remaining);
+  return records.length - remaining.length;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
