@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 35
+
+### What went well?
+
+- Vault 索引升级为“收集路径 + 并行读取解析”：`thread::scope` 最多 4 个工作线程分摊 Markdown 读取与 frontmatter 解析，主线程统一 upsert，大目录扫描明显更快。
+- ignore 规则覆盖目录名（任意层级）与 `**` / `*` glob，`archive/**`、`node_modules` 这类常见排除项集成单测通过；`IndexResult` 同时返回 files 与 ignored 计数。
+- Knowledge Vault Index 新增 Ignore patterns 输入与 Skipped 计数；`verify:ui` / `verify:preview` 新增 files 1 + ignored 1 断言，两条 lane 全绿。
+- 验证覆盖：`cargo test --lib` 36/36，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 初版 `git merge-file` 调试经验无关本 Sprint；本 Sprint 主要约束是 SQLite 连接非 `Send`，因此并行只覆盖文件读取解析，upsert 留在主线程，避免引入连接池复杂度。
+- `ModelBadge` 不支持 amber tone，Skipped 计数改用自定义 span，避免类型扩展污染通用组件。
+
+### Action Items
+
+- 下一 Sprint 候选：Vault watch 监听 ignore 列表、同步快照定时自动同步与冲突 UI。
+- 后续改动 Vault 索引时，保留 ignore 目录/glob 集成单测与 files/ignored UI 断言。
+
 ## Sprint 34
 
 ### What went well?

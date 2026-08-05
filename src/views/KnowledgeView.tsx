@@ -17,8 +17,10 @@ export default function KnowledgeView() {
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
   const [vaultPath, setVaultPath] = useState("");
+  const [ignorePatterns, setIgnorePatterns] = useState("");
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
+  const [lastIgnored, setLastIgnored] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -89,7 +91,12 @@ export default function KnowledgeView() {
 
   const runIndex = async () => {
     if (!vaultPath.trim()) return;
-    await db.indexVault(vaultPath.trim());
+    const patterns = ignorePatterns
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const result = await db.indexVault(vaultPath.trim(), patterns);
+    setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -182,6 +189,24 @@ export default function KnowledgeView() {
               tone="blue"
               status={vaultStatus ? `${vaultStatus.files} files` : "pending"}
             />
+          </span>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            value={ignorePatterns}
+            onChange={(e) => setIgnorePatterns(e.target.value)}
+            placeholder="Ignore patterns (comma separated)"
+            className="h-8 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <span
+            data-vault-ignored={lastIgnored}
+            className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] ${
+              lastIgnored > 0
+                ? "border-amber-500/25 bg-amber-500/10 text-amber-300"
+                : "border-white/10 bg-white/[0.04] text-slate-500"
+            }`}
+          >
+            Skipped {lastIgnored}
           </span>
         </div>
       </BentoCard>

@@ -229,3 +229,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_prompt_versions_agent ON agent_prompt_versi
 - `pull_sync_snapshot(remote_url, token?)`：GET 远端 JSON 后按同一合并规则写入本地 SQLite。
 
 远端同步不改变本地表结构，剪贴板与错误日志的冲突语义与 Sprint 19 一致：同 id 记录按 `updated_at` 新旧合并。
+
+## Sprint 35：Vault 并行扫描与 ignore 列表
+
+`knowledge_files` 表结构不变。`index_vault_files` 升级为两阶段：先递归收集 `.md` 路径（跳过 ignore 命中项），再用 `thread::scope` 最多 4 个工作线程并行读取与解析 frontmatter，主线程统一 upsert。`IndexResult` 新增 `ignored` 计数，返回实际索引数与跳过条目数。
+
+新增命令：
+
+- `index_vault_ex(vault_path, ignore_patterns)`：支持目录名（匹配任意层级）与 `**` / `*` glob；命中目录整体跳过。
+- `index_vault(vault_path)`：默认空 ignore，保持旧行为兼容。
+
+`start_vault_watch` 的初始全量索引仍使用空 ignore；watch 状态下的增量监听与 `knowledge_files` 查询不变。
