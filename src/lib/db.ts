@@ -2331,12 +2331,18 @@ const vaultIndexCancelled = new Set<string>();
 const vaultIndexQueue: IndexQueueRequest[] = [];
 const vaultIndexQueueHandlers: ((status: VaultIndexQueueStatus) => void)[] = [];
 let vaultIndexActive: IndexQueueRequest | null = null;
+const VAULT_INDEX_QUEUE_LS_KEY = "ai-workbench:vault-index-queue:v1";
+let vaultIndexQueueRestored = false;
 
 type IndexQueueRequest = {
   runId: string;
   path: string;
   ignorePatterns: string[];
   concurrency: number;
+};
+
+type PersistedIndexQueueRecord = IndexQueueRequest & {
+  status: "queued" | "running";
 };
 
 function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
@@ -2356,6 +2362,42 @@ function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
       position: index + 1,
     })),
   };
+}
+
+function writePersistedVaultIndexQueue() {
+  const records: PersistedIndexQueueRecord[] = [
+    ...(vaultIndexActive
+      ? [{ ...vaultIndexActive, status: "running" as const }]
+      : []),
+    ...vaultIndexQueue.map((request) => ({
+      ...request,
+      status: "queued" as const,
+    })),
+  ];
+  localStorage.setItem(VAULT_INDEX_QUEUE_LS_KEY, JSON.stringify(records));
+}
+
+function restoreVaultIndexQueueIfNeeded() {
+  if (vaultIndexQueueRestored) return;
+  vaultIndexQueueRestored = true;
+  try {
+    const records = JSON.parse(
+      localStorage.getItem(VAULT_INDEX_QUEUE_LS_KEY) ?? "[]",
+    ) as PersistedIndexQueueRecord[];
+    for (const record of records) {
+      if (record.status === "queued" || record.status === "running") {
+        vaultIndexQueue.push({
+          runId: record.runId,
+          path: record.path,
+          ignorePatterns: Array.isArray(record.ignorePatterns)
+            ? record.ignorePatterns
+            : [],
+          concurrency: Number(record.concurrency) || 4,
+        });
+      }
+    }
+  } catch {}
+  writePersistedVaultIndexQueue();
 }
 
 function emitVaultIndexQueue() {
@@ -2378,6 +2420,7 @@ function pumpVaultIndexQueue() {
     return;
   }
   vaultIndexActive = request;
+  writePersistedVaultIndexQueue();
   emitVaultIndexQueue();
   void runMockVaultIndex(request);
 }
@@ -2401,6 +2444,7 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
       });
       vaultIndexCancelled.delete(runId);
       vaultIndexActive = null;
+      writePersistedVaultIndexQueue();
       emitVaultIndexQueue();
       pumpVaultIndexQueue();
       return;
@@ -2417,6 +2461,7 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
     });
     if (step >= 6) {
       vaultIndexActive = null;
+      writePersistedVaultIndexQueue();
       emitVaultIndexQueue();
       pumpVaultIndexQueue();
       return;
@@ -2434,8 +2479,10 @@ export async function startVaultIndex(
   if (isTauri()) {
     return invoke<string>("start_vault_index", { vaultPath, ignorePatterns, concurrency });
   }
+  restoreVaultIndexQueueIfNeeded();
   const runId = makeId();
   vaultIndexQueue.push({ runId, path: vaultPath, ignorePatterns, concurrency });
+  writePersistedVaultIndexQueue();
   emitIndexProgress({
     runId,
     path: vaultPath,
@@ -2460,6 +2507,7 @@ export async function cancelVaultIndex(runId: string): Promise<boolean> {
   const index = vaultIndexQueue.findIndex((request) => request.runId === runId);
   if (index >= 0) {
     const [request] = vaultIndexQueue.splice(index, 1);
+    writePersistedVaultIndexQueue();
     emitIndexProgress({
       runId: request.runId,
       path: request.path,
@@ -2478,6 +2526,8 @@ export async function cancelVaultIndex(runId: string): Promise<boolean> {
 
 export async function getVaultIndexQueueStatus(): Promise<VaultIndexQueueStatus> {
   if (isTauri()) return invoke<VaultIndexQueueStatus>("get_vault_index_queue_status");
+  restoreVaultIndexQueueIfNeeded();
+  pumpVaultIndexQueue();
   return currentVaultIndexQueueStatus();
 }
 

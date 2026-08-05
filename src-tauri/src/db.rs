@@ -190,6 +190,15 @@ CREATE TABLE IF NOT EXISTS vault_watch_events (
 );
 CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
     ON vault_watch_events(vault_path, created_at DESC);
+CREATE TABLE IF NOT EXISTS vault_index_queue (
+    run_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    ignore_patterns TEXT NOT NULL DEFAULT '[]',
+    concurrency INTEGER NOT NULL DEFAULT 4,
+    status TEXT NOT NULL DEFAULT 'queued',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sync_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event TEXT NOT NULL,
@@ -559,6 +568,16 @@ pub struct KnowledgeCleanupResult {
     pub removed: i64,
     pub reindexed: i64,
     pub failed: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultIndexQueueRecord {
+    pub run_id: String,
+    pub path: String,
+    pub ignore_patterns: Vec<String>,
+    pub concurrency: usize,
+    pub status: String,
 }
 
 fn now_millis() -> i64 {
@@ -2936,6 +2955,73 @@ pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn persist_vault_index_queue(
+    conn: &Connection,
+    run_id: &str,
+    path: &str,
+    ignore_patterns: &[String],
+    concurrency: usize,
+    status: &str,
+) -> Result<()> {
+    let serialized = serde_json::to_string(ignore_patterns).unwrap_or_else(|_| "[]".to_string());
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO vault_index_queue (run_id, path, ignore_patterns, concurrency, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+         ON CONFLICT(run_id) DO UPDATE SET
+           path = excluded.path,
+           ignore_patterns = excluded.ignore_patterns,
+           concurrency = excluded.concurrency,
+           status = excluded.status,
+           updated_at = excluded.updated_at",
+        params![run_id, path, serialized, concurrency as i64, status, now],
+    )?;
+    Ok(())
+}
+
+pub fn list_vault_index_queue(conn: &Connection) -> Result<Vec<VaultIndexQueueRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, path, ignore_patterns, concurrency, status
+             FROM vault_index_queue
+             ORDER BY created_at ASC, rowid ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (run_id, path, serialized, concurrency, status) = row.map_err(|e| e.to_string())?;
+        let ignore_patterns =
+            serde_json::from_str::<Vec<String>>(&serialized).unwrap_or_else(|_| Vec::new());
+        records.push(VaultIndexQueueRecord {
+            run_id,
+            path,
+            ignore_patterns,
+            concurrency: concurrency.clamp(0, 16) as usize,
+            status,
+        });
+    }
+    Ok(records)
+}
+
+pub fn delete_vault_index_queue(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM vault_index_queue WHERE run_id = ?1",
+        params![run_id],
+    )?;
+    Ok(())
+}
+
 pub fn knowledge_index_status(conn: &Connection) -> Result<KnowledgeIndexStatus> {
     let files: i64 =
         conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
@@ -4743,6 +4829,42 @@ mod tests {
         let fresh_doc = remaining.iter().find(|doc| doc.path == fresh_str).unwrap();
         assert_eq!(fresh_doc.vault_path, "D:/vault");
 
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_index_queue_persists_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-index-queue-persist-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+        let conn = init_connection(&db_path).unwrap();
+        persist_vault_index_queue(
+            &conn,
+            "run-1",
+            "C:/vault",
+            &["Daily Notes".to_string(), "*.tmp".to_string()],
+            2,
+            "queued",
+        )
+        .unwrap();
+        persist_vault_index_queue(&conn, "run-2", "D:/vault", &[], 4, "running").unwrap();
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let records = list_vault_index_queue(&conn).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].run_id, "run-1");
+        assert_eq!(records[0].path, "C:/vault");
+        assert_eq!(records[0].ignore_patterns, vec!["Daily Notes", "*.tmp"]);
+        assert_eq!(records[0].concurrency, 2);
+        assert_eq!(records[0].status, "queued");
+        assert_eq!(records[1].status, "running");
+
+        delete_vault_index_queue(&conn, "run-1").unwrap();
+        let records = list_vault_index_queue(&conn).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].run_id, "run-2");
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }

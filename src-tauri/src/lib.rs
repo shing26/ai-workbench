@@ -1688,6 +1688,7 @@ fn spawn_vault_index_worker(
             let _ = app_clone
                 .state::<VaultIndexState>()
                 .finish_active(&thread_run_id);
+            delete_vault_index_request(&app_clone, &thread_run_id);
             let _ = maybe_start_next_vault_index(&app_clone);
         })
         .map_err(|e| e.to_string())?;
@@ -1709,6 +1710,82 @@ fn maybe_start_next_vault_index(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn persist_vault_index_request(app: &tauri::AppHandle, request: &VaultIndexRequest, status: &str) {
+    if let Some(db_state) = app.try_state::<db::Db>() {
+        if let Ok(conn) = db_state.0.lock() {
+            let _ = db::persist_vault_index_queue(
+                &conn,
+                &request.run_id,
+                &request.path,
+                &request.ignore_patterns,
+                request.concurrency,
+                status,
+            );
+        }
+    }
+}
+
+fn delete_vault_index_request(app: &tauri::AppHandle, run_id: &str) {
+    if let Some(db_state) = app.try_state::<db::Db>() {
+        if let Ok(conn) = db_state.0.lock() {
+            let _ = db::delete_vault_index_queue(&conn, run_id);
+        }
+    }
+}
+
+fn enqueue_restored_requests(
+    state: &VaultIndexState,
+    records: Vec<db::VaultIndexQueueRecord>,
+) -> usize {
+    let mut restored = 0usize;
+    for record in records {
+        if (record.status == "queued" || record.status == "running")
+            && state
+                .enqueue(VaultIndexRequest {
+                    run_id: record.run_id,
+                    path: record.path,
+                    ignore_patterns: record.ignore_patterns,
+                    concurrency: record.concurrency,
+                })
+                .is_ok()
+        {
+            restored += 1;
+        }
+    }
+    restored
+}
+
+fn restore_vault_index_queue(app: &tauri::AppHandle) {
+    let Some(db_state) = app.try_state::<db::Db>() else {
+        return;
+    };
+    let records = {
+        let Ok(conn) = db_state.0.lock() else {
+            return;
+        };
+        let Ok(records) = db::list_vault_index_queue(&conn) else {
+            return;
+        };
+        for record in &records {
+            if record.status == "running" {
+                let _ = db::persist_vault_index_queue(
+                    &conn,
+                    &record.run_id,
+                    &record.path,
+                    &record.ignore_patterns,
+                    record.concurrency,
+                    "queued",
+                );
+            }
+        }
+        records
+    };
+    let restored = enqueue_restored_requests(&app.state::<VaultIndexState>(), records);
+    if restored > 0 {
+        let _ = maybe_start_next_vault_index(app);
+    }
+}
+
 #[tauri::command]
 fn start_vault_index(
     app: tauri::AppHandle,
@@ -1717,12 +1794,14 @@ fn start_vault_index(
     concurrency: usize,
 ) -> Result<String, String> {
     let run_id = uuid::Uuid::new_v4().to_string();
-    let position = app.state::<VaultIndexState>().enqueue(VaultIndexRequest {
+    let request = VaultIndexRequest {
         run_id: run_id.clone(),
         path: vault_path.clone(),
         ignore_patterns,
         concurrency,
-    })?;
+    };
+    let position = app.state::<VaultIndexState>().enqueue(request.clone())?;
+    persist_vault_index_request(&app, &request, "queued");
     let _ = app.emit(
         "vault-index-progress",
         IndexProgress {
@@ -1766,6 +1845,7 @@ fn cancel_vault_index(
     };
     if !active {
         if let Some(path) = removed_path {
+            delete_vault_index_request(&app, &run_id);
             let _ = app.emit(
                 "vault-index-progress",
                 IndexProgress {
@@ -3323,6 +3403,7 @@ pub fn run() {
             app.manage(ProviderHeartbeat::default());
             app.manage(VaultWatchState::default());
             app.manage(VaultIndexState::default());
+            restore_vault_index_queue(app.handle());
             restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
@@ -3793,6 +3874,42 @@ mod tests {
         assert_eq!(snapshot.queue[0].run_id, "run-3");
         assert_eq!(snapshot.queue[0].position, 1);
         assert_eq!(snapshot.active.unwrap().run_id, "run-1");
+    }
+
+    #[test]
+    fn vault_index_queue_restore_enqueues_pending_and_resets_running() {
+        let state = VaultIndexState::default();
+        let records = vec![
+            db::VaultIndexQueueRecord {
+                run_id: "run-1".to_string(),
+                path: "C:/a".to_string(),
+                ignore_patterns: Vec::new(),
+                concurrency: 4,
+                status: "queued".to_string(),
+            },
+            db::VaultIndexQueueRecord {
+                run_id: "run-2".to_string(),
+                path: "C:/b".to_string(),
+                ignore_patterns: vec!["Daily Notes".to_string()],
+                concurrency: 2,
+                status: "running".to_string(),
+            },
+            db::VaultIndexQueueRecord {
+                run_id: "run-3".to_string(),
+                path: "C:/c".to_string(),
+                ignore_patterns: Vec::new(),
+                concurrency: 1,
+                status: "done".to_string(),
+            },
+        ];
+        let restored = enqueue_restored_requests(&state, records);
+        assert_eq!(restored, 2);
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.queue.len(), 2);
+        assert_eq!(snapshot.queue[0].run_id, "run-1");
+        assert_eq!(snapshot.queue[0].position, 1);
+        assert_eq!(snapshot.queue[1].run_id, "run-2");
+        assert_eq!(snapshot.queue[1].position, 2);
     }
 
     #[test]
