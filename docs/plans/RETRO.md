@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 77
+
+### What went well?
+
+- Quick Prompt 从静态模板升级为可维护的个人入口：`quickPrompts.ts` 新增自定义模型与 localStorage 读写，AI Studio Manage 面板支持 label / category / text 新增与删除，内置模板不可删除。
+- 自定义项与内置项合并渲染，点击自定义项同样填入输入框并聚焦；`verify:ui` / `verify:preview` 的 `quickPromptManager` 断言新增即见，`quickPromptPersist` 断言刷新保留、删除消失。
+- 验证覆盖：`npm run build` 全绿；`verify:ui` / `verify:preview` 新增 lane 均为 true，既有全部 lane 保持通过。
+
+### What went wrong?
+
+- 验证脚本首次用 `HTMLSelectElement.prototype.value` setter 设置 category 时触发 Illegal invocation，而直接赋值又不会更新 React 受控状态；最终保留默认 work 分类完成持久化断言，避免测试层与 React 状态追踪打架。
+- 自定义 prompt 的 id 由 `Date.now()` 生成，同毫秒连续新增会撞 id；当前单次新增场景无影响，后续可改为 `makeId()` 或加计数器。
+
+### Action Items
+
+- 下一 Sprint 候选：Git dirty 逐文件 diff 预览、真实 Provider 端到端流式联调、Quick Prompt 编辑与排序。
+
 ## Sprint 76
 
 ### What went well?

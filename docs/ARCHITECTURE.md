@@ -355,3 +355,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - ActionsView 聚合今日 Focus / Habits / Schedule 的完成数、总数、总进度与下一个未完成日程；`Today progress` 12 列宽卡片置顶展示。
 - 进度卡带 `data-daily-progress` / `data-daily-focus` / `data-daily-habits` / `data-daily-schedule` / `data-daily-progress-bar` / `data-daily-next-event` 数据属性。
 - `verify:ui` / `verify:preview` 新增 `dailyProgress` lane：seed 态断言 Focus 0/3、Habits 0/3、Schedule 0/2、Next 含“每日复盘”。
+
+## Sprint 77：Quick Prompt 自定义与本地持久化
+
+- `quickPrompts.ts` 新增 `CustomQuickPrompt` 与 `loadQuickPrompts` / `listCustomQuickPrompts` / `addCustomQuickPrompt` / `deleteCustomQuickPrompt`，自定义项持久化到 `ai-workbench:quick-prompts:v1`。
+- AI Studio 芯片行新增 Manage 面板：可填写 label / category / text 新增自定义 prompt，也可删除；内置模板不可删除，自定义项与内置项合并渲染。
+- `verify:ui` / `verify:preview` 新增 `quickPromptManager` / `quickPromptPersist` lane：新增后立即可见、刷新后仍在、删除后消失。

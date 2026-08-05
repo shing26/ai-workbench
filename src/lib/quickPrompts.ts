@@ -5,6 +5,12 @@ export type QuickPrompt = {
   text: string;
 };
 
+export type CustomQuickPrompt = QuickPrompt & {
+  custom: true;
+};
+
+const QUICK_PROMPT_LS_KEY = "ai-workbench:quick-prompts:v1";
+
 export const QUICK_PROMPTS: QuickPrompt[] = [
   {
     id: "daily-recap",
@@ -43,3 +49,48 @@ export const QUICK_PROMPTS: QuickPrompt[] = [
     text: "给我一份 15 分钟的睡前放松清单，包含身体放松、环境调整和一句结束今天的话。",
   },
 ];
+
+export function isCustomQuickPrompt(prompt: QuickPrompt): prompt is CustomQuickPrompt {
+  return "custom" in prompt;
+}
+
+export function loadQuickPrompts(): QuickPrompt[] {
+  return [...QUICK_PROMPTS, ...listCustomQuickPrompts()];
+}
+
+export function listCustomQuickPrompts(): CustomQuickPrompt[] {
+  try {
+    const raw = localStorage.getItem(QUICK_PROMPT_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as CustomQuickPrompt[];
+    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && prompt.custom) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addCustomQuickPrompt(
+  label: string,
+  category: "life" | "work",
+  text: string,
+): CustomQuickPrompt {
+  const prompt: CustomQuickPrompt = {
+    id: `custom-${Date.now()}`,
+    label,
+    category,
+    text,
+    custom: true,
+  };
+  localStorage.setItem(
+    QUICK_PROMPT_LS_KEY,
+    JSON.stringify([...listCustomQuickPrompts(), prompt]),
+  );
+  return prompt;
+}
+
+export function deleteCustomQuickPrompt(id: string): void {
+  localStorage.setItem(
+    QUICK_PROMPT_LS_KEY,
+    JSON.stringify(listCustomQuickPrompts().filter((prompt) => prompt.id !== id)),
+  );
+}
