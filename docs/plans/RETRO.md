@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 60
+
+### What went well?
+
+- `get_sync_audit_summary` 按 `day` / `week` 聚合 `sync_audit_log`，周以周一 UTC 起算；System Sync audit 新增 Activity 柱状图，Day / Week 切换即时刷新，总数徽标与柱合计一致。
+- 缺失 bucket 自动补零（<= 62 个），图表不会因空档日跳变；TS fallback 与 Rust 共用同一 UTC 日 / 周语义。
+- 验证覆盖：`cargo test --lib` 67/67，fmt、clippy、build 全绿；两条 lane 的 `syncAuditChart` 的 total / barTotal / weekTotal 均为 10，切回 Day 恢复。
+
+### What went wrong?
+
+- `verify:preview` 首次失败是 `dist` 仍为旧构建：SystemView 挂载时未调用 `getSyncAuditSummary`，图表停在 No activity；重新 `npm run build` 后 preview 通过。
+- 图表断言最初失败信息只有 `no audit chart bars`，补上 storedAudit / sample / chartText 诊断后能一眼定位是数据缺失还是构建过期。
+
+### Action Items
+
+- 下一 Sprint 候选：watch 事件时间线、索引任务队列持久化、错误日志趋势 / 聚合、RAG 文档状态面板、git 活动看板。
+- 后续改动审计面板时，保持列表 / 导出 / 图表共用同一过滤条件与 UTC 时间语义。
+
 ## Sprint 59
 
 ### What went well?

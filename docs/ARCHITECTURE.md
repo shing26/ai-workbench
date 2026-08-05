@@ -244,3 +244,9 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 - `start_vault_index` 先入队并发出 `queued` / `running` 进度；worker 结束后自动调度队列中的下一个任务。
 - 新增 `get_vault_index_queue_status` 命令与 `vault-index-queue` 事件，快照包含 active 与排队任务的 position；`cancel_vault_index` 对排队任务直接出队。
 - TS fallback 镜像同一队列语义；Knowledge 显示 active + queued 队列条，排队任务也可取消。
+
+## Sprint 60：审计按日/周聚合图表
+
+- 新增 `get_sync_audit_summary` 命令：按 `day` / `week` 聚合 `sync_audit_log`，周以周一 UTC 00:00 起算，bucket 数 <= 62 时补零，返回 total + buckets。
+- System Sync audit 区域新增 Activity 图：Day / Week 分段切换、总数徽标、柱状条按 `bucket.count` 渲染；列表、导出与图表共用同一过滤条件。
+- 浏览器 fallback 用 `summarizeSyncAudit` 镜像同一 UTC 日 / 周语义。
