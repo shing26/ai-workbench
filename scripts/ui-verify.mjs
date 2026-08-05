@@ -408,6 +408,68 @@ try {
   if (!results.quickPrompts.ok) {
     throw new Error(`Quick prompt assertion failed: ${JSON.stringify(results.quickPrompts)}`);
   }
+  results.quickPromptManager = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(80);
+    const manager = document.querySelector("[data-quick-prompt-manager]");
+    if (!manager) return { ok: false, reason: "manager panel missing" };
+    const name = document.querySelector("[data-quick-prompt-name]");
+    const text = document.querySelector("[data-quick-prompt-text]");
+    const category = document.querySelector("[data-quick-prompt-category]");
+    if (!name || !text || !category) return { ok: false, reason: "manager inputs missing" };
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setInput(name, "Review day");
+    setInput(text, "帮我复盘今天，并给明天定 3 件优先事。");
+    await sleep(60);
+    document.querySelector("[data-quick-prompt-add]")?.click();
+    await sleep(120);
+    const chip = [...document.querySelectorAll("[data-quick-prompt]")].find(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const storedOk = Array.isArray(stored) && stored.some((p) => p.label === "Review day" && p.category === "work");
+    if (!chip) return { ok: false, reason: "custom chip missing", stored };
+    const chipCategory = chip.getAttribute("data-quick-prompt-category");
+    chip.click();
+    await sleep(80);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    const filled = input ? input.value.includes("复盘今天") : false;
+    return { ok: storedOk && filled && chipCategory === "work", stored, filled, chipCategory };
+  })()`);
+  if (!results.quickPromptManager.ok) {
+    throw new Error(`Quick prompt manager assertion failed: ${JSON.stringify(results.quickPromptManager)}`);
+  }
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("AI Studio");
+  results.quickPromptPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const persisted = [...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(80);
+    const deleteBtn = [...document.querySelectorAll("[data-quick-prompt-custom-delete]")].find(
+      (btn) => btn.parentElement?.textContent?.includes("Review day"),
+    );
+    if (!deleteBtn) return { ok: false, reason: "delete button missing", persisted };
+    deleteBtn.click();
+    await sleep(120);
+    const gone = ![...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const storedGone = !stored.some((p) => p.label === "Review day");
+    return { ok: persisted && gone && storedGone, persisted, gone, storedGone };
+  })()`);
+  if (!results.quickPromptPersist.ok) {
+    throw new Error(`Quick prompt persistence assertion failed: ${JSON.stringify(results.quickPromptPersist)}`);
+  }
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };

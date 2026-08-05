@@ -1,7 +1,14 @@
 import { Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
-import { QUICK_PROMPTS } from "../lib/quickPrompts";
+import {
+  addCustomQuickPrompt,
+  deleteCustomQuickPrompt,
+  listCustomQuickPrompts,
+  loadQuickPrompts,
+  type CustomQuickPrompt,
+  type QuickPrompt,
+} from "../lib/quickPrompts";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import type { InspectorSection } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -43,6 +50,14 @@ export default function AIStudioView() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const [prompts, setPrompts] = useState<QuickPrompt[]>(() => loadQuickPrompts());
+  const [customPrompts, setCustomPrompts] = useState<CustomQuickPrompt[]>(() =>
+    listCustomQuickPrompts(),
+  );
+  const [manageOpen, setManageOpen] = useState(false);
+  const [customLabel, setCustomLabel] = useState("");
+  const [customCategory, setCustomCategory] = useState<"life" | "work">("work");
+  const [customText, setCustomText] = useState("");
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
@@ -58,6 +73,24 @@ export default function AIStudioView() {
     ? agents.filter((a) => a.departmentId === teamDeptId && a.isActive).slice(0, 3)
     : [];
   const selectedDepartment = departments.find((d) => d.id === teamDeptId) ?? null;
+
+  const refreshQuickPrompts = () => {
+    setPrompts(loadQuickPrompts());
+    setCustomPrompts(listCustomQuickPrompts());
+  };
+
+  const addCustom = () => {
+    if (!customLabel.trim() || !customText.trim()) return;
+    addCustomQuickPrompt(customLabel.trim(), customCategory, customText.trim());
+    refreshQuickPrompts();
+    setCustomLabel("");
+    setCustomText("");
+  };
+
+  const removeCustom = (id: string) => {
+    deleteCustomQuickPrompt(id);
+    refreshQuickPrompts();
+  };
 
   const setMode = (mode: "single" | "team" | "moa" | "auto") => {
     setTeamMode(mode === "team");
@@ -1140,7 +1173,7 @@ export default function AIStudioView() {
           </div>
         )}
         <div data-quick-prompts className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
-          {QUICK_PROMPTS.map((prompt) => (
+          {prompts.map((prompt) => (
             <button
               key={prompt.id}
               type="button"
@@ -1157,7 +1190,77 @@ export default function AIStudioView() {
               {prompt.label}
             </button>
           ))}
+          <button
+            type="button"
+            data-quick-prompt-manage
+            onClick={() => setManageOpen((open) => !open)}
+            className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-500 transition-colors hover:border-blue-500/30 hover:bg-blue-500/10 hover:text-blue-300"
+          >
+            <Pencil size={10} className="shrink-0" />
+            {manageOpen ? "Close" : "Manage"}
+          </button>
         </div>
+        {manageOpen && (
+          <div
+            data-quick-prompt-manager
+            className="mb-2 space-y-2 rounded-xl border border-white/10 bg-white/[0.02] p-2"
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                data-quick-prompt-name
+                value={customLabel}
+                onChange={(e) => setCustomLabel(e.target.value)}
+                placeholder="Label"
+                className="h-7 w-28 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <select
+                data-quick-prompt-category
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value as "life" | "work")}
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+              >
+                <option value="work">work</option>
+                <option value="life">life</option>
+              </select>
+              <input
+                data-quick-prompt-text
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value)}
+                placeholder="Prompt text"
+                className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <button
+                type="button"
+                data-quick-prompt-add
+                onClick={addCustom}
+                className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/20 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/30"
+              >
+                <Plus size={11} /> Add
+              </button>
+            </div>
+            {customPrompts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {customPrompts.map((prompt) => (
+                  <span
+                    key={prompt.id}
+                    className="flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
+                  >
+                    {prompt.label}
+                    <button
+                      type="button"
+                      data-quick-prompt-custom-delete={prompt.id}
+                      aria-label={`Delete ${prompt.label}`}
+                      onClick={() => removeCustom(prompt.id)}
+                      className="text-slate-600 hover:text-rose-400"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="composer flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
           <textarea
             ref={composerRef}

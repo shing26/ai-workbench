@@ -534,3 +534,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 76：Actions 今日进度总览
 
 无表结构变更。今日进度为 ActionsView 基于 `tasks / habits / schedule_events` 的运行时聚合，不新增持久化字段。
+
+## Sprint 77：Quick Prompt 自定义与本地持久化
+
+无表结构变更。自定义 Quick Prompt 保存在前端 `ai-workbench:quick-prompts:v1`，每条含 `id / label / category / text / custom`，不写入 SQLite。
