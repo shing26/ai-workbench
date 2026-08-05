@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS error_logs (
     stack TEXT,
     severity TEXT DEFAULT 'error',
     timestamp INTEGER,
-    updated_at INTEGER DEFAULT 0
+    updated_at INTEGER DEFAULT 0,
+    device_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(is_today, status);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(type, created_at);
@@ -367,6 +368,8 @@ pub struct ErrorLog {
     pub severity: String,
     pub timestamp: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub device_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -614,6 +617,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
     migrate_updated_at(&conn)?;
+    migrate_error_log_device(&conn)?;
     migrate_version_parent(&conn)?;
     migrate_vault_watch_targets(&conn)?;
     migrate_vault_watch_event_stats(&conn)?;
@@ -681,6 +685,15 @@ fn migrate_updated_at(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE error_logs ADD COLUMN updated_at INTEGER DEFAULT 0;
              UPDATE error_logs SET updated_at = timestamp WHERE updated_at = 0;",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_error_log_device(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "error_logs", "device_id")? {
+        conn.execute_batch(
+            "ALTER TABLE error_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT '';",
         )?;
     }
     Ok(())
@@ -821,7 +834,7 @@ fn seed_logs_if_empty(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     conn.execute(
-        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2, ?3)",
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2, ?3, '')",
         params![uid(), now_millis() - 7000, now_millis() - 7000],
     )?;
     Ok(())
@@ -1448,12 +1461,13 @@ pub fn report_frontend_error(
     message: &str,
     stack: Option<&str>,
     severity: &str,
+    device_id: &str,
 ) -> Result<ErrorLog> {
     let id = uid();
     let timestamp = now_millis();
     conn.execute(
-        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, source, message, stack, severity, timestamp, timestamp],
+        "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, source, message, stack, severity, timestamp, timestamp, device_id],
     )?;
     Ok(ErrorLog {
         id,
@@ -1463,12 +1477,13 @@ pub fn report_frontend_error(
         severity: severity.to_string(),
         timestamp,
         updated_at: timestamp,
+        device_id: device_id.to_string(),
     })
 }
 
 pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
     let mut stmt = conn.prepare(
-        "SELECT id, source, message, stack, severity, timestamp, updated_at FROM error_logs ORDER BY updated_at DESC LIMIT 30",
+        "SELECT id, source, message, stack, severity, timestamp, updated_at, device_id FROM error_logs ORDER BY updated_at DESC LIMIT 30",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ErrorLog {
@@ -1479,6 +1494,7 @@ pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
             severity: row.get(4)?,
             timestamp: row.get(5)?,
             updated_at: row.get(6)?,
+            device_id: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -1910,6 +1926,7 @@ pub fn error_log_summary(
     granularity: &str,
     source: Option<&str>,
     severity: Option<&str>,
+    device_id: Option<&str>,
 ) -> Result<ErrorLogSummary, String> {
     let day_ms = 86_400_000i64;
     let week_ms = day_ms * 7;
@@ -1920,11 +1937,12 @@ pub fn error_log_summary(
         .prepare(
             "SELECT severity, updated_at FROM error_logs
              WHERE (?1 IS NULL OR source = ?1)
-               AND (?2 IS NULL OR severity = ?2)",
+               AND (?2 IS NULL OR severity = ?2)
+               AND (?3 IS NULL OR device_id = ?3)",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![source, severity], |row| {
+        .query_map(params![source, severity, device_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|e| e.to_string())?;
@@ -2439,8 +2457,8 @@ fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
         }
         Some((local_content, local_updated)) => {
             conn.execute(
-                "UPDATE error_logs SET source = ?1, message = ?2, stack = ?3, severity = ?4, timestamp = ?5, updated_at = ?6 WHERE id = ?7",
-                params![log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at, log.id],
+                "UPDATE error_logs SET source = ?1, message = ?2, stack = ?3, severity = ?4, timestamp = ?5, updated_at = ?6, device_id = ?7 WHERE id = ?8",
+                params![log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at, log.device_id, log.id],
             )?;
             Ok(MergeOutcome::Updated {
                 local_updated_at: local_updated,
@@ -2449,8 +2467,8 @@ fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
         }
         None => {
             conn.execute(
-                "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![log.id, log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at],
+                "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![log.id, log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at, log.device_id],
             )?;
             Ok(MergeOutcome::Added)
         }
@@ -3774,8 +3792,15 @@ mod tests {
         let conn = init_connection(&db_path).unwrap();
         let item = capture_clipboard(&conn, "Sprint 4 clipboard", "test").unwrap();
         assert!(capture_clipboard(&conn, "Sprint 4 clipboard", "test").is_err());
-        let log =
-            report_frontend_error(&conn, "frontend", "boom", Some("at line 1"), "error").unwrap();
+        let log = report_frontend_error(
+            &conn,
+            "frontend",
+            "boom",
+            Some("at line 1"),
+            "error",
+            "device-local",
+        )
+        .unwrap();
         drop(conn);
 
         let conn = init_connection(&db_path).unwrap();
@@ -3783,6 +3808,10 @@ mod tests {
         assert!(items.iter().any(|i| i.id == item.id));
         let logs = list_error_logs(&conn).unwrap();
         assert!(logs.iter().any(|l| l.id == log.id));
+        assert_eq!(
+            logs.iter().find(|l| l.id == log.id).unwrap().device_id,
+            "device-local"
+        );
         assert_eq!(
             logs.iter().find(|l| l.id == log.id).unwrap().message,
             "boom"
@@ -3802,12 +3831,12 @@ mod tests {
 
         let conn_a = init_connection(&device_a).unwrap();
         capture_clipboard(&conn_a, "from device A", "test").unwrap();
-        report_frontend_error(&conn_a, "a", "log from A", None, "info").unwrap();
+        report_frontend_error(&conn_a, "a", "log from A", None, "info", "device-a").unwrap();
         export_sync_snapshot(&conn_a, &snapshot_path).unwrap();
 
         let conn_b = init_connection(&device_b).unwrap();
         capture_clipboard(&conn_b, "from device B", "test").unwrap();
-        report_frontend_error(&conn_b, "b", "log from B", None, "error").unwrap();
+        report_frontend_error(&conn_b, "b", "log from B", None, "error", "device-b").unwrap();
 
         let result = import_sync_snapshot(&conn_b, &snapshot_path).unwrap();
         assert!(result.clipboard_added >= 1);
@@ -3818,6 +3847,12 @@ mod tests {
         let logs = list_error_logs(&conn_b).unwrap();
         assert!(logs.iter().any(|l| l.message == "log from A"));
         assert!(logs.iter().any(|l| l.message == "log from B"));
+        assert!(logs
+            .iter()
+            .any(|l| l.message == "log from A" && l.device_id == "device-a"));
+        assert!(logs
+            .iter()
+            .any(|l| l.message == "log from B" && l.device_id == "device-b"));
         drop(conn_a);
         drop(conn_b);
 
@@ -3931,7 +3966,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let conn = init_connection(&dir.join("workbench.db")).unwrap();
         let clip = capture_clipboard(&conn, "local clip", "test").unwrap();
-        let log = report_frontend_error(&conn, "test", "local log", None, "error").unwrap();
+        let log = report_frontend_error(&conn, "test", "local log", None, "error", "device-local")
+            .unwrap();
         let clip_updated = clip.updated_at;
         let log_updated = log.updated_at;
         let remote = SyncSnapshot {
@@ -3952,6 +3988,7 @@ mod tests {
                 severity: "error".to_string(),
                 timestamp: log_updated + 1000,
                 updated_at: log_updated + 1000,
+                device_id: "device-remote".to_string(),
             }],
         };
         let merged = merge_sync_snapshot(&conn, remote).unwrap();
@@ -4348,31 +4385,31 @@ mod tests {
         let monday = 1_785_715_200_000i64;
         let day_ms = 86_400_000i64;
         conn.execute(
-            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
-             VALUES (?1, 'frontend', 'boom today', NULL, 'error', ?2, ?2)",
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id)
+             VALUES (?1, 'frontend', 'boom today', NULL, 'error', ?2, ?2, 'device-a')",
             params![uid(), monday],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
-             VALUES (?1, 'tauri', 'warn today', NULL, 'warning', ?2, ?2)",
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id)
+             VALUES (?1, 'tauri', 'warn today', NULL, 'warning', ?2, ?2, 'device-b')",
             params![uid(), monday + 1000],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
-             VALUES (?1, 'frontend', 'info tomorrow', NULL, 'info', ?2, ?2)",
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id)
+             VALUES (?1, 'frontend', 'info tomorrow', NULL, 'info', ?2, ?2, 'device-a')",
             params![uid(), monday + day_ms],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
-             VALUES (?1, 'tauri', 'boom in two days', NULL, 'error', ?2, ?2)",
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id)
+             VALUES (?1, 'tauri', 'boom in two days', NULL, 'error', ?2, ?2, 'device-b')",
             params![uid(), monday + day_ms * 2],
         )
         .unwrap();
 
-        let daily = error_log_summary(&conn, "day", None, None).unwrap();
+        let daily = error_log_summary(&conn, "day", None, None, None).unwrap();
         assert_eq!(daily.total, 4);
         assert_eq!(daily.buckets.len(), 3);
         assert_eq!(daily.buckets[0].bucket, "2026-08-03");
@@ -4383,7 +4420,7 @@ mod tests {
         assert_eq!(daily.buckets[1].info, 1);
         assert_eq!(daily.buckets[2].error, 1);
 
-        let weekly = error_log_summary(&conn, "week", None, None).unwrap();
+        let weekly = error_log_summary(&conn, "week", None, None, None).unwrap();
         assert_eq!(weekly.total, 4);
         assert_eq!(weekly.buckets.len(), 1);
         assert_eq!(weekly.buckets[0].bucket, "2026-08-03");
@@ -4392,17 +4429,24 @@ mod tests {
         assert_eq!(weekly.buckets[0].warning, 1);
         assert_eq!(weekly.buckets[0].info, 1);
 
-        let errors_only = error_log_summary(&conn, "day", None, Some("error")).unwrap();
+        let errors_only = error_log_summary(&conn, "day", None, Some("error"), None).unwrap();
         assert_eq!(errors_only.total, 2);
         assert!(errors_only
             .buckets
             .iter()
             .all(|bucket| bucket.warning == 0 && bucket.info == 0));
 
-        let frontend_only = error_log_summary(&conn, "day", Some("frontend"), None).unwrap();
+        let frontend_only = error_log_summary(&conn, "day", Some("frontend"), None, None).unwrap();
         assert_eq!(frontend_only.total, 2);
 
-        assert!(error_log_summary(&conn, "month", None, None).is_err());
+        let device_a = error_log_summary(&conn, "day", None, None, Some("device-a")).unwrap();
+        assert_eq!(device_a.total, 2);
+
+        let combo =
+            error_log_summary(&conn, "day", Some("frontend"), None, Some("device-a")).unwrap();
+        assert_eq!(combo.total, 2);
+
+        assert!(error_log_summary(&conn, "month", None, None, None).is_err());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

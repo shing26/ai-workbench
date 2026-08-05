@@ -1949,6 +1949,7 @@ try {
           severity: "error",
           timestamp: Date.now() + 1000,
           updatedAt: Date.now() + 1000,
+          deviceId: "device-remote",
         },
       ],
     };
@@ -2316,6 +2317,7 @@ try {
         severity: "error",
         timestamp: startOfToday + 1000,
         updatedAt: startOfToday + 1000,
+        deviceId: "device-local",
       },
       {
         id: "warn-yesterday",
@@ -2325,6 +2327,7 @@ try {
         severity: "warning",
         timestamp: startOfToday - dayMs + 5000,
         updatedAt: startOfToday - dayMs + 5000,
+        deviceId: "device-remote",
       },
       {
         id: "info-yesterday",
@@ -2334,6 +2337,7 @@ try {
         severity: "info",
         timestamp: startOfToday - dayMs + 6000,
         updatedAt: startOfToday - dayMs + 6000,
+        deviceId: "device-local",
       },
       {
         id: "err-week",
@@ -2343,8 +2347,10 @@ try {
         severity: "error",
         timestamp: startOfToday - dayMs * 7 + 2000,
         updatedAt: startOfToday - dayMs * 7 + 2000,
+        deviceId: "device-remote",
       },
     ];
+    shape.syncDeviceId = "device-local";
     localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
     return { ok: true, seeded: shape.logs.length };
   })()`);
@@ -2447,6 +2453,95 @@ try {
     throw new Error(`Error log trend assertion failed: ${JSON.stringify(errorLogTrend)}`);
   }
   results.errorLogTrend = errorLogTrend;
+
+  const errorLogSourceDevice = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setSelect = (selector, value) => {
+      const el = document.querySelector(selector);
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const readTotal = () =>
+      Number(document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0);
+    const readRows = () => [...document.querySelectorAll("[data-error-log-device]")].length;
+    const waitFor = async (total) => {
+      for (let i = 0; i < 20; i++) {
+        if (readTotal() === total) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const sourceSelect = document.querySelector("[data-error-source-filter]");
+    const deviceSelect = document.querySelector("[data-error-device-filter]");
+    if (!sourceSelect || !deviceSelect) {
+      return { ok: false, reason: "missing error source/device filters" };
+    }
+    const initialTotal = readTotal();
+    const initialRows = readRows();
+
+    setSelect("[data-error-source-filter]", "frontend");
+    const frontendOk = (await waitFor(2)) && readRows() === 2;
+    const frontendRowsOk = [...document.querySelectorAll("[data-error-log-source]")].every(
+      (row) => row.getAttribute("data-error-log-source") === "frontend",
+    );
+
+    setSelect("[data-error-source-filter]", "all");
+    await waitFor(4);
+    setSelect("[data-error-device-filter]", "current");
+    const currentOk = (await waitFor(2)) && readRows() === 2;
+    const currentRowsOk = [...document.querySelectorAll("[data-error-log-device]")].every(
+      (row) => row.getAttribute("data-error-log-device") === "device-local",
+    );
+
+    setSelect("[data-error-source-filter]", "frontend");
+    const comboLocalOk = (await waitFor(2)) && readRows() === 2;
+    setSelect("[data-error-source-filter]", "tauri");
+    const comboLocalEmptyOk = (await waitFor(0)) && readRows() === 0;
+    setSelect("[data-error-device-filter]", "device-remote");
+    const comboRemoteOk = (await waitFor(2)) && readRows() === 2;
+    const comboRemoteRowsOk =
+      [...document.querySelectorAll("[data-error-log-source]")].length === 2 &&
+      [...document.querySelectorAll("[data-error-log-source]")].every(
+        (row) => row.getAttribute("data-error-log-source") === "tauri",
+      ) &&
+      [...document.querySelectorAll("[data-error-log-device]")].every(
+        (row) => row.getAttribute("data-error-log-device") === "device-remote",
+      );
+
+    setSelect("[data-error-source-filter]", "all");
+    setSelect("[data-error-device-filter]", "all");
+    const restored = await waitFor(4);
+    const ok =
+      initialTotal === 4 &&
+      initialRows === 4 &&
+      frontendOk &&
+      frontendRowsOk &&
+      currentOk &&
+      currentRowsOk &&
+      comboLocalOk &&
+      comboLocalEmptyOk &&
+      comboRemoteOk &&
+      comboRemoteRowsOk &&
+      restored;
+    return {
+      ok,
+      initialTotal,
+      initialRows,
+      frontendOk,
+      currentOk,
+      comboLocalOk,
+      comboLocalEmptyOk,
+      comboRemoteOk,
+      restored,
+    };
+  })()`);
+  if (!errorLogSourceDevice.ok) {
+    throw new Error(
+      `Error log source/device filter assertion failed: ${JSON.stringify(errorLogSourceDevice)}`,
+    );
+  }
+  results.errorLogSourceDevice = errorLogSourceDevice;
 
   const syncAuditCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -69,6 +69,8 @@ export default function SystemView() {
   const [errorLogSummary, setErrorLogSummary] = useState<db.ErrorLogSummary | null>(null);
   const [errorLogGranularity, setErrorLogGranularity] = useState<"day" | "week">("day");
   const [errorSeverityFilter, setErrorSeverityFilter] = useState("all");
+  const [errorSourceFilter, setErrorSourceFilter] = useState("all");
+  const [errorDeviceFilter, setErrorDeviceFilter] = useState("all");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -264,8 +266,13 @@ export default function SystemView() {
     void db
       .getErrorLogSummary(
         granularity,
-        undefined,
+        errorSourceFilter === "all" ? undefined : errorSourceFilter,
         errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
+        errorDeviceFilter === "all"
+          ? undefined
+          : errorDeviceFilter === "current"
+            ? deviceId
+            : errorDeviceFilter,
       )
       .then(setErrorLogSummary);
   };
@@ -275,8 +282,45 @@ export default function SystemView() {
     void db
       .getErrorLogSummary(
         errorLogGranularity,
-        undefined,
+        errorSourceFilter === "all" ? undefined : errorSourceFilter,
         severity === "all" ? undefined : severity,
+        errorDeviceFilter === "all"
+          ? undefined
+          : errorDeviceFilter === "current"
+            ? deviceId
+            : errorDeviceFilter,
+      )
+      .then(setErrorLogSummary);
+  };
+
+  const changeErrorSourceFilter = (source: string) => {
+    setErrorSourceFilter(source);
+    void db
+      .getErrorLogSummary(
+        errorLogGranularity,
+        source === "all" ? undefined : source,
+        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
+        errorDeviceFilter === "all"
+          ? undefined
+          : errorDeviceFilter === "current"
+            ? deviceId
+            : errorDeviceFilter,
+      )
+      .then(setErrorLogSummary);
+  };
+
+  const changeErrorDeviceFilter = (device: string) => {
+    setErrorDeviceFilter(device);
+    void db
+      .getErrorLogSummary(
+        errorLogGranularity,
+        errorSourceFilter === "all" ? undefined : errorSourceFilter,
+        errorSeverityFilter === "all" ? undefined : errorSeverityFilter,
+        device === "all"
+          ? undefined
+          : device === "current"
+            ? deviceId
+            : device,
       )
       .then(setErrorLogSummary);
   };
@@ -546,6 +590,21 @@ export default function SystemView() {
     setBaseUrl("");
     setApiKey("");
   };
+
+  const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
+  const errorDevices = Array.from(
+    new Set(logs.map((log) => log.deviceId || "unknown")),
+  ).sort();
+  const visibleLogs = logs
+    .filter((log) => errorSourceFilter === "all" || log.source === errorSourceFilter)
+    .filter((log) => errorSeverityFilter === "all" || log.severity === errorSeverityFilter)
+    .filter((log) => {
+      if (errorDeviceFilter === "all") return true;
+      const logDevice = log.deviceId || "unknown";
+      return errorDeviceFilter === "current"
+        ? logDevice === deviceId
+        : logDevice === errorDeviceFilter;
+    });
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
@@ -1307,7 +1366,7 @@ export default function SystemView() {
           <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-500">
             <span className={`health-dot h-1.5 w-1.5 rounded-full ${logs.some((l) => l.severity === "error") ? "bg-red-400" : "bg-emerald-400"}`} />
             <span>{logs.some((l) => l.severity === "error") ? "has errors" : "healthy"}</span>
-            <span className="ml-auto">{logs.length} entries</span>
+            <span className="ml-auto">{visibleLogs.length} entries</span>
           </div>
           <div className="mb-2 flex items-center gap-1.5">
             <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
@@ -1339,6 +1398,20 @@ export default function SystemView() {
               </button>
             </div>
             <select
+              data-error-source-filter
+              value={errorSourceFilter}
+              onChange={(e) => changeErrorSourceFilter(e.target.value)}
+              aria-label="Error source filter"
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+            >
+              <option value="all">All sources</option>
+              {errorSources.map((source) => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+            <select
               data-error-severity-filter
               value={errorSeverityFilter}
               onChange={(e) => changeErrorSeverityFilter(e.target.value)}
@@ -1349,6 +1422,23 @@ export default function SystemView() {
               <option value="error">error</option>
               <option value="warning">warning</option>
               <option value="info">info</option>
+            </select>
+            <select
+              data-error-device-filter
+              value={errorDeviceFilter}
+              onChange={(e) => changeErrorDeviceFilter(e.target.value)}
+              aria-label="Error device filter"
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+            >
+              <option value="all">All devices</option>
+              <option value="current">current</option>
+              {errorDevices
+                .filter((device) => device !== deviceId && device !== "unknown")
+                .map((device) => (
+                  <option key={device} value={device}>
+                    {device.slice(0, 12)}
+                  </option>
+                ))}
             </select>
             <span
               data-error-log-total
@@ -1414,13 +1504,18 @@ export default function SystemView() {
             })}
           </div>
           <div className="flex flex-col gap-1.5">
-            {logs.slice(0, 10).map((l) => (
+            {visibleLogs.slice(0, 10).map((l) => (
               <div
                 key={l.id}
+                data-error-log-source={l.source}
+                data-error-log-device={l.deviceId || "unknown"}
                 className="message-in rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2"
               >
                 <div className="flex items-center gap-2 text-[11px] text-red-300">
                   <span className="font-medium">{l.source}</span>
+                  <span className="text-[9px] text-red-400/70">
+                    {(l.deviceId || "unknown").slice(0, 12)}
+                  </span>
                   <span className="text-[9px] uppercase text-red-400/70">{l.severity}</span>
                   <span className="ml-auto text-[10px] text-red-400/60">{formatTime(l.timestamp)}</span>
                 </div>
