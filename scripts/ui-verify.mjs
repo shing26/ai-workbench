@@ -148,13 +148,18 @@ async function capture(name) {
 }
 
 async function clickDock(label) {
-  const clicked = await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('nav button[aria-label]')]
-      .find((b) => b.getAttribute('aria-label') === ${JSON.stringify(label)});
-    if (!btn) return false;
-    btn.click();
-    return true;
-  })()`);
+  let clicked = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    clicked = await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute('aria-label') === ${JSON.stringify(label)});
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (clicked) break;
+    await delay(150);
+  }
   if (!clicked) throw new Error(`dock button missing: ${label}`);
   await delay(450);
 }
@@ -564,6 +569,52 @@ try {
     throw new Error(`project git graph assertion failed: ${JSON.stringify(gitGraph)}`);
   }
   results.gitGraph = gitGraph;
+  const gitActivity = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const board = () => document.querySelector("[data-git-activity]");
+    for (let i = 0; i < 20; i++) {
+      const projects = board()?.querySelectorAll("[data-git-activity-project]") ?? [];
+      if (projects.length >= 2) break;
+      await sleep(100);
+    }
+    const projects = [...document.querySelectorAll("[data-git-activity-project]")];
+    const summary = document.querySelector("[data-git-activity-total]");
+    const totalProjects = Number(summary?.getAttribute("data-git-activity-total") ?? 0);
+    const totalCommits = Number(summary?.getAttribute("data-git-activity-commits") ?? 0);
+    const dirtyProjects = Number(summary?.getAttribute("data-git-activity-dirty") ?? 0);
+    const branches = projects.map((p) => p.getAttribute("data-git-activity-branch"));
+    const dirtyRows = projects.filter(
+      (p) => p.getAttribute("data-git-activity-dirty") === "true",
+    );
+    const commits = projects.reduce(
+      (sum, p) => sum + Number(p.getAttribute("data-git-activity-commits") ?? 0),
+      0,
+    );
+    const latestOk = projects.some((p) =>
+      (p.getAttribute("data-git-activity-latest") ?? "").includes("sprint-20"),
+    );
+    const ok =
+      projects.length >= 2 &&
+      totalProjects === projects.length &&
+      totalCommits === commits &&
+      dirtyProjects >= 1 &&
+      dirtyRows.length >= 1 &&
+      branches.includes("develop") &&
+      latestOk;
+    return {
+      ok,
+      totalProjects,
+      totalCommits,
+      dirtyProjects,
+      branches,
+      rows: projects.length,
+      latestOk,
+    };
+  })()`);
+  if (!gitActivity.ok) {
+    throw new Error(`Git activity board assertion failed: ${JSON.stringify(gitActivity)}`);
+  }
+  results.gitActivity = gitActivity;
   results.rebaseApply = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector('[data-rebase-branch]');

@@ -295,3 +295,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `vault_index_queue` 表（run_id 主键、path、ignore_patterns JSON、concurrency、status、created_at、updated_at），`start_vault_index` 入队即落库。
 - worker 完成 / 取消 / 出错后删除持久化记录；取消排队任务同步删除；`restore_vault_index_queue` 在 setup 启动时读取 pending 记录，`running` 重置为 `queued` 重新入队并继续调度。
 - 浏览器 fallback 用 `ai-workbench:vault-index-queue:v1` 保存同一队列，重载后自动恢复并 drain；Knowledge 视图队列条行为不变。
+
+## Sprint 67：Git 活动看板
+
+- `GitContext` 新增 `last_commit_at`：从 `logs/HEAD` 末行的第 5 列解析 epoch 秒并乘以 1000，latest commit 消息去掉 `commit:` 前缀。
+- 新增 `get_git_activity` 命令：遍历 projects 调用 `get_project_git_context`，按 `last_commit_at DESC` 排序，汇总 `totalProjects / totalCommits / dirtyProjects / items`；`dirty` 由 changes 非空判定，`changedFiles` 为 changes 数量。
+- Projects 顶部新增 Git activity 卡片：总数徽标 + 每项目 branch / commits / dirty 状态与最新提交；浏览器 fallback 基于 localStorage projects 镜像同一聚合语义。

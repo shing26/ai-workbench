@@ -483,3 +483,7 @@ CREATE TABLE IF NOT EXISTS vault_index_queue (
 - `persist_vault_index_queue` 按 run_id upsert，`ignore_patterns` 以 JSON 数组序列化；`list_vault_index_queue` 按 `created_at ASC, rowid ASC` 返回 pending 记录。
 - `delete_vault_index_queue` 在任务完成、出错或排队取消时删除记录；启动恢复时 `running` 记录重置为 `queued` 重新入队。
 - 浏览器 fallback 用 `ai-workbench:vault-index-queue:v1` 保存同一队列，重载后自动恢复并 drain。
+
+## Sprint 67：Git 活动看板
+
+无表结构变更。`get_git_activity` 复用 `projects` 表既有列，Git 状态来自磁盘 `.git/HEAD` 与 `logs/HEAD` 的运行时解析；`last_commit_at` / `dirty` / `changed_files` 均为运行时计算字段，不落库。
