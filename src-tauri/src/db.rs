@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -2053,6 +2054,166 @@ pub fn resolve_conflicts(
     Ok(conflicts.len())
 }
 
+fn merge_json_value(local: &Value, remote: &Value, prefer_local: bool) -> Value {
+    match (local, remote) {
+        (Value::Object(local_obj), Value::Object(remote_obj)) => {
+            let mut keys: Vec<&String> = local_obj.keys().chain(remote_obj.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            let mut merged = serde_json::Map::new();
+            for key in keys {
+                let value = match (local_obj.get(key), remote_obj.get(key)) {
+                    (Some(local_value), Some(remote_value)) => {
+                        merge_json_value(local_value, remote_value, prefer_local)
+                    }
+                    (Some(local_value), None) => local_value.clone(),
+                    (None, Some(remote_value)) => remote_value.clone(),
+                    (None, None) => Value::Null,
+                };
+                merged.insert(key.clone(), value);
+            }
+            Value::Object(merged)
+        }
+        (Value::Array(local_arr), Value::Array(remote_arr)) => {
+            let mut seen = std::collections::HashSet::new();
+            let mut merged = Vec::new();
+            for item in local_arr.iter().chain(remote_arr.iter()) {
+                if seen.insert(item.to_string()) {
+                    merged.push(item.clone());
+                }
+            }
+            Value::Array(merged)
+        }
+        _ => {
+            if prefer_local || local == remote {
+                local.clone()
+            } else {
+                remote.clone()
+            }
+        }
+    }
+}
+
+fn parse_frontmatter(text: &str) -> Option<(Vec<(String, String)>, String)> {
+    let text = text.trim_start_matches('\u{feff}');
+    let rest = text.strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    let raw = &rest[..end];
+    let body_start = 3 + end + 4;
+    let body = text.get(body_start..)?.trim_start_matches('\n').to_string();
+    let fields = raw
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once(':')?;
+            let key = key.trim();
+            if key.is_empty() {
+                return None;
+            }
+            Some((key.to_string(), value.trim().to_string()))
+        })
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        None
+    } else {
+        Some((fields, body))
+    }
+}
+
+fn merge_frontmatter_value(local: &str, remote: &str, prefer_local: bool) -> String {
+    if local == remote {
+        return local.to_string();
+    }
+    if local.contains(',') || remote.contains(',') {
+        let mut seen = std::collections::HashSet::new();
+        let mut parts = Vec::new();
+        for item in local.split(',').chain(remote.split(',')) {
+            let item = item.trim();
+            if !item.is_empty() && seen.insert(item.to_string()) {
+                parts.push(item.to_string());
+            }
+        }
+        return parts.join(", ");
+    }
+    if prefer_local {
+        local.to_string()
+    } else {
+        remote.to_string()
+    }
+}
+
+fn render_frontmatter_merge(
+    local_fields: &[(String, String)],
+    remote_fields: &[(String, String)],
+    prefer_local: bool,
+    local_body: &str,
+    remote_body: &str,
+) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut keys = Vec::new();
+    for (key, _) in local_fields.iter().chain(remote_fields.iter()) {
+        if seen.insert(key.clone()) {
+            keys.push(key.clone());
+        }
+    }
+    let mut lines = vec!["---".to_string()];
+    for key in keys {
+        let local_value = local_fields
+            .iter()
+            .find(|(k, _)| k == &key)
+            .map(|(_, value)| value.as_str());
+        let remote_value = remote_fields
+            .iter()
+            .find(|(k, _)| k == &key)
+            .map(|(_, value)| value.as_str());
+        let value = match (local_value, remote_value) {
+            (Some(local), Some(remote)) => merge_frontmatter_value(local, remote, prefer_local),
+            (Some(local), None) => local.to_string(),
+            (None, Some(remote)) => remote.to_string(),
+            (None, None) => continue,
+        };
+        lines.push(format!("{}: {}", key, value));
+    }
+    lines.push("---".to_string());
+    let head = lines.join("\n");
+    let body = union_merge_content(local_body, remote_body);
+    if body.is_empty() {
+        head
+    } else {
+        format!("{}\n\n{}", head, body)
+    }
+}
+
+fn structured_merge_content(local: &str, remote: &str, prefer_local: bool) -> String {
+    if let (Ok(local_json), Ok(remote_json)) = (
+        serde_json::from_str::<Value>(local),
+        serde_json::from_str::<Value>(remote),
+    ) {
+        let structured = (local_json.is_object() || local_json.is_array())
+            && (remote_json.is_object() || remote_json.is_array());
+        if structured {
+            let merged = merge_json_value(&local_json, &remote_json, prefer_local);
+            return serde_json::to_string_pretty(&merged)
+                .unwrap_or_else(|_| union_merge_content(local, remote));
+        }
+    }
+    if let (Some((local_fields, local_body)), Some((remote_fields, remote_body))) =
+        (parse_frontmatter(local), parse_frontmatter(remote))
+    {
+        return render_frontmatter_merge(
+            &local_fields,
+            &remote_fields,
+            prefer_local,
+            &local_body,
+            &remote_body,
+        );
+    }
+    union_merge_content(local, remote)
+}
+
 fn union_merge_content(local: &str, remote: &str) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut lines = Vec::new();
@@ -2121,6 +2282,68 @@ pub fn resolve_conflicts_union(
         conn,
         "sync.resolve.union.batch",
         &format!("batch merged {} conflict(s)", conflicts.len()),
+        "",
+    );
+    Ok(conflicts.len())
+}
+
+pub fn resolve_conflict_structured(
+    conn: &Connection,
+    conflict: &SyncConflictItem,
+) -> Result<String, String> {
+    let prefer_local = conflict.local_updated_at >= conflict.remote_updated_at;
+    let content = structured_merge_content(
+        &conflict.local_content,
+        &conflict.remote_content,
+        prefer_local,
+    );
+    let now = now_millis();
+    match conflict.kind.as_str() {
+        "clipboard" => {
+            conn.execute(
+                "UPDATE clipboard_history SET content = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "log" => {
+            conn.execute(
+                "UPDATE error_logs SET message = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
+    }
+    conn.execute(
+        "UPDATE sync_conflicts
+         SET resolved_choice = 'structured', resolved_at = ?1
+         WHERE id = ?2 AND kind = ?3 AND resolved_choice IS NULL",
+        params![now, conflict.id, conflict.kind],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve.structured",
+        &format!("{} {} -> structured", conflict.kind, conflict.id),
+        "",
+    );
+    Ok(content)
+}
+
+pub fn resolve_conflicts_structured(
+    conn: &Connection,
+    conflicts: &[SyncConflictItem],
+) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for conflict in conflicts {
+        resolve_conflict_structured(&tx, conflict)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve.structured.batch",
+        &format!("batch merged {} conflict(s) with fields", conflicts.len()),
         "",
     );
     Ok(conflicts.len())
@@ -3053,6 +3276,39 @@ mod tests {
     }
 
     #[test]
+    fn structured_merge_content_merges_json_fields_and_arrays() {
+        let merged = structured_merge_content(
+            r#"{"title":"Workbench","tags":["work"],"meta":{"count":1}}"#,
+            r#"{"title":"Workbench","tags":["work","life"],"meta":{"count":2,"done":true}}"#,
+            false,
+        );
+        let value: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["title"], "Workbench");
+        assert_eq!(value["tags"], serde_json::json!(["work", "life"]));
+        assert_eq!(value["meta"]["count"], 2);
+        assert_eq!(value["meta"]["done"], true);
+    }
+
+    #[test]
+    fn structured_merge_content_merges_markdown_frontmatter() {
+        let local = "---\ntitle: Sprint 55\ntags: work\n---\n\nLocal body\nline two";
+        let remote = "---\ntitle: Sprint 55\ntags: work, life\n---\n\nRemote body\nline two";
+        let merged = structured_merge_content(local, remote, true);
+        assert!(merged.contains("title: Sprint 55"));
+        assert!(merged.contains("tags: work, life"));
+        assert!(merged.contains("Local body"));
+        assert!(merged.contains("Remote body"));
+    }
+
+    #[test]
+    fn structured_merge_content_falls_back_to_line_union() {
+        assert_eq!(
+            structured_merge_content("alpha\nbeta", "beta\ngamma", true),
+            "alpha\nbeta\ngamma"
+        );
+    }
+
+    #[test]
     fn resolve_conflict_union_merges_both_sides() {
         let dir = std::env::temp_dir().join(format!("aiwb-db-sync-union-{}", uid()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3079,6 +3335,89 @@ mod tests {
         let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union"), None, None).unwrap();
         assert_eq!(audit.len(), 1);
         assert!(audit[0].detail.contains("-> union"));
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_conflict_structured_merges_json_content() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-structured-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "plain", "test").unwrap();
+        let conflict = SyncConflictItem {
+            id: clip.id.clone(),
+            kind: "clipboard".to_string(),
+            local_updated_at: 1,
+            remote_updated_at: 2,
+            resolved_to: "structured".to_string(),
+            preview: "structured conflict".to_string(),
+            local_content: r#"{"title":"A","tags":["x"]}"#.to_string(),
+            remote_content: r#"{"title":"A","tags":["x","y"],"done":true}"#.to_string(),
+        };
+        persist_conflict(&conn, &conflict).unwrap();
+
+        let merged = resolve_conflict_structured(&conn, &conflict).unwrap();
+        assert!(merged.contains("\"done\": true"));
+        assert!(merged.contains("\"y\""));
+        let clips = list_clipboard(&conn).unwrap();
+        assert_eq!(clips[0].content, merged);
+        let records = list_sync_conflicts(&conn, "resolved").unwrap();
+        assert_eq!(records[0].resolved_choice.as_deref(), Some("structured"));
+        let audit =
+            list_sync_audit(&conn, 10, Some("sync.resolve.structured"), None, None).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert!(audit[0].detail.contains("-> structured"));
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_conflicts_structured_batch_resolves_all() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-structured-batch-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip_a = capture_clipboard(&conn, "plain a", "test").unwrap();
+        let clip_b = capture_clipboard(&conn, "plain b", "test").unwrap();
+        let conflicts = vec![
+            SyncConflictItem {
+                id: clip_a.id.clone(),
+                kind: "clipboard".to_string(),
+                local_updated_at: 1,
+                remote_updated_at: 2,
+                resolved_to: "structured".to_string(),
+                preview: "structured a".to_string(),
+                local_content: r#"{"a":1}"#.to_string(),
+                remote_content: r#"{"a":1,"b":2}"#.to_string(),
+            },
+            SyncConflictItem {
+                id: clip_b.id.clone(),
+                kind: "clipboard".to_string(),
+                local_updated_at: 1,
+                remote_updated_at: 2,
+                resolved_to: "structured".to_string(),
+                preview: "structured b".to_string(),
+                local_content: r#"{"x":1}"#.to_string(),
+                remote_content: r#"{"y":2}"#.to_string(),
+            },
+        ];
+        for conflict in &conflicts {
+            persist_conflict(&conn, conflict).unwrap();
+        }
+
+        let resolved = resolve_conflicts_structured(&conn, &conflicts).unwrap();
+        assert_eq!(resolved, 2);
+        let records = list_sync_conflicts(&conn, "resolved").unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|r| r.resolved_choice.as_deref() == Some("structured")));
+        let audit =
+            list_sync_audit(&conn, 10, Some("sync.resolve.structured.batch"), None, None).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert!(audit[0].detail.contains("batch merged 2"));
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

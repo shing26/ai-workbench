@@ -322,6 +322,35 @@ export default function SystemView() {
     }
   };
 
+  const resolveConflictStructuredItem = async (conflict: db.SyncConflictItem) => {
+    try {
+      const message = await db.resolveSyncConflictStructured(conflict);
+      await refreshSystem();
+      await loadConflicts();
+      await loadAudit();
+      setSyncError(false);
+      setSyncMessage(message);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const resolveAllConflictsStructured = async () => {
+    if (syncConflicts.length === 0) return;
+    try {
+      const count = await db.resolveSyncConflictsStructured(syncConflicts);
+      await refreshSystem();
+      await loadConflicts();
+      await loadAudit();
+      setSyncError(false);
+      setSyncMessage(`Merged ${count} conflict(s) with fields`);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const toggleResolvedHistory = async () => {
     if (showResolved) {
       setShowResolved(false);
@@ -627,6 +656,15 @@ export default function SystemView() {
               </button>
               <button
                 type="button"
+                data-batch-resolve="structured"
+                aria-label="Merge all conflicts by fields"
+                onClick={() => void resolveAllConflictsStructured()}
+                className="flex h-6 items-center gap-1 rounded-md bg-violet-500/15 px-2 text-[9px] text-violet-300 hover:bg-violet-500/25"
+              >
+                Merge fields
+              </button>
+              <button
+                type="button"
                 data-batch-resolve="remote"
                 aria-label="Resolve all conflicts keeping remote"
                 onClick={() => void resolveAllConflicts("remote")}
@@ -673,6 +711,15 @@ export default function SystemView() {
                   className="flex h-6 items-center gap-1 rounded-md bg-sky-500/15 px-2 text-[9px] text-sky-300 hover:bg-sky-500/25"
                 >
                   Merge
+                </button>
+                <button
+                  type="button"
+                  data-resolve-structured
+                  aria-label={`Merge conflict ${conflict.id} by fields`}
+                  onClick={() => void resolveConflictStructuredItem(conflict)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-violet-500/15 px-2 text-[9px] text-violet-300 hover:bg-violet-500/25"
+                >
+                  Merge fields
                 </button>
               </div>
             ))}
@@ -749,8 +796,10 @@ export default function SystemView() {
               <option value="sync.merge">merge</option>
               <option value="sync.resolve">resolve</option>
               <option value="sync.resolve.union">merge union</option>
+              <option value="sync.resolve.structured">merge fields</option>
               <option value="sync.resolve.batch">batch resolve</option>
               <option value="sync.resolve.union.batch">batch union</option>
+              <option value="sync.resolve.structured.batch">batch fields</option>
               <option value="sync.history.cleared">history cleared</option>
             </select>
             <select

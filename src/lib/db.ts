@@ -1442,6 +1442,177 @@ export async function resolveSyncConflictsUnion(conflicts: SyncConflictItem[]): 
   return conflicts.length;
 }
 
+function mergeJsonValue(local: any, remote: any, preferLocal: boolean): any {
+  if (Array.isArray(local) && Array.isArray(remote)) {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const item of [...local, ...remote]) {
+      const marker = JSON.stringify(item);
+      if (!seen.has(marker)) {
+        seen.add(marker);
+        out.push(item);
+      }
+    }
+    return out;
+  }
+  if (
+    local !== null &&
+    remote !== null &&
+    typeof local === "object" &&
+    typeof remote === "object"
+  ) {
+    const out: Record<string, any> = {};
+    const keys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+    for (const key of [...keys].sort()) {
+      const localValue = local[key];
+      const remoteValue = remote[key];
+      if (localValue === undefined) out[key] = remoteValue;
+      else if (remoteValue === undefined) out[key] = localValue;
+      else out[key] = mergeJsonValue(localValue, remoteValue, preferLocal);
+    }
+    return out;
+  }
+  if (JSON.stringify(local) === JSON.stringify(remote)) return local;
+  return preferLocal ? local : remote;
+}
+
+function parseFrontmatter(text: string): { fields: [string, string][]; body: string } | null {
+  const trimmed = text.replace(/^\uFEFF/, "");
+  if (!trimmed.startsWith("---")) return null;
+  const rest = trimmed.slice(3);
+  const match = rest.match(/\n---/);
+  if (!match || match.index === undefined) return null;
+  const raw = rest.slice(0, match.index);
+  const bodyStart = 3 + match.index + 4;
+  const body = trimmed.slice(bodyStart).replace(/^\n+/, "");
+  const fields: [string, string][] = [];
+  for (const line of raw.split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (key) fields.push([key, value]);
+  }
+  if (fields.length === 0) return null;
+  return { fields, body };
+}
+
+function mergeFrontmatterValue(local: string, remote: string, preferLocal: boolean): string {
+  if (local === remote) return local;
+  if (local.includes(",") || remote.includes(",")) {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const item of [...local.split(","), ...remote.split(",")]) {
+      const trimmed = item.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        parts.push(trimmed);
+      }
+    }
+    return parts.join(", ");
+  }
+  return preferLocal ? local : remote;
+}
+
+function renderFrontmatterMerge(
+  localFields: [string, string][],
+  remoteFields: [string, string][],
+  preferLocal: boolean,
+  localBody: string,
+  remoteBody: string,
+): string {
+  const keys = [
+    ...new Set([...localFields.map(([key]) => key), ...remoteFields.map(([key]) => key)]),
+  ];
+  const lines = ["---"];
+  for (const key of keys) {
+    const localValue = localFields.find(([k]) => k === key)?.[1];
+    const remoteValue = remoteFields.find(([k]) => k === key)?.[1];
+    const value =
+      localValue !== undefined && remoteValue !== undefined
+        ? mergeFrontmatterValue(localValue, remoteValue, preferLocal)
+        : localValue ?? remoteValue ?? "";
+    lines.push(`${key}: ${value}`);
+  }
+  lines.push("---");
+  const head = lines.join("\n");
+  const body = unionMergeContent(localBody, remoteBody);
+  return body ? `${head}\n\n${body}` : head;
+}
+
+function structuredMergeContent(local: string, remote: string, preferLocal: boolean): string {
+  try {
+    const localJson = JSON.parse(local);
+    const remoteJson = JSON.parse(remote);
+    const structured =
+      (Array.isArray(localJson) || (localJson !== null && typeof localJson === "object")) &&
+      (Array.isArray(remoteJson) || (remoteJson !== null && typeof remoteJson === "object"));
+    if (structured) {
+      return JSON.stringify(mergeJsonValue(localJson, remoteJson, preferLocal), null, 2);
+    }
+  } catch {}
+  const localFrontmatter = parseFrontmatter(local);
+  const remoteFrontmatter = parseFrontmatter(remote);
+  if (localFrontmatter && remoteFrontmatter) {
+    return renderFrontmatterMerge(
+      localFrontmatter.fields,
+      remoteFrontmatter.fields,
+      preferLocal,
+      localFrontmatter.body,
+      remoteFrontmatter.body,
+    );
+  }
+  return unionMergeContent(local, remote);
+}
+
+export async function resolveSyncConflictStructured(conflict: SyncConflictItem): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("resolve_sync_conflict_structured", { conflict });
+  }
+  const shape = readLocal();
+  const preferLocal = conflict.localUpdatedAt >= conflict.remoteUpdatedAt;
+  const content = structuredMergeContent(
+    conflict.localContent,
+    conflict.remoteContent,
+    preferLocal,
+  );
+  const updatedAt = Date.now();
+  if (conflict.kind === "clipboard") {
+    const item = shape.clipboard.find((c) => c.id === conflict.id);
+    if (!item) throw new Error(`clipboard conflict not found: ${conflict.id}`);
+    item.content = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  } else {
+    const item = shape.logs.find((l) => l.id === conflict.id);
+    if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
+    item.message = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  }
+  writeLocal(shape);
+  const records = readSyncConflictRecords().map((record) =>
+    record.id === conflict.id && record.kind === conflict.kind && !record.resolvedChoice
+      ? { ...record, resolvedChoice: "structured", resolvedAt: updatedAt }
+      : record,
+  );
+  writeSyncConflictRecords(records);
+  appendSyncAudit("sync.resolve.structured", `${conflict.kind} ${conflict.id} -> structured`);
+  return `Merged ${conflict.kind} conflict ${conflict.id} with fields`;
+}
+
+export async function resolveSyncConflictsStructured(
+  conflicts: SyncConflictItem[],
+): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("resolve_sync_conflicts_structured", { conflicts });
+  }
+  for (const conflict of conflicts) {
+    await resolveSyncConflictStructured(conflict);
+  }
+  return conflicts.length;
+}
+
 export async function listSyncConflicts(
   status: "unresolved" | "resolved" | "all" = "unresolved",
 ): Promise<SyncConflictRecord[]> {
