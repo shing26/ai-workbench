@@ -32,6 +32,7 @@ export default function SystemView() {
   const [remoteToken, setRemoteToken] = useState("");
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
   const [autoSyncInterval, setAutoSyncInterval] = useState("60");
+  const [lastSyncResult, setLastSyncResult] = useState<db.SyncResult | null>(null);
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -111,6 +112,7 @@ export default function SystemView() {
     setSyncError(false);
     setLastSyncedAt(result.syncedAt);
     setLastRemoteDevice(result.deviceId);
+    setLastSyncResult(result);
     setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
   };
 
@@ -143,6 +145,7 @@ export default function SystemView() {
       setSyncError(false);
       setLastSyncedAt(result.syncedAt);
       setLastRemoteDevice(result.deviceId);
+      setLastSyncResult(result);
       setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
     } catch (err) {
       setSyncError(true);
@@ -159,6 +162,7 @@ export default function SystemView() {
       setSyncError(false);
       setLastSyncedAt(pushed.syncedAt);
       setLastRemoteDevice(pulled.deviceId);
+      setLastSyncResult(pulled);
     } catch (err) {
       setSyncError(true);
       setSyncMessage(err instanceof Error ? err.message : String(err));
@@ -394,6 +398,14 @@ export default function SystemView() {
           {syncMessage && (
             <span data-sync-message className={syncError ? "text-rose-400" : "text-emerald-400"}>
               {syncMessage}
+            </span>
+          )}
+          {lastSyncResult && lastSyncResult.conflicts.length > 0 && (
+            <span
+              data-sync-conflicts
+              className="rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-amber-300"
+            >
+              {lastSyncResult.conflicts.length} conflict(s) auto-resolved
             </span>
           )}
           <span className="ml-auto flex gap-1.5">

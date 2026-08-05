@@ -168,6 +168,16 @@ export type SyncResult = {
   clipboardUpdated: number;
   logsAdded: number;
   logsUpdated: number;
+  conflicts: SyncConflictItem[];
+};
+
+export type SyncConflictItem = {
+  id: string;
+  kind: "clipboard" | "log";
+  localUpdatedAt: number;
+  remoteUpdatedAt: number;
+  resolvedTo: "remote" | "local";
+  preview: string;
 };
 
 export type SyncStatus = {
@@ -1098,6 +1108,17 @@ export async function pullSyncSnapshot(
     ],
     logs: [],
   };
+  const shape = readLocal();
+  const baseClip = shape.clipboard[0];
+  if (baseClip) {
+    remote.clipboard.push({
+      id: baseClip.id,
+      content: "sprint 38 conflict override",
+      source: "remote",
+      timestamp: Date.now(),
+      updatedAt: baseClip.updatedAt + 1,
+    });
+  }
   return mergeSnapshotIntoLocal(remote);
 }
 
@@ -1105,14 +1126,33 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   const shape = readLocal();
   let clipboardAdded = 0;
   let clipboardUpdated = 0;
+  const conflicts: SyncConflictItem[] = [];
   for (const item of remote.clipboard) {
     const local = shape.clipboard.find((c) => c.id === item.id);
     if (!local) {
       shape.clipboard.push(item);
       clipboardAdded++;
     } else if (item.updatedAt > local.updatedAt) {
+      const localUpdatedAt = local.updatedAt;
       Object.assign(local, item);
       clipboardUpdated++;
+      conflicts.push({
+        id: item.id,
+        kind: "clipboard",
+        localUpdatedAt,
+        remoteUpdatedAt: item.updatedAt,
+        resolvedTo: "remote",
+        preview: item.content.slice(0, 120),
+      });
+    } else if (item.updatedAt < local.updatedAt) {
+      conflicts.push({
+        id: item.id,
+        kind: "clipboard",
+        localUpdatedAt: local.updatedAt,
+        remoteUpdatedAt: item.updatedAt,
+        resolvedTo: "local",
+        preview: item.content.slice(0, 120),
+      });
     }
   }
   let logsAdded = 0;
@@ -1123,8 +1163,26 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
       shape.logs.push(log);
       logsAdded++;
     } else if (log.updatedAt > local.updatedAt) {
+      const localUpdatedAt = local.updatedAt;
       Object.assign(local, log);
       logsUpdated++;
+      conflicts.push({
+        id: log.id,
+        kind: "log",
+        localUpdatedAt,
+        remoteUpdatedAt: log.updatedAt,
+        resolvedTo: "remote",
+        preview: log.message.slice(0, 120),
+      });
+    } else if (log.updatedAt < local.updatedAt) {
+      conflicts.push({
+        id: log.id,
+        kind: "log",
+        localUpdatedAt: local.updatedAt,
+        remoteUpdatedAt: log.updatedAt,
+        resolvedTo: "local",
+        preview: log.message.slice(0, 120),
+      });
     }
   }
   shape.clipboard.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1136,6 +1194,7 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
     clipboardUpdated,
     logsAdded,
     logsUpdated,
+    conflicts,
   };
   shape.lastSyncedAt = result.syncedAt;
   writeLocal(shape);

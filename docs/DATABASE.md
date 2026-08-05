@@ -246,3 +246,13 @@ watch 状态下的增量监听 ignore 语义见 Sprint 36。
 watch 场景与全量扫描对齐 ignore 语义。新增 `start_vault_watch_ex(vault_path, ignore_patterns)`：启动时初始全量索引应用 ignore，后续增量事件经 `sync_vault_event` 先计算相对路径并执行 `should_ignore_path`，命中路径跳过 upsert/delete。
 
 `start_vault_watch(vault_path)` 保持空 ignore 兼容。`knowledge_files` 表结构不变，`vault-watch-update` 事件与前端 watch 状态协议不变。
+
+## Sprint 38：同步冲突明细
+
+`SyncResult` 新增 `conflicts` 数组，元素为 `SyncConflictItem { id, kind, localUpdatedAt, remoteUpdatedAt, resolvedTo, preview }`。`merge_sync_snapshot` 在合并时记录每条同 id 记录的冲突方向：
+
+- 远端 `updated_at` 更新 → `resolvedTo: "remote"`，内容被远端覆盖。
+- 本地 `updated_at` 更新 → `resolvedTo: "local"`，远端旧版本被跳过。
+- 两端时间戳相等 → 不产生冲突。
+
+表结构与数据迁移不变；该字段只影响同步结果协议与 System UI 展示。
