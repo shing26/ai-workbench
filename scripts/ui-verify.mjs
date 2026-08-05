@@ -5333,6 +5333,14 @@ try {
 
   const sessionManagement = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
     const setValue = (el, value) => {
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
@@ -5346,8 +5354,9 @@ try {
     const searchMatched = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
       .some((btn) => btn.textContent?.includes("sprint RAG check"));
     setValue(searchInput, "zzz-no-match");
-    await sleep(450);
-    const emptyState = document.body.innerText.includes("No matching sessions");
+    const emptyState = await waitFor(() =>
+      document.body.innerText.includes("No matching sessions"),
+    );
     setValue(searchInput, "");
     await sleep(250);
 
@@ -5550,6 +5559,80 @@ try {
     );
   }
   results.sessionWorkspace = sessionWorkspace;
+
+  const sessionSearchHistoryStats = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+
+    setValue(searchInput, "question");
+    const statsText = await waitFor(() => {
+      const el = document.querySelector("[data-session-search-stats]");
+      return !!el && el.textContent?.includes("hits") && el.textContent?.includes("sessions");
+    });
+    await sleep(300);
+    const historySeen = await waitFor(() =>
+      !!document.querySelector('[data-session-history-query="question"]'),
+    );
+    const stats =
+      document.querySelector("[data-session-search-stats]")?.textContent ?? "";
+    const sessionsOk = stats.includes("sessions");
+    const messageOk = stats.includes("message");
+    const hitsOk = stats.includes("hits");
+
+    setValue(searchInput, "");
+    await sleep(300);
+    document.querySelector('[data-session-history-query="question"]')?.click();
+    const recallStats = await waitFor(() =>
+      document.querySelector("[data-session-search-stats]")?.textContent?.includes("hits"),
+    );
+
+    document.querySelector("[data-session-history-clear]")?.click();
+    await sleep(200);
+    const historyGone = !document.querySelector("[data-session-history-query]");
+    const storedGone = !(localStorage.getItem("ai-workbench:session-search-history:v1") ?? "")
+      .includes("question");
+    return {
+      ok:
+        statsText &&
+        hitsOk &&
+        sessionsOk &&
+        messageOk &&
+        historySeen &&
+        recallStats &&
+        historyGone &&
+        storedGone,
+      stats,
+      hitsOk,
+      sessionsOk,
+      messageOk,
+      historySeen,
+      recallStats,
+      historyGone,
+      storedGone,
+    };
+  })()`);
+  if (!sessionSearchHistoryStats.ok) {
+    throw new Error(
+      `AI Studio session search history/stats assertion failed: ${JSON.stringify(
+        sessionSearchHistoryStats,
+      )}`,
+    );
+  }
+  results.sessionSearchHistoryStats = sessionSearchHistoryStats;
 
   await clickDock('System');
   const providerToggled = await evaluate(`(async () => {

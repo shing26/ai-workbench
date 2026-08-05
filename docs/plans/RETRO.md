@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 108
+
+### What went well?
+
+- 搜索历史模块落地：`src/lib/searchHistory.ts` 提供查询去重、最多 8 条、localStorage 持久化（`ai-workbench:session-search-history:v1`），AI Studio 搜索完成后自动记录并显示 Recent 标签。
+- 跨会话聚合统计上线：`summarizeSearchHits` 计算总命中、会话数、title/model/message、拼音命中与平均分，搜索栏下方 `data-session-search-stats` 让用户一次搜索即可判断覆盖范围。
+- Recent 标签支持点击回填，清空按钮同时清理 DOM 与 localStorage；`verify:ui` / `verify:preview` 的 `sessionSearchHistoryStats` lane 覆盖 `question` 命中多会话消息、历史可见、回填与清空。
+- Rust 无结构变更；`npm run build`、lint、prettier、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- `sessionManagement` 的 `emptyState` 偶发因异步时序读到旧渲染；改为 waitFor 轮询期望空态后稳定，双端验证恢复全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：MOA 链式路由、跨流 token 预算、多 Provider 自动降级、错误日志趋势优化、审计跨时间轴图、AI 复盘结果一键保存更多入口。
+- 保留 `sessionSearchHistoryStats` lane，修改会话搜索、命中聚合或 AI Studio 会话栏时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 107
 
 ### What went well?
