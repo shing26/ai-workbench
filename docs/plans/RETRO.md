@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 36
+
+### What went well?
+
+- watch 与全量扫描的 ignore 语义对齐：`start_vault_watch_ex` 启动时初始索引应用 ignore，增量事件经 `sync_vault_event` 先算相对路径再过滤，忽略目录的新增/修改/删除不再进入 `knowledge_files`。
+- 端到端单测覆盖真实目录：`node_modules` 下新增 Markdown 不入库，普通 `notes` 目录新增正常索引，RAG 搜索确认忽略内容不可见。
+- Knowledge Watch vault 复用 Ignore patterns 输入；`verify:ui` / `verify:preview` 新增 watch 开启时 Skipped 1 断言，两条 lane 全绿。
+- 验证覆盖：`cargo test --lib` 37/37，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- UI 验证首次运行在 session 回跳时偶发找不到 Dock 按钮，属 headless 冷启动时序抖动；重跑后全绿，未进入代码修复。
+
+### Action Items
+
+- 下一 Sprint 候选：同步快照定时自动同步与冲突 UI、Vault 索引并发数可配置。
+- 后续改动 Vault watch 时，保留 ignore 事件过滤单测与 Skipped 计数 UI 断言。
+
 ## Sprint 35
 
 ### What went well?

@@ -898,17 +898,20 @@ try {
       document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "on";
     const watchingText = document.body.innerText.includes("watching");
     const stopText = document.querySelector('[data-vault-watch]')?.textContent.includes("Stop watch") ?? false;
+    const skippedVisible =
+      document.querySelector('[data-vault-ignored]')?.textContent.includes("Skipped 1") ?? false;
     const filesAfter = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
     document.querySelector('[data-vault-watch]')?.click();
     await sleep(250);
     const statusOff =
       document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "off";
     return {
-      ok: statusOn && watchingText && stopText && statusOff && filesAfter > filesBefore,
+      ok: statusOn && watchingText && stopText && statusOff && filesAfter > filesBefore && skippedVisible,
       statusOn,
       watchingText,
       stopText,
       statusOff,
+      skippedVisible,
       filesBefore,
       filesAfter,
     };

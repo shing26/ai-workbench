@@ -1211,23 +1211,32 @@ export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
   return { files: files.length, indexedAt: files.length ? Date.now() : 0 };
 }
 
-export async function startVaultWatch(vaultPath: string): Promise<VaultWatchStatus> {
-  if (isTauri()) return invoke<VaultWatchStatus>("start_vault_watch", { vaultPath });
+export async function startVaultWatch(
+  vaultPath: string,
+  ignorePatterns: string[] = [],
+): Promise<VaultWatchStatus> {
+  if (isTauri()) {
+    return invoke<VaultWatchStatus>("start_vault_watch_ex", { vaultPath, ignorePatterns });
+  }
   const existing = readVaultFiles();
   const merged = existing.length > 0 ? existing : sampleVaultFiles(vaultPath);
+  const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const filtered = merged.filter(
+    (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
+  );
   const syncPath = `${vaultPath}\\Watch Sync Note.md`;
-  if (!merged.some((file) => file.path === syncPath)) {
-    merged.push({
+  if (!filtered.some((file) => file.path === syncPath)) {
+    filtered.push({
       path: syncPath,
       title: "Watch Sync Note",
       tags: "#work,#vault",
       content: "# Watch Sync Note\n\n- 文件监听会自动把新 Markdown 纳入 RAG",
     });
   }
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(merged));
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
   const record: VaultWatchRecord = { watching: true, path: vaultPath, updatedAt: Date.now() };
   localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
-  return { ...record, files: merged.length };
+  return { ...record, files: filtered.length };
 }
 
 export async function stopVaultWatch(): Promise<VaultWatchStatus> {

@@ -89,13 +89,15 @@ export default function KnowledgeView() {
     setResults(await db.searchThoughts(query.trim(), 5));
   };
 
-  const runIndex = async () => {
-    if (!vaultPath.trim()) return;
-    const patterns = ignorePatterns
+  const parseIgnore = () =>
+    ignorePatterns
       .split(",")
       .map((p) => p.trim())
       .filter(Boolean);
-    const result = await db.indexVault(vaultPath.trim(), patterns);
+
+  const runIndex = async () => {
+    if (!vaultPath.trim()) return;
+    const result = await db.indexVault(vaultPath.trim(), parseIgnore());
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
@@ -104,7 +106,9 @@ export default function KnowledgeView() {
   const toggleWatch = async () => {
     if (!vaultPath.trim() && !watchStatus?.watching) return;
     setWatchStatus(
-      watchStatus?.watching ? await db.stopVaultWatch() : await db.startVaultWatch(vaultPath.trim()),
+      watchStatus?.watching
+        ? await db.stopVaultWatch()
+        : await db.startVaultWatch(vaultPath.trim(), parseIgnore()),
     );
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
