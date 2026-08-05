@@ -2932,6 +2932,88 @@ try {
   }
   results.webhookDelivery = webhookDelivery;
 
+  const webhookRules = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const intervalInput = document.querySelector("[data-webhook-rule-interval]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !intervalInput || !saveBtn) {
+      return { ok: false, reason: "webhook rule controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/scheduled");
+    setValue(nameInput, "Daily sync webhook");
+    setValue(intervalInput, "60");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Daily sync webhook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "scheduled rule not created" };
+    const createdText = item.textContent;
+    const created =
+      createdText.includes("Daily sync webhook") && createdText.includes("every 60s");
+    const storedBefore = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const persisted = storedBefore.some((r) => r.name === "Daily sync webhook");
+    const enabledBefore = storedBefore.find((r) => r.name === "Daily sync webhook")?.enabled;
+    item.querySelector("[data-webhook-rule-toggle]")?.click();
+    await sleep(200);
+    const storedAfter = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const enabledAfter = storedAfter.find((r) => r.name === "Daily sync webhook")?.enabled;
+    const toggled =
+      enabledBefore !== undefined && enabledAfter !== undefined && enabledBefore !== enabledAfter;
+    item = document.querySelector("[data-webhook-rule-item]");
+    item?.querySelector("[data-webhook-rule-run]")?.click();
+    let ran = false;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("HTTP 200")) {
+        ran = true;
+        break;
+      }
+      await sleep(100);
+    }
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    let deleted = false;
+    for (let i = 0; i < 20; i++) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+      if (stored.length === 0 && !document.querySelector("[data-webhook-rule-item]")) {
+        deleted = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return {
+      ok: created && persisted && toggled && ran && deleted,
+      created,
+      persisted,
+      toggled,
+      ran,
+      deleted,
+      createdText,
+    };
+  })()`);
+  if (!webhookRules.ok) {
+    throw new Error(`Webhook scheduled rules assertion failed: ${JSON.stringify(webhookRules)}`);
+  }
+  results.webhookRules = webhookRules;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

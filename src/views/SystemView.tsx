@@ -53,6 +53,9 @@ export default function SystemView() {
   const [webhookToken, setWebhookToken] = useState("");
   const [webhookResult, setWebhookResult] = useState<db.WebhookDeliveryResult | null>(null);
   const [webhookBusy, setWebhookBusy] = useState(false);
+  const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
+  const [webhookRuleName, setWebhookRuleName] = useState("");
+  const [webhookRuleInterval, setWebhookRuleInterval] = useState("60");
   const [deviceId, setDeviceId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
@@ -598,9 +601,57 @@ export default function SystemView() {
     }
   };
 
+  const loadWebhookRules = async () => {
+    setWebhookRules(await db.listWebhookRules());
+  };
+
+  const saveWebhookRule = async () => {
+    if (!webhookRuleName.trim() || !webhookUrl.trim()) {
+      setWebhookResult({
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        message: "Rule name and Webhook URL required",
+      });
+      return;
+    }
+    await db.createWebhookRule(
+      webhookRuleName.trim(),
+      webhookUrl.trim(),
+      webhookPayload,
+      webhookMethod,
+      webhookToken,
+      Number(webhookRuleInterval) || 60,
+    );
+    await loadWebhookRules();
+    setWebhookRuleName("");
+  };
+
+  const toggleWebhookRule = async (id: string, enabled: boolean) => {
+    await db.setWebhookRuleEnabled(id, enabled);
+    await loadWebhookRules();
+  };
+
+  const runScheduledWebhook = async (id: string) => {
+    const result = await db.runWebhookRule(id);
+    setWebhookResult(result);
+    await loadWebhookRules();
+  };
+
+  const deleteWebhookRule = async (id: string) => {
+    await db.deleteWebhookRule(id);
+    await loadWebhookRules();
+  };
+
   useEffect(() => {
     void checkAll();
   }, [providers.length]);
+
+  useEffect(() => {
+    void loadWebhookRules();
+    const timer = window.setInterval(() => void loadWebhookRules(), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -1290,6 +1341,100 @@ export default function SystemView() {
               {webhookResult.durationMs}ms - {webhookResult.message}
             </span>
           )}
+        </div>
+        <div className="mt-3 border-t border-white/5 pt-2">
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Scheduled rules
+            </span>
+            <input
+              value={webhookRuleName}
+              onChange={(e) => setWebhookRuleName(e.target.value)}
+              placeholder="Rule name"
+              data-webhook-rule-name
+              className="h-7 w-36 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <input
+              type="number"
+              min={5}
+              value={webhookRuleInterval}
+              onChange={(e) => setWebhookRuleInterval(e.target.value)}
+              placeholder="Interval (s)"
+              data-webhook-rule-interval
+              className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <button
+              type="button"
+              data-webhook-rule-save
+              onClick={() => void saveWebhookRule()}
+              className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+            >
+              <Webhook size={10} /> Save rule
+            </button>
+          </div>
+          <div data-webhook-rules className="space-y-1.5">
+            {webhookRules.length === 0 && (
+              <div className="rounded-lg border border-white/5 px-2 py-1.5 text-[10px] text-slate-600">
+                No scheduled rules
+              </div>
+            )}
+            {webhookRules.map((rule) => (
+              <div
+                key={rule.id}
+                data-webhook-rule-item
+                className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+              >
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
+                  {rule.name}
+                </span>
+                <span className="max-w-40 truncate text-[9px] text-slate-500">
+                  {rule.method} {rule.url}
+                </span>
+                <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
+                  every {rule.intervalSeconds}s
+                </span>
+                <span
+                  data-webhook-rule-status
+                  className={`rounded-md px-1.5 py-0.5 text-[9px] ${
+                    rule.enabled
+                      ? "bg-emerald-500/10 text-emerald-300"
+                      : "bg-slate-500/10 text-slate-400"
+                  }`}
+                >
+                  {rule.enabled ? "on" : "off"} - HTTP {rule.lastStatus || "-"}
+                </span>
+                {rule.lastMessage && (
+                  <span className="max-w-48 truncate text-[9px] text-slate-500">
+                    {rule.lastMessage}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  data-webhook-rule-toggle
+                  onClick={() => void toggleWebhookRule(rule.id, !rule.enabled)}
+                  className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+                >
+                  {rule.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  type="button"
+                  data-webhook-rule-run
+                  onClick={() => void runScheduledWebhook(rule.id)}
+                  className="flex h-6 items-center rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
+                >
+                  Run now
+                </button>
+                <button
+                  type="button"
+                  data-webhook-rule-delete
+                  onClick={() => void deleteWebhookRule(rule.id)}
+                  className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       </BentoCard>
 

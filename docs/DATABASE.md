@@ -562,3 +562,26 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 83：Webhook 真实投递
 
 无表结构变更。`deliver_webhook` 直接发起运行时 HTTP 请求，结果只在 System 视图回显，不新增持久化字段或表。
+
+## Sprint 84：Webhook 定时器 / 触发器规则
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    method TEXT NOT NULL DEFAULT 'POST',
+    token TEXT NOT NULL DEFAULT '',
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    last_run_at INTEGER NOT NULL DEFAULT 0,
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
+```
+
+- 新表由 `SCHEMA` 自动创建，无旧库迁移；浏览器 fallback 使用 `ai-workbench:webhook-rules:v1` 保存同一模型。
