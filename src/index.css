@@ -352,6 +352,27 @@ html[data-accent="sakura"] {
   --color-emerald-900: #831843;
 }
 
+/* Sprint 30: accent semantic tokens */
+.accent-bg { background-color: var(--color-accent); }
+.accent-bg-6 { background-color: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+.accent-bg-10 { background-color: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.accent-bg-15 { background-color: color-mix(in srgb, var(--color-accent) 15%, transparent); }
+.accent-bg-20 { background-color: color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.accent-bg-25 { background-color: color-mix(in srgb, var(--color-accent) 25%, transparent); }
+.accent-bg-30 { background-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.accent-text { color: var(--color-accent); }
+.accent-text-strong { color: var(--color-accent-strong); }
+.accent-border { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.accent-border-20 { border-color: color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.accent-ring { --tw-ring-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+.accent-dot { background-color: var(--color-accent); }
+.accent-dot-ring { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.accent-shadow { box-shadow: 0 0 8px color-mix(in srgb, var(--color-accent) 50%, transparent); }
+.accent-hover-bg-25:hover { background-color: color-mix(in srgb, var(--color-accent) 25%, transparent); }
+.accent-hover-bg-30:hover { background-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.accent-hover-text:hover { color: var(--color-accent-strong); }
+.accent-hover-base:hover { color: var(--color-accent); }
+
 html[data-theme-resolved="light"] {
   --color-bg-primary: #F3F5F7;
   --color-bg-secondary: #FFFFFF;

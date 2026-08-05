@@ -13,9 +13,9 @@ const colorClass: Record<(typeof HABIT_COLORS)[number], { dot: string; active: s
     ring: "ring-emerald-500/40",
   },
   blue: {
-    dot: "bg-[#007AFF] shadow-[0_0_8px_rgba(0,122,255,0.5)]",
-    active: "border-[#007AFF]/30 bg-[#007AFF]/10 text-[#7FB4FF]",
-    ring: "ring-[#007AFF]/40",
+    dot: "accent-dot accent-shadow",
+    active: "accent-border accent-bg-10 accent-text-strong",
+    ring: "accent-ring",
   },
   amber: {
     dot: "bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.5)]",
@@ -238,7 +238,7 @@ export default function ActionsView() {
                   type="button"
                   onClick={() => void setTaskToday(t.id, !t.isToday)}
                   className={`rounded-md px-2 py-1 text-[10px] ${
-                    t.isToday ? "bg-[#007AFF]/15 text-[#7FB4FF]" : "text-slate-600 hover:text-slate-400"
+                    t.isToday ? "accent-bg-15 accent-text-strong" : "text-slate-600 hover:text-slate-400"
                   }`}
                 >
                   Focus

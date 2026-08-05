@@ -154,7 +154,8 @@ export default function KnowledgeView() {
           <button
             type="button"
             onClick={() => void runIndex()}
-            className="flex h-9 items-center rounded-xl bg-blue-500/20 px-3 text-xs text-[#7FB4FF] hover:bg-blue-500/30"
+            data-accent-token="index-vault"
+            className="flex h-9 items-center rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30"
           >
             Index vault
           </button>

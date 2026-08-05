@@ -689,7 +689,7 @@ export default function AIStudioView() {
             <button
               type="button"
               onClick={() => setMode("moa")}
-              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${moa ? "bg-[#007AFF]/20 text-[#7FB4FF]" : "text-slate-500 hover:text-slate-300"}`}
+              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${moa ? "accent-bg-20 accent-text-strong" : "text-slate-500 hover:text-slate-300"}`}
             >
               MOA
             </button>
@@ -953,7 +953,7 @@ export default function AIStudioView() {
                       type="button"
                       aria-label="Open message history"
                       onClick={() => void toggleHistory(m)}
-                      className="flex h-6 w-6 items-center justify-center rounded-md bg-white/5 text-slate-500 hover:text-blue-300"
+                      className="flex h-6 w-6 items-center justify-center rounded-md bg-white/5 text-slate-500 accent-hover-text"
                     >
                       <History size={11} />
                     </button>
@@ -992,7 +992,7 @@ export default function AIStudioView() {
                                   className={`version-node h-2.5 w-2.5 shrink-0 rounded-full transition-colors ${
                                     diffVersionId === v.id
                                       ? "bg-amber-400 ring-2 ring-amber-400/30"
-                                      : "bg-[#7FB4FF]"
+                                      : "accent-bg"
                                   }`}
                                 />
                                 {i < historyVersions.length - 1 && (
@@ -1040,7 +1040,7 @@ export default function AIStudioView() {
                             type="button"
                             aria-label={`Restore version ${i + 1}`}
                             onClick={() => void restoreVersion(m, v)}
-                            className="shrink-0 rounded-md bg-blue-500/15 px-1.5 py-1 text-[9px] text-[#7FB4FF] hover:bg-blue-500/25"
+                            className="shrink-0 rounded-md accent-bg-15 px-1.5 py-1 text-[9px] accent-text-strong accent-hover-bg-25"
                           >
                             Restore
                           </button>

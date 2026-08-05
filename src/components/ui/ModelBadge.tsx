@@ -2,7 +2,7 @@ type Props = { label: string; tone?: "green" | "blue" | "neutral"; status?: stri
 
 const TONES = {
   green: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-  blue: "bg-[#007AFF]/15 text-[#7FB4FF] border-[#007AFF]/30",
+  blue: "accent-bg-15 accent-text-strong accent-border",
   neutral: "bg-white/[0.04] text-slate-400 border-white/10",
 };
 

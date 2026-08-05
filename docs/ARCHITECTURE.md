@@ -67,6 +67,8 @@ Sprint 28 新增命令：`start_vault_watch`、`stop_vault_watch`、`get_vault_w
 
 Sprint 29 新增命令：`apply_commit`、`create_remote_pr`。
 
+Sprint 30 新增 accent 语义类：`.accent-bg-*`、`.accent-text*`、`.accent-border*`、`.accent-ring`、`.accent-dot*`，组件层蓝色字面量清零。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
