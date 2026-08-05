@@ -359,6 +359,10 @@ ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
 - 新增 `vault_target_stats(conn)`：按 `vault_path <> ''` 分组返回 `{ path, files, last_indexed_at }`，旧记录（空路径）不进入统计。
 - 新增 Tauri 命令 `list_vault_target_stats`，Knowledge UI 每个 vault 目标行显示独立文件数；浏览器 fallback 按目标前缀统计 `readVaultFiles()`。
 
+## Sprint 48：同步审计筛选与导出
+
+无表结构变更。`list_sync_audit` 增加可选 `event` 参数，按事件精确过滤后按 `created_at DESC, id DESC` 返回；`export_sync_audit(format, event)` 复用同一过滤逻辑，JSON 输出美化数组，CSV 输出 `id,event,detail,device_id,created_at` 表头并对逗号、双引号、CR/LF 转义。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

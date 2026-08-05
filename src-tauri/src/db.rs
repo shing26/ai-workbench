@@ -1605,15 +1605,21 @@ pub fn append_sync_audit(
     })
 }
 
-pub fn list_sync_audit(conn: &Connection, limit: i64) -> Result<Vec<SyncAuditEntry>, String> {
+pub fn list_sync_audit(
+    conn: &Connection,
+    limit: i64,
+    event: Option<&str>,
+) -> Result<Vec<SyncAuditEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, event, detail, device_id, created_at
-         FROM sync_audit_log ORDER BY created_at DESC, id DESC LIMIT ?1",
+             FROM sync_audit_log
+             WHERE (?1 IS NULL OR event = ?1)
+             ORDER BY created_at DESC, id DESC LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![limit], |row| {
+        .query_map(params![event, limit], |row| {
             Ok(SyncAuditEntry {
                 id: row.get(0)?,
                 event: row.get(1)?,
@@ -1628,6 +1634,40 @@ pub fn list_sync_audit(conn: &Connection, limit: i64) -> Result<Vec<SyncAuditEnt
         out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.chars().any(|c| matches!(c, ',' | '"' | '\r' | '\n')) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn export_sync_audit(
+    conn: &Connection,
+    format: &str,
+    event: Option<&str>,
+) -> Result<String, String> {
+    let entries = list_sync_audit(conn, 10_000, event)?;
+    match format {
+        "json" => serde_json::to_string_pretty(&entries).map_err(|e| e.to_string()),
+        "csv" => {
+            let mut out = String::from("id,event,detail,device_id,created_at\n");
+            for entry in &entries {
+                out.push_str(&format!(
+                    "{},{},{},{},{}\n",
+                    entry.id,
+                    csv_escape(&entry.event),
+                    csv_escape(&entry.detail),
+                    csv_escape(&entry.device_id),
+                    entry.created_at
+                ));
+            }
+            Ok(out)
+        }
+        _ => Err("unsupported audit export format; use json or csv".to_string()),
+    }
 }
 
 pub fn clear_sync_audit(conn: &Connection) -> Result<usize, String> {
@@ -2891,7 +2931,7 @@ mod tests {
         };
 
         merge_sync_snapshot(&conn, remote).unwrap();
-        let entries = list_sync_audit(&conn, 20).unwrap();
+        let entries = list_sync_audit(&conn, 20, None).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event, "sync.merge");
         assert_eq!(entries[0].device_id, "device-audit");
@@ -2909,19 +2949,55 @@ mod tests {
             remote_content: unresolved[0].remote_content.clone(),
         };
         resolve_conflict(&conn, &conflict, "remote").unwrap();
-        let entries = list_sync_audit(&conn, 20).unwrap();
+        let entries = list_sync_audit(&conn, 20, None).unwrap();
         assert_eq!(entries[0].event, "sync.resolve");
         assert!(entries[0].detail.contains("clipboard"));
 
         let cleared = clear_resolved_sync_conflicts(&conn).unwrap();
         assert!(cleared > 0);
-        let entries = list_sync_audit(&conn, 20).unwrap();
+        let entries = list_sync_audit(&conn, 20, None).unwrap();
         assert_eq!(entries[0].event, "sync.history.cleared");
         assert!(entries[0].detail.contains("cleared"));
 
         let removed = clear_sync_audit(&conn).unwrap();
         assert!(removed > 0);
-        assert!(list_sync_audit(&conn, 20).unwrap().is_empty());
+        assert!(list_sync_audit(&conn, 20, None).unwrap().is_empty());
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_audit_filter_and_export() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-audit-export-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        append_sync_audit(&conn, "sync.merge", "merged a", "device-a").unwrap();
+        append_sync_audit(&conn, "sync.resolve", "clipboard -> remote", "device-a").unwrap();
+        append_sync_audit(&conn, "sync.history.cleared", "cleared 2", "device-b").unwrap();
+
+        let all = list_sync_audit(&conn, 10, None).unwrap();
+        assert_eq!(all.len(), 3);
+        let resolved = list_sync_audit(&conn, 10, Some("sync.resolve")).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].event, "sync.resolve");
+
+        let json = export_sync_audit(&conn, "json", Some("sync.merge")).unwrap();
+        assert!(json.contains("\"event\": \"sync.merge\""));
+        assert!(!json.contains("sync.resolve"));
+
+        append_sync_audit(
+            &conn,
+            "sync.merge",
+            "quoted \"detail\", line1\nline2",
+            "device-a",
+        )
+        .unwrap();
+        let csv = export_sync_audit(&conn, "csv", None).unwrap();
+        assert!(csv.starts_with("id,event,detail,device_id,created_at\n"));
+        assert!(csv.contains("\"quoted \"\"detail\"\", line1\nline2\""));
+
+        assert!(export_sync_audit(&conn, "yaml", None).is_err());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

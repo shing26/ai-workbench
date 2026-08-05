@@ -103,6 +103,8 @@ Sprint 46 新增命令：`recommend_index_concurrency`；Knowledge Vault Index �
 
 Sprint 47 新增命令：`list_vault_target_stats`；`knowledge_files` 记录每份文档归属的 vault path，Knowledge 每个 vault 目标显示独立文件数，按目标区分索引统计。
 
+Sprint 48 扩展 `list_sync_audit`：新增 `event` 筛选参数；新增 `export_sync_audit`，支持按筛选结果导出 JSON / CSV，System Sync audit 面板提供筛选下拉框与导出按钮。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

@@ -36,6 +36,8 @@ export default function SystemView() {
   const [resolvedConflicts, setResolvedConflicts] = useState<db.SyncConflictRecord[]>([]);
   const [showResolved, setShowResolved] = useState(false);
   const [syncAudit, setSyncAudit] = useState<db.SyncAuditEntry[]>([]);
+  const [auditFilter, setAuditFilter] = useState("all");
+  const [auditExportMessage, setAuditExportMessage] = useState("");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -181,8 +183,43 @@ export default function SystemView() {
     setSyncConflicts(await db.listSyncConflicts("unresolved"));
   };
 
-  const loadAudit = async () => {
-    setSyncAudit(await db.listSyncAudit(50));
+  const loadAudit = async (filter = auditFilter) => {
+    setSyncAudit(await db.listSyncAudit(200, filter === "all" ? undefined : filter));
+  };
+
+  const changeAuditFilter = (filter: string) => {
+    setAuditFilter(filter);
+    setAuditExportMessage("");
+    void loadAudit(filter);
+  };
+
+  const exportAudit = async (format: "json" | "csv") => {
+    try {
+      const text = await db.exportSyncAudit(
+        format,
+        auditFilter === "all" ? undefined : auditFilter,
+      );
+      const count =
+        format === "json"
+          ? (JSON.parse(text) as db.SyncAuditEntry[]).length
+          : Math.max(0, text.trim().split("\n").length - 1);
+      const blob = new Blob([text], {
+        type: format === "json" ? "application/json" : "text/csv",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `sync-audit-${new Date().toISOString().slice(0, 10)}.${format}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const message = `Exported ${count} sync audit event(s)`;
+      setSyncError(false);
+      setSyncMessage(message);
+      setAuditExportMessage(message);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const resolveConflictItem = async (
@@ -611,10 +648,41 @@ export default function SystemView() {
           </div>
         )}
         <div data-sync-audit-section className="mt-3 border-t border-white/5 pt-2">
-          <div className="mb-1.5 flex items-center justify-between">
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
             <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
               Sync audit
             </span>
+            <select
+              aria-label="Sync audit event filter"
+              data-sync-audit-filter
+              value={auditFilter}
+              onChange={(e) => changeAuditFilter(e.target.value)}
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+            >
+              <option value="all">All events</option>
+              <option value="sync.merge">merge</option>
+              <option value="sync.resolve">resolve</option>
+              <option value="sync.resolve.batch">batch resolve</option>
+              <option value="sync.history.cleared">history cleared</option>
+            </select>
+            <button
+              type="button"
+              aria-label="Export sync audit as JSON"
+              data-sync-audit-export-json
+              onClick={() => void exportAudit("json")}
+              className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+            >
+              JSON
+            </button>
+            <button
+              type="button"
+              aria-label="Export sync audit as CSV"
+              data-sync-audit-export-csv
+              onClick={() => void exportAudit("csv")}
+              className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+            >
+              CSV
+            </button>
             <button
               type="button"
               aria-label="Clear sync audit log"
@@ -625,6 +693,14 @@ export default function SystemView() {
               Clear
             </button>
           </div>
+          {auditExportMessage && (
+            <div
+              data-sync-audit-exported
+              className="mb-1.5 rounded-md bg-emerald-500/10 px-2 py-1 text-[9px] text-emerald-300"
+            >
+              {auditExportMessage}
+            </div>
+          )}
           <div data-sync-audit-list className="max-h-40 space-y-1 overflow-y-auto">
             {syncAudit.length === 0 && (
               <div className="rounded-lg border border-white/5 px-2 py-1.5 text-[10px] text-slate-600">
