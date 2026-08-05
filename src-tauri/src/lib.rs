@@ -3167,27 +3167,20 @@ fn git_branch(path: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-#[tauri::command]
-fn apply_commit(path: String, message: String) -> Result<GitCommitResult, String> {
-    if message.trim().is_empty() {
-        return Err("Commit message is empty".into());
-    }
-    run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    run_git(&path, &["add", "-A"])?;
-    let output = Command::new("git")
-        .args(["commit", "-m", &message])
-        .current_dir(&path)
-        .output()
-        .map_err(|e| format!("git commit failed: {}", e))?;
-    let head = run_git(&path, &["rev-parse", "HEAD"])?;
+fn finalize_commit(
+    path: &str,
+    message: &str,
+    output: std::process::Output,
+) -> Result<GitCommitResult, String> {
+    let head = run_git(path, &["rev-parse", "HEAD"])?;
     let hash = head.chars().take(8).collect();
-    let branch = git_branch(&path);
+    let branch = git_branch(path);
     if output.status.success() {
         return Ok(GitCommitResult {
             committed: true,
             hash,
             branch,
-            message,
+            message: message.to_string(),
         });
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3201,7 +3194,7 @@ fn apply_commit(path: String, message: String) -> Result<GitCommitResult, String
             committed: false,
             hash,
             branch,
-            message,
+            message: message.to_string(),
         })
     } else {
         let detail = stderr.trim();
@@ -3211,6 +3204,47 @@ fn apply_commit(path: String, message: String) -> Result<GitCommitResult, String
             detail.to_string()
         })
     }
+}
+
+#[tauri::command]
+fn apply_commit(path: String, message: String) -> Result<GitCommitResult, String> {
+    if message.trim().is_empty() {
+        return Err("Commit message is empty".into());
+    }
+    run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    run_git(&path, &["add", "-A"])?;
+    let output = Command::new("git")
+        .args(["commit", "-m", &message])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("git commit failed: {}", e))?;
+    finalize_commit(&path, &message, output)
+}
+
+#[tauri::command]
+fn commit_git_files(
+    path: String,
+    files: Vec<String>,
+    message: String,
+) -> Result<GitCommitResult, String> {
+    if message.trim().is_empty() {
+        return Err("Commit message is empty".into());
+    }
+    if files.is_empty() {
+        return Err("No files selected".into());
+    }
+    run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let mut add_args: Vec<&str> = vec!["add", "--"];
+    for file in &files {
+        add_args.push(file.as_str());
+    }
+    run_git(&path, &add_args)?;
+    let output = Command::new("git")
+        .args(["commit", "-m", &message])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("git commit failed: {}", e))?;
+    finalize_commit(&path, &message, output)
 }
 
 fn pr_create_args(title: &str, body: &str, branch: &str) -> Vec<String> {
@@ -3895,6 +3929,7 @@ pub fn run() {
             get_git_file_diff,
             generate_commit_pr_draft,
             apply_commit,
+            commit_git_files,
             create_remote_pr,
             rebase_branch,
             abort_rebase,
@@ -4813,6 +4848,62 @@ mod tests {
 
         let result = apply_commit(path.clone(), "chore(test): nothing".to_string()).unwrap();
         assert!(!result.committed);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn commit_git_files_commits_only_selected_files() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-commit-files-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "# Test\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        std::fs::write(temp.join("a.txt"), "a1\n").unwrap();
+        std::fs::write(temp.join("b.txt"), "b1\n").unwrap();
+
+        let result = commit_git_files(
+            path.clone(),
+            vec!["a.txt".to_string()],
+            "feat(test): selected a".to_string(),
+        )
+        .unwrap();
+        assert!(result.committed);
+        assert_eq!(
+            run_git(&path, &["log", "-1", "--format=%s"]).unwrap(),
+            "feat(test): selected a"
+        );
+        let status = run_git(&path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.contains("b.txt"),
+            "b.txt should stay dirty: {}",
+            status
+        );
+        assert!(
+            !status.contains("a.txt"),
+            "a.txt should be committed: {}",
+            status
+        );
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn commit_git_files_rejects_empty_selection() {
+        let temp = std::env::temp_dir().join(format!(
+            "aiwb-commit-files-empty-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+
+        let err =
+            commit_git_files(path.clone(), vec![], "chore(test): none".to_string()).unwrap_err();
+        assert!(
+            err.contains("No files selected"),
+            "unexpected error: {}",
+            err
+        );
         std::fs::remove_dir_all(&temp).unwrap();
     }
 

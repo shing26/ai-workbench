@@ -554,3 +554,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 81：Git 批量提交内容预览
 
 无表结构变更。批量预览内容来自 `get_git_file_diff` 的运行时读取，仅在组件内存中合并展示，不新增持久化字段。
+
+## Sprint 82：一键提交选中文件
+
+无表结构变更。`commit_git_files` 只操作 Git 工作区与索引，提交结果仍为运行时返回，不新增持久化字段。
