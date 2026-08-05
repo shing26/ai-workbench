@@ -391,3 +391,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Rust 新增 `GitFileDiff { path, status, diff }` 与 `get_git_file_diff(path, file)`：未跟踪文件用 `git status --porcelain` 判定后读磁盘转成 `+` 新增行；已跟踪文件优先 `git diff --unified=3`，为空再走 `git diff --cached` 覆盖暂存改动。
 - Projects 的 dirty 预览中每个文件新增 Diff 开关，点击后调用 `db.getGitFileDiff` 渲染 `<pre>` unified diff，可再次点击收起。
 - `db.ts` 新增 `GitFileDiff` / `getGitFileDiff`，浏览器 fallback 返回含 `diff --git`、`+added line`、`-removed line` 的 mock diff；`verify:ui` / `verify:preview` 新增 `gitDirtyDiff` lane。
+
+## Sprint 83：Webhook 真实投递
+
+- Rust 新增 `WebhookDeliveryResult { ok, status, durationMs, message }` 与 `deliver_webhook(url, payload, method?, token?)` Tauri 命令：默认 POST，支持 POST / PUT / PATCH / GET / DELETE；POST / PUT / PATCH 发送 `Content-Type: application/json`，token 非空时带 `Authorization: Bearer`，payload 必须是合法 JSON。
+- `db.ts` 新增 `WebhookDeliveryResult` 与 `deliverWebhook`，浏览器 fallback 返回确定性 `HTTP 200` mock；System 视图新增 Webhook delivery 卡片（`data-webhook-deliver` / `data-webhook-result`）。
+- `verify:ui` / `verify:preview` 新增 `webhookDelivery` lane；Rust 本地 TCP 单测覆盖真实 POST、JSON body、Authorization header 与非 2xx 状态回显。

@@ -334,6 +334,13 @@ export type StreamSmokeResult = {
   message: string;
 };
 
+export type WebhookDeliveryResult = {
+  ok: boolean;
+  status: number;
+  durationMs: number;
+  message: string;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -3264,6 +3271,28 @@ export async function resolveRebaseConflicts(
     branch: "feature/hermes",
     head: `local-resolve-${makeId().slice(0, 8)}`,
     message: `Resolved 2 conflicted file(s) with ${strategy} and continued rebase`,
+  };
+}
+
+export async function deliverWebhook(
+  url: string,
+  payload: string,
+  method?: string,
+  token?: string,
+): Promise<WebhookDeliveryResult> {
+  if (isTauri()) {
+    return invoke<WebhookDeliveryResult>("deliver_webhook", {
+      url,
+      payload: payload.trim() ? payload.trim() : "{}",
+      method: method?.trim() ? method.trim().toUpperCase() : null,
+      token: token?.trim() ? token.trim() : null,
+    });
+  }
+  return {
+    ok: true,
+    status: 200,
+    durationMs: 12,
+    message: "HTTP 200 delivered",
   };
 }
 

@@ -558,3 +558,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 82：一键提交选中文件
 
 无表结构变更。`commit_git_files` 只操作 Git 工作区与索引，提交结果仍为运行时返回，不新增持久化字段。
+
+## Sprint 83：Webhook 真实投递
+
+无表结构变更。`deliver_webhook` 直接发起运行时 HTTP 请求，结果只在 System 视图回显，不新增持久化字段或表。

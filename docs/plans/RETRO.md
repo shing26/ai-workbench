@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 83
+
+### What went well?
+
+- Rust 新增 `WebhookDeliveryResult` 与 `deliver_webhook(url, payload, method?, token?)`：默认 POST，支持 POST / PUT / PATCH / GET / DELETE，POST / PUT / PATCH 带 `Content-Type: application/json`，token 非空时带 `Authorization: Bearer`；本地 TCP 单测覆盖真实 HTTP POST、JSON body、Authorization header 与 400 状态回显。
+- `db.ts` 新增 `deliverWebhook` fallback；System 视图新增 Webhook delivery 卡片（`data-webhook-deliver` / `data-webhook-result`）；`cargo test --lib` 88/88，fmt、clippy、build 全绿。
+- `verify:ui` / `verify:preview` 的 `webhookDelivery` 均为 true，断言结果可见且包含 HTTP 200。
+
+### What went wrong?
+
+- 浏览器 fallback 只模拟成功结果，不真正发起网络请求；真实 HTTP 行为由 Rust 本地 TCP 单测覆盖。
+
+### Action Items
+
+- 下一 Sprint 候选：Webhook 定时器 / 触发器规则、暂存 / 未暂存分组与提交前 lint 门禁。
+- 真实 Provider 端到端流式联调（真实网络）继续留在候选池。
+
 ## Sprint 82
 
 ### What went well?

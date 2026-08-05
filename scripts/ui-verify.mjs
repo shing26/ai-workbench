@@ -2896,6 +2896,42 @@ try {
   }
   results.streamSmoke = streamSmokeCheck;
 
+  const webhookDelivery = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector('textarea[placeholder="Payload (JSON)"]');
+    const deliverBtn = document.querySelector('[data-webhook-deliver]');
+    if (!urlInput || !payloadInput || !deliverBtn) {
+      return { ok: false, reason: "webhook controls missing" };
+    }
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setValue(urlInput, "https://hooks.example.test/ai-workbench");
+    setValue(payloadInput, '{"event":"daily.summary","ok":true}');
+    await sleep(80);
+    deliverBtn.click();
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      const el = document.querySelector("[data-webhook-result]");
+      if (el) {
+        text = el.textContent ?? "";
+        if (text.includes("HTTP 200")) break;
+      }
+      await sleep(100);
+    }
+    return { ok: text.includes("HTTP 200"), text };
+  })()`);
+  if (!webhookDelivery.ok) {
+    throw new Error(`Webhook delivery assertion failed: ${JSON.stringify(webhookDelivery)}`);
+  }
+  results.webhookDelivery = webhookDelivery;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');
