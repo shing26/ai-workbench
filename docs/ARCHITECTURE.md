@@ -466,3 +466,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `SyncEnvelope` / `encryptSyncPayload` / `decryptSyncPayload` / `exportEncryptedSyncSnapshot` / `importEncryptedSyncSnapshot`；浏览器 fallback 用 Web Crypto 镜像同一算法，localStorage key 为 `ai-workbench:sync-encrypted:v1`。
 - System Sync card 新增 `data-sync-e2e-toggle` / `data-sync-passphrase` / `data-sync-e2e-status`，export / import / push / pull / auto sync 全部支持口令加密；`syncErrorMessage` 兜底空 message 的 DOMException。
 - `verify:ui` / `verify:preview` 新增 `syncE2e` lane：导出加密快照、envelope 无明文、加密导入、错误口令失败、加密 push 成功提示。
+
+## Sprint 93：UI 动效残留补全
+
+- 新增 `src/components/ui/ProjectCarousel.tsx`：Projects 视图 `data-project-carousel` 卡片，Orbit（3D 环形）与 Fan（扇形堆叠）双模式，支持按钮 / 滚轮 / 方向键导航，选中卡前景高亮。
+- Autoplay 为显式开关：rAF 推进位置、hover / focus 暂停，`prefers-reduced-motion` 下自动关闭；交互与抽屉开合只用 `transform` / `opacity` / `filter` 且 <=150ms。
+- 新增 `src/components/layout/MaterialDrawer.tsx`：Header 入口打开 `data-material-drawer`，实时调整 `data-material-preset` / `data-material-opacity` / `data-material-blur`，改写 `--material-opacity-base` / `--material-blur-base` 与 `data-material-global`，localStorage `ai-workbench:material-settings:v1` 持久化。
+- Motion DoD 断言改为按 `aside.drawer-panel` 定位 Inspector，避免新增 Material `<aside>` 后误取。
+- `verify:ui` / `verify:preview` 新增 `projectCarousel` / `projectCarouselReduced` / `materialDrawer` lane。

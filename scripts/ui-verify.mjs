@@ -349,6 +349,71 @@ try {
     throw new Error(`Accent token assertion failed: ${JSON.stringify(results.accentTokens)}`);
   }
 
+  results.materialDrawer = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setNativeValue = (el, value) => {
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+    };
+    const openBtn = document.querySelector("[data-material-settings-open]");
+    if (!openBtn) return { ok: false, reason: "material open button missing" };
+    openBtn.click();
+    let drawer = null;
+    for (let i = 0; i < 20; i++) {
+      drawer = document.querySelector("[data-material-drawer]");
+      if (drawer?.classList.contains("open")) break;
+      await sleep(100);
+    }
+    if (!drawer?.classList.contains("open")) return { ok: false, reason: "drawer not open" };
+    const preset = document.querySelector("[data-material-preset]");
+    const opacity = document.querySelector("[data-material-opacity]");
+    const blur = document.querySelector("[data-material-blur]");
+    if (!preset || !opacity || !blur) return { ok: false, reason: "material controls missing" };
+    setNativeValue(preset, "rain");
+    await sleep(120);
+    setNativeValue(opacity, "0.55");
+    await sleep(120);
+    setNativeValue(blur, "30");
+    await sleep(120);
+    const root = document.documentElement;
+    const card = document.querySelector(".material-card[data-material]");
+    const computedOpacity = card ? getComputedStyle(card).getPropertyValue("--material-opacity").trim() : "";
+    const computedBlur = card ? getComputedStyle(card).getPropertyValue("--material-blur").trim() : "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:material-settings:v1") ?? "{}");
+    const applied = root.dataset.materialGlobal === "rain"
+      && root.style.getPropertyValue("--material-opacity-base") === "0.55"
+      && root.style.getPropertyValue("--material-blur-base") === "30px"
+      && computedOpacity === "0.55"
+      && computedBlur === "30px"
+      && stored.preset === "rain"
+      && stored.opacity === 0.55
+      && stored.blur === 30;
+    document.querySelector("[data-material-drawer-close]")?.click();
+    await sleep(150);
+    const closed = !document.querySelector("[data-material-drawer]")?.classList.contains("open");
+    openBtn.click();
+    await sleep(120);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(150);
+    const escClosed = !document.querySelector("[data-material-drawer]")?.classList.contains("open");
+    setNativeValue(preset, "cyan");
+    setNativeValue(opacity, "0.3");
+    setNativeValue(blur, "18");
+    return {
+      ok: applied && closed && escClosed,
+      applied,
+      closed,
+      escClosed,
+      computedOpacity,
+      computedBlur,
+      stored,
+    };
+  })()`);
+  if (!results.materialDrawer.ok) {
+    throw new Error(`Material drawer assertion failed: ${JSON.stringify(results.materialDrawer)}`);
+  }
+
   await clickDock("Actions");
   results.uiDynamics.material = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1185,6 +1250,75 @@ try {
   await delay(250);
 
   await clickDock("Projects");
+  results.projectCarousel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let carousel = null;
+    for (let i = 0; i < 20; i++) {
+      carousel = document.querySelector("[data-project-carousel]");
+      if (carousel) break;
+      await sleep(100);
+    }
+    if (!carousel) return { ok: false, reason: "project carousel missing" };
+    const scene = document.querySelector("[data-carousel-scene]");
+    const cards = [...document.querySelectorAll("[data-carousel-card]")];
+    if (!scene || cards.length < 2) {
+      return { ok: false, reason: "carousel cards missing", cards: cards.length };
+    }
+    const firstSelected = cards.find((c) => c.getAttribute("data-carousel-selected") === "true")?.getAttribute("data-carousel-project");
+    document.querySelector("[data-carousel-next]")?.click();
+    await sleep(200);
+    const afterNext = document.querySelector("[data-carousel-index]")?.textContent ?? "";
+    const secondSelected = cards.find((c) => c.getAttribute("data-carousel-selected") === "true")?.getAttribute("data-carousel-project");
+    const orbitOk = afterNext.includes("2 /") && firstSelected !== secondSelected;
+    document.querySelector('[data-carousel-mode="fan"]')?.click();
+    await sleep(200);
+    const fanMode = scene.getAttribute("data-carousel-scene-mode") === "fan";
+    const fanPressed = document.querySelector('[data-carousel-mode="fan"]')?.getAttribute("aria-pressed") === "true";
+    const playBtn = document.querySelector("[data-carousel-play]");
+    playBtn?.click();
+    await sleep(120);
+    const playing = playBtn?.getAttribute("aria-pressed") === "true"
+      && playBtn?.getAttribute("data-carousel-playing") === "true";
+    playBtn?.click();
+    await sleep(120);
+    const paused = playBtn?.getAttribute("data-carousel-playing") === "false";
+    const ok = orbitOk && fanMode && fanPressed && playing && paused;
+    return {
+      ok,
+      cards: cards.length,
+      firstSelected,
+      secondSelected,
+      afterNext,
+      fanMode,
+      fanPressed,
+      playing,
+      paused,
+    };
+  })()`);
+  if (!results.projectCarousel.ok) {
+    throw new Error(`Project carousel assertion failed: ${JSON.stringify(results.projectCarousel)}`);
+  }
+  await send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  await delay(200);
+  results.projectCarouselReduced = await evaluate(`(() => {
+    const card = document.querySelector("[data-carousel-card]");
+    const playBtn = document.querySelector("[data-carousel-play]");
+    const transition = card ? getComputedStyle(card).transitionDuration : "";
+    const playState = playBtn?.getAttribute("aria-pressed") ?? "";
+    return { transition, playState };
+  })()`);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+  results.projectCarouselReduced.ok =
+    durationSeconds(results.projectCarouselReduced.transition) <= 0.02 &&
+    results.projectCarouselReduced.playState === "false";
+  if (!results.projectCarouselReduced.ok) {
+    throw new Error(
+      `Project carousel reduced motion assertion failed: ${JSON.stringify(results.projectCarouselReduced)}`,
+    );
+  }
+
   const gitGraph = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
@@ -1818,7 +1952,7 @@ try {
   if (!inspectorOpened) throw new Error("AI Coding button missing for inspector layout check");
   await delay(300);
   const inspectorInfo = await evaluate(`(() => {
-    const aside = document.querySelector('aside');
+    const aside = document.querySelector('aside.drawer-panel');
     const main = document.querySelector('main');
     return {
       asideWidth: aside ? getComputedStyle(aside).width : "",
