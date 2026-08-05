@@ -344,6 +344,10 @@ CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at D
 - 新命令：`list_sync_audit(limit)` 按 created_at 倒序返回（limit clamp 1~200）；`clear_sync_audit` 清空全部审计。
 - 浏览器 fallback 用 `ai-workbench:sync-audit:v1` 保存最近 200 条，与 Rust 语义一致。
 
+## Sprint 46：索引并发自动调优
+
+无表结构变更。新增 `recommend_index_concurrency` 命令，按设备可用并行度返回推荐并发（1~16）；`index_vault_ex` 的 concurrency 参数 clamp 语义不变，Knowledge UI 的 Auto 开关只是把推荐值透传给索引命令。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

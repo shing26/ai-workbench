@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 46
+
+### What went well?
+
+- Vault 索引并发新增设备自动调优：`recommend_index_concurrency` 基于 `available_parallelism` 返回推荐值并 clamp 1~16，失败回退 4；Knowledge Vault Index 提供 Auto 开关，开启后输入禁用并显示推荐值，关闭恢复手动。
+- 浏览器 fallback 用 `navigator.hardwareConcurrency` 计算，与 Rust 语义一致；单测覆盖推荐值边界与核心数关系。
+- 验证覆盖：`cargo test --lib` 47/47，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 Auto 开启/关闭断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 推荐 helper 首版只被单测引用导致 clippy dead-code 告警；改为命令函数调用 helper，单测直接验证命令函数后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：目标级索引统计、审计导出与筛选、三方合并策略、按文件规模动态并发。
+- 后续改动索引协议时，保留 Auto 开关 UI 断言与推荐值边界单测。
+
 ## Sprint 45
 
 ### What went well?

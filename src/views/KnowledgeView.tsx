@@ -19,6 +19,8 @@ export default function KnowledgeView() {
   const [vaultPath, setVaultPath] = useState("");
   const [ignorePatterns, setIgnorePatterns] = useState("");
   const [indexConcurrency, setIndexConcurrency] = useState("4");
+  const [useAutoConcurrency, setUseAutoConcurrency] = useState(false);
+  const [recommendedConcurrency, setRecommendedConcurrency] = useState(4);
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
   const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
@@ -42,6 +44,7 @@ export default function KnowledgeView() {
 
   useEffect(() => {
     void db.getKnowledgeIndexStatus().then(setVaultStatus);
+    void db.recommendIndexConcurrency().then((r) => setRecommendedConcurrency(r.recommended));
   }, []);
 
   useEffect(() => {
@@ -121,7 +124,9 @@ export default function KnowledgeView() {
 
   const runIndex = async () => {
     if (!vaultPath.trim()) return;
-    const concurrency = Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
+    const concurrency = useAutoConcurrency
+      ? Math.max(1, Math.min(16, recommendedConcurrency))
+      : Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
     const result = await db.indexVault(vaultPath.trim(), parseIgnore(), concurrency);
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
@@ -264,16 +269,32 @@ export default function KnowledgeView() {
         </div>
         <div className="mt-2 flex items-center gap-2">
           <input
-            value={indexConcurrency}
+            value={useAutoConcurrency ? String(recommendedConcurrency) : indexConcurrency}
             onChange={(e) => setIndexConcurrency(e.target.value)}
             type="number"
             min={1}
             max={16}
+            disabled={useAutoConcurrency}
             aria-label="Index concurrency"
-            data-index-concurrency={indexConcurrency}
+            data-index-concurrency={useAutoConcurrency ? String(recommendedConcurrency) : indexConcurrency}
             placeholder="Threads"
-            className="h-8 w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            className="h-8 w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600 disabled:opacity-50"
           />
+          <button
+            type="button"
+            aria-label="Auto index concurrency"
+            aria-pressed={useAutoConcurrency}
+            data-index-concurrency-auto={useAutoConcurrency ? "on" : "off"}
+            data-recommended-concurrency={recommendedConcurrency}
+            onClick={() => setUseAutoConcurrency((value) => !value)}
+            className={`flex h-8 items-center rounded-lg px-2 text-[10px] ${
+              useAutoConcurrency
+                ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
+                : "bg-white/5 text-slate-300 hover:bg-white/10"
+            }`}
+          >
+            Auto
+          </button>
           <input
             value={ignorePatterns}
             onChange={(e) => setIgnorePatterns(e.target.value)}

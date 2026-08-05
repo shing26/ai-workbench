@@ -886,6 +886,39 @@ try {
     throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
   }
   results.vaultIndex = vaultIndex;
+
+  const concurrencyAuto = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = document.querySelector("[data-index-concurrency-auto]");
+    const input = document.querySelector('input[aria-label="Index concurrency"]');
+    if (!autoBtn || !input) {
+      return { ok: false, reason: "no auto concurrency control" };
+    }
+    autoBtn.click();
+    await sleep(180);
+    const autoOn = autoBtn.getAttribute("data-index-concurrency-auto") === "on";
+    const value = Number(input.value || 0);
+    const inRange = value >= 1 && value <= 16;
+    const disabled = input.disabled;
+    autoBtn.click();
+    await sleep(180);
+    const autoOff = autoBtn.getAttribute("data-index-concurrency-auto") === "off";
+    const manualEnabled = !input.disabled;
+    return {
+      ok: autoOn && inRange && disabled && autoOff && manualEnabled,
+      autoOn,
+      value,
+      inRange,
+      disabled,
+      autoOff,
+      manualEnabled,
+    };
+  })()`);
+  if (!concurrencyAuto.ok) {
+    throw new Error(`Concurrency auto assertion failed: ${JSON.stringify(concurrencyAuto)}`);
+  }
+  results.concurrencyAuto = concurrencyAuto;
+
   const vaultIgnore = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const ignoreInput = document.querySelector('input[placeholder="Ignore patterns (comma separated)"]');
