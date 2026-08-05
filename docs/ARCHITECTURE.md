@@ -97,6 +97,8 @@ Sprint 43 新增命令：`resolve_sync_conflicts`；`resolve_conflicts` 用单�
 
 Sprint 44 新增命令：`list_vault_watch_targets` / `upsert_vault_watch_target` / `delete_vault_watch_target`；watch 状态升级为多实例并行，`stop_vault_watch` 支持按路径停止，Knowledge card 提供多 vault 目标列表。
 
+Sprint 45 新增命令：`list_sync_audit` / `clear_sync_audit`；`sync_audit_log` 表持久化 merge / resolve / history.clear 事件，System Sync card 新增审计面板。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

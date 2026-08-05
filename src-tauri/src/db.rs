@@ -173,6 +173,14 @@ CREATE TABLE IF NOT EXISTS vault_watch_targets (
     enabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sync_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    device_id TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at DESC);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -403,6 +411,16 @@ pub struct VaultWatchTarget {
     pub ignore_patterns: Vec<String>,
     pub enabled: bool,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAuditEntry {
+    pub id: i64,
+    pub event: String,
+    pub detail: String,
+    pub device_id: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1415,6 +1433,19 @@ pub fn merge_sync_snapshot(
     for conflict in &conflicts {
         persist_conflict(conn, conflict)?;
     }
+    let _ = append_sync_audit(
+        conn,
+        "sync.merge",
+        &format!(
+            "clips +{} / updated {} / logs +{} / updated {} / conflicts {}",
+            clipboard_added,
+            clipboard_updated,
+            logs_added,
+            logs_updated,
+            conflicts.len()
+        ),
+        &snapshot.device_id,
+    );
     Ok(SyncResult {
         device_id: snapshot.device_id,
         synced_at: now_millis(),
@@ -1519,11 +1550,70 @@ pub fn list_sync_conflicts(
 }
 
 pub fn clear_resolved_sync_conflicts(conn: &Connection) -> Result<usize, String> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM sync_conflicts WHERE resolved_choice IS NOT NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.history.cleared",
+        &format!("cleared {} resolved conflict(s)", deleted),
+        "",
+    );
+    Ok(deleted)
+}
+
+pub fn append_sync_audit(
+    conn: &Connection,
+    event: &str,
+    detail: &str,
+    device_id: &str,
+) -> Result<SyncAuditEntry> {
+    let created_at = now_millis();
     conn.execute(
-        "DELETE FROM sync_conflicts WHERE resolved_choice IS NOT NULL",
-        [],
-    )
-    .map_err(|e| e.to_string())
+        "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![event, detail, device_id, created_at],
+    )?;
+    Ok(SyncAuditEntry {
+        id: conn.last_insert_rowid(),
+        event: event.to_string(),
+        detail: detail.to_string(),
+        device_id: device_id.to_string(),
+        created_at,
+    })
+}
+
+pub fn list_sync_audit(conn: &Connection, limit: i64) -> Result<Vec<SyncAuditEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, event, detail, device_id, created_at
+         FROM sync_audit_log ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![limit], |row| {
+            Ok(SyncAuditEntry {
+                id: row.get(0)?,
+                event: row.get(1)?,
+                detail: row.get(2)?,
+                device_id: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn clear_sync_audit(conn: &Connection) -> Result<usize, String> {
+    conn.execute("DELETE FROM sync_audit_log", [])
+        .map_err(|e| e.to_string())
 }
 
 pub fn get_vault_watch_config(conn: &Connection) -> Result<VaultWatchConfig> {
@@ -1817,6 +1907,12 @@ pub fn resolve_conflict(
         params![choice, now, conflict.id, conflict.kind],
     )
     .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve",
+        &format!("{} {} -> {}", conflict.kind, conflict.id, choice),
+        "",
+    );
     Ok(())
 }
 
@@ -1830,6 +1926,16 @@ pub fn resolve_conflicts(
         resolve_conflict(&tx, conflict, choice)?;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve.batch",
+        &format!(
+            "batch resolved {} conflict(s) -> {}",
+            conflicts.len(),
+            choice
+        ),
+        "",
+    );
     Ok(conflicts.len())
 }
 
@@ -2707,6 +2813,63 @@ mod tests {
         assert_eq!(logs[0].message, "local log");
         assert!(list_sync_conflicts(&conn, "unresolved").unwrap().is_empty());
         assert_eq!(list_sync_conflicts(&conn, "resolved").unwrap().len(), 2);
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_audit_tracks_merge_resolve_and_clear() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-audit-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "local v1", "test").unwrap();
+        let local_updated = clip.updated_at;
+        let remote = SyncSnapshot {
+            device_id: "device-audit".to_string(),
+            exported_at: 1,
+            clipboard: vec![ClipboardItem {
+                id: clip.id.clone(),
+                content: "remote v1".to_string(),
+                source: "remote".to_string(),
+                timestamp: local_updated + 1000,
+                updated_at: local_updated + 1000,
+            }],
+            logs: Vec::new(),
+        };
+
+        merge_sync_snapshot(&conn, remote).unwrap();
+        let entries = list_sync_audit(&conn, 20).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event, "sync.merge");
+        assert_eq!(entries[0].device_id, "device-audit");
+        assert!(entries[0].detail.contains("conflicts 1"));
+
+        let unresolved = list_sync_conflicts(&conn, "unresolved").unwrap();
+        let conflict = SyncConflictItem {
+            id: unresolved[0].id.clone(),
+            kind: unresolved[0].kind.clone(),
+            local_updated_at: unresolved[0].local_updated_at,
+            remote_updated_at: unresolved[0].remote_updated_at,
+            resolved_to: unresolved[0].resolved_to.clone(),
+            preview: unresolved[0].preview.clone(),
+            local_content: unresolved[0].local_content.clone(),
+            remote_content: unresolved[0].remote_content.clone(),
+        };
+        resolve_conflict(&conn, &conflict, "remote").unwrap();
+        let entries = list_sync_audit(&conn, 20).unwrap();
+        assert_eq!(entries[0].event, "sync.resolve");
+        assert!(entries[0].detail.contains("clipboard"));
+
+        let cleared = clear_resolved_sync_conflicts(&conn).unwrap();
+        assert!(cleared > 0);
+        let entries = list_sync_audit(&conn, 20).unwrap();
+        assert_eq!(entries[0].event, "sync.history.cleared");
+        assert!(entries[0].detail.contains("cleared"));
+
+        let removed = clear_sync_audit(&conn).unwrap();
+        assert!(removed > 0);
+        assert!(list_sync_audit(&conn, 20).unwrap().is_empty());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

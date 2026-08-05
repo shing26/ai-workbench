@@ -193,6 +193,14 @@ export type SyncStatus = {
   lastSyncedAt: number | null;
 };
 
+export type SyncAuditEntry = {
+  id: number;
+  event: string;
+  detail: string;
+  deviceId: string;
+  createdAt: number;
+};
+
 export type RemoteSyncPushResult = {
   ok: boolean;
   syncedAt: number;
@@ -1049,6 +1057,7 @@ export async function listenClipboardUpdated(
 const SYNC_LS_KEY = "ai-workbench:sync-snapshot:v1";
 const SYNC_AUTO_LS_KEY = "ai-workbench:sync-auto:v1";
 const SYNC_CONFLICTS_LS_KEY = "ai-workbench:sync-conflicts:v1";
+const SYNC_AUDIT_LS_KEY = "ai-workbench:sync-audit:v1";
 
 export type SyncAutoConfig = {
   enabled: boolean;
@@ -1234,6 +1243,10 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   shape.lastSyncedAt = result.syncedAt;
   writeLocal(shape);
   persistFallbackConflicts(conflicts);
+  appendSyncAudit(
+    "sync.merge",
+    `clips +${clipboardAdded} / updated ${clipboardUpdated} / logs +${logsAdded} / updated ${logsUpdated} / conflicts ${conflicts.length}`,
+  );
   return result;
 }
 
@@ -1247,6 +1260,30 @@ function readSyncConflictRecords(): SyncConflictRecord[] {
 
 function writeSyncConflictRecords(records: SyncConflictRecord[]) {
   localStorage.setItem(SYNC_CONFLICTS_LS_KEY, JSON.stringify(records));
+}
+
+function readSyncAudit(): SyncAuditEntry[] {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_AUDIT_LS_KEY) ?? "[]") as SyncAuditEntry[];
+  } catch {
+    return [];
+  }
+}
+
+function writeSyncAudit(entries: SyncAuditEntry[]) {
+  localStorage.setItem(SYNC_AUDIT_LS_KEY, JSON.stringify(entries.slice(0, 200)));
+}
+
+function appendSyncAudit(event: string, detail: string) {
+  const entries = readSyncAudit();
+  entries.unshift({
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    event,
+    detail,
+    deviceId: readLocal().syncDeviceId || "local",
+    createdAt: Date.now(),
+  });
+  writeSyncAudit(entries);
 }
 
 function persistFallbackConflicts(conflicts: SyncConflictItem[]): SyncConflictRecord[] {
@@ -1302,6 +1339,7 @@ export async function resolveSyncConflict(
       : record,
   );
   writeSyncConflictRecords(records);
+  appendSyncAudit("sync.resolve", `${conflict.kind} ${conflict.id} -> ${choice}`);
   return `Resolved ${conflict.kind} conflict ${conflict.id} with ${choice}`;
 }
 
@@ -1339,7 +1377,21 @@ export async function clearResolvedSyncConflicts(): Promise<number> {
   const records = readSyncConflictRecords();
   const remaining = records.filter((record) => !record.resolvedChoice);
   writeSyncConflictRecords(remaining);
-  return records.length - remaining.length;
+  const cleared = records.length - remaining.length;
+  appendSyncAudit("sync.history.cleared", `cleared ${cleared} resolved conflict(s)`);
+  return cleared;
+}
+
+export async function listSyncAudit(limit = 50): Promise<SyncAuditEntry[]> {
+  if (isTauri()) return invoke<SyncAuditEntry[]>("list_sync_audit", { limit });
+  return readSyncAudit().slice(0, Math.max(1, Math.min(200, limit)));
+}
+
+export async function clearSyncAudit(): Promise<number> {
+  if (isTauri()) return invoke<number>("clear_sync_audit");
+  const count = readSyncAudit().length;
+  localStorage.removeItem(SYNC_AUDIT_LS_KEY);
+  return count;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {

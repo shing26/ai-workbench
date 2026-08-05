@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 45
+
+### What went well?
+
+- 同步链路新增持久化审计：`sync_audit_log` 表记录 merge / resolve / batch resolve / history.clear 事件与详情，Tauri 命令 `list_sync_audit` / `clear_sync_audit` 已注册，limit clamp 1~200。
+- System Sync snapshot 卡片新增 Sync audit 面板：事件名、详情、时间与 Clear 按钮，同步/仲裁/清理操作后自动刷新，浏览器 fallback 用 localStorage 保存最近 200 条。
+- 单测覆盖 merge / resolve / clear 三类事件与最终清空；`cargo test --lib` 46/46，fmt、clippy、build 全绿。
+- 验证覆盖：`verify:ui` / `verify:preview` 新增审计列表含 merge / resolve 与 Clear 后清空断言，两条 lane 全绿；motion 轮询修复后连续通过。
+
+### What went wrong?
+
+- `list_sync_audit` 首版错误类型混用 rusqlite Error 与 String，编译期暴露后统一为 String 返回并补 `map_err`。
+
+### Action Items
+
+- 下一 Sprint 候选：并发数随设备配置自动调优、目标级索引统计、审计导出与筛选、三方合并策略。
+- 后续改动同步链路时，保留审计埋点单测与 System audit UI 断言。
+
 ## Sprint 44
 
 ### What went well?
