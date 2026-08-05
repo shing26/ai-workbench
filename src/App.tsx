@@ -4,9 +4,11 @@ import AppHeader from "./components/layout/AppHeader";
 import AppInspector from "./components/layout/AppInspector";
 import ViewRouter from "./components/ViewRouter";
 import * as db from "./lib/db";
+import { useThemeStore } from "./stores/themeStore";
 import { useWorkbenchStore } from "./stores/workbenchStore";
 
 export default function App() {
+  const initTheme = useThemeStore((s) => s.init);
   const init = useWorkbenchStore((s) => s.init);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
   const reportError = useWorkbenchStore((s) => s.reportError);
@@ -14,6 +16,10 @@ export default function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  useEffect(() => {
+    initTheme();
+  }, [initTheme]);
 
   useEffect(() => {
     let disposed = false;

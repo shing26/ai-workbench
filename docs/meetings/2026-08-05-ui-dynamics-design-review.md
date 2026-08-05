@@ -73,3 +73,13 @@
 - R3：浮层缺少焦点闭环。
 - R4：验收脚本不检查动效与溢出。
 - R5：直接照搬 3D 卡片造成遮挡与性能问题。
+
+## Sprint 22 深化契约（设计部）
+
+设计部 UI Designer 已基于模板与 Sprint 2 落地结果产出 Sprint 22 深化契约，完整内容见 `docs/meetings/2026-08-05-sprint-22-ui-dynamics-contract.md`。核心增量：
+
+1. 主题/强调色系统：`data-theme` + `data-accent`，默认 `dark + emerald`，5 个 accent preset，localStorage 持久化。
+2. 流体材质卡：hover/focus 触发的单次 140ms flow，只动 `transform/opacity/filter`，尺寸不变。
+3. AI Studio 对话舞台：busy 时 stage glow 150ms，composer focus glow 120ms，MOA provider stack 入场 stagger。
+4. 动效守卫：交互 transition <=150ms，JS + CSS 双通道响应 reduced-motion。
+5. 自动化验收：`verify:ui` / `verify:preview` 新增主题持久化、accent 切换、材质卡尺寸与 reduced-motion 断言。

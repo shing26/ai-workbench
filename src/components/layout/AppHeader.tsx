@@ -1,6 +1,7 @@
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkbenchStore, type ViewId } from "../../stores/workbenchStore";
+import ThemeSwitcher from "../ui/ThemeSwitcher";
 
 const TITLES: Record<ViewId, string> = {
   "ai-studio": "AI Studio",
@@ -53,6 +54,7 @@ export default function AppHeader() {
             {activeProvider.name}
           </span>
         )}
+        <ThemeSwitcher />
         <div className="relative">
           <button
             type="button"

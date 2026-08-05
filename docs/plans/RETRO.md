@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 22
+
+### What went well?
+
+- UI 深化闭环：设计部 UI Designer 产出 Sprint 22 动效契约，主题/强调色、流体材质卡、AI Studio 对话舞台全部按契约落地，并写入 SDLC 生命周期。
+- 动效系统：`data-theme` + `data-accent` 首帧预载、localStorage 持久化、5 个 accent preset；BentoCard 支持 4 种流体材质，hover 单次 140ms flow，尺寸稳定。
+- 可测试性：`verify:ui` / `verify:preview` 新增主题持久化、accent 切换、材质卡 hover 固定尺寸、composer/stage 动效与 reduced-motion 断言，两条 lane 全绿。
+- `cargo test --lib` 17/17，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 在 System 视图上断言 `.conversation-stage`，需要先切回 AI Studio；补 `clickDock("AI Studio")` 后通过。
+- 材质卡 hover 动画时长最初在移除 `.hovering` 后测量，读到 `0s`；改为 hover 态内测量后确认 `0.14s`。
+
+### Action Items
+
+- 下一 Sprint 候选：部门与 Agent 数据模型、真实 Provider 端到端流式联调、自动文件监听同步、自动生成 Commit/PR 草稿。
+- 后续可把全仓库硬编码 emerald/#007AFF Tailwind class 迁移到 accent token（单独 Sprint）。
+
 ## Sprint 21
 
 ### What went well?

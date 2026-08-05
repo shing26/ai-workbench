@@ -94,3 +94,13 @@ DoD 检查单：
 1. What went well？
 2. What went wrong？
 3. Action Items？
+
+## UI 改造生命周期闭环（Sprint 22+）
+
+任何 UI 动态效果改造必须走完整闭环，禁止绕过设计评审直接堆效果：
+
+1. 设计部契约：先产出 `docs/meetings/*-ui-dynamics-*.md`，锁定动效范围、Motion Token 与验收标准。
+2. Token 冻结：交互动画 <=150ms，只用 `transform/opacity/filter`，尊重 `prefers-reduced-motion`。
+3. 主题与材质：主题/强调色/材质预设纳入验收，刷新持久化，浅色主题保证文字对比度。
+4. 自动化验收：`verify:ui` / `verify:preview` 覆盖动效时长、固定尺寸、reduced-motion 与布局稳定。
+5. 复盘与 Backlog：Sprint 结束后更新 RETRO；未纳入范围的动效进入 Backlog，禁止临时加项。
