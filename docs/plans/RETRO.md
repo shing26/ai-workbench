@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 32
+
+### What went well?
+
+- 端到端流式联调闭环：`stream_openai_compatible_with` 支持 sink 注入，本地 SSE 服务单测覆盖真实 HTTP + 分块解析，无 `[DONE]` 错误路径也覆盖。
+- System Provider 卡片新增 Stream test 一键联调，返回 chunk 数与错误信息；浏览器 fallback 确定性返回 2 chunk。
+- 验证覆盖：`cargo test --lib` 31/31，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 stream smoke 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 首轮编译报 `app` 被取消闭包 move 后无法再给 emit 闭包借用，补 `app_for_cancel` clone 后通过。
+- 前端 setState updater 里直接 `await` 触发 TS1308，改为先 await 结果再 setState。
+- preview 验收偶发 motion 断言失败，属冷启动时序抖动；预热后重跑全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：云端同步传输、冲突自动解决 / 三方合并策略。
+- 后续改动流式核心时，保留 SSE 端到端单测与 stream smoke UI 断言。
+
 ## Sprint 31
 
 ### What went well?

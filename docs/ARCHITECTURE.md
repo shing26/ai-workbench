@@ -71,6 +71,8 @@ Sprint 30 新增 accent 语义类：`.accent-bg-*`、`.accent-text*`、`.accent-
 
 Sprint 31 新增命令：`rebase_branch`、`abort_rebase`。
 
+Sprint 32 新增命令：`run_provider_stream_smoke_test`；流式核心重构为 `stream_openai_compatible_with` / `stream_ollama_with`（sink 注入式）。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
