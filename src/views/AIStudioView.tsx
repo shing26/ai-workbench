@@ -1,6 +1,7 @@
-import { Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
+import { buildDailyRecapPrompt } from "../lib/dailyRecap";
 import {
   addCustomQuickPrompt,
   deleteCustomQuickPrompt,
@@ -20,6 +21,9 @@ type ApiMessage = { role: "user" | "assistant" | "system"; content: string };
 
 export default function AIStudioView() {
   const providers = useWorkbenchStore((s) => s.providers);
+  const tasks = useWorkbenchStore((s) => s.tasks);
+  const habits = useWorkbenchStore((s) => s.habits);
+  const scheduleEvents = useWorkbenchStore((s) => s.scheduleEvents);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." },
@@ -561,9 +565,8 @@ export default function AIStudioView() {
     openInspector(traceTitle, sections);
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy) return;
+  const sendText = async (text: string) => {
+    if (!text.trim() || busy) return;
     setBusy(true);
     let hits: db.RagSearchResult[] = [];
     if (useRag) {
@@ -595,6 +598,14 @@ export default function AIStudioView() {
     await db.saveChatMessage(session.id, "user", text, messageId);
     const history: Message[] = next.slice(0, next.length - 1);
     await runStream(history, runId, hits);
+  };
+
+  const send = async () => {
+    await sendText(input.trim());
+  };
+
+  const runDailyRecap = () => {
+    void sendText(buildDailyRecapPrompt(tasks, habits, scheduleEvents));
   };
 
   const startEdit = (message: Message) => {
@@ -1205,6 +1216,15 @@ export default function AIStudioView() {
               )}
             </button>
           ))}
+          <button
+            type="button"
+            data-ai-daily-recap
+            onClick={runDailyRecap}
+            className="flex h-6 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] text-emerald-300 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/20 hover:text-emerald-200"
+          >
+            <CalendarDays size={10} />
+            今日复盘
+          </button>
           <button
             type="button"
             data-quick-prompt-manage

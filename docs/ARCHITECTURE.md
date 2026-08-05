@@ -368,6 +368,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 芯片初始与刷新均按使用次数降序稳定排序，同次数保持内置默认顺序；点击芯片即累计次数、重排并显示次数角标，芯片带 `data-quick-prompt-usage`。
 - `verify:ui` / `verify:preview` 新增 `quickPromptUsage` / `quickPromptUsagePersist` lane：清空计数后点击 2 次 daily-recap、3 次 wind-down，断言 wind-down 排第一、daily-recap 次数为 2，重载后顺序保持。
 
+## Sprint 80：AI 生成式今日复盘
+
+- 新增 `src/lib/dailyRecap.ts`：`buildDailyRecapContext` 聚合 Focus / Habits / Schedule 完成数与总体进度，`buildDailyRecapPrompt` 组装包含进度、任务、习惯与日程的结构化中文提示词。
+- AI Studio 新增“今日复盘”按钮（`data-ai-daily-recap`），读取 workbench store 数据后复用 `sendText` 走既有 RAG / 流式 / 会话链路；`send` 拆出 `sendText(text)` 供普通发送与复盘共用。
+- `verify:ui` / `verify:preview` 新增 `aiDailyRecap` lane：断言用户消息包含今日 Focus / 习惯 / 日程样例与 Overall 进度，流式回复可见且结束后自动 New chat 复位。
+
 ## Sprint 78：Git dirty 逐文件 diff 预览
 
 - Rust 新增 `GitFileDiff { path, status, diff }` 与 `get_git_file_diff(path, file)`：未跟踪文件用 `git status --porcelain` 判定后读磁盘转成 `+` 新增行；已跟踪文件优先 `git diff --unified=3`，为空再走 `git diff --cached` 覆盖暂存改动。

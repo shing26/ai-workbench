@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 80
+
+### What went well?
+
+- 新增 `src/lib/dailyRecap.ts`：`buildDailyRecapContext` 聚合 Focus / Habits / Schedule 与总体进度，`buildDailyRecapPrompt` 生成结构化中文提示词，AI Studio“今日复盘”按钮一键走 `sendText` 流式发送。
+- `send` 拆出 `sendText(text)` 后，复盘与普通发送共用 RAG / 流式 / 会话链路；`verify:ui` / `verify:preview` 的 `aiDailyRecap` 均为 true，`npm run build` 全绿。
+
+### What went wrong?
+
+- 复盘 lane 首次在回复仍在流式时返回，导致后续 stream lane 的发送被 `busy` 忽略；改为等待 `data-streaming` 空闲后再继续。
+- 复盘成为首个发送后，后续测试消息都并入复盘会话，“sprint RAG check”独立会话标题消失；lane 结束后点击 New chat 复位，并把会话删除断言改为“无孤儿消息”，让统计不再受其他会话干扰。
+
+### Action Items
+
+- 下一 Sprint 候选：批量提交内容预览、真实 Provider 端到端流式联调。
+- 把 AI 复盘结果一键保存为知识笔记进入候选池。
+
 ## Sprint 79
 
 ### What went well?
