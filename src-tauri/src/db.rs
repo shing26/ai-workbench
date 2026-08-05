@@ -330,7 +330,7 @@ pub struct SyncResult {
     pub conflicts: Vec<SyncConflictItem>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConflictItem {
     pub id: String,
@@ -339,6 +339,8 @@ pub struct SyncConflictItem {
     pub remote_updated_at: i64,
     pub resolved_to: String,
     pub preview: String,
+    pub local_content: String,
+    pub remote_content: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -1262,7 +1264,10 @@ pub fn merge_sync_snapshot(
     for item in snapshot.clipboard {
         match merge_clipboard_item(conn, &item).map_err(|e| e.to_string())? {
             MergeOutcome::Added => clipboard_added += 1,
-            MergeOutcome::Updated { local_updated_at } => {
+            MergeOutcome::Updated {
+                local_updated_at,
+                local_content,
+            } => {
                 clipboard_updated += 1;
                 conflicts.push(SyncConflictItem {
                     id: item.id.clone(),
@@ -1271,9 +1276,14 @@ pub fn merge_sync_snapshot(
                     remote_updated_at: item.updated_at,
                     resolved_to: "remote".to_string(),
                     preview: item.content.chars().take(120).collect(),
+                    local_content,
+                    remote_content: item.content.clone(),
                 });
             }
-            MergeOutcome::Skipped { local_updated_at } => {
+            MergeOutcome::Skipped {
+                local_updated_at,
+                local_content,
+            } => {
                 if local_updated_at > item.updated_at {
                     conflicts.push(SyncConflictItem {
                         id: item.id.clone(),
@@ -1282,6 +1292,8 @@ pub fn merge_sync_snapshot(
                         remote_updated_at: item.updated_at,
                         resolved_to: "local".to_string(),
                         preview: item.content.chars().take(120).collect(),
+                        local_content,
+                        remote_content: item.content.clone(),
                     });
                 }
             }
@@ -1292,7 +1304,10 @@ pub fn merge_sync_snapshot(
     for log in snapshot.logs {
         match merge_error_log(conn, &log).map_err(|e| e.to_string())? {
             MergeOutcome::Added => logs_added += 1,
-            MergeOutcome::Updated { local_updated_at } => {
+            MergeOutcome::Updated {
+                local_updated_at,
+                local_content,
+            } => {
                 logs_updated += 1;
                 conflicts.push(SyncConflictItem {
                     id: log.id.clone(),
@@ -1301,9 +1316,14 @@ pub fn merge_sync_snapshot(
                     remote_updated_at: log.updated_at,
                     resolved_to: "remote".to_string(),
                     preview: log.message.chars().take(120).collect(),
+                    local_content,
+                    remote_content: log.message.clone(),
                 });
             }
-            MergeOutcome::Skipped { local_updated_at } => {
+            MergeOutcome::Skipped {
+                local_updated_at,
+                local_content,
+            } => {
                 if local_updated_at > log.updated_at {
                     conflicts.push(SyncConflictItem {
                         id: log.id.clone(),
@@ -1312,6 +1332,8 @@ pub fn merge_sync_snapshot(
                         remote_updated_at: log.updated_at,
                         resolved_to: "local".to_string(),
                         preview: log.message.chars().take(120).collect(),
+                        local_content,
+                        remote_content: log.message.clone(),
                     });
                 }
             }
@@ -1330,29 +1352,39 @@ pub fn merge_sync_snapshot(
 
 enum MergeOutcome {
     Added,
-    Updated { local_updated_at: i64 },
-    Skipped { local_updated_at: i64 },
+    Updated {
+        local_updated_at: i64,
+        local_content: String,
+    },
+    Skipped {
+        local_updated_at: i64,
+        local_content: String,
+    },
 }
 
 fn merge_clipboard_item(conn: &Connection, item: &ClipboardItem) -> Result<MergeOutcome> {
-    let local_updated: Option<i64> = conn
+    let local_row: Option<(String, i64)> = conn
         .query_row(
-            "SELECT updated_at FROM clipboard_history WHERE id = ?1",
+            "SELECT content, updated_at FROM clipboard_history WHERE id = ?1",
             params![item.id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match local_updated {
-        Some(local) if local >= item.updated_at => Ok(MergeOutcome::Skipped {
-            local_updated_at: local,
-        }),
-        Some(local) => {
+    match local_row {
+        Some((local_content, local_updated)) if local_updated >= item.updated_at => {
+            Ok(MergeOutcome::Skipped {
+                local_updated_at: local_updated,
+                local_content,
+            })
+        }
+        Some((local_content, local_updated)) => {
             conn.execute(
                 "UPDATE clipboard_history SET content = ?1, source = ?2, timestamp = ?3, updated_at = ?4 WHERE id = ?5",
                 params![item.content, item.source, item.timestamp, item.updated_at, item.id],
             )?;
             Ok(MergeOutcome::Updated {
-                local_updated_at: local,
+                local_updated_at: local_updated,
+                local_content,
             })
         }
         None => {
@@ -1366,24 +1398,28 @@ fn merge_clipboard_item(conn: &Connection, item: &ClipboardItem) -> Result<Merge
 }
 
 fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
-    let local_updated: Option<i64> = conn
+    let local_row: Option<(String, i64)> = conn
         .query_row(
-            "SELECT updated_at FROM error_logs WHERE id = ?1",
+            "SELECT message, updated_at FROM error_logs WHERE id = ?1",
             params![log.id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match local_updated {
-        Some(local) if local >= log.updated_at => Ok(MergeOutcome::Skipped {
-            local_updated_at: local,
-        }),
-        Some(local) => {
+    match local_row {
+        Some((local_content, local_updated)) if local_updated >= log.updated_at => {
+            Ok(MergeOutcome::Skipped {
+                local_updated_at: local_updated,
+                local_content,
+            })
+        }
+        Some((local_content, local_updated)) => {
             conn.execute(
                 "UPDATE error_logs SET source = ?1, message = ?2, stack = ?3, severity = ?4, timestamp = ?5, updated_at = ?6 WHERE id = ?7",
                 params![log.source, log.message, log.stack, log.severity, log.timestamp, log.updated_at, log.id],
             )?;
             Ok(MergeOutcome::Updated {
-                local_updated_at: local,
+                local_updated_at: local_updated,
+                local_content,
             })
         }
         None => {
@@ -1394,6 +1430,37 @@ fn merge_error_log(conn: &Connection, log: &ErrorLog) -> Result<MergeOutcome> {
             Ok(MergeOutcome::Added)
         }
     }
+}
+
+pub fn resolve_conflict(
+    conn: &Connection,
+    conflict: &SyncConflictItem,
+    choice: &str,
+) -> Result<(), String> {
+    let content = match choice {
+        "local" => conflict.local_content.clone(),
+        "remote" => conflict.remote_content.clone(),
+        _ => return Err(format!("Unsupported conflict choice: {}", choice)),
+    };
+    let now = now_millis();
+    match conflict.kind.as_str() {
+        "clipboard" => {
+            conn.execute(
+                "UPDATE clipboard_history SET content = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "log" => {
+            conn.execute(
+                "UPDATE error_logs SET message = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
+    }
+    Ok(())
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -2188,6 +2255,44 @@ mod tests {
         };
         let third = merge_sync_snapshot(&conn, remote_equal).unwrap();
         assert_eq!(third.conflicts.len(), 0);
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_conflict_restores_chosen_side() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-resolve-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "local content", "test").unwrap();
+        let local_updated = clip.updated_at;
+        let remote = SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 1,
+            clipboard: vec![ClipboardItem {
+                id: clip.id.clone(),
+                content: "remote content".to_string(),
+                source: "remote".to_string(),
+                timestamp: local_updated + 1000,
+                updated_at: local_updated + 1000,
+            }],
+            logs: Vec::new(),
+        };
+        let merged = merge_sync_snapshot(&conn, remote).unwrap();
+        let conflict = merged.conflicts[0].clone();
+        assert_eq!(conflict.local_content, "local content");
+        assert_eq!(conflict.remote_content, "remote content");
+
+        resolve_conflict(&conn, &conflict, "local").unwrap();
+        let clips = list_clipboard(&conn).unwrap();
+        assert_eq!(clips[0].content, "local content");
+
+        let err = resolve_conflict(&conn, &conflict, "sideways").unwrap_err();
+        assert!(err.contains("Unsupported conflict choice"), "{}", err);
+
+        resolve_conflict(&conn, &conflict, "remote").unwrap();
+        let clips = list_clipboard(&conn).unwrap();
+        assert_eq!(clips[0].content, "remote content");
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -1222,6 +1222,37 @@ try {
   }
   results.remoteSync = remoteSyncCheck;
 
+  const syncResolveCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-sync-conflict-item]");
+      if (item) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "no conflict item" };
+    const remoteBtn = item.querySelector('[data-resolve-choice="remote"]');
+    if (!remoteBtn) return { ok: false, reason: "no keep remote button" };
+    remoteBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const body = document.body.innerText;
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      resolved =
+        msg.includes("Resolved clipboard conflict") &&
+        body.includes("sprint 38 conflict override") &&
+        badgeGone;
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: resolved, resolved };
+  })()`);
+  if (!syncResolveCheck.ok) {
+    throw new Error(`sync resolve assertion failed: ${JSON.stringify(syncResolveCheck)}`);
+  }
+  results.syncResolve = syncResolveCheck;
+
   const autoSyncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const toggle = document.querySelector('[data-auto-sync]');

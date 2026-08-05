@@ -256,3 +256,14 @@ watch 场景与全量扫描对齐 ignore 语义。新增 `start_vault_watch_ex(v
 - 两端时间戳相等 → 不产生冲突。
 
 表结构与数据迁移不变；该字段只影响同步结果协议与 System UI 展示。
+
+## Sprint 39：同步冲突人工仲裁
+
+`SyncConflictItem` 新增 `localContent` / `remoteContent`，`merge_sync_snapshot` 在产生冲突时保留双方完整内容，作为人工仲裁依据。
+
+新增仲裁逻辑：
+
+- `resolve_conflict(conn, conflict, choice)`：`"local"` / `"remote"` 将对应内容写回 `clipboard_history.content` 或 `error_logs.message`，并更新 `updated_at` 为当前时间戳，使该裁决在下次同步中胜出；未知 choice 返回明确错误。
+- Tauri 命令 `resolve_sync_conflict(conflict, choice)`：透传冲突明细与选择，返回 `Resolved <kind> conflict <id> with <choice>`。
+
+浏览器 fallback 与 Rust 行为一致：按 kind 写回内容并更新时间戳。表结构与数据迁移不变。

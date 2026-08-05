@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 39
+
+### What went well?
+
+- 冲突仲裁闭环：`SyncConflictItem` 携带 local / remote 完整内容，`resolve_conflict` 按 choice 写回剪贴板/日志并刷新 `updated_at`，未知 choice 明确报错。
+- System Sync snapshot 卡片新增逐条冲突列表与 Keep local / Keep remote 按钮，仲裁后刷新剪贴板并移除该冲突。
+- 验证覆盖：`cargo test --lib` 39/39，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 Pull → Keep remote → badge 消失与结果可见断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 浏览器 fallback 需要先保存 local / remote 快照再写回，避免覆盖后丢失仲裁依据；前端按 `localContent` / `remoteContent` 选择内容，与 Rust 语义保持一致。
+
+### Action Items
+
+- 下一 Sprint 候选：冲突明细持久化与历史仲裁记录、Vault 索引并发数可配置、watch 状态 ignore 列表持久化。
+- 后续改动同步仲裁时，保留 Keep local / Keep remote 两条 UI 断言与 Rust 仲裁单测。
+
 ## Sprint 38
 
 ### What went well?
