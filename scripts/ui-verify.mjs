@@ -6463,6 +6463,123 @@ try {
     if (moaServer) moaServer.close();
   }
 
+  let fallbackServer = null;
+  try {
+    fallbackServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const route = req.url ?? '';
+      if (route.includes('fallback-a')) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"primary down"}');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      res.write(`data: {"choices":[{"delta":{"content":"fallback answer ok"}}]}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    await new Promise((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const fallbackPort = fallbackServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "fb-a",
+          name: "Failing",
+          baseUrl: "http://127.0.0.1:${fallbackPort}/v1/fallback-a",
+          apiKey: "test-key",
+          model: "failing-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "fb-b",
+          name: "Healthy",
+          baseUrl: "http://127.0.0.1:${fallbackPort}/v1/fallback-b",
+          apiKey: "test-key",
+          model: "healthy-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const autoFallback = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const singleBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "Single");
+      if (!singleBtn) return { ok: false, reason: "single button missing" };
+      singleBtn.click();
+      await sleep(150);
+      const agentSelect = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (agentSelect) {
+        const agentSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        agentSetter.call(agentSelect, "");
+        agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await sleep(150);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "auto fallback check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let marker = false;
+      let reply = false;
+      let chain = "";
+      for (let i = 0; i < 50; i += 1) {
+        const body = document.body.innerText;
+        marker = marker || body.includes("auto fallback: Failing → Healthy");
+        reply = reply || body.includes("fallback answer ok");
+        chain = document.querySelector("[data-ai-fallback-chain]")?.textContent ?? "";
+        if (marker && reply && chain.includes("Failing → Healthy")) break;
+        await sleep(100);
+      }
+      const inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      return {
+        ok:
+          marker &&
+          reply &&
+          chain.includes("Failing → Healthy") &&
+          inspectorText.includes("FALLBACK CHAIN") &&
+          inspectorText.includes("Failing → Healthy"),
+        marker,
+        reply,
+        chain,
+        inspectorShowsChain:
+          inspectorText.includes("FALLBACK CHAIN") &&
+          inspectorText.includes("Failing → Healthy"),
+        inspectorText: inspectorText.slice(0, 200),
+      };
+    })()`);
+    if (!autoFallback.ok) {
+      throw new Error(`AI Studio auto fallback assertion failed: ${JSON.stringify(autoFallback)}`);
+    }
+    results.autoFallback = autoFallback;
+  } finally {
+    if (fallbackServer) fallbackServer.close();
+  }
+
+  await clickDock('System');
   const webhookSystemEvents = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const now = Date.now();

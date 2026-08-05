@@ -2640,6 +2640,18 @@ struct StreamChunk {
     cancelled: bool,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamFallback {
+    id: String,
+    from: String,
+    to: String,
+}
+
+fn auto_fallback_marker(from: &str, to: &str) -> String {
+    format!("\n[auto fallback: {} → {}]\n", from, to)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoaConsensus {
@@ -3000,6 +3012,7 @@ async fn stream_ai_message(
     messages: Vec<Value>,
     moa: bool,
     run_id: String,
+    auto_fallback: bool,
 ) -> Result<(), String> {
     let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
     let mut selected: Vec<db::Provider> = {
@@ -3013,7 +3026,9 @@ async fn stream_ai_message(
         }
         selected
     };
-    selected.sort_by_key(|provider| std::cmp::Reverse(provider.priority));
+    if !auto_fallback {
+        selected.sort_by_key(|provider| std::cmp::Reverse(provider.priority));
+    }
     if selected.is_empty() {
         return Err("No providers configured".to_string());
     }
@@ -3108,49 +3123,97 @@ async fn stream_ai_message(
         }
         Ok(())
     } else {
-        let app_clone = app.clone();
-        let run_id_clone = run_id.clone();
-        let provider = selected.into_iter().next().unwrap();
-        let streamed: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
-            if is_ollama_provider(&provider.name, &provider.base_url) {
-                let model = if provider.model.is_empty() {
-                    "qwen2.5:3b".to_string()
-                } else {
-                    provider.model.clone()
-                };
-                stream_ollama(
-                    &app_clone,
-                    &run_id_clone,
-                    &provider.base_url,
-                    &messages_json,
-                    &model,
-                )
-            } else {
-                let key_ref = if provider.api_key.is_empty() {
-                    "OPENAI_API_KEY".to_string()
-                } else {
-                    provider.api_key.clone()
-                };
-                let api_key = get_api_key(&key_ref)?;
-                let model = if provider.model.is_empty() {
-                    "gpt-4o-mini".to_string()
-                } else {
-                    provider.model.clone()
-                };
-                stream_openai_compatible(
-                    &app_clone,
-                    &run_id_clone,
-                    &provider.base_url,
-                    &api_key,
-                    &messages_json,
-                    &model,
-                )
+        let providers = if auto_fallback {
+            selected
+        } else {
+            selected.into_iter().take(1).collect::<Vec<_>>()
+        };
+        let total = providers.len();
+        let mut last_error: Option<String> = None;
+        let mut result: Result<(), String> = Err("All providers failed".to_string());
+        for index in 0..total {
+            let provider = providers[index].clone();
+            let provider_name = provider.name.clone();
+            let next_name = providers.get(index + 1).map(|next| next.name.clone());
+            let app_clone = app.clone();
+            let run_id_clone = run_id.clone();
+            let messages_json = messages_json.clone();
+            let streamed: Result<String, String> =
+                tauri::async_runtime::spawn_blocking(move || {
+                    if is_ollama_provider(&provider.name, &provider.base_url) {
+                        let model = if provider.model.is_empty() {
+                            "qwen2.5:3b".to_string()
+                        } else {
+                            provider.model.clone()
+                        };
+                        stream_ollama(
+                            &app_clone,
+                            &run_id_clone,
+                            &provider.base_url,
+                            &messages_json,
+                            &model,
+                        )
+                    } else {
+                        let key_ref = if provider.api_key.is_empty() {
+                            "OPENAI_API_KEY".to_string()
+                        } else {
+                            provider.api_key.clone()
+                        };
+                        let api_key = get_api_key(&key_ref)?;
+                        let model = if provider.model.is_empty() {
+                            "gpt-4o-mini".to_string()
+                        } else {
+                            provider.model.clone()
+                        };
+                        stream_openai_compatible(
+                            &app_clone,
+                            &run_id_clone,
+                            &provider.base_url,
+                            &api_key,
+                            &messages_json,
+                            &model,
+                        )
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            match streamed {
+                Ok(_) => {
+                    result = Ok(());
+                    break;
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                    if let Some(next_name) = next_name {
+                        if auto_fallback {
+                            let marker = auto_fallback_marker(&provider_name, &next_name);
+                            let _ = app.emit(
+                                "stream-chunk",
+                                StreamChunk {
+                                    id: run_id.clone(),
+                                    delta: marker,
+                                    done: false,
+                                    error: None,
+                                    cancelled: false,
+                                },
+                            );
+                            let _ = app.emit(
+                                "stream-fallback",
+                                StreamFallback {
+                                    id: run_id.clone(),
+                                    from: provider_name,
+                                    to: next_name,
+                                },
+                            );
+                        }
+                    }
+                }
             }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        let _ = streamed?;
-        Ok(())
+        }
+        if result.is_err() {
+            result = Err(last_error.unwrap_or_else(|| "All providers failed".to_string()));
+        }
+        result
     };
 
     let error = done.err().map(|e| e.to_string());
@@ -5258,6 +5321,14 @@ mod tests {
         assert!(!state.is_cancelled("run-2"));
         state.clear("run-1");
         assert!(!state.is_cancelled("run-1"));
+    }
+
+    #[test]
+    fn auto_fallback_marker_links_provider_names() {
+        assert_eq!(
+            auto_fallback_marker("Alpha", "Beta"),
+            "\n[auto fallback: Alpha → Beta]\n"
+        );
     }
 
     #[test]

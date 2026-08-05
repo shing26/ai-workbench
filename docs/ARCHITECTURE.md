@@ -585,3 +585,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `src/lib/searchHistory.ts`：`loadSearchHistory` / `recordSearchHistory` / `clearSearchHistory` / `summarizeSearchHits`，查询去重、最多保留 8 条，localStorage key 为 `ai-workbench:session-search-history:v1`。
 - AI Studio 会话搜索完成后自动记录历史，Recent 标签可点击回填查询，清空按钮同时清理 DOM 与 localStorage；搜索栏下方 `data-session-search-stats` 展示总命中、会话数、title/model/message、拼音命中与平均分。
 - `verify:ui` / `verify:preview` 新增 `sessionSearchHistoryStats` lane：覆盖 `question` 命中多会话消息、历史可见、点击回填与清空生效；`sessionManagement` 的 `emptyState` 改为 waitFor 轮询，消除偶发异步时序。
+
+## Sprint 109：多 Provider 自动降级
+
+- Rust `stream_ai_message` 新增 `auto_fallback`：非 MOA 分支按 `provider_ids` 顺序逐个尝试，失败时 emit `stream-fallback` 事件并追加 `[auto fallback: A → B]` 文本块；`auto_fallback_marker` 提供统一标记格式。
+- `src/lib/db.ts` 新增 `StreamFallback` / `listenStreamFallbacks` / `emitLocalStreamFallback`，浏览器 fallback 与 Tauri 使用同一事件模型；`sendAiMessageStream` 在 `autoFallback` 下按传入顺序降级，全部失败才返回最终错误。
+- AI Studio Single / Auto 模式传入全部 active Provider，头部新增 `data-ai-fallback-chain` 徽标，Inspector 新增 `Fallback chain` 区块；`verify:ui` / `verify:preview` 新增 `autoFallback` lane，用 500 + SSE 双 mock 断言回退链。
