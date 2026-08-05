@@ -117,6 +117,12 @@ export default function AIStudioView() {
   const teamResultsRef = useRef(new Map<string, string>());
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
+  const [ragConfirmMode, setRagConfirmMode] = useState(false);
+  const [pendingSend, setPendingSend] = useState<{
+    text: string;
+    hits: db.RagSearchResult[];
+  } | null>(null);
+  const [pendingSelected, setPendingSelected] = useState<Set<string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [streamStatus, setStreamStatus] = useState<"idle" | "connecting" | "streaming" | "error" | "stopped">("idle");
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -143,6 +149,7 @@ export default function AIStudioView() {
   const sortedCustomPrompts = [...customPrompts].sort(
     (a, b) => (a.order ?? 0) - (b.order ?? 0),
   );
+  const pendingSelectedCount = pendingSelected?.size ?? 0;
   const [recapReady, setRecapReady] = useState(false);
   const [recapSaving, setRecapSaving] = useState(false);
   const [recapSaveResult, setRecapSaveResult] = useState<string | null>(null);
@@ -444,6 +451,8 @@ export default function AIStudioView() {
     setStreamError(null);
     setInput("");
     setRagHits([]);
+    setPendingSend(null);
+    setPendingSelected(null);
     setRecapReady(false);
     setRecapSaveResult(null);
   };
@@ -464,6 +473,8 @@ export default function AIStudioView() {
     setStreamError(null);
     setInput("");
     setRagHits([]);
+    setPendingSend(null);
+    setPendingSelected(null);
   };
 
   const startRename = (session: db.Session) => {
@@ -718,20 +729,8 @@ export default function AIStudioView() {
     openInspector(traceTitle, sections);
   };
 
-  const sendText = async (text: string) => {
-    if (!text.trim() || busy) return;
-    setRecapReady(false);
-    setRecapSaveResult(null);
+  const dispatchSend = async (text: string, hits: db.RagSearchResult[]) => {
     setBusy(true);
-    let hits: db.RagSearchResult[] = [];
-    if (useRag) {
-      try {
-        hits = await db.searchThoughts(text, 5);
-      } catch {
-        hits = [];
-      }
-    }
-    setRagHits(hits);
     if (teamMode) {
       await sendTeam(text, hits);
       return;
@@ -753,6 +752,52 @@ export default function AIStudioView() {
     await db.saveChatMessage(session.id, "user", text, messageId);
     const history: Message[] = next.slice(0, next.length - 1);
     await runStream(history, runId, hits);
+  };
+
+  const sendText = async (text: string) => {
+    if (!text.trim() || busy) return;
+    setRecapReady(false);
+    setRecapSaveResult(null);
+    let hits: db.RagSearchResult[] = [];
+    if (useRag) {
+      try {
+        hits = await db.searchThoughts(text, 5);
+      } catch {
+        hits = [];
+      }
+    }
+    setRagHits(hits);
+    if (useRag && ragConfirmMode && hits.length > 0) {
+      setPendingSend({ text, hits });
+      setPendingSelected(new Set(hits.map((hit) => hit.id)));
+      return;
+    }
+    await dispatchSend(text, hits);
+  };
+
+  const toggleRagHit = (id: string) => {
+    setPendingSelected((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const confirmRagSend = async () => {
+    if (!pendingSend || !pendingSelected) return;
+    const { text, hits } = pendingSend;
+    const selected = hits.filter((hit) => pendingSelected.has(hit.id));
+    setPendingSend(null);
+    setPendingSelected(null);
+    setRagHits(selected);
+    await dispatchSend(text, selected);
+  };
+
+  const cancelRagSend = () => {
+    setPendingSend(null);
+    setPendingSelected(null);
+    setRagHits([]);
   };
 
   const send = async () => {
@@ -1003,6 +1048,24 @@ export default function AIStudioView() {
           >
             <span className={`h-1.5 w-1.5 rounded-full ${useRag ? "bg-amber-400" : "bg-slate-600"}`} />
             RAG
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={ragConfirmMode}
+            aria-label="Confirm RAG hits before send"
+            data-rag-confirm-mode
+            onClick={() => setRagConfirmMode((value) => !value)}
+            className={`flex h-8 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-[11px] transition-colors ${
+              ragConfirmMode
+                ? "border-violet-500/30 bg-violet-500/10 text-violet-300"
+                : "border-white/10 bg-white/[0.03] text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${ragConfirmMode ? "bg-violet-400" : "bg-slate-600"}`}
+            />
+            Confirm hits
           </button>
         </div>
       </div>
@@ -1369,6 +1432,64 @@ export default function AIStudioView() {
                 {hit.content.replace(/\s+/g, " ").slice(0, 44)}
               </span>
             ))}
+          </div>
+        )}
+        {pendingSend && (
+          <div
+            data-rag-confirm-panel
+            className="mb-2 rounded-xl border border-violet-500/25 bg-violet-500/5 px-2 py-2"
+          >
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="text-[10px] font-medium text-violet-300">
+                Confirm RAG hits
+              </span>
+              <span className="ml-auto rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300">
+                {pendingSelectedCount}/{pendingSend.hits.length} selected
+              </span>
+            </div>
+            <div className="space-y-1">
+              {pendingSend.hits.map((hit) => (
+                <label
+                  key={hit.id}
+                  className="flex items-start gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+                >
+                  <input
+                    type="checkbox"
+                    data-rag-confirm-hit={hit.id}
+                    checked={pendingSelected?.has(hit.id) ?? false}
+                    onChange={() => toggleRagHit(hit.id)}
+                    className="mt-0.5 h-3 w-3 accent-violet-400"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[10px] text-slate-300">
+                      {hit.content.replace(/\s+/g, " ").slice(0, 72)}
+                    </span>
+                    <span className="text-[9px] text-slate-600">
+                      score {hit.score.toFixed(2)}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                data-rag-confirm-send
+                disabled={pendingSelectedCount === 0}
+                onClick={() => void confirmRagSend()}
+                className="flex h-7 items-center rounded-md bg-violet-500/15 px-2 text-[10px] text-violet-300 hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Send with {pendingSelectedCount}
+              </button>
+              <button
+                type="button"
+                data-rag-confirm-cancel
+                onClick={cancelRagSend}
+                className="flex h-7 items-center rounded-md bg-white/5 px-2 text-[10px] text-slate-400 hover:bg-white/10"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
         <div data-quick-prompts className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
