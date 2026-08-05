@@ -540,6 +540,17 @@ pub struct VaultTargetStats {
     pub removed_events: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeFileRecord {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub tags: String,
+    pub vault_path: String,
+    pub indexed_at: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2928,6 +2939,36 @@ pub fn knowledge_index_status(conn: &Connection) -> Result<KnowledgeIndexStatus>
     })
 }
 
+pub fn list_knowledge_files(
+    conn: &Connection,
+    vault_path: Option<&str>,
+    limit: Option<i64>,
+) -> Result<Vec<KnowledgeFileRecord>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, path, title, tags, vault_path, indexed_at FROM knowledge_files
+             WHERE (?1 IS NULL OR vault_path = ?1)
+             ORDER BY indexed_at DESC, path ASC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![vault_path, limit], |row| {
+            Ok(KnowledgeFileRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                title: row.get(2)?,
+                tags: row.get(3)?,
+                vault_path: row.get(4)?,
+                indexed_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<KnowledgeFileRecord>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<RagSearchResult>> {
     let query_tokens = tokenize(query);
     if query_tokens.is_empty() {
@@ -4459,6 +4500,60 @@ mod tests {
         upsert_knowledge_file(&conn, "C:/a/c.md", "C", "", "c", "C:/a").unwrap();
         let stats = vault_target_stats(&conn).unwrap();
         assert_eq!(stats[0].files, 3);
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn knowledge_files_list_filters_by_vault_and_limit() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-files-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+
+        upsert_knowledge_file(&conn, "C:/a/a.md", "A", "#work", "a", "C:/a").unwrap();
+        upsert_knowledge_file(&conn, "C:/a/b.md", "B", "#life", "b", "C:/a").unwrap();
+        upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
+        upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
+            params![1000, "C:/a/a.md"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
+            params![2000, "C:/a/b.md"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
+            params![3000, "D:/b/c.md"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
+            params![4000, "E:/legacy.md"],
+        )
+        .unwrap();
+
+        let all = list_knowledge_files(&conn, None, None).unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].title, "L");
+        assert_eq!(all[0].vault_path, "");
+
+        let c_files = list_knowledge_files(&conn, Some("C:/a"), None).unwrap();
+        assert_eq!(c_files.len(), 2);
+        assert_eq!(c_files[0].title, "B");
+        assert_eq!(c_files[1].title, "A");
+        assert!(c_files.iter().all(|file| file.vault_path == "C:/a"));
+
+        let limited = list_knowledge_files(&conn, None, Some(1)).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].title, "L");
+
+        let legacy = list_knowledge_files(&conn, Some(""), None).unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].path, "E:/legacy.md");
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

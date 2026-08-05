@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 63
+
+### What went well?
+
+- Knowledge 新增 Document status 面板：`list_knowledge_files` 按 vault 过滤并展示每份文档的标题、路径、归属与索引时间，limit clamp 1~200，空路径 legacy 记录不丢失。
+- fallback 按 watch target 前缀推断 vault 归属，与 Rust 目标级语义一致；watch / 索引完成后文档列表自动刷新。
+- 验证覆盖：`cargo test --lib` 70/70，fmt、clippy、build 全绿；两条 lane 的 `knowledgeDocStatus` 的 count / vaults / filterOk / filteredCount 全部命中。
+
+### What went wrong?
+
+- UI 验证首次 seed 用正斜杠路径，fallback 前缀推断按反斜杠匹配导致 vault 归属为空；改用 `C:/vault\\...` 后通过。
+- 模板字符串内路径转义经过 Node 与浏览器两层解析，最初 `\\` 只剩一个反斜杠被浏览器当作非法转义吞掉；补成 `\\\\` 后路径才保留分隔符。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列持久化、git 活动看板、文档缺失 / 过期状态检测、错误日志来源 / 设备组合筛选。
+- 后续扩展文档面板时，保持 fallback 的 vault 前缀推断与 Rust `vault_path` 语义一致。
+
 ## Sprint 62
 
 ### What went well?

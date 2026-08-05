@@ -453,3 +453,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 ## Sprint 62：错误日志趋势与聚合
 
 无表结构变更。`error_log_summary` 在内存中按 `error_logs.updated_at` 的 UTC 日（86400000ms 对齐）或周（周一 00:00）分组，支持可选 `source` / `severity` 过滤；bucket 内按 `error` / `warning` / `info` 拆分计数，bucket 数 <= 62 时补齐缺失区间。浏览器 fallback 在 `ai-workbench:db:v1` 的 `logs` 上执行同一聚合。
+
+## Sprint 63：RAG 文档状态面板
+
+无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

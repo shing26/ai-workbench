@@ -26,6 +26,8 @@ export default function KnowledgeView() {
   const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
   const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
   const [watchEvents, setWatchEvents] = useState<db.VaultWatchEvent[]>([]);
+  const [knowledgeDocs, setKnowledgeDocs] = useState<db.KnowledgeFileRecord[]>([]);
+  const [docVaultFilter, setDocVaultFilter] = useState("all");
   const [expandedTimeline, setExpandedTimeline] = useState<string | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
@@ -57,11 +59,16 @@ export default function KnowledgeView() {
     void db.getVaultWatchStatus().then(setWatchStatus);
     void db.listVaultWatchTargets().then(setVaultTargets);
     void db.listVaultTargetStats().then(setTargetStats);
+    void loadDocs();
     void loadWatchEvents();
   }, []);
 
   const loadWatchEvents = async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
+  };
+
+  const loadDocs = async (vaultPath?: string) => {
+    setKnowledgeDocs(await db.listKnowledgeFiles(vaultPath, 100));
   };
 
   useEffect(() => {
@@ -93,6 +100,7 @@ export default function KnowledgeView() {
         if (disposed) return;
         setWatchStatus(status);
         void loadWatchEvents();
+        void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
         void db.getKnowledgeIndexStatus().then((next) => {
           if (!disposed) setVaultStatus(next);
         });
@@ -121,6 +129,7 @@ export default function KnowledgeView() {
           setLastIgnored(progress.ignored);
           setLastConcurrencyUsed(progress.concurrencyUsed);
           void loadTargets();
+          void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
           void db.getKnowledgeIndexStatus().then(setVaultStatus);
           void db.getRagIndexStatus().then(setIndexStatus);
         }
@@ -217,6 +226,11 @@ export default function KnowledgeView() {
     setTargetStats(await db.listVaultTargetStats());
   };
 
+  const changeDocVaultFilter = (vaultPath: string) => {
+    setDocVaultFilter(vaultPath);
+    void loadDocs(vaultPath === "all" ? undefined : vaultPath);
+  };
+
   const toggleWatch = async () => {
     const currentWatching =
       watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
@@ -227,6 +241,7 @@ export default function KnowledgeView() {
     setWatchStatus(next);
     await loadTargets();
     await loadWatchEvents();
+    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -239,6 +254,7 @@ export default function KnowledgeView() {
     setWatchStatus(next);
     await loadTargets();
     await loadWatchEvents();
+    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -247,6 +263,7 @@ export default function KnowledgeView() {
     await db.deleteVaultWatchTarget(target.path);
     await loadTargets();
     await loadWatchEvents();
+    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
     if (expandedTimeline === target.path) setExpandedTimeline(null);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
@@ -644,6 +661,72 @@ export default function KnowledgeView() {
             })}
           </div>
         )}
+        <div
+          data-knowledge-docs
+          className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-3"
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] font-medium text-slate-300">
+              Document status
+            </span>
+            <span
+              data-knowledge-docs-count
+              className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
+            >
+              {knowledgeDocs.length} docs
+            </span>
+            <select
+              data-knowledge-doc-filter
+              value={docVaultFilter}
+              onChange={(e) => changeDocVaultFilter(e.target.value)}
+              aria-label="Document vault filter"
+              className="ml-auto h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+            >
+              <option value="all">All vaults</option>
+              {vaultTargets.map((target) => (
+                <option key={target.path} value={target.path}>
+                  {target.path}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="max-h-44 space-y-1 overflow-y-auto">
+            {knowledgeDocs.length === 0 && (
+              <div className="py-3 text-center text-[9px] text-slate-600">
+                No indexed documents
+              </div>
+            )}
+            {knowledgeDocs.map((doc) => (
+              <div
+                key={doc.id}
+                data-knowledge-doc
+                data-knowledge-doc-vault={doc.vaultPath}
+                data-knowledge-doc-path={doc.path}
+                data-knowledge-doc-title={doc.title}
+                className="flex items-start gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[10px] text-slate-300">
+                    {doc.title || doc.path}
+                  </span>
+                  <span className="block truncate text-[8px] text-slate-600">
+                    {doc.path}
+                  </span>
+                </span>
+                {doc.vaultPath && (
+                  <span className="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[8px] text-sky-300">
+                    {doc.vaultPath}
+                  </span>
+                )}
+                <span className="shrink-0 text-[8px] text-slate-600">
+                  {doc.indexedAt > 0
+                    ? new Date(doc.indexedAt).toLocaleDateString("zh-CN")
+                    : "n/a"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       </BentoCard>
 
       <div className="grid min-h-0 flex-1 grid-cols-12 gap-4">
