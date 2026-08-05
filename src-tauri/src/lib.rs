@@ -2335,6 +2335,45 @@ fn spawn_provider_heartbeat_monitor(app: tauri::AppHandle) {
     });
 }
 
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn spawn_webhook_scheduler(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(1));
+        let Some(state) = app.try_state::<db::Db>() else {
+            continue;
+        };
+        let Ok(conn) = state.0.lock() else {
+            continue;
+        };
+        let Ok(due) = db::list_due_webhook_rules(&conn, now_millis()) else {
+            continue;
+        };
+        drop(conn);
+        for rule in due {
+            let token = if rule.token.trim().is_empty() {
+                None
+            } else {
+                Some(rule.token.as_str())
+            };
+            let outcome = deliver_webhook_http(&rule.url, &rule.payload, &rule.method, token);
+            let (status, message) = match outcome {
+                Ok(result) => (result.status as i64, result.message),
+                Err(err) => (0, format!("Webhook delivery failed: {}", err)),
+            };
+            let Ok(conn) = state.0.lock() else {
+                continue;
+            };
+            let _ = db::mark_webhook_rule_run(&conn, &rule.id, status, &message);
+        }
+    });
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StreamChunk {
@@ -3632,6 +3671,85 @@ fn deliver_webhook(
     )
 }
 
+fn run_webhook_rule_inner(
+    conn: &rusqlite::Connection,
+    rule_id: &str,
+) -> Result<WebhookDeliveryResult, String> {
+    let rule = db::get_webhook_rule(conn, rule_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Webhook rule not found".to_string())?;
+    let token = if rule.token.trim().is_empty() {
+        None
+    } else {
+        Some(rule.token.as_str())
+    };
+    let result = deliver_webhook_http(&rule.url, &rule.payload, &rule.method, token)?;
+    db::mark_webhook_rule_run(conn, &rule.id, result.status as i64, &result.message)
+        .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn list_webhook_rules(state: State<'_, db::Db>) -> Result<Vec<db::WebhookRule>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_webhook_rules(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_webhook_rule(
+    state: State<'_, db::Db>,
+    name: String,
+    url: String,
+    payload: String,
+    method: Option<String>,
+    token: Option<String>,
+    interval_seconds: i64,
+) -> Result<db::WebhookRule, String> {
+    if name.trim().is_empty() {
+        return Err("Rule name is required".to_string());
+    }
+    if url.trim().is_empty() {
+        return Err("Webhook URL is required".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_webhook_rule(
+        &conn,
+        name.trim(),
+        url.trim(),
+        &payload,
+        method.as_deref().unwrap_or("POST"),
+        token.as_deref().unwrap_or(""),
+        interval_seconds.max(5),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_webhook_rule_enabled(
+    state: State<'_, db::Db>,
+    id: String,
+    enabled: bool,
+) -> Result<db::WebhookRule, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_webhook_rule_enabled(&conn, &id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_webhook_rule(&conn, &id).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Deleted webhook rule {}",
+        id.chars().take(8).collect::<String>()
+    ))
+}
+
+#[tauri::command]
+fn run_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<WebhookDeliveryResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    run_webhook_rule_inner(&conn, &id)
+}
+
 #[tauri::command]
 fn push_sync_snapshot(
     state: State<'_, db::Db>,
@@ -3913,6 +4031,7 @@ pub fn run() {
             restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
+            spawn_webhook_scheduler(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4024,6 +4143,11 @@ pub fn run() {
             check_provider_health,
             run_provider_heartbeat,
             deliver_webhook,
+            list_webhook_rules,
+            create_webhook_rule,
+            set_webhook_rule_enabled,
+            delete_webhook_rule,
+            run_webhook_rule,
             run_provider_stream_smoke_test
         ])
         .run(tauri::generate_context!())
@@ -5411,5 +5535,45 @@ mod tests {
         assert_eq!(result.status, 400);
         assert!(result.message.contains("HTTP 400"), "{}", result.message);
         assert!(result.message.contains("bad request"), "{}", result.message);
+    }
+
+    #[test]
+    fn run_webhook_rule_delivers_and_records_status() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request = read_http_request_until(&mut stream, "scheduled");
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-webhook-rule-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let rule = db::create_webhook_rule(
+            &conn,
+            "Scheduled",
+            &format!("http://{}", addr),
+            r#"{"event":"scheduled"}"#,
+            "POST",
+            "rule-token",
+            60,
+        )
+        .unwrap();
+        let result = run_webhook_rule_inner(&conn, &rule.id).unwrap();
+        server.join().unwrap();
+        assert!(result.ok);
+        assert_eq!(result.status, 200);
+        let after = db::get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after.last_status, 200);
+        assert!(
+            after.last_message.contains("HTTP 200"),
+            "{}",
+            after.last_message
+        );
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 }

@@ -1,5 +1,21 @@
 # Sprint Retrospective
 
+## Sprint 84
+
+### What went well?
+
+- 新增 `webhook_rules` 表与完整 CRUD / due 判定 / 状态回写；`spawn_webhook_scheduler` 后台每秒检查到期规则并真实投递。
+- System Webhook delivery 卡片新增 Scheduled rules 区；`db.ts` fallback 持久化到 `ai-workbench:webhook-rules:v1`；`cargo test --lib` 90/90，fmt、clippy、build 全绿。
+- `verify:ui` / `verify:preview` 的 `webhookRules` 均为 true，创建 / 持久化 / 开关 / Run now / 删除全链路通过。
+
+### What went wrong?
+
+- 浏览器 fallback 不跑后台调度线程，定时行为由 Rust `list_due_webhook_rules` 单测覆盖。
+
+### Action Items
+
+- 下一 Sprint 候选：暂存 / 未暂存分组与提交前 lint 门禁、AI 复盘结果一键保存为知识笔记、多端同步自定义 prompt 与使用次数。
+
 ## Sprint 83
 
 ### What went well?

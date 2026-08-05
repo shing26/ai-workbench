@@ -397,3 +397,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Rust 新增 `WebhookDeliveryResult { ok, status, durationMs, message }` 与 `deliver_webhook(url, payload, method?, token?)` Tauri 命令：默认 POST，支持 POST / PUT / PATCH / GET / DELETE；POST / PUT / PATCH 发送 `Content-Type: application/json`，token 非空时带 `Authorization: Bearer`，payload 必须是合法 JSON。
 - `db.ts` 新增 `WebhookDeliveryResult` 与 `deliverWebhook`，浏览器 fallback 返回确定性 `HTTP 200` mock；System 视图新增 Webhook delivery 卡片（`data-webhook-deliver` / `data-webhook-result`）。
 - `verify:ui` / `verify:preview` 新增 `webhookDelivery` lane；Rust 本地 TCP 单测覆盖真实 POST、JSON body、Authorization header 与非 2xx 状态回显。
+
+## Sprint 84：Webhook 定时器 / 触发器规则
+
+- 新增 `webhook_rules` 表与 `WebhookRule` 数据模型；`list_webhook_rules` / `create_webhook_rule` / `set_webhook_rule_enabled` / `delete_webhook_rule` / `get_webhook_rule` / `list_due_webhook_rules` / `mark_webhook_rule_run` 覆盖 CRUD、due 判定与状态回写。
+- 新增 Tauri 命令并启动 `spawn_webhook_scheduler` 后台线程：每秒检查 enabled 规则，`now - last_run_at >= interval_seconds * 1000` 时真实投递并写回 `last_run_at / last_status / last_message`。
+- `db.ts` 新增 `WebhookRule` 与 CRUD / `runWebhookRule`，fallback 持久化到 `ai-workbench:webhook-rules:v1`；System Webhook delivery 卡片新增 Scheduled rules 区（创建 / 开关 / Run now / 删除）。
+- `verify:ui` / `verify:preview` 新增 `webhookRules` lane；Rust 单测覆盖 CRUD、due 选择与真实投递状态回写。

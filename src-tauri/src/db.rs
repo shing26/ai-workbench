@@ -211,6 +211,22 @@ CREATE TABLE IF NOT EXISTS sync_audit_log (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at DESC);
+CREATE TABLE IF NOT EXISTS webhook_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    method TEXT NOT NULL DEFAULT 'POST',
+    token TEXT NOT NULL DEFAULT '',
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    last_run_at INTEGER NOT NULL DEFAULT 0,
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -589,6 +605,24 @@ pub struct VaultIndexQueueRecord {
     pub last_error: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookRule {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub payload: String,
+    pub method: String,
+    pub token: String,
+    pub interval_seconds: i64,
+    pub enabled: bool,
+    pub last_run_at: i64,
+    pub last_status: i64,
+    pub last_message: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -617,6 +651,123 @@ fn today_local() -> String {
 
 fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+const WEBHOOK_RULE_COLUMNS: &str =
+    "id, name, url, payload, method, token, interval_seconds, enabled, last_run_at, \
+     last_status, last_message, created_at, updated_at";
+
+fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
+    Ok(WebhookRule {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        url: row.get(2)?,
+        payload: row.get(3)?,
+        method: row.get(4)?,
+        token: row.get(5)?,
+        interval_seconds: row.get(6)?,
+        enabled: row.get::<_, i64>(7)? != 0,
+        last_run_at: row.get(8)?,
+        last_status: row.get(9)?,
+        last_message: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+pub fn get_webhook_rule(conn: &Connection, id: &str) -> Result<Option<WebhookRule>> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM webhook_rules WHERE id = ?1",
+            WEBHOOK_RULE_COLUMNS
+        ),
+        params![id],
+        map_webhook_rule,
+    )
+    .optional()
+}
+
+pub fn list_webhook_rules(conn: &Connection) -> Result<Vec<WebhookRule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM webhook_rules ORDER BY created_at ASC",
+        WEBHOOK_RULE_COLUMNS
+    ))?;
+    let rows = stmt.query_map([], map_webhook_rule)?;
+    rows.collect()
+}
+
+pub fn create_webhook_rule(
+    conn: &Connection,
+    name: &str,
+    url: &str,
+    payload: &str,
+    method: &str,
+    token: &str,
+    interval_seconds: i64,
+) -> Result<WebhookRule> {
+    let now = now_millis();
+    let id = uid();
+    let method = if method.trim().is_empty() {
+        "POST".to_string()
+    } else {
+        method.trim().to_uppercase()
+    };
+    let payload = if payload.trim().is_empty() {
+        "{}".to_string()
+    } else {
+        payload.trim().to_string()
+    };
+    let interval = interval_seconds.max(5);
+    conn.execute(
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, interval_seconds, enabled, last_run_at, last_status, last_message, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 0, 0, '', ?8, ?8)",
+        params![id, name, url, payload, method, token, interval, now],
+    )?;
+    get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<WebhookRule> {
+    let updated = conn.execute(
+        "UPDATE webhook_rules SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+        params![enabled as i64, now_millis(), id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_webhook_rule(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_webhook_rule(conn: &Connection, id: &str) -> Result<()> {
+    let removed = conn.execute("DELETE FROM webhook_rules WHERE id = ?1", params![id])?;
+    if removed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+pub fn list_due_webhook_rules(conn: &Connection, now_ms: i64) -> Result<Vec<WebhookRule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM webhook_rules
+         WHERE enabled = 1 AND (last_run_at = 0 OR ?1 - last_run_at >= interval_seconds * 1000)
+         ORDER BY last_run_at ASC",
+        WEBHOOK_RULE_COLUMNS
+    ))?;
+    let rows = stmt.query_map(params![now_ms], map_webhook_rule)?;
+    rows.collect()
+}
+
+pub fn mark_webhook_rule_run(
+    conn: &Connection,
+    id: &str,
+    status: i64,
+    message: &str,
+) -> Result<()> {
+    let now = now_millis();
+    conn.execute(
+        "UPDATE webhook_rules SET last_run_at = ?1, last_status = ?2, last_message = ?3, updated_at = ?1 WHERE id = ?4",
+        params![now, status, message, id],
+    )?;
+    Ok(())
 }
 
 pub fn init_connection(path: &Path) -> Result<Connection> {
@@ -5101,5 +5252,44 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn webhook_rules_crud_and_due_selection() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let now = now_millis();
+        let rule = create_webhook_rule(
+            &conn,
+            "Daily sync",
+            "https://example.test/hook",
+            "{\"event\":\"daily\"}",
+            "POST",
+            "secret-token",
+            60,
+        )
+        .unwrap();
+        assert!(rule.enabled);
+        assert_eq!(rule.interval_seconds, 60);
+        assert_eq!(rule.method, "POST");
+        assert_eq!(rule.token, "secret-token");
+
+        let due = list_due_webhook_rules(&conn, now).unwrap();
+        assert!(due.iter().any(|r| r.id == rule.id));
+
+        mark_webhook_rule_run(&conn, &rule.id, 200, "HTTP 200 delivered").unwrap();
+        let after = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after.last_status, 200);
+        assert!(after.last_message.contains("HTTP 200"));
+        let not_due = list_due_webhook_rules(&conn, now + 1000).unwrap();
+        assert!(!not_due.iter().any(|r| r.id == rule.id));
+
+        set_webhook_rule_enabled(&conn, &rule.id, false).unwrap();
+        let disabled = list_due_webhook_rules(&conn, now + 10_000_000).unwrap();
+        assert!(!disabled.iter().any(|r| r.id == rule.id));
+
+        delete_webhook_rule(&conn, &rule.id).unwrap();
+        assert!(get_webhook_rule(&conn, &rule.id).unwrap().is_none());
     }
 }

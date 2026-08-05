@@ -341,6 +341,22 @@ export type WebhookDeliveryResult = {
   message: string;
 };
 
+export type WebhookRule = {
+  id: string;
+  name: string;
+  url: string;
+  payload: string;
+  method: string;
+  token: string;
+  intervalSeconds: number;
+  enabled: boolean;
+  lastRunAt: number;
+  lastStatus: number;
+  lastMessage: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -514,6 +530,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 }
 
 const makeId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}`);
+const WEBHOOK_RULES_LS_KEY = "ai-workbench:webhook-rules:v1";
 
 function emptyShape(): LocalShape {
   return {
@@ -3294,6 +3311,106 @@ export async function deliverWebhook(
     durationMs: 12,
     message: "HTTP 200 delivered",
   };
+}
+
+function readWebhookRules(): WebhookRule[] {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_RULES_LS_KEY);
+    return raw ? (JSON.parse(raw) as WebhookRule[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWebhookRules(rules: WebhookRule[]) {
+  localStorage.setItem(WEBHOOK_RULES_LS_KEY, JSON.stringify(rules));
+}
+
+export async function listWebhookRules(): Promise<WebhookRule[]> {
+  if (isTauri()) return invoke<WebhookRule[]>("list_webhook_rules");
+  return readWebhookRules();
+}
+
+export async function createWebhookRule(
+  name: string,
+  url: string,
+  payload: string,
+  method?: string,
+  token?: string,
+  intervalSeconds = 60,
+): Promise<WebhookRule> {
+  if (isTauri()) {
+    return invoke<WebhookRule>("create_webhook_rule", {
+      name,
+      url,
+      payload,
+      method: method?.trim() ? method.trim().toUpperCase() : null,
+      token: token?.trim() ? token.trim() : null,
+      intervalSeconds: Math.max(5, intervalSeconds),
+    });
+  }
+  const now = Date.now();
+  const rule: WebhookRule = {
+    id: makeId(),
+    name,
+    url,
+    payload: payload.trim() ? payload.trim() : "{}",
+    method: method?.trim().toUpperCase() || "POST",
+    token: token?.trim() || "",
+    intervalSeconds: Math.max(5, intervalSeconds),
+    enabled: true,
+    lastRunAt: 0,
+    lastStatus: 0,
+    lastMessage: "",
+    createdAt: now,
+    updatedAt: now,
+  };
+  writeWebhookRules([...readWebhookRules(), rule]);
+  return rule;
+}
+
+export async function setWebhookRuleEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<WebhookRule> {
+  if (isTauri()) {
+    return invoke<WebhookRule>("set_webhook_rule_enabled", { id, enabled });
+  }
+  const rules = readWebhookRules();
+  const rule = rules.find((r) => r.id === id);
+  if (!rule) throw new Error("Webhook rule not found");
+  rule.enabled = enabled;
+  rule.updatedAt = Date.now();
+  writeWebhookRules(rules);
+  return rule;
+}
+
+export async function deleteWebhookRule(id: string): Promise<string> {
+  if (isTauri()) return invoke<string>("delete_webhook_rule", { id });
+  const rules = readWebhookRules();
+  const next = rules.filter((r) => r.id !== id);
+  if (next.length === rules.length) throw new Error("Webhook rule not found");
+  writeWebhookRules(next);
+  return `Deleted webhook rule ${id.slice(0, 8)}`;
+}
+
+export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult> {
+  if (isTauri()) return invoke<WebhookDeliveryResult>("run_webhook_rule", { id });
+  const rules = readWebhookRules();
+  const rule = rules.find((r) => r.id === id);
+  if (!rule) throw new Error("Webhook rule not found");
+  const result: WebhookDeliveryResult = {
+    ok: true,
+    status: 200,
+    durationMs: 12,
+    message: "HTTP 200 delivered",
+  };
+  rule.lastRunAt = Date.now();
+  rule.lastStatus = result.status;
+  rule.lastMessage = result.message;
+  rule.updatedAt = Date.now();
+  writeWebhookRules(rules);
+  return result;
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {
