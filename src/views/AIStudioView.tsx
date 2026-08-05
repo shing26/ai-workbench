@@ -210,7 +210,9 @@ export default function AIStudioView() {
   const retryTargetRef = useRef<Message | null>(null);
   const activeProvider =
     providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
-  const activeProviders = providers.filter((p) => p.isActive);
+  const activeProviders = [...providers.filter((p) => p.isActive)].sort(
+    (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
+  );
   const moaProviders = activeProviders.slice(0, 3);
   const teamAgents = teamMode
     ? agents.filter((a) => a.departmentId === teamDeptId && a.isActive).slice(0, 3)
@@ -745,12 +747,9 @@ export default function AIStudioView() {
     let routedName: string | null = null;
     let fallbackFrom: string | null = null;
     if (moa) {
-      providerIds = providers
-        .filter((p) => p.isActive)
-        .slice(0, 3)
-        .map((p) => p.id);
+      providerIds = activeProviders.slice(0, 3).map((p) => p.id);
     } else if (autoRoute) {
-      const routed = await db.routeProvider(providers.filter((p) => p.isActive).map((p) => p.id));
+      const routed = await db.routeProvider(activeProviders.map((p) => p.id));
       if (routed.provider) {
         providerIds = [routed.provider.id];
         routedName = routed.provider.name;

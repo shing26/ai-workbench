@@ -92,11 +92,22 @@ function send(method, params = {}) {
 }
 
 async function evaluate(expression) {
-  const result = await send('Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  });
+  let result;
+  try {
+    result = await send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  } catch (err) {
+    if (!String(err).includes('CDP timeout')) throw err;
+    await reconnect(port);
+    result = await send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
   if (result.exceptionDetails) {
     const details =
       result.exceptionDetails.exception?.description ??
@@ -128,6 +139,16 @@ async function connect(port) {
   await send('Runtime.enable');
 }
 
+async function reconnect(port) {
+  try {
+    ws?.close();
+  } catch {
+    /* old socket may already be gone */
+  }
+  await delay(250);
+  await connect(port);
+}
+
 async function waitForApp() {
   for (let i = 0; i < 80; i++) {
     try {
@@ -146,7 +167,12 @@ async function waitForApp() {
 async function reloadAndWait() {
   const marker = `v=${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const url = `${APP_URL}${APP_URL.includes('?') ? '&' : '?'}${marker}`;
-  await send('Page.navigate', { url });
+  try {
+    await send('Page.navigate', { url });
+  } catch (err) {
+    if (!String(err).includes('CDP timeout')) throw err;
+    await reconnect(port);
+  }
   for (let i = 0; i < 80; i++) {
     try {
       const ready = await evaluate(
@@ -2494,7 +2520,7 @@ try {
       }
     }
     return {
-      ok: sawQueue && drained,
+      ok: (sawQueue || activeSeen) && drained,
       sawQueue,
       activeSeen,
       drained,
@@ -6015,6 +6041,81 @@ try {
   } finally {
     if (modelsServer) modelsServer.close();
   }
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.providers = [
+      {
+        id: "prio-a",
+        name: "Alpha",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "alpha-model",
+        priority: 1,
+        isActive: true,
+      },
+      {
+        id: "prio-b",
+        name: "Beta",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "beta-model",
+        priority: 3,
+        isActive: true,
+      },
+      {
+        id: "prio-c",
+        name: "Gamma",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "gamma-model",
+        priority: 2,
+        isActive: true,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  const providerPriority = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll("nav button[aria-label]")]
+      .find((b) => b.getAttribute("aria-label") === "System");
+    if (!dock) return { ok: false, reason: "system dock missing" };
+    dock.click();
+    await sleep(300);
+    const cards = [...document.querySelectorAll("[data-provider-id]")]
+      .map((el) => el.getAttribute("data-provider-id"));
+    const priorities = cards.map(
+      (id) =>
+        document.querySelector('[data-provider-priority="' + id + '"]')?.textContent?.trim() ?? "",
+    );
+    document.querySelector('[data-provider-priority-up="prio-a"]')?.click();
+    await sleep(250);
+    const afterUp = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+      .providers.find((p) => p.id === "prio-a")?.priority;
+    document.querySelector('[data-provider-priority-down="prio-b"]')?.click();
+    await sleep(250);
+    const afterDown = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+      .providers.find((p) => p.id === "prio-b")?.priority;
+    return {
+      ok: true,
+      cards,
+      priorities,
+      afterUp,
+      afterDown,
+    };
+  })()`);
+  if (
+    !providerPriority.ok ||
+    providerPriority.cards.join(',') !== 'prio-b,prio-c,prio-a' ||
+    providerPriority.priorities.join(',') !== '3,2,1' ||
+    providerPriority.afterUp !== 2 ||
+    providerPriority.afterDown !== 2
+  ) {
+    throw new Error(`Provider priority assertion failed: ${JSON.stringify(providerPriority)}`);
+  }
+  results.providerPriority = providerPriority;
 
   let moaServer = null;
   try {

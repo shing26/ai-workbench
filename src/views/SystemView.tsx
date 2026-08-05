@@ -2,6 +2,8 @@ import {
   Activity,
   AlertTriangle,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clipboard,
   CloudUpload,
   Download,
@@ -64,6 +66,7 @@ export default function SystemView() {
   const addProvider = useWorkbenchStore((s) => s.addProvider);
   const toggleProvider = useWorkbenchStore((s) => s.toggleProvider);
   const setProviderModel = useWorkbenchStore((s) => s.setProviderModel);
+  const setProviderPriority = useWorkbenchStore((s) => s.setProviderPriority);
   const clipboard = useWorkbenchStore((s) => s.clipboard);
   const logs = useWorkbenchStore((s) => s.logs);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
@@ -1035,6 +1038,33 @@ export default function SystemView() {
                     className="ml-auto text-[10px] text-slate-500 hover:text-slate-300"
                   >
                     Check
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center gap-1.5" data-provider-priority-row={p.id}>
+                  <span className="text-[9px] text-slate-500">Priority</span>
+                  <button
+                    type="button"
+                    data-provider-priority-down={p.id}
+                    aria-label={`Lower ${p.name} priority`}
+                    onClick={() => void setProviderPriority(p.id, (p.priority ?? 0) - 1)}
+                    className="flex h-5 w-5 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-slate-400 hover:border-emerald-500/30 hover:text-emerald-300"
+                  >
+                    <ChevronDown size={11} />
+                  </button>
+                  <span
+                    data-provider-priority={p.id}
+                    className="min-w-4 text-center text-[10px] text-slate-300"
+                  >
+                    {p.priority ?? 0}
+                  </span>
+                  <button
+                    type="button"
+                    data-provider-priority-up={p.id}
+                    aria-label={`Raise ${p.name} priority`}
+                    onClick={() => void setProviderPriority(p.id, (p.priority ?? 0) + 1)}
+                    className="flex h-5 w-5 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-slate-400 hover:border-emerald-500/30 hover:text-emerald-300"
+                  >
+                    <ChevronUp size={11} />
                   </button>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
