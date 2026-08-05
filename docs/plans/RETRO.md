@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 57
+
+### What went well?
+
+- watch 事件从单一总数拆为 created / modified / removed 三类：`touch_vault_watch_event` 按 `event_kind` 累计，`event_count` 保持总数兼容旧逻辑。
+- 迁移幂等补三列，旧库自动升级；Knowledge 目标行直接显示 `+N` / `~N` / `-N`，能一眼看出 vault 变更构成。
+- 验证覆盖：`cargo test --lib` 63/63，fmt、clippy、build 全绿；两条 lane 的 `created` 均为 1、`modified` / `removed` 均为 0。
+
+### What went wrong?
+
+- `touch_vault_watch_event` 返回类型改为可返回错误后，测试调用需全部补事件类型参数；批量更新时统一补齐后通过。
+- 事件类型由 notify 单次 event 判定，UI 验证只在 fallback 中模拟 created，断言保持与 Rust 口径一致。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列、对象数组按 key 去重、审计按日/周聚合图表、watch 事件时间线。
+- 后续扩展 watch 统计时，保留 event_count 总数与类型计数的一致性。
+
 ## Sprint 56
 
 ### What went well?

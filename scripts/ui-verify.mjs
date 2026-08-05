@@ -1159,6 +1159,9 @@ try {
     const targets = ["C:/vault", "D:/vault"];
     let counts = {};
     let events = {};
+    let created = {};
+    let modified = {};
+    let removed = {};
     for (let i = 0; i < 30; i++) {
       counts = Object.fromEntries(
         [...document.querySelectorAll("[data-vault-target]")].map((row) => [
@@ -1176,6 +1179,30 @@ try {
           ),
         ]),
       );
+      created = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-created]")?.getAttribute("data-vault-created") ?? 0,
+          ),
+        ]),
+      );
+      modified = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-modified]")?.getAttribute("data-vault-modified") ?? 0,
+          ),
+        ]),
+      );
+      removed = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-removed]")?.getAttribute("data-vault-removed") ?? 0,
+          ),
+        ]),
+      );
       if (targets.every((path) => (counts[path] ?? 0) > 0) && targets.some((path) => (events[path] ?? 0) > 0)) {
         break;
       }
@@ -1184,9 +1211,13 @@ try {
     return {
       ok:
         targets.every((path) => (counts[path] ?? 0) > 0) &&
-        targets.some((path) => (events[path] ?? 0) > 0),
+        targets.some((path) => (events[path] ?? 0) > 0) &&
+        targets.some((path) => (created[path] ?? 0) > 0),
       counts,
       events,
+      created,
+      modified,
+      removed,
     };
   })()`);
   if (!vaultTargetStats.ok) {

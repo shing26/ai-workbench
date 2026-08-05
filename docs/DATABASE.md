@@ -408,3 +408,13 @@ ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 
 ## Sprint 56：自定义审计日期范围
 
 无表结构变更。`sync_audit_log` 查询新增 `until` 条件，仅使用已有 `created_at` 列。
+
+## Sprint 57：watch 事件类型细分
+
+```sql
+ALTER TABLE vault_watch_targets ADD COLUMN created_events INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vault_watch_targets ADD COLUMN modified_events INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAULT 0;
+```
+
+- `migrate_vault_watch_event_stats` 按列存在性幂等补三列；`touch_vault_watch_event(path, event_kind)` 分别累计三类计数。

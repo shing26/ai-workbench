@@ -175,7 +175,10 @@ CREATE TABLE IF NOT EXISTS vault_watch_targets (
     enabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0,
     last_event_at INTEGER NOT NULL DEFAULT 0,
-    event_count INTEGER NOT NULL DEFAULT 0
+    event_count INTEGER NOT NULL DEFAULT 0,
+    created_events INTEGER NOT NULL DEFAULT 0,
+    modified_events INTEGER NOT NULL DEFAULT 0,
+    removed_events INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sync_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -417,6 +420,9 @@ pub struct VaultWatchTarget {
     pub updated_at: i64,
     pub last_event_at: i64,
     pub event_count: i64,
+    pub created_events: i64,
+    pub modified_events: i64,
+    pub removed_events: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -471,6 +477,9 @@ pub struct VaultTargetStats {
     pub last_indexed_at: i64,
     pub last_event_at: i64,
     pub event_count: i64,
+    pub created_events: i64,
+    pub modified_events: i64,
+    pub removed_events: i64,
 }
 
 fn now_millis() -> i64 {
@@ -534,6 +543,21 @@ fn migrate_vault_watch_event_stats(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "vault_watch_targets", "event_count")? {
         conn.execute_batch(
             "ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "vault_watch_targets", "created_events")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_watch_targets ADD COLUMN created_events INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "vault_watch_targets", "modified_events")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_watch_targets ADD COLUMN modified_events INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "vault_watch_targets", "removed_events")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     Ok(())
@@ -1786,7 +1810,8 @@ pub fn set_vault_watch_config(
 
 pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarget>> {
     let mut stmt = conn.prepare(
-        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count
+        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
+                created_events, modified_events, removed_events
          FROM vault_watch_targets ORDER BY path",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1799,11 +1824,24 @@ pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarge
             row.get::<_, i64>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
         ))
     })?;
     let mut targets = Vec::new();
     for row in rows {
-        let (path, raw, enabled, updated_at, last_event_at, event_count) = row?;
+        let (
+            path,
+            raw,
+            enabled,
+            updated_at,
+            last_event_at,
+            event_count,
+            created_events,
+            modified_events,
+            removed_events,
+        ) = row?;
         targets.push(VaultWatchTarget {
             path,
             ignore_patterns: raw
@@ -1815,6 +1853,9 @@ pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarge
             updated_at,
             last_event_at,
             event_count,
+            created_events,
+            modified_events,
+            removed_events,
         });
     }
     Ok(targets)
@@ -1822,7 +1863,8 @@ pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarge
 
 fn get_vault_watch_target(conn: &Connection, path: &str) -> Result<Option<VaultWatchTarget>> {
     let row = conn.query_row(
-        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count
+        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
+                created_events, modified_events, removed_events
          FROM vault_watch_targets WHERE path = ?1",
         params![path],
         |row| {
@@ -1835,24 +1877,38 @@ fn get_vault_watch_target(conn: &Connection, path: &str) -> Result<Option<VaultW
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
             ))
         },
     );
     match row {
-        Ok((path, raw, enabled, updated_at, last_event_at, event_count)) => {
-            Ok(Some(VaultWatchTarget {
-                path,
-                ignore_patterns: raw
-                    .lines()
-                    .map(|line| line.to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect(),
-                enabled: enabled != 0,
-                updated_at,
-                last_event_at,
-                event_count,
-            }))
-        }
+        Ok((
+            path,
+            raw,
+            enabled,
+            updated_at,
+            last_event_at,
+            event_count,
+            created_events,
+            modified_events,
+            removed_events,
+        )) => Ok(Some(VaultWatchTarget {
+            path,
+            ignore_patterns: raw
+                .lines()
+                .map(|line| line.to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+            enabled: enabled != 0,
+            updated_at,
+            last_event_at,
+            event_count,
+            created_events,
+            modified_events,
+            removed_events,
+        })),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e),
     }
@@ -1873,8 +1929,9 @@ pub fn upsert_vault_watch_target(
     let updated_at = now_millis();
     conn.execute(
         "INSERT INTO vault_watch_targets
-         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count)
-         VALUES (?1, ?2, ?3, ?4, 0, 0)
+         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
+          created_events, modified_events, removed_events)
+         VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0, 0)
          ON CONFLICT(path) DO UPDATE SET
            ignore_patterns = excluded.ignore_patterns,
            enabled = excluded.enabled,
@@ -1888,20 +1945,43 @@ pub fn upsert_vault_watch_target(
         updated_at,
         last_event_at: 0,
         event_count: 0,
+        created_events: 0,
+        modified_events: 0,
+        removed_events: 0,
     })
 }
 
-pub fn touch_vault_watch_event(conn: &Connection, path: &str) -> Result<()> {
+pub fn touch_vault_watch_event(
+    conn: &Connection,
+    path: &str,
+    event_kind: &str,
+) -> Result<(), String> {
+    let (created, modified, removed) = match event_kind {
+        "created" => (1, 0, 0),
+        "modified" => (0, 1, 0),
+        "removed" => (0, 0, 1),
+        _ => {
+            return Err(format!(
+                "Unsupported vault watch event kind: {}",
+                event_kind
+            ))
+        }
+    };
     let now = now_millis();
     conn.execute(
         "INSERT INTO vault_watch_targets
-         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count)
-         VALUES (?1, '', 0, ?2, ?2, 1)
+         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
+          created_events, modified_events, removed_events)
+         VALUES (?1, '', 0, ?2, ?2, 1, ?3, ?4, ?5)
          ON CONFLICT(path) DO UPDATE SET
            last_event_at = excluded.last_event_at,
-           event_count = event_count + 1",
-        params![path, now],
-    )?;
+           event_count = event_count + 1,
+           created_events = created_events + excluded.created_events,
+           modified_events = modified_events + excluded.modified_events,
+           removed_events = removed_events + excluded.removed_events",
+        params![path, now, created, modified, removed],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2423,7 +2503,9 @@ pub fn vault_target_stats(conn: &Connection) -> Result<Vec<VaultTargetStats>, St
     let mut stmt = conn
         .prepare(
             "SELECT f.vault_path, COUNT(*), MAX(f.indexed_at),
-                    COALESCE(MAX(t.last_event_at), 0), COALESCE(MAX(t.event_count), 0)
+                    COALESCE(MAX(t.last_event_at), 0), COALESCE(MAX(t.event_count), 0),
+                    COALESCE(MAX(t.created_events), 0), COALESCE(MAX(t.modified_events), 0),
+                    COALESCE(MAX(t.removed_events), 0)
              FROM knowledge_files f
              LEFT JOIN vault_watch_targets t ON t.path = f.vault_path
              WHERE f.vault_path <> ''
@@ -2439,19 +2521,33 @@ pub fn vault_target_stats(conn: &Connection) -> Result<Vec<VaultTargetStats>, St
                 row.get::<_, Option<i64>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        let (path, files, last_indexed_at, last_event_at, event_count) =
-            row.map_err(|e| e.to_string())?;
+        let (
+            path,
+            files,
+            last_indexed_at,
+            last_event_at,
+            event_count,
+            created_events,
+            modified_events,
+            removed_events,
+        ) = row.map_err(|e| e.to_string())?;
         out.push(VaultTargetStats {
             path,
             files,
             last_indexed_at: last_indexed_at.unwrap_or(0),
             last_event_at,
             event_count,
+            created_events,
+            modified_events,
+            removed_events,
         });
     }
     Ok(out)
@@ -3781,6 +3877,9 @@ mod tests {
         assert!(targets[0].enabled);
         assert_eq!(targets[0].last_event_at, 0);
         assert_eq!(targets[0].event_count, 0);
+        assert_eq!(targets[0].created_events, 0);
+        assert_eq!(targets[0].modified_events, 0);
+        assert_eq!(targets[0].removed_events, 0);
 
         upsert_vault_watch_target(&conn, "D:/work", &[], false).unwrap();
         let targets = list_vault_watch_targets(&conn).unwrap();
@@ -3788,12 +3887,15 @@ mod tests {
         assert_eq!(targets[1].path, "D:/work");
         assert!(!targets[1].enabled);
 
-        touch_vault_watch_event(&conn, "D:/work").unwrap();
-        touch_vault_watch_event(&conn, "D:/work").unwrap();
+        touch_vault_watch_event(&conn, "D:/work", "created").unwrap();
+        touch_vault_watch_event(&conn, "D:/work", "modified").unwrap();
         let touched = list_vault_watch_targets(&conn).unwrap();
         let work = touched.iter().find(|t| t.path == "D:/work").unwrap();
         assert_eq!(work.event_count, 2);
         assert!(work.last_event_at > 0);
+        assert_eq!(work.created_events, 1);
+        assert_eq!(work.modified_events, 1);
+        assert_eq!(work.removed_events, 0);
 
         let enabled = set_vault_watch_target_enabled(&conn, "D:/work", true).unwrap();
         assert_eq!(enabled.as_ref().map(|t| t.enabled), Some(true));
@@ -3822,7 +3924,7 @@ mod tests {
         upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
         upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
         upsert_vault_watch_target(&conn, "C:/a", &[], true).unwrap();
-        touch_vault_watch_event(&conn, "C:/a").unwrap();
+        touch_vault_watch_event(&conn, "C:/a", "created").unwrap();
 
         let stats = vault_target_stats(&conn).unwrap();
         assert_eq!(stats.len(), 2);
@@ -3831,9 +3933,13 @@ mod tests {
         assert!(stats[0].last_indexed_at > 0);
         assert_eq!(stats[0].event_count, 1);
         assert!(stats[0].last_event_at > 0);
+        assert_eq!(stats[0].created_events, 1);
+        assert_eq!(stats[0].modified_events, 0);
+        assert_eq!(stats[0].removed_events, 0);
         assert_eq!(stats[1].path, "D:/b");
         assert_eq!(stats[1].files, 1);
         assert_eq!(stats[1].event_count, 0);
+        assert_eq!(stats[1].created_events, 0);
 
         upsert_knowledge_file(&conn, "C:/a/c.md", "C", "", "c", "C:/a").unwrap();
         let stats = vault_target_stats(&conn).unwrap();

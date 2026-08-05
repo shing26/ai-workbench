@@ -174,6 +174,9 @@ export default function KnowledgeView() {
       updatedAt: Date.now(),
       lastEventAt: 0,
       eventCount: 0,
+      createdEvents: 0,
+      modifiedEvents: 0,
+      removedEvents: 0,
     });
   };
 
@@ -403,8 +406,8 @@ export default function KnowledgeView() {
             {vaultTargets.map((target) => {
               const targetWatching =
                 watchStatus?.paths?.includes(target.path) ?? target.enabled;
-              const targetFileCount =
-                targetStats.find((stat) => stat.path === target.path)?.files ?? 0;
+              const targetStat = targetStats.find((stat) => stat.path === target.path);
+              const targetFileCount = targetStat?.files ?? 0;
               return (
                 <div
                   key={target.path}
@@ -427,6 +430,24 @@ export default function KnowledgeView() {
                     className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
                   >
                     {target.eventCount ?? 0} events
+                  </span>
+                  <span
+                    data-vault-created={targetStat?.createdEvents ?? 0}
+                    className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-400"
+                  >
+                    +{targetStat?.createdEvents ?? 0}
+                  </span>
+                  <span
+                    data-vault-modified={targetStat?.modifiedEvents ?? 0}
+                    className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-400"
+                  >
+                    ~{targetStat?.modifiedEvents ?? 0}
+                  </span>
+                  <span
+                    data-vault-removed={targetStat?.removedEvents ?? 0}
+                    className="rounded-md bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-400"
+                  >
+                    -{targetStat?.removedEvents ?? 0}
                   </span>
                   {target.ignorePatterns.length > 0 && (
                     <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">
