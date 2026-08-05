@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 100
+
+### What went well?
+
+- 会话工作台上线：`sessions.pinned` 列 + `migrate_session_pinned` 幂等迁移，`list_sessions` 返回消息数并按置顶优先排序。
+- Rust 新增 `set_session_pinned` / `duplicate_session`，浏览器 fallback 同构实现；复制会话生成 `(copy)` 标题并完整复制消息。
+- AI Studio 会话行新增置顶、消息数、复制与 Markdown 导出；导出面板支持预览、复制与下载。
+- `verify:ui` / `verify:preview` 新增 `sessionWorkspace` lane；Rust 114 单测、clippy、build 全绿。
+
+### What went wrong?
+
+- 首轮置顶断言把两个会话都设为置顶后仍要求 Alpha 排第一，与“同置顶按创建时间倒序”冲突；改为先取消 Beta 置顶再验证。
+- `streamError` lane 偶发 busy 残留导致找不到 Send 按钮，补等待与 Stop 兜底后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 MOA 并行、前端 ESLint/Prettier + husky/lint-staged、会话搜索模糊匹配。
+- 复制会话暂不复制消息版本历史，后续可按需做版本树迁移。
+- 保留 `sessionWorkspace` lane，改动会话模型或 AI Studio 会话交互时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 99
 
 ### What went well?

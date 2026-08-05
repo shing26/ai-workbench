@@ -721,3 +721,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 99：系统事件总线与投递刷新
 
 无表结构变更。系统事件不新增表或字段：`webhook_rules.trigger_event` 继续作为事件匹配键，`webhook_deliveries` 承接事件投递；`workbench:webhook-deliveries-updated` 只是前端刷新信号，不落库。浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 与 `ai-workbench:webhook-deliveries:v1`。
+
+## Sprint 100：会话置顶与消息数
+
+`sessions` 新增 `pinned INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建表语句已直接包含该列，旧库由 `migrate_session_pinned` 幂等补列，已加入 `init_connection` 迁移链。`message_count` 不落库，由 `list_sessions` 子查询 `COUNT(*) FROM chat_messages WHERE session_id = sessions.id` 实时计算；`duplicate_session` 复制会话与消息，返回新会话的消息数。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `sessions` 与 `chatMessages`，旧数据在读取时自动补 `pinned=false`。

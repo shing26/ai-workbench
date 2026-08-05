@@ -5091,6 +5091,147 @@ try {
   }
   results.sessionManagement = sessionManagement;
 
+  const sessionWorkspaceSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "ws-alpha",
+        projectId: null,
+        title: "Workspace Alpha",
+        model: "openai",
+        pinned: false,
+        messageCount: 2,
+        createdAt: now - 2000,
+      },
+      {
+        id: "ws-beta",
+        projectId: null,
+        title: "Workspace Beta",
+        model: "ollama",
+        pinned: true,
+        messageCount: 1,
+        createdAt: now - 1000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "ws-alpha-user", sessionId: "ws-alpha", role: "user", content: "alpha question", createdAt: now - 1500 },
+      { id: "ws-alpha-assistant", sessionId: "ws-alpha", role: "assistant", content: "alpha answer", createdAt: now - 1000 },
+      { id: "ws-beta-user", sessionId: "ws-beta", role: "user", content: "beta question", createdAt: now - 500 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("AI Studio");
+  const sessionWorkspace = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }))
+        .filter(({ row }) => row?.textContent?.includes("Workspace"));
+    let found = false;
+    for (let i = 0; i < 30; i++) {
+      found = rows().length >= 2;
+      if (found) break;
+      await sleep(100);
+    }
+    if (!found) {
+      return { ok: false, reason: "workspace sessions not rendered", rendered: rows().length };
+    }
+    const titles = rows().map(({ btn }) => btn.textContent?.trim() ?? "");
+    const pinnedFirst = titles[0]?.includes("Workspace Beta") ?? false;
+    const alpha = rows().find(({ row }) => row.textContent?.includes("Workspace Alpha"));
+    const beta = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    const alphaCount = alpha?.btn.getAttribute("data-session-count");
+    const betaCount = beta?.btn.getAttribute("data-session-count");
+    beta?.row.querySelector('button[aria-label="Unpin session"]')?.click();
+    let betaUnpinned = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const after = rows();
+      betaUnpinned =
+        after.find(({ row }) => row.textContent?.includes("Workspace Beta"))
+          ?.row.querySelector('button[aria-label="Pin session"]') != null;
+      if (betaUnpinned) break;
+    }
+    const alphaAfter = rows().find(({ row }) => row.textContent?.includes("Workspace Alpha"));
+    alphaAfter?.row.querySelector('button[aria-label="Pin session"]')?.click();
+    let alphaPinned = false;
+    let pinnedAlphaFirst = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const after = rows();
+      alphaPinned =
+        after.find(({ row }) => row.textContent?.includes("Workspace Alpha"))
+          ?.row.querySelector('button[aria-label="Unpin session"]') != null;
+      pinnedAlphaFirst = after[0]?.row.textContent?.includes("Workspace Alpha") ?? false;
+      if (alphaPinned && pinnedAlphaFirst) break;
+    }
+    const storedSessions = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").sessions;
+    const alphaStored = storedSessions.find((s) => s.id === "ws-alpha");
+    const betaAfter = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    betaAfter?.row.querySelector('button[aria-label="Duplicate session"]')?.click();
+    let copyStored = null;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      copyStored = shape.sessions.find((s) => s.title === "Workspace Beta (copy)") ?? null;
+      if (copyStored) break;
+      await sleep(100);
+    }
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const copyMessageCount = copyStored
+      ? storedAfter.chatMessages.filter((m) => m.sessionId === copyStored.id).length
+      : -1;
+    const betaExport = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    betaExport?.row.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("Workspace Beta")) break;
+      await sleep(100);
+    }
+    const exportOk =
+      preview.includes("# Workspace Beta") &&
+      preview.includes("## User") &&
+      preview.includes("beta question");
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    const panelGone = !document.querySelector("[data-session-export-panel]");
+    return {
+      ok:
+        pinnedFirst &&
+        alphaCount === "2" &&
+        betaCount === "1" &&
+        betaUnpinned &&
+        alphaPinned &&
+        pinnedAlphaFirst &&
+        alphaStored?.pinned === true &&
+        !!copyStored &&
+        copyMessageCount === 1 &&
+        exportOk &&
+        panelGone,
+      pinnedFirst,
+      alphaCount,
+      betaCount,
+      betaUnpinned,
+      alphaPinned,
+      pinnedAlphaFirst,
+      alphaStoredPinned: alphaStored?.pinned,
+      copyStored: !!copyStored,
+      copyMessageCount,
+      exportOk,
+      panelGone,
+    };
+  })()`);
+  if (!sessionWorkspace.ok) {
+    throw new Error(
+      `AI Studio session workspace assertion failed: ${JSON.stringify(sessionWorkspace)}`,
+    );
+  }
+  results.sessionWorkspace = sessionWorkspace;
+
   await clickDock("System");
   const providerToggled = await evaluate(`(async () => {
     const card = [...document.querySelectorAll(".provider-card")].find((c) => c.textContent?.includes("OpenAI"));
@@ -5405,8 +5546,23 @@ try {
     if (!input) return { ok: false, reason: "no chat input" };
     setValue(input, "sprint 15 timeout check");
     await sleep(80);
-    const sendBtn = document.querySelector('main button[aria-label="Send"]');
-    if (!sendBtn) return { ok: false, reason: "no send button" };
+    let sendBtn = document.querySelector('main button[aria-label="Send"]');
+    for (let i = 0; i < 30 && !sendBtn; i++) {
+      await sleep(100);
+      sendBtn = document.querySelector('main button[aria-label="Send"]');
+    }
+    if (!sendBtn) {
+      document.querySelector('main button[aria-label="Stop streaming"]')?.click();
+      await sleep(300);
+      sendBtn = document.querySelector('main button[aria-label="Send"]');
+    }
+    if (!sendBtn) {
+      return {
+        ok: false,
+        reason: "no send button",
+        busy: !!document.querySelector('main button[aria-label="Stop streaming"]'),
+      };
+    }
     sendBtn.click();
     let statusSeen = false;
     for (let i = 0; i < 30; i++) {

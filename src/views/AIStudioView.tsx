@@ -1,4 +1,4 @@
-import { CalendarDays, Check, ChevronDown, ChevronUp, GitCompare, GitFork, GripVertical, History, Pencil, Plus, RefreshCw, Save, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronUp, Copy, Download, GitCompare, GitFork, GripVertical, History, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -132,6 +132,9 @@ export default function AIStudioView() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [exportSession, setExportSession] = useState<db.Session | null>(null);
+  const [exportMarkdown, setExportMarkdown] = useState("");
+  const [exportCopied, setExportCopied] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -521,11 +524,66 @@ export default function AIStudioView() {
     }
   };
 
+  const toggleSessionPin = async (session: db.Session) => {
+    await db.setSessionPinned(session.id, !session.pinned);
+    setSessions(await db.listSessions());
+  };
+
+  const duplicateSessionRow = async (session: db.Session) => {
+    const copy = await db.duplicateSession(session.id);
+    setSessions(await db.listSessions());
+    await selectSession(copy.id);
+  };
+
+  const openSessionExport = async (session: db.Session) => {
+    const messages = await db.listChatMessages(session.id);
+    setExportSession(session);
+    setExportMarkdown(db.buildSessionMarkdown(session, messages));
+    setExportCopied(false);
+  };
+
+  const closeSessionExport = () => {
+    setExportSession(null);
+    setExportMarkdown("");
+    setExportCopied(false);
+  };
+
+  const copySessionExport = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(exportMarkdown);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = exportMarkdown;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      setExportCopied(true);
+    } catch {
+      setExportCopied(false);
+    }
+  };
+
+  const downloadSessionExport = () => {
+    if (!exportSession || !exportMarkdown) return;
+    const blob = new Blob([exportMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${exportSession.title.replace(/[\\/:*?"<>|]/g, "_")}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const filteredSessions = sessions.filter((s) => {
     const q = sessionQuery.trim().toLowerCase();
     if (!q) return true;
     return `${s.title} ${s.model}`.toLowerCase().includes(q);
-  });
+  }).sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
+  );
 
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
@@ -1133,16 +1191,33 @@ export default function AIStudioView() {
                 <div key={s.id} className="group relative rounded-lg">
                   <button
                     type="button"
+                    aria-label={s.pinned ? "Unpin session" : "Pin session"}
+                    data-session-pin={s.id}
+                    data-session-pinned={s.pinned ? "true" : "false"}
+                    onClick={() => void toggleSessionPin(s)}
+                    className={`absolute left-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md transition-colors ${
+                      s.pinned
+                        ? "text-amber-300 hover:text-amber-200"
+                        : "text-slate-600 hover:text-amber-300"
+                    }`}
+                  >
+                    {s.pinned ? <Pin size={10} /> : <PinOff size={10} />}
+                  </button>
+                  <button
+                    type="button"
                     aria-label="Open session"
                     onClick={() => void selectSession(s.id)}
-                    className={`w-full rounded-lg border px-2 py-1.5 pr-12 text-left ${
+                    className={`w-full rounded-lg border py-1.5 pl-7 pr-16 text-left ${
                       sessionId === s.id
                         ? "border-emerald-500/30 bg-emerald-500/10"
                         : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
                     }`}
+                    data-session-count={s.messageCount}
                   >
                     <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
-                    <span className="mt-0.5 block text-[9px] text-slate-600">{s.model}</span>
+                    <span className="mt-0.5 block truncate text-[9px] text-slate-600">
+                      {s.model} · {s.messageCount} msg(s)
+                    </span>
                   </button>
                   {confirmDeleteId === s.id ? (
                     <button
@@ -1155,6 +1230,24 @@ export default function AIStudioView() {
                     </button>
                   ) : (
                     <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex">
+                      <button
+                        type="button"
+                        aria-label="Duplicate session"
+                        data-session-duplicate={s.id}
+                        onClick={() => void duplicateSessionRow(s)}
+                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-blue-300"
+                      >
+                        <Copy size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Export session"
+                        data-session-export={s.id}
+                        onClick={() => void openSessionExport(s)}
+                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+                      >
+                        <Download size={10} />
+                      </button>
                       <button
                         type="button"
                         aria-label="Rename session"
@@ -1679,6 +1772,64 @@ export default function AIStudioView() {
         </div>
       </div>
       </div>
+      {exportSession && exportMarkdown && (
+        <div
+          data-session-export-panel
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-[#18181C] shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium text-slate-200">
+                  {exportSession.title}
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  {exportMarkdown.split("\n").length} lines · Markdown
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close session export"
+                data-session-export-close
+                onClick={closeSessionExport}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/5 text-slate-400 hover:text-slate-200"
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <pre
+              data-session-export-preview
+              className="max-h-[50vh] overflow-auto whitespace-pre-wrap px-4 py-3 text-[11px] leading-relaxed text-slate-300"
+            >
+              {exportMarkdown}
+            </pre>
+            <div className="flex items-center gap-2 border-t border-white/10 px-4 py-3">
+              <button
+                type="button"
+                aria-label="Copy session transcript"
+                data-session-export-copy
+                onClick={() => void copySessionExport()}
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 text-[11px] text-emerald-300 hover:bg-emerald-500/30"
+              >
+                <Copy size={12} />
+                {exportCopied ? "Copied" : "Copy"}
+              </button>
+              <button
+                type="button"
+                aria-label="Download session transcript"
+                data-session-export-download
+                onClick={downloadSessionExport}
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-white/5 px-3 text-[11px] text-slate-300 hover:bg-white/10"
+              >
+                <Download size={12} />
+                Download .md
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_id TEXT,
     title TEXT,
     model TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS providers (
@@ -335,6 +336,8 @@ pub struct Session {
     pub project_id: Option<String>,
     pub title: String,
     pub model: String,
+    pub pinned: bool,
+    pub message_count: i64,
     pub created_at: i64,
 }
 
@@ -1086,6 +1089,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
     migrate_webhook_trigger_event(&conn)?;
+    migrate_session_pinned(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -1204,6 +1208,15 @@ fn migrate_webhook_trigger_event(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "webhook_rules", "trigger_event")? {
         conn.execute_batch(
             "ALTER TABLE webhook_rules ADD COLUMN trigger_event TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_session_pinned(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "sessions", "pinned")? {
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     Ok(())
@@ -4169,7 +4182,10 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
 
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, model, created_at FROM sessions ORDER BY created_at DESC",
+        "SELECT s.id, s.project_id, s.title, s.model, s.created_at, s.pinned,
+                (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) AS message_count
+         FROM sessions s
+         ORDER BY s.pinned DESC, s.created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Session {
@@ -4178,6 +4194,8 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
             title: row.get(2)?,
             model: row.get(3)?,
             created_at: row.get(4)?,
+            pinned: row.get::<_, i64>(5)? != 0,
+            message_count: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -4195,6 +4213,8 @@ pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Ses
         project_id: None,
         title: title.to_string(),
         model: model.to_string(),
+        pinned: false,
+        message_count: 0,
         created_at: now,
     })
 }
@@ -4205,6 +4225,81 @@ pub fn rename_session(conn: &Connection, id: &str, title: &str) -> Result<()> {
         params![title, id],
     )?;
     Ok(())
+}
+
+pub fn set_session_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE sessions SET pinned = ?1 WHERE id = ?2",
+        params![pinned as i64, id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String> {
+    let source = conn
+        .query_row(
+            "SELECT id, project_id, title, model, created_at FROM sessions WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("session not found: {id}"))?;
+    let new_id = uid();
+    let now = now_millis();
+    let title = format!("{} (copy)", source.2);
+    conn.execute(
+        "INSERT INTO sessions (id, project_id, title, model, pinned, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+        params![new_id, source.1, title, source.3, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let messages: Vec<(String, String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT role, content, created_at FROM chat_messages
+                 WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        out
+    };
+    for (role, content, created_at) in &messages {
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![uid(), new_id, role, content, created_at],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(Session {
+        id: new_id,
+        project_id: source.1,
+        title,
+        model: source.3,
+        pinned: false,
+        message_count: messages.len() as i64,
+        created_at: now,
+    })
 }
 
 pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
@@ -4559,6 +4654,76 @@ mod tests {
         let sessions = list_sessions(&conn).unwrap();
         assert!(!sessions.iter().any(|s| s.id == session.id));
         assert!(list_chat_messages(&conn, &session.id).unwrap().is_empty());
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn session_pinned_migration_adds_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                title TEXT,
+                model TEXT,
+                created_at INTEGER
+            );",
+        )
+        .unwrap();
+        migrate_session_pinned(&conn).unwrap();
+        assert!(column_exists(&conn, "sessions", "pinned").unwrap());
+        conn.execute(
+            "INSERT INTO sessions (id, title, model, created_at) VALUES (?1, 'old', 'openai', 1)",
+            params!["old-session"],
+        )
+        .unwrap();
+        let pinned: i64 = conn
+            .query_row(
+                "SELECT pinned FROM sessions WHERE id = 'old-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pinned, 0);
+    }
+
+    #[test]
+    fn session_pin_duplicate_orders_and_counts() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-session-workspace-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let first = create_session(&conn, "First", "openai").unwrap();
+        let second = create_session(&conn, "Second", "ollama").unwrap();
+        save_chat_message(&conn, &first.id, "user", "Hello", None).unwrap();
+        save_chat_message(&conn, &first.id, "assistant", "Hi", None).unwrap();
+        save_chat_message(&conn, &second.id, "user", "Ollama question", None).unwrap();
+
+        let sessions = list_sessions(&conn).unwrap();
+        assert_eq!(sessions[0].id, second.id);
+        assert_eq!(sessions[0].message_count, 1);
+        assert_eq!(sessions[1].message_count, 2);
+
+        set_session_pinned(&conn, &first.id, true).unwrap();
+        let sessions = list_sessions(&conn).unwrap();
+        assert!(sessions[0].pinned);
+        assert_eq!(sessions[0].id, first.id);
+
+        let copy = duplicate_session(&conn, &first.id).unwrap();
+        assert!(copy.title.ends_with("(copy)"));
+        assert_eq!(copy.message_count, 2);
+        let messages = list_chat_messages(&conn, &copy.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "Hello");
+
+        drop(conn);
+        let conn = init_connection(&db_path).unwrap();
+        let sessions = list_sessions(&conn).unwrap();
+        let restored = sessions.iter().find(|s| s.id == first.id).unwrap();
+        assert!(restored.pinned);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

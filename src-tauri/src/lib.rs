@@ -1625,6 +1625,18 @@ fn rename_session(state: State<'_, db::Db>, id: String, title: String) -> Result
 }
 
 #[tauri::command]
+fn set_session_pinned(state: State<'_, db::Db>, id: String, pinned: bool) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_session_pinned(&conn, &id, pinned).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn duplicate_session(state: State<'_, db::Db>, id: String) -> Result<db::Session, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::duplicate_session(&conn, &id)
+}
+
+#[tauri::command]
 fn delete_session(state: State<'_, db::Db>, id: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_session(&conn, &id).map_err(|e| e.to_string())
@@ -4865,6 +4877,8 @@ pub fn run() {
             list_sessions,
             create_session,
             rename_session,
+            set_session_pinned,
+            duplicate_session,
             delete_session,
             save_chat_message,
             list_chat_messages,

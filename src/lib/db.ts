@@ -55,6 +55,8 @@ export type Session = {
   projectId: string | null;
   title: string;
   model: string;
+  pinned: boolean;
+  messageCount: number;
   createdAt: number;
 };
 
@@ -694,7 +696,15 @@ function seedShape(): LocalShape {
       { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Reality Checker", role: "证据驱动的发布门禁", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Reality Checker，负责证据驱动的发布门禁。输出必须引用实际文件与命令结果。", isActive: true, createdAt: now - 3800 },
     ],
     sessions: [
-      { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
+      {
+        id: makeId(),
+        projectId: null,
+        title: "Workbench planning",
+        model: "openai",
+        pinned: false,
+        messageCount: 0,
+        createdAt: now - 60000,
+      },
     ],
     chatMessages: [],
     messageVersions: [],
@@ -1113,13 +1123,32 @@ export async function routeProvider(providerIds: string[]): Promise<RouteResult>
 }
 
 export async function listSessions(): Promise<Session[]> {
-  return isTauri() ? invoke<Session[]>("list_sessions") : readLocal().sessions;
+  if (isTauri()) return invoke<Session[]>("list_sessions");
+  const shape = readLocal();
+  return shape.sessions
+    .map((s) => ({
+      ...s,
+      pinned: s.pinned ?? false,
+      messageCount: shape.chatMessages.filter((m) => m.sessionId === s.id).length,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
+    );
 }
 
 export async function createSession(title: string, model: string): Promise<Session> {
   if (isTauri()) return invoke<Session>("create_session", { title, model });
   const shape = readLocal();
-  const session: Session = { id: makeId(), projectId: null, title, model, createdAt: Date.now() };
+  const session: Session = {
+    id: makeId(),
+    projectId: null,
+    title,
+    model,
+    pinned: false,
+    messageCount: 0,
+    createdAt: Date.now(),
+  };
   shape.sessions.unshift(session);
   writeLocal(shape);
   return session;
@@ -1134,6 +1163,69 @@ export async function renameSession(id: string, title: string): Promise<void> {
   const session = shape.sessions.find((s) => s.id === id);
   if (session) session.title = title;
   writeLocal(shape);
+}
+
+export async function setSessionPinned(id: string, pinned: boolean): Promise<void> {
+  if (isTauri()) {
+    await invoke("set_session_pinned", { id, pinned });
+    return;
+  }
+  const shape = readLocal();
+  const session = shape.sessions.find((s) => s.id === id);
+  if (session) session.pinned = pinned;
+  writeLocal(shape);
+}
+
+export async function duplicateSession(id: string): Promise<Session> {
+  if (isTauri()) return invoke<Session>("duplicate_session", { id });
+  const shape = readLocal();
+  const source = shape.sessions.find((s) => s.id === id);
+  if (!source) throw new Error(`Session not found: ${id}`);
+  const now = Date.now();
+  const copy: Session = {
+    id: makeId(),
+    projectId: source.projectId,
+    title: `${source.title} (copy)`,
+    model: source.model,
+    pinned: false,
+    messageCount: shape.chatMessages.filter((m) => m.sessionId === id).length,
+    createdAt: now,
+  };
+  shape.sessions.unshift(copy);
+  shape.chatMessages
+    .filter((m) => m.sessionId === id)
+    .forEach((m) => {
+      shape.chatMessages.push({
+        id: makeId(),
+        sessionId: copy.id,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+      });
+    });
+  writeLocal(shape);
+  return copy;
+}
+
+export function buildSessionMarkdown(
+  session: Session,
+  messages: ChatMessage[],
+): string {
+  const lines: string[] = [
+    `# ${session.title}`,
+    "",
+    `> Model: ${session.model} · Created: ${new Date(session.createdAt).toLocaleString()}`,
+    "",
+  ];
+  for (const message of messages) {
+    lines.push(
+      `## ${message.role === "user" ? "User" : "Assistant"}`,
+      "",
+      message.content,
+      "",
+    );
+  }
+  return lines.join("\n").trimEnd() + "\n";
 }
 
 export async function deleteSession(id: string): Promise<void> {
