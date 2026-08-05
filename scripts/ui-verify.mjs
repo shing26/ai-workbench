@@ -1122,6 +1122,42 @@ try {
   }
   results.sync = syncCheck;
 
+  const remoteSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    const pushBtn = document.querySelector('button[aria-label="Push sync snapshot"]');
+    const pullBtn = document.querySelector('button[aria-label="Pull sync snapshot"]');
+    if (!urlInput || !pushBtn || !pullBtn) {
+      return { ok: false, reason: "remote sync controls missing" };
+    }
+    setter.call(urlInput, "https://sync.example.test/workbench");
+    urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+    pushBtn.click();
+    let pushed = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      pushed = msg.includes("Pushed snapshot to remote");
+      if (pushed) break;
+      await sleep(100);
+    }
+    pullBtn.click();
+    let pulled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const body = document.body.innerText;
+      pulled =
+        msg.includes("Merged +1 clips") && body.includes("sprint 33 remote clipboard");
+      if (pulled) break;
+      await sleep(100);
+    }
+    return { ok: pushed && pulled, pushed, pulled };
+  })()`);
+  if (!remoteSyncCheck.ok) {
+    throw new Error(`remote sync assertion failed: ${JSON.stringify(remoteSyncCheck)}`);
+  }
+  results.remoteSync = remoteSyncCheck;
+
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);

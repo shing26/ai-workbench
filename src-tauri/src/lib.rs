@@ -1773,6 +1773,14 @@ struct RemotePrResult {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RemoteSyncPushResult {
+    ok: bool,
+    synced_at: i64,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitRebaseResult {
     rebased: bool,
     conflict: bool,
@@ -2079,6 +2087,79 @@ fn abort_rebase(path: String) -> Result<String, String> {
     Ok(format!("Rebase aborted on {}", git_branch(&path)))
 }
 
+fn push_sync_snapshot_http(
+    snapshot: &db::SyncSnapshot,
+    remote_url: &str,
+    token: Option<&str>,
+) -> Result<RemoteSyncPushResult, String> {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.put(remote_url).json(snapshot);
+    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    let resp = request
+        .send()
+        .map_err(|e| format!("Remote sync failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Remote sync {} : {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        ));
+    }
+    Ok(RemoteSyncPushResult {
+        ok: true,
+        synced_at: snapshot.exported_at,
+        message: "Pushed snapshot to remote".to_string(),
+    })
+}
+
+fn pull_sync_snapshot_http(
+    remote_url: &str,
+    token: Option<&str>,
+) -> Result<db::SyncSnapshot, String> {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.get(remote_url);
+    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    let resp = request
+        .send()
+        .map_err(|e| format!("Remote sync failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Remote sync {} : {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        ));
+    }
+    resp.json::<db::SyncSnapshot>()
+        .map_err(|e| format!("Invalid remote snapshot: {}", e))
+}
+
+#[tauri::command]
+fn push_sync_snapshot(
+    state: State<'_, db::Db>,
+    remote_url: String,
+    token: Option<String>,
+) -> Result<RemoteSyncPushResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snapshot = db::build_sync_snapshot(&conn).map_err(|e| e.to_string())?;
+    drop(conn);
+    push_sync_snapshot_http(&snapshot, &remote_url, token.as_deref())
+}
+
+#[tauri::command]
+fn pull_sync_snapshot(
+    state: State<'_, db::Db>,
+    remote_url: String,
+    token: Option<String>,
+) -> Result<db::SyncResult, String> {
+    let snapshot = pull_sync_snapshot_http(&remote_url, token.as_deref())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::merge_sync_snapshot(&conn, snapshot).map_err(|e| e.to_string())
+}
+
 fn build_team_summary_text(contents: Vec<String>) -> String {
     let mut lines = Vec::new();
     for content in contents {
@@ -2222,6 +2303,8 @@ pub fn run() {
             list_error_logs,
             export_sync_snapshot,
             import_sync_snapshot,
+            push_sync_snapshot,
+            pull_sync_snapshot,
             report_frontend_error,
             capture_clipboard,
             search_thoughts,
@@ -2712,5 +2795,92 @@ mod tests {
             "unexpected error: {}",
             err
         );
+    }
+
+    #[test]
+    fn remote_push_sends_snapshot_with_auth() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                request.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if request.contains("\r\n\r\n") || n == 0 {
+                    break;
+                }
+            }
+            let has_auth = request
+                .to_lowercase()
+                .contains("authorization: bearer test-token");
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = stream.write_all(response.as_bytes());
+            has_auth
+        });
+        let snapshot = db::SyncSnapshot {
+            device_id: "device-a".to_string(),
+            exported_at: 1234,
+            clipboard: Vec::new(),
+            logs: Vec::new(),
+        };
+        let result =
+            push_sync_snapshot_http(&snapshot, &format!("http://{}", addr), Some("test-token"))
+                .unwrap();
+        assert!(result.ok);
+        assert_eq!(result.synced_at, 1234);
+        assert!(server.join().unwrap(), "Authorization header missing");
+    }
+
+    #[test]
+    fn remote_pull_merges_snapshot_into_db() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let snapshot = db::SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 5678,
+            clipboard: vec![db::ClipboardItem {
+                id: "remote-clip-1".to_string(),
+                content: "remote sync content".to_string(),
+                source: "remote".to_string(),
+                timestamp: 5678,
+                updated_at: 5678,
+            }],
+            logs: Vec::new(),
+        };
+        let body = serde_json::to_string(&snapshot).unwrap();
+        let body_len = body.len();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                request.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if request.contains("\r\n\r\n") || n == 0 {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_len,
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let pulled = pull_sync_snapshot_http(&format!("http://{}", addr), None).unwrap();
+        server.join().unwrap();
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-remote-sync-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let result = db::merge_sync_snapshot(&conn, pulled).unwrap();
+        assert_eq!(result.clipboard_added, 1);
+        assert_eq!(result.device_id, "device-remote");
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 }

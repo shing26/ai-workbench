@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 33
+
+### What went well?
+
+- 同步快照从“本地文件导入导出”升级为“HTTP 远端 Push / Pull”：`build_sync_snapshot` / `merge_sync_snapshot` 拆出后，文件路径与远端路径共用同一套合并语义。
+- 端到端单测用本地 `TcpListener` 验证真实 HTTP 请求：Push 断言请求体与 `Authorization: Bearer` 头，Pull 断言 GET 解析后按 `updated_at` 合并进 SQLite。
+- System Sync snapshot 卡片新增 Remote URL / Token 输入与 Push / Pull 按钮，浏览器 fallback 确定性返回结果；`verify:ui` / `verify:preview` 新增 Push / Pull 断言，两条 lane 全绿。
+- 验证覆盖：`cargo test --lib` 33/33，fmt、clippy、build 全绿。
+
+### What went wrong?
+
+- 首轮 HTTP 单测失败：reqwest 发送的 header 名是小写（`authorization`），测试按大写精确匹配；改为大小写不敏感包含判断后通过。
+- Pull 合并单测直接写临时目录下的 SQLite，父目录不存在导致 `CannotOpen`；先 `create_dir_all` 再初始化连接后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：冲突自动解决 / 三方合并策略、Vault 大目录并行扫描与 ignore 列表。
+- 后续改动同步逻辑时，保留 Push / Pull / Token / 合并四条断言与两条 UI lane。
+
 ## Sprint 32
 
 ### What went well?
