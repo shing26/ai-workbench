@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 71
+
+### What went well?
+
+- Vault 索引队列从纯 FIFO 升级为“高优先级插队 + 失败自动重试”：`vault_index_queue` 新增 `priority / attempts / last_error` 并幂等迁移，`list_vault_index_queue` 按 `priority DESC, created_at ASC` 排序。
+- worker 失败后保留优先级重新入队，最多 3 次尝试，每次记录 `last_error`，耗尽后删除；重试间隔 800ms 防热循环；Knowledge 卡片新增 Normal / High 优先级选择，队列行展示优先级与重试次数。
+- 验证覆盖：`cargo test --lib` 80/80，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `indexQueuePriority` 断言高优先级先跑，`indexQueueRetry` 断言 attempts 1/2 可见、最终错误可见并 drain。
+
+### What went wrong?
+
+- 首版 fallback 重试间隔只有 120ms，在点击 Knowledge 并开始断言前重试已经耗尽，attempts 1/2 观察不到；拉长到 800ms 后稳定捕获。
+- `indexProgressCheck` 原本依赖前一条 lane 遗留的 “Indexed” 状态，插入重试 lane 后读到的是模拟错误；在该 lane 内先点击 Index vault 再断言，回归稳定。
+
+### Action Items
+
+- 自动巡检运行历史与通知提醒继续保留在 Backlog。
+
 ## Sprint 70
 
 ### What went well?

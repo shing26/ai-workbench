@@ -1173,6 +1173,148 @@ try {
     );
   }
   results.indexQueuePersist = indexQueuePersist;
+
+  await evaluate(`(() => {
+    const records = [
+      {
+        runId: "prio-low",
+        path: "C:/priority-low",
+        ignorePatterns: [],
+        concurrency: 4,
+        priority: 0,
+        attempts: 0,
+        lastError: "",
+        status: "queued",
+      },
+      {
+        runId: "prio-high",
+        path: "C:/priority-high",
+        ignorePatterns: [],
+        concurrency: 4,
+        priority: 1,
+        attempts: 0,
+        lastError: "",
+        status: "queued",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
+    return { ok: true, seeded: records.length };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const indexQueuePriority = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let firstActive = "";
+    let sawHigh = false;
+    let queuedPaths = [];
+    for (let i = 0; i < 120; i++) {
+      await sleep(50);
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const activePriority =
+        document.querySelector("[data-vault-index-queue-active-priority]")?.getAttribute("data-vault-index-queue-active-priority") ?? "";
+      if (active) {
+        if (!firstActive) firstActive = active;
+        if (activePriority === "1") sawHigh = true;
+      }
+      queuedPaths = [...document.querySelectorAll("[data-vault-index-queued-path]")].map(
+        (el) => el.getAttribute("data-vault-index-queued-path") ?? "",
+      );
+      if (firstActive && queuedPaths.length > 0) break;
+    }
+    let drained = false;
+    for (let i = 0; i < 120; i++) {
+      await sleep(100);
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok: firstActive.includes("priority-high") && sawHigh && drained,
+      firstActive,
+      sawHigh,
+      queuedPaths,
+      drained,
+    };
+  })()`);
+  if (!indexQueuePriority.ok) {
+    throw new Error(`Index queue priority assertion failed: ${JSON.stringify(indexQueuePriority)}`);
+  }
+  results.indexQueuePriority = indexQueuePriority;
+
+  await evaluate(`(() => {
+    localStorage.setItem(
+      "ai-workbench:vault-index-queue:v1",
+      JSON.stringify([
+        {
+          runId: "retry-run",
+          path: "C:/retry-vault",
+          ignorePatterns: [],
+          concurrency: 4,
+          priority: 1,
+          attempts: 0,
+          lastError: "",
+          status: "queued",
+        },
+      ]),
+    );
+    return { ok: true };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const indexQueueRetry = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const attemptsSeen = new Set();
+    let errorSeen = false;
+    let drained = false;
+    for (let i = 0; i < 160; i++) {
+      await sleep(20);
+      for (const el of document.querySelectorAll("[data-vault-index-queued-path]")) {
+        const attempts = Number(el.getAttribute("data-vault-index-queue-attempts") ?? 0);
+        if (attempts > 0) attemptsSeen.add(attempts);
+      }
+      const activeAttempts = Number(
+        document.querySelector("[data-vault-index-queue-active-attempts]")?.getAttribute("data-vault-index-queue-active-attempts") ?? 0,
+      );
+      if (activeAttempts > 0) attemptsSeen.add(activeAttempts);
+      const status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      if (status.includes("simulated failure")) errorSeen = true;
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0 && errorSeen) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok: attemptsSeen.has(1) && attemptsSeen.has(2) && errorSeen && drained,
+      attemptsSeen: [...attemptsSeen],
+      errorSeen,
+      drained,
+    };
+  })()`);
+  if (!indexQueueRetry.ok) {
+    throw new Error(`Index queue retry assertion failed: ${JSON.stringify(indexQueueRetry)}`);
+  }
+  results.indexQueueRetry = indexQueueRetry;
+
   await evaluate(`(() => {
     const input = document.querySelector('input[placeholder="Vault path..."]');
     if (input) {
@@ -1185,6 +1327,11 @@ try {
 
   const indexProgressCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
     let status = "";
     let bar = 0;
     for (let i = 0; i < 30; i++) {

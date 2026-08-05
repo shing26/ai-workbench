@@ -504,3 +504,13 @@ ALTER TABLE error_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT '';
 ## Sprint 70：Git 看板时间范围与提交人过滤
 
 无表结构变更。`get_git_activity` 继续复用 `projects` 表既有列；`sinceMs / untilMs / committer` 均为运行时过滤参数，`committer` 与 `committers` 来自 `logs/HEAD` 运行时解析，不落库。
+
+## Sprint 71：索引队列优先级与失败重试
+
+```sql
+ALTER TABLE vault_index_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vault_index_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+```
+
+- `migrate_vault_index_queue_priority` 按列存在性幂等补列，旧库升级不丢记录；`persist_vault_index_queue` 改为接收 `VaultIndexQueueRecord`，保留 `created_at` 供同优先级 FIFO 排序。

@@ -146,7 +146,12 @@ struct VaultIndexRequest {
     path: String,
     ignore_patterns: Vec<String>,
     concurrency: usize,
+    priority: usize,
+    attempts: usize,
+    last_error: String,
 }
+
+const VAULT_INDEX_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Default)]
 struct VaultIndexState {
@@ -167,6 +172,9 @@ struct VaultIndexQueueEntry {
     path: String,
     status: String,
     position: usize,
+    priority: usize,
+    attempts: usize,
+    last_error: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -179,8 +187,12 @@ struct VaultIndexQueueStatus {
 impl VaultIndexState {
     fn enqueue(&self, request: VaultIndexRequest) -> Result<usize, String> {
         let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        let position = guard.queue.len() + 1;
-        guard.queue.push_back(request);
+        let position = guard
+            .queue
+            .iter()
+            .position(|queued| queued.priority < request.priority)
+            .unwrap_or(guard.queue.len());
+        guard.queue.insert(position, request);
         Ok(position)
     }
 
@@ -235,6 +247,31 @@ impl VaultIndexState {
         Ok(())
     }
 
+    fn retry_failed(&self, run_id: &str, error: &str) -> Result<Option<VaultIndexRequest>, String> {
+        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+        let Some(active) = guard.active.take() else {
+            return Ok(None);
+        };
+        if active.run_id != run_id {
+            guard.active = Some(active);
+            return Err("active run does not match failed run".to_string());
+        }
+        guard.cancelled.remove(run_id);
+        let mut request = active;
+        request.attempts += 1;
+        request.last_error = error.to_string();
+        if request.attempts >= VAULT_INDEX_MAX_ATTEMPTS {
+            return Ok(None);
+        }
+        let position = guard
+            .queue
+            .iter()
+            .position(|queued| queued.priority < request.priority)
+            .unwrap_or(guard.queue.len());
+        guard.queue.insert(position, request.clone());
+        Ok(Some(request))
+    }
+
     fn snapshot(&self) -> Result<VaultIndexQueueStatus, String> {
         let guard = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(VaultIndexQueueStatus {
@@ -243,6 +280,9 @@ impl VaultIndexState {
                 path: request.path.clone(),
                 status: "running".to_string(),
                 position: 1,
+                priority: request.priority,
+                attempts: request.attempts,
+                last_error: request.last_error.clone(),
             }),
             queue: guard
                 .queue
@@ -253,6 +293,9 @@ impl VaultIndexState {
                     path: request.path.clone(),
                     status: "queued".to_string(),
                     position: index + 1,
+                    priority: request.priority,
+                    attempts: request.attempts,
+                    last_error: request.last_error.clone(),
                 })
                 .collect(),
         })
@@ -1688,6 +1731,7 @@ fn spawn_vault_index_worker(
                 Err(_) if cancelled => ("cancelled".to_string(), last_done, last_total, 0, 0, 0),
                 Err(error) => (format!("error: {}", error), 0, 0, 0, 0, 0),
             };
+            let retry_error = status.strip_prefix("error:").map(|s| s.trim().to_string());
             let payload = IndexProgress {
                 run_id: thread_run_id.clone(),
                 path: run_path,
@@ -1700,10 +1744,26 @@ fn spawn_vault_index_worker(
             };
             let _ = app_clone.emit("vault-index-progress", payload);
             clear_vault_index_cancel(&app_clone, &thread_run_id);
-            let _ = app_clone
-                .state::<VaultIndexState>()
-                .finish_active(&thread_run_id);
-            delete_vault_index_request(&app_clone, &thread_run_id);
+            let retry = if let Some(error) = retry_error {
+                app_clone
+                    .state::<VaultIndexState>()
+                    .retry_failed(&thread_run_id, &error)
+                    .ok()
+                    .flatten()
+            } else {
+                let _ = app_clone
+                    .state::<VaultIndexState>()
+                    .finish_active(&thread_run_id);
+                None
+            };
+            if let Some(retry) = retry {
+                persist_vault_index_request(&app_clone, &retry, "queued");
+                thread::sleep(Duration::from_millis(800));
+                emit_vault_index_queue(&app_clone);
+            } else {
+                delete_vault_index_request(&app_clone, &thread_run_id);
+                emit_vault_index_queue(&app_clone);
+            }
             let _ = maybe_start_next_vault_index(&app_clone);
         })
         .map_err(|e| e.to_string())?;
@@ -1728,14 +1788,17 @@ fn maybe_start_next_vault_index(app: &tauri::AppHandle) -> Result<(), String> {
 fn persist_vault_index_request(app: &tauri::AppHandle, request: &VaultIndexRequest, status: &str) {
     if let Some(db_state) = app.try_state::<db::Db>() {
         if let Ok(conn) = db_state.0.lock() {
-            let _ = db::persist_vault_index_queue(
-                &conn,
-                &request.run_id,
-                &request.path,
-                &request.ignore_patterns,
-                request.concurrency,
-                status,
-            );
+            let record = db::VaultIndexQueueRecord {
+                run_id: request.run_id.clone(),
+                path: request.path.clone(),
+                ignore_patterns: request.ignore_patterns.clone(),
+                concurrency: request.concurrency,
+                status: status.to_string(),
+                priority: request.priority,
+                attempts: request.attempts,
+                last_error: request.last_error.clone(),
+            };
+            let _ = db::persist_vault_index_queue(&conn, &record);
         }
     }
 }
@@ -1761,6 +1824,9 @@ fn enqueue_restored_requests(
                     path: record.path,
                     ignore_patterns: record.ignore_patterns,
                     concurrency: record.concurrency,
+                    priority: record.priority,
+                    attempts: record.attempts,
+                    last_error: record.last_error,
                 })
                 .is_ok()
         {
@@ -1783,14 +1849,9 @@ fn restore_vault_index_queue(app: &tauri::AppHandle) {
         };
         for record in &records {
             if record.status == "running" {
-                let _ = db::persist_vault_index_queue(
-                    &conn,
-                    &record.run_id,
-                    &record.path,
-                    &record.ignore_patterns,
-                    record.concurrency,
-                    "queued",
-                );
+                let mut reset = record.clone();
+                reset.status = "queued".to_string();
+                let _ = db::persist_vault_index_queue(&conn, &reset);
             }
         }
         records
@@ -1807,6 +1868,7 @@ fn start_vault_index(
     vault_path: String,
     ignore_patterns: Vec<String>,
     concurrency: usize,
+    priority: Option<usize>,
 ) -> Result<String, String> {
     let run_id = uuid::Uuid::new_v4().to_string();
     let request = VaultIndexRequest {
@@ -1814,6 +1876,9 @@ fn start_vault_index(
         path: vault_path.clone(),
         ignore_patterns,
         concurrency,
+        priority: priority.unwrap_or(0),
+        attempts: 0,
+        last_error: String::new(),
     };
     let position = app.state::<VaultIndexState>().enqueue(request.clone())?;
     persist_vault_index_request(&app, &request, "queued");
@@ -4163,6 +4228,9 @@ mod tests {
             path: path.to_string(),
             ignore_patterns: Vec::new(),
             concurrency: 4,
+            priority: 0,
+            attempts: 0,
+            last_error: String::new(),
         };
         state.enqueue(request("run-1", "C:/a")).unwrap();
         state.enqueue(request("run-2", "C:/b")).unwrap();
@@ -4185,6 +4253,9 @@ mod tests {
             path: path.to_string(),
             ignore_patterns: Vec::new(),
             concurrency: 4,
+            priority: 0,
+            attempts: 0,
+            last_error: String::new(),
         };
         state.enqueue(request("run-1", "C:/a")).unwrap();
         state.enqueue(request("run-2", "C:/b")).unwrap();
@@ -4210,6 +4281,9 @@ mod tests {
                 ignore_patterns: Vec::new(),
                 concurrency: 4,
                 status: "queued".to_string(),
+                priority: 0,
+                attempts: 0,
+                last_error: String::new(),
             },
             db::VaultIndexQueueRecord {
                 run_id: "run-2".to_string(),
@@ -4217,6 +4291,9 @@ mod tests {
                 ignore_patterns: vec!["Daily Notes".to_string()],
                 concurrency: 2,
                 status: "running".to_string(),
+                priority: 1,
+                attempts: 1,
+                last_error: "boom".to_string(),
             },
             db::VaultIndexQueueRecord {
                 run_id: "run-3".to_string(),
@@ -4224,16 +4301,90 @@ mod tests {
                 ignore_patterns: Vec::new(),
                 concurrency: 1,
                 status: "done".to_string(),
+                priority: 0,
+                attempts: 0,
+                last_error: String::new(),
             },
         ];
         let restored = enqueue_restored_requests(&state, records);
         assert_eq!(restored, 2);
         let snapshot = state.snapshot().unwrap();
         assert_eq!(snapshot.queue.len(), 2);
-        assert_eq!(snapshot.queue[0].run_id, "run-1");
+        assert_eq!(snapshot.queue[0].run_id, "run-2");
         assert_eq!(snapshot.queue[0].position, 1);
-        assert_eq!(snapshot.queue[1].run_id, "run-2");
+        assert_eq!(snapshot.queue[0].priority, 1);
+        assert_eq!(snapshot.queue[0].attempts, 1);
+        assert_eq!(snapshot.queue[0].last_error, "boom");
+        assert_eq!(snapshot.queue[1].run_id, "run-1");
         assert_eq!(snapshot.queue[1].position, 2);
+        assert_eq!(snapshot.queue[1].priority, 0);
+    }
+
+    #[test]
+    fn vault_index_queue_prioritizes_high_priority() {
+        let state = VaultIndexState::default();
+        let request = |run_id: &str, path: &str, priority: usize| VaultIndexRequest {
+            run_id: run_id.to_string(),
+            path: path.to_string(),
+            ignore_patterns: Vec::new(),
+            concurrency: 4,
+            priority,
+            attempts: 0,
+            last_error: String::new(),
+        };
+        state.enqueue(request("run-low", "C:/a", 0)).unwrap();
+        state.enqueue(request("run-high", "C:/b", 1)).unwrap();
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.queue[0].run_id, "run-high");
+        assert_eq!(snapshot.queue[0].priority, 1);
+        assert_eq!(snapshot.queue[0].position, 1);
+        assert_eq!(snapshot.queue[1].run_id, "run-low");
+        let first = state.claim_next().unwrap().expect("high priority first");
+        assert_eq!(first.run_id, "run-high");
+        state.finish_active("run-high").unwrap();
+        let second = state.claim_next().unwrap().expect("low priority second");
+        assert_eq!(second.run_id, "run-low");
+    }
+
+    #[test]
+    fn vault_index_queue_retries_failed_then_gives_up() {
+        let state = VaultIndexState::default();
+        state
+            .enqueue(VaultIndexRequest {
+                run_id: "run-1".to_string(),
+                path: "C:/failing".to_string(),
+                ignore_patterns: Vec::new(),
+                concurrency: 4,
+                priority: 1,
+                attempts: 0,
+                last_error: String::new(),
+            })
+            .unwrap();
+        let first = state.claim_next().unwrap().expect("first attempt");
+        assert_eq!(first.attempts, 0);
+        let retry_one = state
+            .retry_failed("run-1", "boom")
+            .unwrap()
+            .expect("retry once");
+        assert_eq!(retry_one.attempts, 1);
+        assert_eq!(retry_one.last_error, "boom");
+        assert!(state.snapshot().unwrap().active.is_none());
+        assert_eq!(state.snapshot().unwrap().queue.len(), 1);
+
+        let second = state.claim_next().unwrap().expect("second attempt");
+        assert_eq!(second.attempts, 1);
+        let retry_two = state
+            .retry_failed("run-1", "boom again")
+            .unwrap()
+            .expect("retry twice");
+        assert_eq!(retry_two.attempts, 2);
+        assert_eq!(retry_two.last_error, "boom again");
+
+        let third = state.claim_next().unwrap().expect("third attempt");
+        assert_eq!(third.attempts, 2);
+        assert!(state.retry_failed("run-1", "boom final").unwrap().is_none());
+        assert!(state.snapshot().unwrap().active.is_none());
+        assert!(state.snapshot().unwrap().queue.is_empty());
     }
 
     #[test]

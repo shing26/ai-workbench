@@ -427,6 +427,9 @@ export type VaultIndexQueueEntry = {
   path: string;
   status: string;
   position: number;
+  priority: number;
+  attempts: number;
+  lastError: string;
 };
 
 export type VaultIndexQueueStatus = {
@@ -2409,11 +2412,22 @@ type IndexQueueRequest = {
   path: string;
   ignorePatterns: string[];
   concurrency: number;
+  priority: number;
+  attempts: number;
+  lastError: string;
 };
 
 type PersistedIndexQueueRecord = IndexQueueRequest & {
   status: "queued" | "running";
 };
+
+const VAULT_INDEX_MAX_ATTEMPTS = 3;
+
+function enqueueIndexRequest(request: IndexQueueRequest) {
+  const index = vaultIndexQueue.findIndex((queued) => queued.priority < request.priority);
+  if (index === -1) vaultIndexQueue.push(request);
+  else vaultIndexQueue.splice(index, 0, request);
+}
 
 function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
   return {
@@ -2423,6 +2437,9 @@ function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
           path: vaultIndexActive.path,
           status: "running",
           position: 1,
+          priority: vaultIndexActive.priority,
+          attempts: vaultIndexActive.attempts,
+          lastError: vaultIndexActive.lastError,
         }
       : null,
     queue: vaultIndexQueue.map((request, index) => ({
@@ -2430,6 +2447,9 @@ function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
       path: request.path,
       status: "queued",
       position: index + 1,
+      priority: request.priority,
+      attempts: request.attempts,
+      lastError: request.lastError,
     })),
   };
 }
@@ -2456,13 +2476,16 @@ function restoreVaultIndexQueueIfNeeded() {
     ) as PersistedIndexQueueRecord[];
     for (const record of records) {
       if (record.status === "queued" || record.status === "running") {
-        vaultIndexQueue.push({
+        enqueueIndexRequest({
           runId: record.runId,
           path: record.path,
           ignorePatterns: Array.isArray(record.ignorePatterns)
             ? record.ignorePatterns
             : [],
           concurrency: Number(record.concurrency) || 4,
+          priority: Number(record.priority) || 0,
+          attempts: Number(record.attempts) || 0,
+          lastError: typeof record.lastError === "string" ? record.lastError : "",
         });
       }
     }
@@ -2497,8 +2520,56 @@ function pumpVaultIndexQueue() {
 
 async function runMockVaultIndex(request: IndexQueueRequest) {
   const { runId, path, ignorePatterns, concurrency } = request;
-  const result = await indexVault(path, ignorePatterns, concurrency);
+  const retryable = path.toLowerCase().includes("retry");
+  const result = retryable ? null : await indexVault(path, ignorePatterns, concurrency);
   let step = 0;
+  const failAttempt = () => {
+    if (vaultIndexCancelled.has(runId)) {
+      emitIndexProgress({
+        runId,
+        path,
+        done: 0,
+        total: 0,
+        files: 0,
+        ignored: 0,
+        concurrencyUsed: 0,
+        status: "cancelled",
+      });
+      vaultIndexCancelled.delete(runId);
+      vaultIndexActive = null;
+      writePersistedVaultIndexQueue();
+      emitVaultIndexQueue();
+      pumpVaultIndexQueue();
+      return;
+    }
+    const active = vaultIndexActive;
+    if (!active) return;
+    const attempts = active.attempts + 1;
+    emitIndexProgress({
+      runId,
+      path,
+      done: 0,
+      total: 0,
+      files: 0,
+      ignored: 0,
+      concurrencyUsed: 0,
+      status: "error: simulated failure",
+    });
+    if (attempts >= VAULT_INDEX_MAX_ATTEMPTS) {
+      vaultIndexActive = null;
+      writePersistedVaultIndexQueue();
+      emitVaultIndexQueue();
+      pumpVaultIndexQueue();
+      return;
+    }
+    active.attempts = attempts;
+    active.lastError = "simulated failure";
+    vaultIndexActive = null;
+    enqueueIndexRequest(active);
+    writePersistedVaultIndexQueue();
+    emitVaultIndexQueue();
+    setTimeout(() => pumpVaultIndexQueue(), 800);
+  };
   const tick = () => {
     step += 1;
     if (vaultIndexCancelled.has(runId)) {
@@ -2519,6 +2590,7 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
       pumpVaultIndexQueue();
       return;
     }
+    if (!result) return;
     emitIndexProgress({
       runId,
       path,
@@ -2538,6 +2610,10 @@ async function runMockVaultIndex(request: IndexQueueRequest) {
     }
     setTimeout(tick, 120);
   };
+  if (retryable) {
+    setTimeout(failAttempt, 30);
+    return;
+  }
   setTimeout(tick, 30);
 }
 
@@ -2545,13 +2621,27 @@ export async function startVaultIndex(
   vaultPath: string,
   ignorePatterns: string[] = [],
   concurrency = 4,
+  priority = 0,
 ): Promise<string> {
   if (isTauri()) {
-    return invoke<string>("start_vault_index", { vaultPath, ignorePatterns, concurrency });
+    return invoke<string>("start_vault_index", {
+      vaultPath,
+      ignorePatterns,
+      concurrency,
+      priority,
+    });
   }
   restoreVaultIndexQueueIfNeeded();
   const runId = makeId();
-  vaultIndexQueue.push({ runId, path: vaultPath, ignorePatterns, concurrency });
+  enqueueIndexRequest({
+    runId,
+    path: vaultPath,
+    ignorePatterns,
+    concurrency,
+    priority,
+    attempts: 0,
+    lastError: "",
+  });
   writePersistedVaultIndexQueue();
   emitIndexProgress({
     runId,

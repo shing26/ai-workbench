@@ -20,6 +20,7 @@ export default function KnowledgeView() {
   const [ignorePatterns, setIgnorePatterns] = useState("");
   const [indexConcurrency, setIndexConcurrency] = useState("4");
   const [useAutoConcurrency, setUseAutoConcurrency] = useState(false);
+  const [indexPriority, setIndexPriority] = useState("0");
   const [recommendedConcurrency, setRecommendedConcurrency] = useState(4);
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
@@ -211,7 +212,13 @@ export default function KnowledgeView() {
     const concurrency = useAutoConcurrency
       ? 0
       : Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
-    const runId = await db.startVaultIndex(vaultPath.trim(), parseIgnore(), concurrency);
+    const priority = indexPriority === "1" ? 1 : 0;
+    const runId = await db.startVaultIndex(
+      vaultPath.trim(),
+      parseIgnore(),
+      concurrency,
+      priority,
+    );
     setIndexProgress({
       runId,
       path: vaultPath.trim(),
@@ -417,6 +424,15 @@ export default function KnowledgeView() {
             placeholder="Vault path..."
             className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
+          <select
+            data-index-priority
+            value={indexPriority}
+            onChange={(e) => setIndexPriority(e.target.value)}
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+          >
+            <option value="0">Normal priority</option>
+            <option value="1">High priority</option>
+          </select>
           <button
             type="button"
             onClick={() => void runIndex()}
@@ -557,10 +573,18 @@ export default function KnowledgeView() {
             {indexQueueStatus.active && (
               <span
                 data-vault-index-queue-active={indexQueueStatus.active.path}
+                data-vault-index-queue-active-priority={indexQueueStatus.active.priority}
+                data-vault-index-queue-active-attempts={indexQueueStatus.active.attempts}
                 className="flex max-w-[240px] items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
               >
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full accent-bg" />
                 <span className="truncate">{indexQueueStatus.active.path}</span>
+                <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[8px] text-slate-500">
+                  {indexQueueStatus.active.priority === 1 ? "high" : "normal"}
+                  {indexQueueStatus.active.attempts > 0
+                    ? ` retry ${indexQueueStatus.active.attempts}`
+                    : ""}
+                </span>
               </span>
             )}
             {indexQueueStatus.queue.length > 0 && (
@@ -575,9 +599,12 @@ export default function KnowledgeView() {
               <span
                 key={entry.runId}
                 data-vault-index-queued-path={entry.path}
+                data-vault-index-queue-priority={entry.priority}
+                data-vault-index-queue-attempts={entry.attempts}
                 className="max-w-[180px] truncate rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-500"
               >
                 {entry.path}
+                {entry.attempts > 0 ? ` (retry ${entry.attempts})` : ""}
               </span>
             ))}
           </div>

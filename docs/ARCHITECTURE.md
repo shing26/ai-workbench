@@ -319,3 +319,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `GitContext` 与 `GitActivityItem` 新增 `committer`，从 reflog 末行解析提交人姓名（按时间戳 / 时区倒推 email 列，兼容姓名含空格）。
 - `get_git_activity` 新增 `sinceMs? / untilMs? / committer?`：先按 `lastCommitAt` 与 committer（大小写不敏感）过滤，再聚合与排序；`GitActivityBoard` 新增全量去重 `committers` 供下拉使用。
 - Projects Git activity 卡片新增时间范围（All / 24h / 7d / 30d）与提交人下拉，切换后刷新统计与行列表；浏览器 fallback 基于 localStorage projects 镜像同一过滤语义。
+
+## Sprint 71：索引队列优先级与失败重试
+
+- `vault_index_queue` 新增 `priority / attempts / last_error`，`migrate_vault_index_queue_priority` 幂等补列；`list_vault_index_queue` 按 `priority DESC, created_at ASC` 返回。
+- 内存队列按 `priority DESC` 插队、同优先级保持 FIFO；`start_vault_index` 新增 `priority` 参数，worker 失败后若 `attempts < 3` 保留优先级重新入队并记录 `last_error`，否则删除记录；重试间隔 800ms 防热循环。
+- Knowledge Vault Index 新增 Normal / High 优先级选择，队列行展示优先级与重试次数，进度区展示最终错误；浏览器 fallback 镜像同一插队与最多 3 次重试语义。
