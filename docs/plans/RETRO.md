@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 85
+
+### What went well?
+
+- Rust 新增 `git_change_groups`：按 `git status --short` 的 XY 前缀把 dirty 文件归类为 staged / unstaged / untracked / both，`GitActivityItem` 新增 `change_groups`，未再丢失状态前缀的空格语义。
+- Rust 新增 `run_commit_lint_gate` 与 `GitLintIssue`：提交前扫描冲突标记与非法 JSON，`commit_git_files` 门禁失败即拒绝提交；`cargo test --lib` 92/92，fmt、clippy、build 全绿。
+- Projects dirty 预览按四组渲染（`data-git-change-group` / `data-git-change-group-header`），Commit selected 先跑 lint 门禁并展示 `data-git-lint-gate`；`verify:ui` / `verify:preview` 新增 `gitStagedUnstaged` / `gitCommitLintGate` lane，均通过。
+
+### What went wrong?
+
+- 首次实现把两位状态前缀 `trim()` 后判定，`" M"` 被误判为 staged；修复为保留原始前缀字节后再按位判断，单测覆盖后回归通过。
+- 分组 lane 断言后未收起 preview，导致后续 diff lane 把已展开面板再次点击成收起；lane 结束前补收起等待后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：AI 复盘结果一键保存为知识笔记、多端同步自定义 prompt 与使用次数。
+- 行内着色与 diff 编辑器、整文件对比视图继续留在 Backlog。
+
 ## Sprint 84
 
 ### What went well?

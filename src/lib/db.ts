@@ -259,7 +259,20 @@ export type GitActivityItem = {
   lastCommitAt: number;
   changedFiles: number;
   changedPaths: string[];
+  changeGroups: GitChangeGroup[];
   dirty: boolean;
+};
+
+export type GitChangeGroup = {
+  path: string;
+  status: string;
+  group: "staged" | "unstaged" | "untracked" | "both";
+};
+
+export type GitLintIssue = {
+  file: string;
+  line: number;
+  message: string;
 };
 
 export type GitCommitBucket = {
@@ -3096,9 +3109,13 @@ export async function getGitActivity(options?: {
       "develop",
       21,
       "d676ced feat(sprint-20): message version graph with parent lineage",
-      2,
+      3,
       "Alice",
-      ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
+      [
+        "docs/plans/sprint-21-project-git-graph.md",
+        "src/views/ProjectsView.tsx",
+        "broken-lint.json",
+      ],
       [6, 5, 3, 4, 2, 1, 2],
     ],
     ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0, "Bob", [], [2, 1, 1, 0, 0, 0, 0]],
@@ -3107,6 +3124,11 @@ export async function getGitActivity(options?: {
     const [branch, commitCount, latestCommit, changedFiles, committer, changedPaths] =
       samples[index % samples.length];
     const hoursAgo = index % samples.length === 1 ? 26 : index + 1;
+    const changeGroups: GitChangeGroup[] = changedPaths.map((path) => ({
+      path,
+      status: path.includes("broken") ? "??" : path.endsWith(".tsx") ? "M " : " M",
+      group: path.includes("broken") ? "untracked" : path.endsWith(".tsx") ? "staged" : "unstaged",
+    }));
     return {
       projectId: project.id,
       projectName: project.name,
@@ -3117,6 +3139,7 @@ export async function getGitActivity(options?: {
       lastCommitAt: now - hoursAgo * 3_600_000,
       changedFiles,
       changedPaths,
+      changeGroups,
       dirty: changedFiles > 0,
       committer,
     };
@@ -3239,6 +3262,22 @@ export async function commitGitFiles(
     branch: "develop",
     message,
   };
+}
+
+export async function runCommitLintGate(
+  path: string,
+  files: string[],
+): Promise<GitLintIssue[]> {
+  if (isTauri()) {
+    return invoke<GitLintIssue[]>("run_commit_lint_gate", { path, files });
+  }
+  return files
+    .filter((file) => /broken|conflict/i.test(file))
+    .map((file) => ({
+      file,
+      line: 1,
+      message: "Unresolved merge conflict marker or invalid JSON",
+    }));
 }
 
 export async function createRemotePr(
