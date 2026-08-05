@@ -316,6 +316,14 @@ export type VaultWatchTarget = {
   removedEvents: number;
 };
 
+export type VaultWatchEvent = {
+  id: number;
+  vaultPath: string;
+  filePath: string;
+  eventKind: string;
+  createdAt: number;
+};
+
 export type VaultTargetStats = {
   path: string;
   files: number;
@@ -372,6 +380,7 @@ const LS_KEY = "ai-workbench:db:v1";
 const VAULT_LS_KEY = "ai-workbench:vault:v1";
 const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
 const VAULT_WATCH_TARGETS_LS_KEY = "ai-workbench:vault-watch-targets:v1";
+const VAULT_WATCH_EVENTS_LS_KEY = "ai-workbench:vault-watch-events:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -2028,7 +2037,62 @@ export async function deleteVaultWatchTarget(vaultPath: string): Promise<boolean
   const targets = readVaultWatchTargets();
   const next = targets.filter((target) => target.path !== vaultPath);
   writeVaultWatchTargets(next);
+  await clearVaultWatchEvents(vaultPath);
   return next.length !== targets.length;
+}
+
+function readVaultWatchEvents(): VaultWatchEvent[] {
+  try {
+    return JSON.parse(localStorage.getItem(VAULT_WATCH_EVENTS_LS_KEY) ?? "[]") as VaultWatchEvent[];
+  } catch {
+    return [];
+  }
+}
+
+function writeVaultWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
+  const next = events.slice(0, 500);
+  localStorage.setItem(VAULT_WATCH_EVENTS_LS_KEY, JSON.stringify(next));
+  return next;
+}
+
+function recordVaultWatchEvent(vaultPath: string, filePath: string, eventKind: string): void {
+  if (!["created", "modified", "removed"].includes(eventKind)) return;
+  const events = readVaultWatchEvents();
+  events.unshift({
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    vaultPath,
+    filePath,
+    eventKind,
+    createdAt: Date.now(),
+  });
+  writeVaultWatchEvents(events);
+}
+
+export async function listVaultWatchEvents(
+  vaultPath?: string,
+  limit = 20,
+): Promise<VaultWatchEvent[]> {
+  if (isTauri()) {
+    return invoke<VaultWatchEvent[]>("list_vault_watch_events", {
+      vaultPath: vaultPath ?? null,
+      limit,
+    });
+  }
+  return readVaultWatchEvents()
+    .filter((event) => !vaultPath || event.vaultPath === vaultPath)
+    .slice(0, Math.max(1, Math.min(200, limit)));
+}
+
+export async function clearVaultWatchEvents(vaultPath?: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("clear_vault_watch_events", {
+      vaultPath: vaultPath ?? null,
+    });
+  }
+  const events = readVaultWatchEvents();
+  const next = vaultPath ? events.filter((event) => event.vaultPath !== vaultPath) : [];
+  writeVaultWatchEvents(next);
+  return events.length - next.length;
 }
 
 export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
@@ -2318,6 +2382,7 @@ export async function startVaultWatch(
       : target,
   );
   writeVaultWatchTargets(targets);
+  recordVaultWatchEvent(vaultPath, syncPath, "created");
   return getVaultWatchStatus();
 }
 

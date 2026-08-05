@@ -1263,6 +1263,58 @@ try {
   }
   results.vaultTargetStats = vaultTargetStats;
 
+  const vaultWatchTimeline = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const target = [...document.querySelectorAll("[data-vault-target]")]
+      .find((row) => row.getAttribute("data-vault-target-path") === "C:/vault");
+    if (!target) return { ok: false, reason: "no C:/vault target" };
+    const timelineBtn = target.querySelector("[data-vault-target-timeline]");
+    if (!timelineBtn) return { ok: false, reason: "no timeline button" };
+    timelineBtn.click();
+    let events = [];
+    for (let i = 0; i < 30; i++) {
+      events = [...document.querySelectorAll("[data-vault-watch-event]")];
+      if (events.length > 0) break;
+      await sleep(100);
+    }
+    const kinds = [...new Set(events.map((el) => el.getAttribute("data-vault-watch-event-kind")))];
+    const paths = events.map((el) => el.getAttribute("data-vault-watch-event-path") ?? "");
+    const countText =
+      document.querySelector("[data-vault-watch-events-count]")?.textContent ?? "";
+    const countOk =
+      Number(countText.replace(/[^0-9]/g, "") || 0) === events.length;
+    const clearBtn = document.querySelector("[data-vault-watch-events-clear]");
+    if (!clearBtn) {
+      return { ok: false, reason: "no clear button", events: events.length, kinds, countOk };
+    }
+    clearBtn.click();
+    let cleared = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      cleared = document.querySelectorAll("[data-vault-watch-event]").length === 0;
+      if (cleared) break;
+    }
+    return {
+      ok:
+        events.length > 0 &&
+        kinds.includes("created") &&
+        paths.some((path) => path.includes("Watch Sync Note")) &&
+        countOk &&
+        cleared,
+      events: events.length,
+      kinds,
+      paths,
+      countOk,
+      cleared,
+    };
+  })()`);
+  if (!vaultWatchTimeline.ok) {
+    throw new Error(
+      `Vault watch timeline assertion failed: ${JSON.stringify(vaultWatchTimeline)}`,
+    );
+  }
+  results.vaultWatchTimeline = vaultWatchTimeline;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

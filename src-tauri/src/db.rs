@@ -181,6 +181,15 @@ CREATE TABLE IF NOT EXISTS vault_watch_targets (
     modified_events INTEGER NOT NULL DEFAULT 0,
     removed_events INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS vault_watch_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_path TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
+    ON vault_watch_events(vault_path, created_at DESC);
 CREATE TABLE IF NOT EXISTS sync_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event TEXT NOT NULL,
@@ -424,6 +433,16 @@ pub struct VaultWatchTarget {
     pub created_events: i64,
     pub modified_events: i64,
     pub removed_events: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultWatchEvent {
+    pub id: i64,
+    pub vault_path: String,
+    pub file_path: String,
+    pub event_kind: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -2082,6 +2101,7 @@ pub fn upsert_vault_watch_target(
 pub fn touch_vault_watch_event(
     conn: &Connection,
     path: &str,
+    file_path: &str,
     event_kind: &str,
 ) -> Result<(), String> {
     let (created, modified, removed) = match event_kind {
@@ -2097,6 +2117,18 @@ pub fn touch_vault_watch_event(
     };
     let now = now_millis();
     conn.execute(
+        "INSERT INTO vault_watch_events (vault_path, file_path, event_kind, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![path, file_path, event_kind, now],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM vault_watch_events
+         WHERE id NOT IN (SELECT id FROM vault_watch_events ORDER BY id DESC LIMIT 500)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
         "INSERT INTO vault_watch_targets
          (path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
           created_events, modified_events, removed_events)
@@ -2111,6 +2143,64 @@ pub fn touch_vault_watch_event(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn list_vault_watch_events(
+    conn: &Connection,
+    vault_path: Option<&str>,
+    limit: i64,
+) -> Result<Vec<VaultWatchEvent>, String> {
+    let limit = limit.clamp(1, 200);
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, vault_path, file_path, event_kind, created_at
+             FROM vault_watch_events
+             WHERE (?1 IS NULL OR vault_path = ?1)
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![vault_path, limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, vault_path, file_path, event_kind, created_at) = row.map_err(|e| e.to_string())?;
+        out.push(VaultWatchEvent {
+            id,
+            vault_path,
+            file_path,
+            event_kind,
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
+pub fn clear_vault_watch_events(
+    conn: &Connection,
+    vault_path: Option<&str>,
+) -> Result<i64, String> {
+    let removed = match vault_path {
+        Some(path) => conn
+            .execute(
+                "DELETE FROM vault_watch_events WHERE vault_path = ?1",
+                params![path],
+            )
+            .map_err(|e| e.to_string())?,
+        None => conn
+            .execute("DELETE FROM vault_watch_events", [])
+            .map_err(|e| e.to_string())?,
+    };
+    Ok(removed as i64)
 }
 
 pub fn set_vault_watch_target_enabled(
@@ -2129,6 +2219,10 @@ pub fn set_vault_watch_target_enabled(
 }
 
 pub fn delete_vault_watch_target(conn: &Connection, path: &str) -> Result<bool> {
+    conn.execute(
+        "DELETE FROM vault_watch_events WHERE vault_path = ?1",
+        params![path],
+    )?;
     let deleted = conn.execute(
         "DELETE FROM vault_watch_targets WHERE path = ?1",
         params![path],
@@ -4114,8 +4208,8 @@ mod tests {
         assert_eq!(targets[1].path, "D:/work");
         assert!(!targets[1].enabled);
 
-        touch_vault_watch_event(&conn, "D:/work", "created").unwrap();
-        touch_vault_watch_event(&conn, "D:/work", "modified").unwrap();
+        touch_vault_watch_event(&conn, "D:/work", "D:/work/note.md", "created").unwrap();
+        touch_vault_watch_event(&conn, "D:/work", "D:/work/task.md", "modified").unwrap();
         let touched = list_vault_watch_targets(&conn).unwrap();
         let work = touched.iter().find(|t| t.path == "D:/work").unwrap();
         assert_eq!(work.event_count, 2);
@@ -4123,6 +4217,18 @@ mod tests {
         assert_eq!(work.created_events, 1);
         assert_eq!(work.modified_events, 1);
         assert_eq!(work.removed_events, 0);
+        let events = list_vault_watch_events(&conn, Some("D:/work"), 20).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_kind, "modified");
+        assert_eq!(events[0].file_path, "D:/work/task.md");
+        assert_eq!(events[1].event_kind, "created");
+        assert_eq!(events[1].file_path, "D:/work/note.md");
+        assert_eq!(
+            list_vault_watch_events(&conn, Some("C:/missing"), 20)
+                .unwrap()
+                .len(),
+            0
+        );
 
         let enabled = set_vault_watch_target_enabled(&conn, "D:/work", true).unwrap();
         assert_eq!(enabled.as_ref().map(|t| t.enabled), Some(true));
@@ -4135,6 +4241,14 @@ mod tests {
         let remaining = list_vault_watch_targets(&conn).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, "D:/work");
+
+        assert_eq!(clear_vault_watch_events(&conn, Some("D:/work")).unwrap(), 2);
+        assert_eq!(
+            list_vault_watch_events(&conn, Some("D:/work"), 20)
+                .unwrap()
+                .len(),
+            0
+        );
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -4151,7 +4265,7 @@ mod tests {
         upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
         upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
         upsert_vault_watch_target(&conn, "C:/a", &[], true).unwrap();
-        touch_vault_watch_event(&conn, "C:/a", "created").unwrap();
+        touch_vault_watch_event(&conn, "C:/a", "C:/a/note.md", "created").unwrap();
 
         let stats = vault_target_stats(&conn).unwrap();
         assert_eq!(stats.len(), 2);
@@ -4171,6 +4285,24 @@ mod tests {
         upsert_knowledge_file(&conn, "C:/a/c.md", "C", "", "c", "C:/a").unwrap();
         let stats = vault_target_stats(&conn).unwrap();
         assert_eq!(stats[0].files, 3);
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_watch_events_clear_all_and_prune() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-events-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+
+        touch_vault_watch_event(&conn, "A:/one", "A:/one/1.md", "created").unwrap();
+        touch_vault_watch_event(&conn, "B:/two", "B:/two/2.md", "removed").unwrap();
+        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 2);
+        assert_eq!(clear_vault_watch_events(&conn, None).unwrap(), 2);
+        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 0);
+        assert!(touch_vault_watch_event(&conn, "A:/one", "A:/one/bad.txt", "watched").is_err());
+        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 0);
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
