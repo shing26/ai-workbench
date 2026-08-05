@@ -709,3 +709,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 - `status` 取值：`queued`（待投递）、`delivering`（已认领）、`success`（投递成功）、`dead`（超过 `retries + 1` 次仍失败）；`retry_webhook_delivery` 重置为 `queued / attempts 0 / next_attempt_at = now`。
 - `delete_webhook_rule` 会级联 `DELETE FROM webhook_deliveries WHERE rule_id = ?`；`clear_webhook_deliveries` 支持按 status 过滤或清空全表。
 - 浏览器 fallback 使用 `ai-workbench:webhook-deliveries:v1` 保存同一模型，不写入 SQLite。
+
+## Sprint 97：Provider /models 探测
+
+无表结构变更。`list_provider_models` 是运行时探测：结果不落库，模型仍由 `providers.model` 保存；浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` 数组，不新增 localStorage key。

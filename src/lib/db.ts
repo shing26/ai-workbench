@@ -88,6 +88,11 @@ export type Provider = {
   isActive: boolean;
 };
 
+export type ProviderModel = {
+  id: string;
+  ownedBy: string | null;
+};
+
 export type Department = {
   id: string;
   name: string;
@@ -837,6 +842,48 @@ export async function updateProviderModel(id: string, model: string): Promise<vo
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.model = model;
   writeLocal(shape);
+}
+
+export async function listProviderModels(provider: Provider): Promise<ProviderModel[]> {
+  if (isTauri()) {
+    return invoke<ProviderModel[]>("list_provider_models", { providerId: provider.id });
+  }
+  const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
+  const base = provider.baseUrl.replace(/\/+$/, "");
+  const endpoint = isOllama ? `${base}/api/tags` : `${base}/models`;
+  const headers: Record<string, string> = {};
+  if (!isOllama && provider.apiKey.trim()) {
+    headers.Authorization = `Bearer ${provider.apiKey.trim()}`;
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(endpoint, { headers, signal: controller.signal });
+    if (!response.ok) throw new Error(`Models HTTP ${response.status}`);
+    const payload = (await response.json()) as Record<string, unknown>;
+    if (isOllama) {
+      const items = ((payload.models as Array<{ name?: string }> | undefined) ?? []).filter(
+        (m) => m.name,
+      );
+      const models: ProviderModel[] = items.map((m) => ({
+        id: m.name as string,
+        ownedBy: null,
+      }));
+      if (models.length === 0) throw new Error("No models returned by provider");
+      return models;
+    }
+    const items = ((payload.data as Array<{ id?: string; owned_by?: string }> | undefined) ?? []).filter(
+      (m) => m.id,
+    );
+    const models: ProviderModel[] = items.map((m) => ({
+      id: m.id as string,
+      ownedBy: m.owned_by ?? null,
+    }));
+    if (models.length === 0) throw new Error("No models returned by provider");
+    return models;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function listDepartments(): Promise<Department[]> {
