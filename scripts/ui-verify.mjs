@@ -920,6 +920,54 @@ try {
     throw new Error(`Vault watch assertion failed: ${JSON.stringify(vaultWatch)}`);
   }
   results.vaultWatch = vaultWatch;
+  const vaultWatchReady = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const watchBtn = document.querySelector('[data-vault-watch]');
+    if (!watchBtn) return { ok: false, reason: "no vault watch button" };
+    if (watchBtn.getAttribute("data-vault-watch") !== "on") {
+      watchBtn.click();
+      await sleep(350);
+    }
+    const path = document.querySelector('input[placeholder="Vault path..."]')?.value ?? "";
+    const ignore =
+      document.querySelector('input[placeholder="Ignore patterns (comma separated)"]')?.value ?? "";
+    return {
+      ok: path === "C:/vault" && ignore.includes("Daily Notes"),
+      path,
+      ignore,
+    };
+  })()`);
+  if (!vaultWatchReady.ok) {
+    throw new Error(`Vault watch persistence setup failed: ${JSON.stringify(vaultWatchReady)}`);
+  }
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const vaultWatchPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let restored = false;
+    for (let i = 0; i < 30; i++) {
+      const path = document.querySelector('input[placeholder="Vault path..."]')?.value ?? "";
+      const ignore =
+        document.querySelector('input[placeholder="Ignore patterns (comma separated)"]')?.value ?? "";
+      const watch =
+        document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") ?? "";
+      restored = path === "C:/vault" && ignore.includes("Daily Notes") && watch === "on";
+      if (restored) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(250);
+    const stopped =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "off";
+    return { ok: restored && stopped, restored, stopped };
+  })()`);
+  if (!vaultWatchPersisted.ok) {
+    throw new Error(
+      `Vault watch persistence assertion failed: ${JSON.stringify(vaultWatchPersisted)}`,
+    );
+  }
+  results.vaultWatchPersisted = vaultWatchPersisted;
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

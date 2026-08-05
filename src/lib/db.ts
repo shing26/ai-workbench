@@ -280,6 +280,13 @@ export type VaultWatchStatus = {
   updatedAt: number;
 };
 
+export type VaultWatchConfig = {
+  path: string;
+  ignorePatterns: string[];
+  enabled: boolean;
+  updatedAt: number;
+};
+
 export type IndexResult = {
   files: number;
   ignored: number;
@@ -1369,15 +1376,49 @@ type VaultWatchRecord = {
   watching: boolean;
   path: string | null;
   updatedAt: number;
+  ignorePatterns: string[];
 };
 
 function readVaultWatch(): VaultWatchRecord {
   try {
     const record = JSON.parse(localStorage.getItem(VAULT_WATCH_LS_KEY) ?? "null") as VaultWatchRecord | null;
-    return record ?? { watching: false, path: null, updatedAt: 0 };
+    return record ?? { watching: false, path: null, updatedAt: 0, ignorePatterns: [] };
   } catch {
-    return { watching: false, path: null, updatedAt: 0 };
+    return { watching: false, path: null, updatedAt: 0, ignorePatterns: [] };
   }
+}
+
+function readVaultWatchConfig(): VaultWatchConfig {
+  const record = readVaultWatch();
+  return {
+    path: record.path ?? "",
+    ignorePatterns: record.ignorePatterns ?? [],
+    enabled: record.watching,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function writeVaultWatchConfig(config: VaultWatchConfig): VaultWatchConfig {
+  const record: VaultWatchRecord = {
+    watching: config.enabled,
+    path: config.path,
+    updatedAt: config.updatedAt || Date.now(),
+    ignorePatterns: config.ignorePatterns,
+  };
+  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  return { ...config, updatedAt: record.updatedAt };
+}
+
+export async function getVaultWatchConfig(): Promise<VaultWatchConfig> {
+  if (isTauri()) return invoke<VaultWatchConfig>("get_vault_watch_config");
+  return readVaultWatchConfig();
+}
+
+export async function setVaultWatchConfig(config: VaultWatchConfig): Promise<VaultWatchConfig> {
+  if (isTauri()) {
+    return invoke<VaultWatchConfig>("set_vault_watch_config", { config });
+  }
+  return writeVaultWatchConfig(config);
 }
 
 export async function indexVault(
@@ -1427,14 +1468,25 @@ export async function startVaultWatch(
     });
   }
   localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
-  const record: VaultWatchRecord = { watching: true, path: vaultPath, updatedAt: Date.now() };
+  const record: VaultWatchRecord = {
+    watching: true,
+    path: vaultPath,
+    updatedAt: Date.now(),
+    ignorePatterns,
+  };
   localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
   return { ...record, files: filtered.length };
 }
 
 export async function stopVaultWatch(): Promise<VaultWatchStatus> {
   if (isTauri()) return invoke<VaultWatchStatus>("stop_vault_watch");
-  const record: VaultWatchRecord = { watching: false, path: null, updatedAt: Date.now() };
+  const current = readVaultWatch();
+  const record: VaultWatchRecord = {
+    watching: false,
+    path: current.path,
+    updatedAt: Date.now(),
+    ignorePatterns: current.ignorePatterns,
+  };
   localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
   return { ...record, files: readVaultFiles().length };
 }

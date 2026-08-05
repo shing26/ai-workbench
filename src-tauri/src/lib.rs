@@ -1404,6 +1404,7 @@ fn start_vault_watch_impl(
     }
     let app_clone = app.clone();
     let canonical_for_events = canonical.clone();
+    let patterns_for_config = ignore_patterns.clone();
     let on_event = move |event: &Event| {
         if !matches!(
             event.kind,
@@ -1428,6 +1429,8 @@ fn start_vault_watch_impl(
     let handle = start_vault_watcher(canonical_str.clone(), on_event)?;
     *state.active.lock().map_err(|e| e.to_string())? = Some(handle);
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    db::set_vault_watch_config(&conn, &canonical_str, &patterns_for_config, true)
+        .map_err(|e| e.to_string())?;
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
     Ok(status)
@@ -1467,6 +1470,9 @@ fn stop_vault_watch(
         }
     }
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    let config = db::get_vault_watch_config(&conn).map_err(|e| e.to_string())?;
+    db::set_vault_watch_config(&conn, &config.path, &config.ignore_patterns, false)
+        .map_err(|e| e.to_string())?;
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
     Ok(status)
@@ -1480,6 +1486,45 @@ fn get_vault_watch_status(
 ) -> Result<VaultWatchStatus, String> {
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
     vault_watch_status(&app, &conn)
+}
+
+#[tauri::command]
+fn get_vault_watch_config(state: State<'_, db::Db>) -> Result<db::VaultWatchConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_vault_watch_config(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_vault_watch_config(
+    state: State<'_, db::Db>,
+    config: db::VaultWatchConfig,
+) -> Result<db::VaultWatchConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_vault_watch_config(&conn, &config.path, &config.ignore_patterns, config.enabled)
+        .map_err(|e| e.to_string())
+}
+
+fn restore_vault_watch(app: tauri::AppHandle) {
+    let Some(db_state) = app.try_state::<db::Db>() else {
+        return;
+    };
+    let config = {
+        let Ok(conn) = db_state.0.lock() else {
+            return;
+        };
+        db::get_vault_watch_config(&conn).ok()
+    };
+    if let Some(config) = config {
+        if config.enabled && !config.path.is_empty() {
+            let _ = start_vault_watch_impl(
+                app.clone(),
+                app.state::<VaultWatchState>(),
+                db_state,
+                config.path,
+                config.ignore_patterns,
+            );
+        }
+    }
 }
 
 fn spawn_clipboard_monitor(app: tauri::AppHandle) {
@@ -2565,6 +2610,7 @@ pub fn run() {
             app.manage(StreamCancellation::default());
             app.manage(ProviderHeartbeat::default());
             app.manage(VaultWatchState::default());
+            restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
             Ok(())
@@ -2637,6 +2683,8 @@ pub fn run() {
             start_vault_watch_ex,
             stop_vault_watch,
             get_vault_watch_status,
+            get_vault_watch_config,
+            set_vault_watch_config,
             get_project_git_context,
             generate_commit_pr_draft,
             apply_commit,

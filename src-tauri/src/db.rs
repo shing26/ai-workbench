@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
     PRIMARY KEY (id, kind, created_at)
 );
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolved_at, created_at);
+CREATE TABLE IF NOT EXISTS vault_watch_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    path TEXT NOT NULL DEFAULT '',
+    ignore_patterns TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -372,6 +379,15 @@ pub struct SyncConflictRecord {
     pub resolved_choice: Option<String>,
     pub resolved_at: Option<i64>,
     pub created_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultWatchConfig {
+    pub path: String,
+    pub ignore_patterns: Vec<String>,
+    pub enabled: bool,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1484,6 +1500,63 @@ pub fn clear_resolved_sync_conflicts(conn: &Connection) -> Result<usize, String>
     .map_err(|e| e.to_string())
 }
 
+pub fn get_vault_watch_config(conn: &Connection) -> Result<VaultWatchConfig> {
+    let row = conn.query_row(
+        "SELECT path, ignore_patterns, enabled, updated_at
+         FROM vault_watch_config WHERE id = 1",
+        [],
+        |row| {
+            let raw: String = row.get(1)?;
+            let enabled: i64 = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                raw,
+                enabled,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    match row {
+        Ok((path, raw, enabled, updated_at)) => Ok(VaultWatchConfig {
+            path,
+            ignore_patterns: raw
+                .lines()
+                .map(|line| line.to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+            enabled: enabled != 0,
+            updated_at,
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(VaultWatchConfig {
+            path: String::new(),
+            ignore_patterns: Vec::new(),
+            enabled: false,
+            updated_at: 0,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn set_vault_watch_config(
+    conn: &Connection,
+    path: &str,
+    ignore_patterns: &[String],
+    enabled: bool,
+) -> Result<VaultWatchConfig> {
+    let joined = ignore_patterns.join("\n");
+    conn.execute(
+        "INSERT INTO vault_watch_config (id, path, ignore_patterns, enabled, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+           path = excluded.path,
+           ignore_patterns = excluded.ignore_patterns,
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at",
+        params![path, joined, enabled as i64, now_millis()],
+    )?;
+    get_vault_watch_config(conn)
+}
+
 enum MergeOutcome {
     Added,
     Updated {
@@ -2497,6 +2570,48 @@ mod tests {
         assert_eq!(cleared, 1);
         assert_eq!(list_sync_conflicts(&conn, "all").unwrap().len(), 1);
         drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_watch_config_persists_path_ignore_and_enabled() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-config-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+        let conn = init_connection(&db_path).unwrap();
+
+        let saved = set_vault_watch_config(
+            &conn,
+            "C:/vault",
+            &["Daily Notes".to_string(), "node_modules".to_string()],
+            true,
+        )
+        .unwrap();
+        assert_eq!(saved.path, "C:/vault");
+        assert_eq!(saved.ignore_patterns.len(), 2);
+        assert!(saved.enabled);
+        drop(conn);
+
+        let reopened = init_connection(&db_path).unwrap();
+        let restored = get_vault_watch_config(&reopened).unwrap();
+        assert_eq!(restored.path, "C:/vault");
+        assert_eq!(
+            restored.ignore_patterns,
+            vec!["Daily Notes", "node_modules"]
+        );
+        assert!(restored.enabled);
+        assert!(restored.updated_at > 0);
+
+        let stopped =
+            set_vault_watch_config(&reopened, &restored.path, &restored.ignore_patterns, false)
+                .unwrap();
+        assert!(!stopped.enabled);
+        assert_eq!(stopped.path, "C:/vault");
+        assert_eq!(stopped.ignore_patterns.len(), 2);
+
+        let empty = get_vault_watch_config(&reopened).unwrap();
+        assert!(!empty.enabled);
+        drop(reopened);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -48,6 +48,27 @@ export default function KnowledgeView() {
 
   useEffect(() => {
     let disposed = false;
+    void (async () => {
+      const config = await db.getVaultWatchConfig();
+      if (disposed) return;
+      if (config.path) setVaultPath(config.path);
+      if (config.ignorePatterns.length > 0) {
+        setIgnorePatterns(config.ignorePatterns.join(", "));
+      }
+      if (config.enabled && config.path) {
+        const status = await db.getVaultWatchStatus();
+        if (!disposed && !status.watching) {
+          setWatchStatus(await db.startVaultWatch(config.path, config.ignorePatterns));
+        }
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
     let unlisten = () => {};
     void db
       .listenVaultWatchUpdated((status) => {
@@ -101,15 +122,26 @@ export default function KnowledgeView() {
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
+    await db.setVaultWatchConfig({
+      path: vaultPath.trim(),
+      ignorePatterns: parseIgnore(),
+      enabled: watchStatus?.watching ?? false,
+      updatedAt: Date.now(),
+    });
   };
 
   const toggleWatch = async () => {
     if (!vaultPath.trim() && !watchStatus?.watching) return;
-    setWatchStatus(
-      watchStatus?.watching
-        ? await db.stopVaultWatch()
-        : await db.startVaultWatch(vaultPath.trim(), parseIgnore()),
-    );
+    const next = watchStatus?.watching
+      ? await db.stopVaultWatch()
+      : await db.startVaultWatch(vaultPath.trim(), parseIgnore());
+    setWatchStatus(next);
+    await db.setVaultWatchConfig({
+      path: next.path ?? vaultPath.trim(),
+      ignorePatterns: parseIgnore(),
+      enabled: next.watching,
+      updatedAt: Date.now(),
+    });
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
