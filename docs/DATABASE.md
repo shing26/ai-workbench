@@ -626,3 +626,7 @@ UPDATE quick_prompts SET sort_order = rowid WHERE sort_order = 0;
 
 - 新库的 `quick_prompts` 建表语句已直接包含 `sort_order INTEGER NOT NULL DEFAULT 0`；`QuickPrompt.order` 经 serde 命名映射为 JSON `order`，随 Sync Snapshot 同步。
 - `update_custom_quick_prompt` 只允许 `custom = 1` 的行，保留 `created_at` 与 `sort_order`；`reorder_custom_quick_prompts` 单事务把传入 id 依次重编号为 0..n-1。
+
+## Sprint 89：行内着色 diff 与整文件对比
+
+无表结构变更。`get_git_file_versions` 为运行时命令：旧内容来自 `git show HEAD:file`，新内容来自工作区磁盘读取，status 来自 `git status --porcelain`，不新增持久化字段或表；浏览器 fallback 仍由既有 `getGitFileDiff` mock 派生，不涉及 localStorage 新 key。

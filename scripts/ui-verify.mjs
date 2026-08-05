@@ -1350,6 +1350,58 @@ try {
   if (!results.gitDirtyDiff.ok) {
     throw new Error(`Git dirty diff assertion failed: ${JSON.stringify(results.gitDirtyDiff)}`);
   }
+  results.gitInlineDiffSideBySide = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const panel = document.querySelector(
+      '[data-git-diff-content="src/views/ProjectsView.tsx"]',
+    );
+    if (!panel) return { ok: false, reason: "diff panel missing" };
+    const lines = [...panel.querySelectorAll("[data-git-diff-line]")];
+    const types = new Set(lines.map((el) => el.getAttribute("data-git-diff-line-type")));
+    const highlighted = !!panel.querySelector(
+      '[data-git-diff-line] span[class*="text-"]',
+    );
+    const inlineOk =
+      lines.length > 0 &&
+      ["add", "del", "hunk", "context"].every((kind) => types.has(kind)) &&
+      highlighted;
+    const toggle = panel.querySelector("[data-git-side-by-side-toggle]");
+    if (!toggle) return { ok: false, reason: "side-by-side toggle missing", inlineOk };
+    toggle.click();
+    let sideOk = false;
+    for (let i = 0; i < 20; i++) {
+      const side = panel.querySelector('[data-git-side-by-side="src/views/ProjectsView.tsx"]');
+      const oldLines = panel.querySelectorAll('[data-git-file-version="old"]');
+      const newLines = panel.querySelectorAll('[data-git-file-version="new"]');
+      const firstOld = oldLines[0];
+      const firstNew = newLines[0];
+      sideOk =
+        !!side &&
+        oldLines.length > 0 &&
+        newLines.length > 0 &&
+        (firstOld?.textContent ?? "").includes("1") &&
+        (firstNew?.textContent ?? "").includes("1");
+      if (sideOk) break;
+      await sleep(100);
+    }
+    toggle.click();
+    await sleep(120);
+    const backToInline = !!panel.querySelector("[data-git-diff-line]");
+    return {
+      ok: inlineOk && sideOk && backToInline,
+      inlineOk,
+      sideOk,
+      backToInline,
+      types: [...types],
+      lineCount: lines.length,
+      highlighted,
+    };
+  })()`);
+  if (!results.gitInlineDiffSideBySide.ok) {
+    throw new Error(
+      `Git inline diff / side-by-side assertion failed: ${JSON.stringify(results.gitInlineDiffSideBySide)}`,
+    );
+  }
   results.gitBatchPreview = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {

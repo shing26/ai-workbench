@@ -2861,6 +2861,15 @@ struct GitFileDiff {
     diff: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileVersions {
+    path: String,
+    status: String,
+    old_content: String,
+    new_content: String,
+}
+
 fn read_untracked_diff(path: &str, file: &str) -> String {
     let display = file.replace('\\', "/");
     let target = Path::new(path).join(file);
@@ -2913,6 +2922,29 @@ fn get_git_file_diff(path: String, file: String) -> Result<GitFileDiff, String> 
         path: file,
         status,
         diff,
+    })
+}
+
+#[tauri::command]
+fn get_git_file_versions(path: String, file: String) -> Result<GitFileVersions, String> {
+    let git_file = file.replace('\\', "/");
+    let status = run_git(&path, &["status", "--porcelain", "--", &git_file])
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "clean".to_string());
+    let old_content = if status.starts_with("??") {
+        String::new()
+    } else {
+        run_git(&path, &["show", &format!("HEAD:{git_file}")]).unwrap_or_default()
+    };
+    let new_content = fs::read_to_string(Path::new(&path).join(&file)).unwrap_or_default();
+    Ok(GitFileVersions {
+        path: file,
+        status,
+        old_content,
+        new_content,
     })
 }
 
@@ -4319,6 +4351,7 @@ pub fn run() {
             get_project_git_context,
             get_git_activity,
             get_git_file_diff,
+            get_git_file_versions,
             generate_commit_pr_draft,
             apply_commit,
             commit_git_files,
@@ -4503,6 +4536,42 @@ mod tests {
         assert!(diff.diff.contains("diff --git"));
         assert!(diff.diff.contains("+new content"));
         assert!(diff.diff.contains("+second line"));
+
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn git_file_versions_returns_head_and_worktree_content() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-file-versions-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "line one\nline two\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        std::fs::write(temp.join("README.md"), "line one\nline changed\n").unwrap();
+
+        let versions = get_git_file_versions(path.clone(), "README.md".to_string()).unwrap();
+        assert!(versions.old_content.contains("line two"));
+        assert!(versions.new_content.contains("line changed"));
+        assert!(!versions.new_content.contains("line two"));
+        assert!(versions.status.contains("M"));
+
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn git_file_versions_untracked_returns_empty_old() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-untracked-versions-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("notes.txt"), "new content\n").unwrap();
+
+        let versions = get_git_file_versions(path.clone(), "notes.txt".to_string()).unwrap();
+        assert!(versions.old_content.is_empty());
+        assert!(versions.new_content.contains("new content"));
+        assert!(versions.status.starts_with("??"));
 
         std::fs::remove_dir_all(&temp).unwrap();
     }

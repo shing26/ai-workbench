@@ -1,6 +1,7 @@
 import { Check, Copy, ExternalLink, FolderKanban, GitBranch, GitMerge, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
+import { detectLanguage, highlightLine, parseDiffLines, type DiffLineKind } from "../lib/diffHighlight";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
 import StatPill from "../components/ui/StatPill";
@@ -20,6 +21,62 @@ const GIT_CHANGE_GROUPS = [
   { key: "untracked", label: "Untracked" },
   { key: "both", label: "Both" },
 ] as const;
+
+function diffLineClass(kind: DiffLineKind): string {
+  switch (kind) {
+    case "file":
+      return "text-slate-500";
+    case "hunk":
+      return "text-cyan-300/90";
+    case "add":
+      return "bg-emerald-500/10 text-emerald-300/90";
+    case "del":
+      return "bg-rose-500/10 text-rose-300/90";
+    default:
+      return "text-slate-400";
+  }
+}
+
+function FileVersionPane({
+  title,
+  dataKey,
+  content,
+  language,
+}: {
+  title: string;
+  dataKey: string;
+  content: string;
+  language: string;
+}) {
+  const lines = content ? content.split("\n") : [];
+  return (
+    <div className="min-w-0 rounded-lg border border-white/10 bg-black/30">
+      <div className="border-b border-white/10 px-2 py-1 text-[8px] uppercase tracking-normal text-slate-500">
+        {title}
+      </div>
+      <div className="max-h-56 overflow-auto">
+        {lines.length === 0 ? (
+          <div className="px-2 py-1 text-[9px] text-slate-600">empty</div>
+        ) : (
+          lines.map((line, index) => (
+            <div
+              key={index}
+              data-git-file-version={dataKey}
+              className="flex gap-2 px-1 text-[9px] leading-relaxed"
+            >
+              <span className="w-6 shrink-0 select-none text-right text-slate-700">
+                {index + 1}
+              </span>
+              <span className="min-w-0 whitespace-pre-wrap text-slate-300">
+                {highlightLine(line, language)}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
@@ -42,6 +99,9 @@ export default function ProjectsView() {
   const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
   const [gitDiffs, setGitDiffs] = useState<Record<string, db.GitFileDiff>>({});
   const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
+  const [sideBySide, setSideBySide] = useState<Record<string, boolean>>({});
+  const [fileVersions, setFileVersions] = useState<Record<string, db.GitFileVersions>>({});
+  const [loadingVersions, setLoadingVersions] = useState<Record<string, boolean>>({});
   const [batchDiff, setBatchDiff] = useState<{
     projectId: string;
     content: string;
@@ -74,6 +134,22 @@ export default function ProjectsView() {
         return next;
       });
     });
+  };
+
+  const toggleSideBySide = (projectId: string, projectPath: string, file: string) => {
+    const key = `${projectId}:${file}`;
+    setSideBySide((prev) => ({ ...prev, [key]: !prev[key] }));
+    if (!fileVersions[key] && !loadingVersions[key]) {
+      setLoadingVersions((prev) => ({ ...prev, [key]: true }));
+      void db.getGitFileVersions(projectPath, file).then((versions) => {
+        setFileVersions((prev) => ({ ...prev, [key]: versions }));
+        setLoadingVersions((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      });
+    }
   };
 
   const loadBatchPreview = async (
@@ -361,15 +437,78 @@ export default function ProjectsView() {
                 </button>
               </div>
               {gitDiffs[`${item.projectId}:${entry.path}`] && (
-                <pre
+                <div
                   data-git-diff-content={entry.path}
                   data-git-diff-status={
                     gitDiffs[`${item.projectId}:${entry.path}`].status
                   }
-                  className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
+                  className="rounded-lg border border-white/10 bg-black/30"
                 >
-                  {gitDiffs[`${item.projectId}:${entry.path}`].diff}
-                </pre>
+                  <div className="flex items-center gap-2 border-b border-white/10 px-2 py-1">
+                    <span className="text-[8px] uppercase tracking-normal text-slate-500">
+                      diff
+                    </span>
+                    <button
+                      type="button"
+                      data-git-side-by-side-toggle={entry.path}
+                      onClick={() =>
+                        toggleSideBySide(item.projectId, item.path, entry.path)
+                      }
+                      className="ml-auto rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
+                    >
+                      {sideBySide[`${item.projectId}:${entry.path}`]
+                        ? "Inline"
+                        : "Side by side"}
+                    </button>
+                  </div>
+                  {sideBySide[`${item.projectId}:${entry.path}`] ? (
+                    loadingVersions[`${item.projectId}:${entry.path}`] ? (
+                      <div className="px-2 py-1 text-[9px] text-slate-500">
+                        Loading versions...
+                      </div>
+                    ) : fileVersions[`${item.projectId}:${entry.path}`] ? (
+                      <div
+                        data-git-side-by-side={entry.path}
+                        className="grid grid-cols-2 gap-2 p-2"
+                      >
+                        <FileVersionPane
+                          title="HEAD"
+                          dataKey="old"
+                          content={
+                            fileVersions[`${item.projectId}:${entry.path}`].oldContent
+                          }
+                          language={detectLanguage(entry.path)}
+                        />
+                        <FileVersionPane
+                          title="Working tree"
+                          dataKey="new"
+                          content={
+                            fileVersions[`${item.projectId}:${entry.path}`].newContent
+                          }
+                          language={detectLanguage(entry.path)}
+                        />
+                      </div>
+                    ) : null
+                  ) : (
+                    <div
+                      data-git-diff-lines={entry.path}
+                      className="max-h-40 overflow-auto px-2 py-1.5"
+                    >
+                      {parseDiffLines(
+                        gitDiffs[`${item.projectId}:${entry.path}`].diff,
+                      ).map((line, index) => (
+                        <div
+                          key={index}
+                          data-git-diff-line={entry.path}
+                          data-git-diff-line-type={line.kind}
+                          className={`whitespace-pre-wrap rounded px-1 text-[9px] leading-relaxed ${diffLineClass(line.kind)}`}
+                        >
+                          {highlightLine(line.text, detectLanguage(entry.path))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           ))}

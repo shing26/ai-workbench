@@ -326,6 +326,13 @@ export type GitFileDiff = {
   diff: string;
 };
 
+export type GitFileVersions = {
+  path: string;
+  status: string;
+  oldContent: string;
+  newContent: string;
+};
+
 export type CommitPrDraft = {
   branch: string;
   commitMessage: string;
@@ -3413,7 +3420,39 @@ export async function getGitFileDiff(path: string, file: string): Promise<GitFil
   return {
     path: file,
     status: " M",
-    diff: `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1,2 +1,3 @@\n context line\n-removed line\n+added line\n+second addition\n`,
+    diff: `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1,2 +1,4 @@\n context line\n-removed line\n+added line\n+const enabled = true;\n+second addition\n`,
+  };
+}
+
+export async function getGitFileVersions(
+  path: string,
+  file: string,
+): Promise<GitFileVersions> {
+  if (isTauri()) {
+    return invoke<GitFileVersions>("get_git_file_versions", { path, file });
+  }
+  const diff = await getGitFileDiff(path, file);
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  for (const line of diff.diff.split("\n")) {
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      oldLines.push(line.slice(1));
+    } else if (line.startsWith("+") && !line.startsWith("+++")) {
+      newLines.push(line.slice(1));
+    } else if (
+      !line.startsWith("diff") &&
+      !line.startsWith("@@") &&
+      !line.startsWith("index")
+    ) {
+      oldLines.push(line);
+      newLines.push(line);
+    }
+  }
+  return {
+    path: file,
+    status: diff.status,
+    oldContent: oldLines.join("\n"),
+    newContent: newLines.join("\n"),
   };
 }
 
