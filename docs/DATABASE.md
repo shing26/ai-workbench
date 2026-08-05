@@ -550,3 +550,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 80：AI 生成式今日复盘
 
 无表结构变更。复盘上下文由 AIStudioView 从 `tasks / habits / schedule_events` 运行时聚合，提示词只作为聊天消息写入既有 `chat_messages`，不新增持久化字段。
+
+## Sprint 81：Git 批量提交内容预览
+
+无表结构变更。批量预览内容来自 `get_git_file_diff` 的运行时读取，仅在组件内存中合并展示，不新增持久化字段。
