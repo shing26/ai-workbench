@@ -343,3 +343,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `vault_index_retry_delay_ms(attempts)` 以 500ms 为基数、2 倍增长、4000ms 封顶；worker 按 `retry.attempts` 计算并 sleep，替代固定 800ms。
 - `VaultIndexQueueEntry` 新增 `retry_delay_ms`，active / queued 快照均携带；Knowledge 队列行显示 `retry N · NNNms` 并暴露 `retry-delay` 数据属性。
 - TS fallback 用同一 `indexRetryDelayMs` 公式调度与展示；`verify:ui` / `verify:preview` 的 `indexQueueRetry` 断言 500 / 1000ms，新增 `indexQueueBackoff` lane。
+
+## Sprint 75：AI Studio 日常 Quick Prompts
+
+- 新增 `src/lib/quickPrompts.ts`：`QuickPrompt { id, label, category: life/work, text }`，内置 6 个生活与工作高频模板。
+- AI Studio composer 上方新增 Quick Prompt 芯片行，点击后把结构化提示词填入输入框并聚焦；芯片带 `data-quick-prompt` / `data-quick-prompt-label` / `data-quick-prompt-category`。
+- `verify:ui` / `verify:preview` 新增 `quickPrompts` lane：断言 >=4 个芯片、life/work 两类齐全、点击后输入框内容正确。

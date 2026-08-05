@@ -526,3 +526,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 74：索引队列指数退避
 
 无表结构变更。`retry_delay_ms` 为运行时计算字段，由 `attempts` 按 500ms 基数、2 倍增长、4000ms 封顶推导；`vault_index_queue` 仍只持久化 `attempts / last_error`。
+
+## Sprint 75：AI Studio 日常 Quick Prompts
+
+无表结构变更。Quick Prompt 模板为前端静态常量，不落库；点击后仅填充输入框，不新增持久化字段。

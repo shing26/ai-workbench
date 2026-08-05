@@ -377,6 +377,37 @@ try {
   }
 
   await clickDock("AI Studio");
+  results.quickPrompts = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chips = [...document.querySelectorAll("[data-quick-prompt]")];
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (chips.length < 4 || !input) {
+      return { ok: false, chips: chips.length, hasInput: !!input };
+    }
+    const labels = chips.map((chip) => chip.getAttribute("data-quick-prompt-label"));
+    const categories = chips.map((chip) => chip.getAttribute("data-quick-prompt-category"));
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    const dailyValue = input.value;
+    document.querySelector('[data-quick-prompt="week-plan"]')?.click();
+    await sleep(80);
+    const weekValue = input.value;
+    const ok =
+      dailyValue.includes("复盘") &&
+      weekValue.includes("本周") &&
+      categories.includes("life") &&
+      categories.includes("work");
+    return {
+      ok,
+      chips: chips.length,
+      labels,
+      dailyValue: dailyValue.slice(0, 60),
+      weekValue: weekValue.slice(0, 60),
+    };
+  })()`);
+  if (!results.quickPrompts.ok) {
+    throw new Error(`Quick prompt assertion failed: ${JSON.stringify(results.quickPrompts)}`);
+  }
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };
