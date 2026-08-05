@@ -549,3 +549,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `SessionSearchHit` / `searchSessions` / `sessionMatchScore` / `sessionSnippet`，浏览器 fallback 与 Rust 同构；Tauri 环境走真实命令。
 - AI Studio 会话栏搜索改为 180ms 防抖异步检索：新增 `data-session-search-input`、`data-session-range`、`data-session-fulltext`、`data-session-snippet`、`data-session-match-type`；时间范围为 Any / Today / 7d / 30d。
 - `verify:ui` / `verify:preview` 新增 `sessionSearchEnhanced` lane：断言模糊标题命中、消息全文命中与摘要、全文关闭后空态、清空恢复列表。
+
+## Sprint 104：MOA 三路共识摘要
+
+- Rust 新增 `MoaConsensus`（summary / common / viewpoints）与 `build_moa_consensus` Tauri 命令：首条有效行 + 跨输出关键词 + 分歧首行，纯本地确定性规则，不新增依赖。
+- `stream_ai_message(moa=true)` 的三路 `spawn_blocking` 改为返回各自最终文本，全部结束后在 done 前 emit `## MOA Consensus` 摘要块；取消时不追加摘要，单路失败以空输出参与。
+- `stream_openai_compatible_with` / `stream_ollama_with` 返回值从 `()` 升级为完整收集文本，smoke test 与单测同步适配。
+- `db.ts` 新增同构 `buildMoaConsensus` / `buildMoaConsensusLocal`，`sendAiMessageStream` 的 MOA 分支在全部流结束后 emit 相同摘要块。
+- AI Studio MOA badge 状态从 `3-way` 升级为 `3-way+summary`，Inspector 展示 `3-way consensus` 状态与 Consensus 摘要。
+- `verify:ui` / `verify:preview` 的 `moaParallel` lane 新增 `consensusSeen` / `summaryText` 断言；Rust 118 条单测通过。

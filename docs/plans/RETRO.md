@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 104
+
+### What went well?
+
+- MOA 三路并行流结束前追加确定性的 `## MOA Consensus` 摘要块：共识关键词、分歧/独特观点、结论首行，随主消息一起落库。
+- Rust 与浏览器 fallback 通过同构 `build_moa_consensus` 生成相同结构；`stream_ai_message` 的三路 `spawn_blocking` 返回最终文本后统一 emit 摘要。
+- AI Studio MOA badge 升级为 `3-way+summary`，Inspector 展示 `3-way consensus` 状态与 Consensus 摘要。
+- `verify:ui` / `verify:preview` 的 `moaParallel` lane 新增 `consensusSeen` / `summaryText` 断言，`maxActive = 3`；Rust 新增 1 条单测，总计 118 通过。
+- `npm run build`、lint、prettier、`cargo fmt`、`cargo clippy --lib -- -D warnings`、`verify:preview` 全绿。
+
+### What went wrong?
+
+- 停用词表首版包含 `answer` / `answers`，导致三路共同关键词断言失败；移除后 Rust / TS 两侧规则保持一致。
+- 流式函数返回值从 `()` 改为完整文本后，Rust 需要显式声明 `JoinHandle<Result<String, String>>`，补齐后编译通过。
+- 摘要追加在流内同一 run，Inspector 读取 `run.content` 存在事件竞态，通过短暂轮询等待摘要块后稳定展示。
+
+### Action Items
+
+- 下一个 Sprint 候选：Provider 权重 / 路由排序、会话消息内跳转、拼音模糊搜索。
+- 保留 `moaParallel` lane，修改流式链路、取消语义或 Provider 选择逻辑时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 103
 
 ### What went well?

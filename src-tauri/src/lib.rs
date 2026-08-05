@@ -440,7 +440,7 @@ fn stream_openai_compatible_with(
     model: &str,
     is_cancelled: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&StreamChunk),
-) -> Result<(), String> {
+) -> Result<String, String> {
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = stream_client();
@@ -462,6 +462,7 @@ fn stream_openai_compatible_with(
     let mut reader = BufReader::new(resp);
     let mut finished = false;
     let mut line = String::new();
+    let mut collected = String::new();
     loop {
         line.clear();
         let read = reader
@@ -471,7 +472,7 @@ fn stream_openai_compatible_with(
             break;
         }
         if is_cancelled() {
-            return Ok(());
+            return Ok(collected);
         }
         let line = line.trim();
         if line.is_empty() {
@@ -485,6 +486,7 @@ fn stream_openai_compatible_with(
             }
             if let Ok(json) = serde_json::from_str::<Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    collected.push_str(delta);
                     emit(&StreamChunk {
                         id: run_id.to_string(),
                         delta: delta.to_string(),
@@ -497,12 +499,12 @@ fn stream_openai_compatible_with(
         }
     }
     if is_cancelled() {
-        return Ok(());
+        return Ok(collected);
     }
     if !finished {
         return Err("AI stream ended without [DONE]".into());
     }
-    Ok(())
+    Ok(collected)
 }
 
 fn stream_openai_compatible(
@@ -512,7 +514,7 @@ fn stream_openai_compatible(
     api_key: &str,
     messages_json: &str,
     model: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let app = app.clone();
     let run_id_owned = run_id.to_string();
     let app_for_cancel = app.clone();
@@ -538,7 +540,7 @@ fn stream_ollama_with(
     model_name: &str,
     is_cancelled: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&StreamChunk),
-) -> Result<(), String> {
+) -> Result<String, String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let client = stream_client();
     let endpoint = format!("{}/api/chat", base_url.trim_end_matches('/'));
@@ -559,6 +561,7 @@ fn stream_ollama_with(
     let mut reader = BufReader::new(resp);
     let mut finished = false;
     let mut line = String::new();
+    let mut collected = String::new();
     loop {
         line.clear();
         let read = reader
@@ -568,7 +571,7 @@ fn stream_ollama_with(
             break;
         }
         if is_cancelled() {
-            return Ok(());
+            return Ok(collected);
         }
         let line = line.trim();
         if line.is_empty() {
@@ -576,6 +579,7 @@ fn stream_ollama_with(
         }
         if let Ok(json) = serde_json::from_str::<Value>(line) {
             if let Some(delta) = json["message"]["content"].as_str() {
+                collected.push_str(delta);
                 emit(&StreamChunk {
                     id: run_id.to_string(),
                     delta: delta.to_string(),
@@ -591,12 +595,12 @@ fn stream_ollama_with(
         }
     }
     if is_cancelled() {
-        return Ok(());
+        return Ok(collected);
     }
     if !finished {
         return Err("Ollama stream ended without done: true".into());
     }
-    Ok(())
+    Ok(collected)
 }
 
 fn stream_ollama(
@@ -605,7 +609,7 @@ fn stream_ollama(
     base_url: &str,
     messages_json: &str,
     model_name: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let app = app.clone();
     let run_id_owned = run_id.to_string();
     let app_for_cancel = app.clone();
@@ -2626,6 +2630,14 @@ struct StreamChunk {
     cancelled: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoaConsensus {
+    pub summary: String,
+    pub common: Vec<String>,
+    pub viewpoints: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StreamSmokeResult {
@@ -2958,7 +2970,7 @@ fn run_provider_stream_smoke_test(
         )
     };
     match result {
-        Ok(()) => Ok(StreamSmokeResult {
+        Ok(_) => Ok(StreamSmokeResult {
             ok: true,
             chunks,
             message: format!("Streamed {chunks} chunk(s)"),
@@ -2996,14 +3008,14 @@ async fn stream_ai_message(
     }
 
     let done: Result<(), String> = if moa {
-        let mut tasks = Vec::new();
+        let mut tasks: Vec<tauri::async_runtime::JoinHandle<Result<String, String>>> = Vec::new();
         for provider in selected.into_iter().take(3) {
             let app = app.clone();
             let run_id = run_id.clone();
             let messages_json = messages_json.clone();
             tasks.push(tauri::async_runtime::spawn_blocking(move || {
                 if is_stream_cancelled(&app, &run_id) {
-                    return Ok(());
+                    return Ok(String::new());
                 }
                 let _ = app.emit(
                     "stream-chunk",
@@ -3015,7 +3027,7 @@ async fn stream_ai_message(
                         cancelled: false,
                     },
                 );
-                let result: Result<(), String> = (|| {
+                let result: Result<String, String> = (|| {
                     if is_ollama_provider(&provider.name, &provider.base_url) {
                         let model = if provider.model.is_empty() {
                             "qwen2.5:3b".to_string()
@@ -3045,36 +3057,50 @@ async fn stream_ai_message(
                         )
                     }
                 })();
-                if let Err(err) = result {
-                    if !is_stream_cancelled(&app, &run_id) {
-                        let _ = app.emit(
-                            "stream-chunk",
-                            StreamChunk {
-                                id: run_id.clone(),
-                                delta: format!("\n[{} error: {}]\n", provider.name, err),
-                                done: false,
-                                error: None,
-                                cancelled: false,
-                            },
-                        );
+                match result {
+                    Ok(text) => Ok(text),
+                    Err(err) => {
+                        if !is_stream_cancelled(&app, &run_id) {
+                            let _ = app.emit(
+                                "stream-chunk",
+                                StreamChunk {
+                                    id: run_id.clone(),
+                                    delta: format!("\n[{} error: {}]\n", provider.name, err),
+                                    done: false,
+                                    error: None,
+                                    cancelled: false,
+                                },
+                            );
+                        }
+                        Ok(String::new())
                     }
                 }
-                Ok::<(), String>(())
             }));
         }
-        let mut results = Vec::new();
+        let mut outputs = Vec::new();
         for task in tasks {
-            results.push(task.await.map_err(|e| e.to_string())?);
+            let task_result = task.await.map_err(|e| e.to_string())?;
+            outputs.push(task_result?);
         }
-        for result in results {
-            result?;
+        if !is_stream_cancelled(&app, &run_id) && outputs.iter().any(|text| !text.is_empty()) {
+            let consensus = build_moa_consensus_text(outputs);
+            let _ = app.emit(
+                "stream-chunk",
+                StreamChunk {
+                    id: run_id.clone(),
+                    delta: format!("\n\n## MOA Consensus\n\n{}", consensus),
+                    done: false,
+                    error: None,
+                    cancelled: false,
+                },
+            );
         }
         Ok(())
     } else {
         let app_clone = app.clone();
         let run_id_clone = run_id.clone();
         let provider = selected.into_iter().next().unwrap();
-        tauri::async_runtime::spawn_blocking(move || {
+        let streamed: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
             if is_ollama_provider(&provider.name, &provider.base_url) {
                 let model = if provider.model.is_empty() {
                     "qwen2.5:3b".to_string()
@@ -3111,7 +3137,9 @@ async fn stream_ai_message(
             }
         })
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        let _ = streamed?;
+        Ok(())
     };
 
     let error = done.err().map(|e| e.to_string());
@@ -4835,6 +4863,158 @@ fn build_team_summary(contents: Vec<String>) -> Result<String, String> {
     Ok(build_team_summary_text(contents))
 }
 
+fn moa_first_line(content: &str) -> String {
+    content
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && !line.starts_with("**")
+                && !line.starts_with('-')
+                && !line.starts_with('[')
+                && !line.starts_with("## ")
+        })
+        .unwrap_or("No output")
+        .chars()
+        .take(140)
+        .collect()
+}
+
+fn moa_keywords(contents: &[String]) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "it",
+        "this",
+        "that",
+        "you",
+        "your",
+        "we",
+        "our",
+        "i",
+        "as",
+        "at",
+        "by",
+        "from",
+        "not",
+        "but",
+        "if",
+        "then",
+        "can",
+        "will",
+        "should",
+        "would",
+        "please",
+        "output",
+        "outputs",
+        "streaming",
+        "fallback",
+    ];
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for content in contents {
+        let mut seen = HashSet::new();
+        for token in content.split(|c: char| !c.is_alphanumeric()) {
+            let token = token.trim();
+            if token.chars().count() < 2 {
+                continue;
+            }
+            let lower = token.to_lowercase();
+            if STOPWORDS.contains(&lower.as_str()) || lower.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            seen.insert(lower);
+        }
+        for token in seen {
+            *counts.entry(token).or_default() += 1;
+        }
+    }
+    let mut keywords: Vec<(String, usize)> = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 2)
+        .collect();
+    keywords.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    keywords.truncate(3);
+    keywords.into_iter().map(|(token, _)| token).collect()
+}
+
+fn moa_viewpoints(contents: &[String]) -> Vec<String> {
+    let lines: Vec<String> = contents
+        .iter()
+        .map(|content| moa_first_line(content))
+        .collect();
+    let mut viewpoints = Vec::new();
+    for line in &lines {
+        let shared = lines.iter().all(|other| other == line);
+        if !shared && !viewpoints.contains(line) {
+            viewpoints.push(line.clone());
+        }
+    }
+    if viewpoints.is_empty() && !lines.is_empty() {
+        viewpoints.push(lines[0].clone());
+    }
+    viewpoints.truncate(3);
+    viewpoints
+}
+
+fn build_moa_consensus_inner(contents: Vec<String>) -> MoaConsensus {
+    let first_lines: Vec<String> = contents
+        .iter()
+        .map(|content| moa_first_line(content))
+        .collect();
+    let common = moa_keywords(&contents);
+    let viewpoints = moa_viewpoints(&contents);
+    let mut summary = String::new();
+    if contents.is_empty() || first_lines.iter().all(|line| line == "No output") {
+        summary.push_str("No agent output collected.");
+    } else {
+        summary.push_str("共识点：\n");
+        if common.is_empty() {
+            summary.push_str("- 各输出均有有效回答\n");
+        } else {
+            for keyword in &common {
+                summary.push_str(&format!("- {}\n", keyword));
+            }
+        }
+        summary.push_str("\n分歧/独特观点：\n");
+        for viewpoint in &viewpoints {
+            summary.push_str(&format!("- {}\n", viewpoint));
+        }
+        summary.push_str("\n结论：\n");
+        for (index, line) in first_lines.iter().enumerate() {
+            summary.push_str(&format!("- Output {}: {}\n", index + 1, line));
+        }
+    }
+    MoaConsensus {
+        summary,
+        common,
+        viewpoints,
+    }
+}
+
+#[tauri::command]
+fn build_moa_consensus(contents: Vec<String>) -> Result<MoaConsensus, String> {
+    Ok(build_moa_consensus_inner(contents))
+}
+
+fn build_moa_consensus_text(contents: Vec<String>) -> String {
+    build_moa_consensus_inner(contents).summary
+}
+
 #[tauri::command]
 async fn send_ai_message(
     state: State<'_, db::Db>,
@@ -4874,7 +5054,10 @@ async fn send_ai_message(
             Ok(Err(err)) => err,
             Err(err) => err.to_string(),
         });
-        Ok(format!("MOA consensus\n\n{}", parts.join("\n\n---\n\n")))
+        Ok(format!(
+            "MOA consensus\n\n{}",
+            build_moa_consensus_text(parts.to_vec())
+        ))
     } else {
         let provider = selected.remove(0);
         let result =
@@ -5026,6 +5209,7 @@ pub fn run() {
             abort_rebase,
             resolve_rebase_conflicts,
             build_team_summary,
+            build_moa_consensus,
             send_ai_message,
             stream_ai_message,
             cancel_ai_stream,
@@ -5486,6 +5670,24 @@ mod tests {
             "Streaming fallback: first agent output.\nStreaming fallback: second agent output."
         );
         assert!(build_team_summary_text(Vec::new()).contains("No agent output"));
+    }
+
+    #[test]
+    fn moa_consensus_combines_common_keywords_and_viewpoints() {
+        let consensus = build_moa_consensus_inner(vec![
+            "Alpha answer part2\n- alpha".to_string(),
+            "Beta answer part2\n- beta".to_string(),
+            "Gamma answer part2\n- gamma".to_string(),
+        ]);
+        assert!(consensus.common.contains(&"answer".to_string()));
+        assert!(consensus.common.contains(&"part2".to_string()));
+        assert_eq!(consensus.common.len(), 2);
+        assert_eq!(consensus.viewpoints.len(), 3);
+        assert!(consensus.summary.contains("共识点"));
+        assert!(consensus.summary.contains("分歧/独特观点"));
+        assert!(consensus.summary.contains("结论"));
+        assert!(consensus.summary.contains("Output 1: Alpha answer part2"));
+        assert!(build_moa_consensus_text(Vec::new()).contains("No agent output"));
     }
 
     #[test]
