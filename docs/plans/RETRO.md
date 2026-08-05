@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 91
+
+### What went well?
+
+- AI Studio 新增 RAG 命中人工确认：`ragConfirmMode` 开关开启后，检索到命中先展示确认面板，逐条勾选后再发送，避免无关知识被自动注入。
+- `sendText` 拆出 `dispatchSend`，确认态不置 busy；确认后只注入勾选命中，普通发送、团队模式、复盘与 regenerate 全部保持原有行为。
+- 确认面板带 `data-rag-confirm-panel` / `data-rag-confirm-hit` / `data-rag-confirm-send` / `data-rag-confirm-cancel`，Send 按钮 0 选中时禁用；New chat 与会话切换会清理待确认内容。
+- `verify:ui` / `verify:preview` 新增 `ragConfirmSend` lane：2 条命中 → 取消 1 条 → Send with 1 → badge RAG +1；关闭确认后直发不出现面板，全部通过。
+
+### What went wrong?
+
+- 首版若把确认面板放在 rag-badge 之前会导致选中后面板闪烁；调整渲染位置到 quick prompts 上方后稳定。
+- verify lane 需在确认发送后等待 busy 结束再关确认开关，否则第二次直发会被 busy 忽略；补 Send 按钮轮询后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Embedding 向量检索、跨文件命中选择器。
+- 命中确认的“记住选择”、来源优先级排序继续留在 Backlog。
+- 保留 `ragConfirmSend` 断言，改动 AI Studio 发送链路或 RAG 交互时重跑 `verify:ui`。
+
 ## Sprint 90
 
 ### What went well?

@@ -950,6 +950,88 @@ try {
   await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
   await delay(250);
 
+  const ragConfirmSend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();
+    await sleep(200);
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) return { ok: false, reason: "rag confirm controls missing" };
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "sprint rag confirm");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const send = document.querySelector('main button[aria-label="Send"]');
+    send.click();
+    let panel = null;
+    let hitRows = 0;
+    for (let i = 0; i < 20; i++) {
+      panel = document.querySelector("[data-rag-confirm-panel]");
+      hitRows = panel ? panel.querySelectorAll("[data-rag-confirm-hit]").length : 0;
+      if (panel && hitRows > 0) break;
+      await sleep(100);
+    }
+    if (!panel || hitRows === 0) {
+      return { ok: false, reason: "confirm panel not shown", hitRows };
+    }
+    panel.querySelector("[data-rag-confirm-hit]")?.click();
+    await sleep(120);
+    const sendBtn = panel.querySelector("[data-rag-confirm-send]");
+    const expected = hitRows - 1;
+    const countOk = (sendBtn?.textContent ?? "").includes(String(expected));
+    sendBtn.click();
+    let badge = "";
+    let replySeen = false;
+    for (let i = 0; i < 20; i++) {
+      badge = document.querySelector(".rag-badge")?.textContent?.trim() ?? "";
+      replySeen =
+        document.body.innerText.includes("Streaming fallback") ||
+        document.body.innerText.includes("分块模拟");
+      if (badge.includes("RAG +" + expected) && replySeen) break;
+      await sleep(150);
+    }
+    const badgeOk = badge.includes("RAG +" + expected);
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('main button[aria-label="Send"]')) break;
+      await sleep(100);
+    }
+    modeToggle.click();
+    await sleep(100);
+    setter.call(input, "sprint rag direct");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const send2 = document.querySelector('main button[aria-label="Send"]');
+    send2.click();
+    let directOk = true;
+    let inputCleared = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector("[data-rag-confirm-panel]")) {
+        directOk = false;
+        break;
+      }
+      if (!input.value) inputCleared = true;
+      await sleep(100);
+    }
+    return {
+      ok: countOk && badgeOk && replySeen && directOk && inputCleared,
+      hitRows,
+      expected,
+      countOk,
+      badgeOk,
+      replySeen,
+      directOk,
+      inputCleared,
+    };
+  })()`);
+  if (!ragConfirmSend.ok) {
+    throw new Error(
+      `RAG confirm send assertion failed: ${JSON.stringify(ragConfirmSend)}`,
+    );
+  }
+  results.ragConfirmSend = ragConfirmSend;
+
   const streamStop = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };

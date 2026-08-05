@@ -641,3 +641,7 @@ ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;
 
 - 新库的 `webhook_rules` 建表语句已直接包含 `secret TEXT NOT NULL DEFAULT ''` 与 `retries INTEGER NOT NULL DEFAULT 1`；`WebhookRule.secret` / `retries` 经 serde 映射为 JSON `secret` / `retries`。
 - `create_webhook_rule` 通过 `WebhookRuleInput` 写入 secret / retries；调度器与 `run_webhook_rule` 读取该字段驱动签名与重试，浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 保存同一模型。
+
+## Sprint 91：RAG 命中人工确认
+
+无表结构变更。命中确认是 AI Studio 会话内的前端状态：`ragConfirmMode` / `pendingSend` / `pendingSelected` 均不持久化，也不新增 localStorage key 或 SQLite 字段。

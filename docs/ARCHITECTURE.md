@@ -451,3 +451,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 为 `deliverWebhook` / `createWebhookRule` 增加 secret / retries，返回 `attempts` / `signed`；浏览器 fallback 确定性模拟 `retries + 1` 次。
 - SystemView Webhook 卡片新增 `data-webhook-secret` / `data-webhook-retries` / `data-webhook-attempts` / `data-webhook-signed` / `data-webhook-rule-retries` / `data-webhook-rule-secret`。
 - `verify:ui` / `verify:preview` 新增 `webhookSignRetry` lane；Rust 单测覆盖 HMAC 已知答案、签名头、重试链路与迁移。
+
+## Sprint 91：RAG 命中人工确认
+
+- AIStudioView 新增 `ragConfirmMode` / `pendingSend` / `pendingSelected` 状态；`sendText` 拆分为检索与 `dispatchSend`，确认态不置 busy，确认后只注入勾选命中。
+- 模式条新增 `data-rag-confirm-mode` 开关；确认面板带 `data-rag-confirm-panel` / `data-rag-confirm-hit` / `data-rag-confirm-send` / `data-rag-confirm-cancel`，Send 按钮 0 选中禁用。
+- New chat 与会话切换清理待确认内容；普通发送、团队模式、复盘与 regenerate 路径不变。
+- `verify:ui` / `verify:preview` 新增 `ragConfirmSend` lane，覆盖勾选、取消、badge 计数与关闭确认后的直发路径。
