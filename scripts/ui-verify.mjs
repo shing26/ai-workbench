@@ -1206,8 +1206,12 @@ try {
     for (let i = 0; i < 20; i++) {
       const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
       const body = document.body.innerText;
+      const conflictVisible =
+        document.querySelector("[data-sync-conflicts]")?.textContent.includes("1 conflict") ?? false;
       pulled =
-        msg.includes("Merged +1 clips") && body.includes("sprint 33 remote clipboard");
+        msg.includes("Merged +1 clips") &&
+        body.includes("sprint 33 remote clipboard") &&
+        conflictVisible;
       if (pulled) break;
       await sleep(100);
     }

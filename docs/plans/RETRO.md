@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 38
+
+### What went well?
+
+- 同步自动合并透明化：`SyncResult.conflicts` 记录每条同 id 记录的 `localUpdatedAt` / `remoteUpdatedAt` / `resolvedTo` / `preview`，remote 覆盖、local 胜出、时间戳相等三条方向都有单测覆盖。
+- `MergeOutcome` 从枚举值扩展为携带本地时间戳，冲突收集与合并写库共用一次查询，无额外 SQL 开销。
+- System Sync snapshot 卡片展示 `N conflict(s) auto-resolved`，浏览器 fallback 的 Pull 会构造一条本地/远端同 id 冲突，UI 断言可直接验证。
+- 验证覆盖：`cargo test --lib` 38/38，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增冲突 badge 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 前端 fallback 初版在 `Object.assign` 之后读取 `local.updatedAt`，导致 conflict 的 local 时间戳被覆盖为新值；改为先保存旧时间戳再更新后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：冲突人工仲裁（手动选择 local / remote）、Vault 索引并发数可配置。
+- 后续改动同步协议时，保留 remote / local / equal 三条方向单测与冲突 badge UI 断言。
+
 ## Sprint 37
 
 ### What went well?

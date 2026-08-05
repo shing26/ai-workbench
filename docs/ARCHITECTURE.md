@@ -83,6 +83,8 @@ Sprint 36 新增命令：`start_vault_watch_ex`；watch 启动索引与增量事
 
 Sprint 37 新增前端同步配置：`getSyncAutoConfig` / `setSyncAutoConfig` 持久化 `{ enabled, intervalMs, remoteUrl }`；System Auto sync 启用时立即执行 pull → push 双向同步，并按 10s / 30s / 60s / 5m 间隔定时续跑，Token 不落盘。
 
+Sprint 38 扩展同步协议：`SyncResult.conflicts` 返回 `SyncConflictItem` 明细（kind / 两端 updatedAt / resolvedTo / preview），System card 展示自动解决方向与冲突数量。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
