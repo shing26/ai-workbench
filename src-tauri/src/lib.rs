@@ -2463,6 +2463,21 @@ fn resolve_sync_conflict(
     ))
 }
 
+#[tauri::command]
+fn list_sync_conflicts(
+    state: State<'_, db::Db>,
+    status: String,
+) -> Result<Vec<db::SyncConflictRecord>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_sync_conflicts(&conn, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_resolved_sync_conflicts(state: State<'_, db::Db>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::clear_resolved_sync_conflicts(&conn).map_err(|e| e.to_string())
+}
+
 fn build_team_summary_text(contents: Vec<String>) -> String {
     let mut lines = Vec::new();
     for content in contents {
@@ -2609,6 +2624,8 @@ pub fn run() {
             push_sync_snapshot,
             pull_sync_snapshot,
             resolve_sync_conflict,
+            list_sync_conflicts,
+            clear_resolved_sync_conflicts,
             report_frontend_error,
             capture_clipboard,
             search_thoughts,

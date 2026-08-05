@@ -1253,11 +1253,80 @@ try {
   }
   results.syncResolve = syncResolveCheck;
 
+  const syncHistoryCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const toggle = document.querySelector("[data-sync-history-toggle]");
+    if (!toggle) return { ok: false, reason: "no history toggle" };
+    toggle.click();
+    let historySeen = false;
+    for (let i = 0; i < 20; i++) {
+      const item = document.querySelector("[data-sync-resolved-item]");
+      const choice = document.querySelector('[data-resolved-choice="remote"]');
+      historySeen =
+        !!item &&
+        !!choice &&
+        (item.textContent ?? "").includes("sprint 38 conflict override");
+      if (historySeen) break;
+      await sleep(100);
+    }
+    return { ok: historySeen, historySeen };
+  })()`);
+  if (!syncHistoryCheck.ok) {
+    throw new Error(`sync history assertion failed: ${JSON.stringify(syncHistoryCheck)}`);
+  }
+  results.syncHistory = syncHistoryCheck;
+
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("System");
+  const syncHistoryPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let toggle = null;
+    for (let i = 0; i < 20; i++) {
+      toggle = document.querySelector("[data-sync-history-toggle]");
+      if (toggle) break;
+      await sleep(100);
+    }
+    if (!toggle) return { ok: false, reason: "no history toggle after reload" };
+    toggle.click();
+    let seen = false;
+    for (let i = 0; i < 20; i++) {
+      const item = document.querySelector("[data-sync-resolved-item]");
+      const choice = document.querySelector('[data-resolved-choice="remote"]');
+      seen =
+        !!item &&
+        !!choice &&
+        (item.textContent ?? "").includes("sprint 38 conflict override");
+      if (seen) break;
+      await sleep(100);
+    }
+    return { ok: seen, seen };
+  })()`);
+  if (!syncHistoryPersisted.ok) {
+    throw new Error(
+      `sync history persistence assertion failed: ${JSON.stringify(syncHistoryPersisted)}`,
+    );
+  }
+  results.syncHistoryPersisted = syncHistoryPersisted;
+
   const autoSyncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const url = document.querySelector('input[placeholder="Remote URL"]')?.value ?? "";
+      if (url.trim()) break;
+      await sleep(100);
+    }
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    if (urlInput && !(urlInput.value ?? "").trim()) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(urlInput, "https://sync.example.test/workbench");
+      urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(200);
+    }
     const toggle = document.querySelector('[data-auto-sync]');
     if (!toggle) return { ok: false, reason: "no auto sync toggle" };
-    if (toggle.getAttribute("data-auto-sync") === "on") {
+    const initialState = toggle.getAttribute("data-auto-sync");
+    if (initialState === "on") {
       toggle.click();
       await sleep(200);
     }
@@ -1281,7 +1350,16 @@ try {
       if (disabled) break;
       await sleep(100);
     }
-    return { ok: enabled && disabled, enabled, disabled };
+    return {
+      ok: enabled && disabled,
+      enabled,
+      disabled,
+      initialState,
+      remoteUrl: document.querySelector('input[placeholder="Remote URL"]')?.value ?? "",
+      autoConfigRaw: localStorage.getItem("ai-workbench:sync-auto:v1") ?? "",
+      finalState: document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") ?? "",
+      finalMsg: document.querySelector("[data-sync-message]")?.textContent ?? "",
+    };
   })()`);
   if (!autoSyncCheck.ok) {
     throw new Error(`auto sync assertion failed: ${JSON.stringify(autoSyncCheck)}`);

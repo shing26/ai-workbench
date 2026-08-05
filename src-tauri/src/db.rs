@@ -145,6 +145,21 @@ CREATE TABLE IF NOT EXISTS message_versions (
     FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_message_versions_message ON message_versions(message_id, created_at);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    local_content TEXT NOT NULL,
+    remote_content TEXT NOT NULL,
+    local_updated_at INTEGER NOT NULL,
+    remote_updated_at INTEGER NOT NULL,
+    resolved_to TEXT NOT NULL,
+    preview TEXT NOT NULL,
+    resolved_choice TEXT,
+    resolved_at INTEGER,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (id, kind, created_at)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolved_at, created_at);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -341,6 +356,22 @@ pub struct SyncConflictItem {
     pub preview: String,
     pub local_content: String,
     pub remote_content: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflictRecord {
+    pub id: String,
+    pub kind: String,
+    pub local_updated_at: i64,
+    pub remote_updated_at: i64,
+    pub resolved_to: String,
+    pub preview: String,
+    pub local_content: String,
+    pub remote_content: String,
+    pub resolved_choice: Option<String>,
+    pub resolved_at: Option<i64>,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1339,6 +1370,9 @@ pub fn merge_sync_snapshot(
             }
         }
     }
+    for conflict in &conflicts {
+        persist_conflict(conn, conflict)?;
+    }
     Ok(SyncResult {
         device_id: snapshot.device_id,
         synced_at: now_millis(),
@@ -1348,6 +1382,106 @@ pub fn merge_sync_snapshot(
         logs_updated,
         conflicts,
     })
+}
+
+fn persist_conflict(conn: &Connection, conflict: &SyncConflictItem) -> Result<(), String> {
+    let existing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE id = ?1 AND kind = ?2 AND resolved_choice IS NULL",
+            params![conflict.id, conflict.kind],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if existing > 0 {
+        conn.execute(
+            "UPDATE sync_conflicts
+             SET local_content = ?1,
+                 remote_content = ?2,
+                 local_updated_at = ?3,
+                 remote_updated_at = ?4,
+                 resolved_to = ?5,
+                 preview = ?6
+             WHERE id = ?7 AND kind = ?8 AND resolved_choice IS NULL",
+            params![
+                conflict.local_content,
+                conflict.remote_content,
+                conflict.local_updated_at,
+                conflict.remote_updated_at,
+                conflict.resolved_to,
+                conflict.preview,
+                conflict.id,
+                conflict.kind
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "INSERT INTO sync_conflicts
+             (id, kind, local_content, remote_content, local_updated_at, remote_updated_at,
+              resolved_to, preview, resolved_choice, resolved_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9)",
+            params![
+                conflict.id,
+                conflict.kind,
+                conflict.local_content,
+                conflict.remote_content,
+                conflict.local_updated_at,
+                conflict.remote_updated_at,
+                conflict.resolved_to,
+                conflict.preview,
+                now_millis()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn list_sync_conflicts(
+    conn: &Connection,
+    status: &str,
+) -> Result<Vec<SyncConflictRecord>, String> {
+    let mut sql = String::from(
+        "SELECT id, kind, local_content, remote_content, local_updated_at, remote_updated_at,
+                resolved_to, preview, resolved_choice, resolved_at, created_at
+         FROM sync_conflicts",
+    );
+    match status {
+        "unresolved" => sql.push_str(" WHERE resolved_choice IS NULL ORDER BY created_at DESC"),
+        "resolved" => sql.push_str(" WHERE resolved_choice IS NOT NULL ORDER BY resolved_at DESC"),
+        _ => sql.push_str(" ORDER BY created_at DESC"),
+    }
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SyncConflictRecord {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                local_content: row.get(2)?,
+                remote_content: row.get(3)?,
+                local_updated_at: row.get(4)?,
+                remote_updated_at: row.get(5)?,
+                resolved_to: row.get(6)?,
+                preview: row.get(7)?,
+                resolved_choice: row.get(8)?,
+                resolved_at: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn clear_resolved_sync_conflicts(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM sync_conflicts WHERE resolved_choice IS NOT NULL",
+        [],
+    )
+    .map_err(|e| e.to_string())
 }
 
 enum MergeOutcome {
@@ -1460,6 +1594,13 @@ pub fn resolve_conflict(
         }
         _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
     }
+    conn.execute(
+        "UPDATE sync_conflicts
+         SET resolved_choice = ?1, resolved_at = ?2
+         WHERE id = ?3 AND kind = ?4 AND resolved_choice IS NULL",
+        params![choice, now, conflict.id, conflict.kind],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2293,6 +2434,68 @@ mod tests {
         resolve_conflict(&conn, &conflict, "remote").unwrap();
         let clips = list_clipboard(&conn).unwrap();
         assert_eq!(clips[0].content, "remote content");
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_conflicts_persist_history_until_resolved() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-history-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "local v1", "test").unwrap();
+        let local_updated = clip.updated_at;
+        let remote = SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 1,
+            clipboard: vec![ClipboardItem {
+                id: clip.id.clone(),
+                content: "remote v1".to_string(),
+                source: "remote".to_string(),
+                timestamp: local_updated + 1000,
+                updated_at: local_updated + 1000,
+            }],
+            logs: Vec::new(),
+        };
+        let merged = merge_sync_snapshot(&conn, remote).unwrap();
+        assert_eq!(merged.conflicts.len(), 1);
+
+        let unresolved = list_sync_conflicts(&conn, "unresolved").unwrap();
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].local_content, "local v1");
+        assert_eq!(unresolved[0].remote_content, "remote v1");
+        assert!(unresolved[0].resolved_choice.is_none());
+
+        resolve_conflict(&conn, &merged.conflicts[0], "remote").unwrap();
+        assert!(list_sync_conflicts(&conn, "unresolved").unwrap().is_empty());
+        let resolved = list_sync_conflicts(&conn, "resolved").unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].resolved_choice.as_deref(), Some("remote"));
+        assert!(resolved[0].resolved_at.is_some());
+
+        let clip_after = list_clipboard(&conn).unwrap();
+        assert_eq!(clip_after[0].content, "remote v1");
+
+        let next_remote = SyncSnapshot {
+            device_id: "device-remote".to_string(),
+            exported_at: 2,
+            clipboard: vec![ClipboardItem {
+                id: clip.id.clone(),
+                content: "remote v2".to_string(),
+                source: "remote".to_string(),
+                timestamp: local_updated + 2000,
+                updated_at: local_updated + 2000,
+            }],
+            logs: Vec::new(),
+        };
+        let merged2 = merge_sync_snapshot(&conn, next_remote).unwrap();
+        assert_eq!(merged2.conflicts.len(), 1);
+        assert_eq!(list_sync_conflicts(&conn, "unresolved").unwrap().len(), 1);
+        assert_eq!(list_sync_conflicts(&conn, "all").unwrap().len(), 2);
+
+        let cleared = clear_resolved_sync_conflicts(&conn).unwrap();
+        assert_eq!(cleared, 1);
+        assert_eq!(list_sync_conflicts(&conn, "all").unwrap().len(), 1);
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
