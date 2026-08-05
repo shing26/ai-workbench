@@ -422,3 +422,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAU
 ## Sprint 58：结构化合并对象数组按 key 去重
 
 无表结构变更。去重逻辑为纯函数，仅在内存中对 JSON 数组项做规范化标记。
+
+## Sprint 59：Vault Index 串行任务队列
+
+无表结构变更。队列状态保存在 `VaultIndexState` 内存中（active 请求 + FIFO 队列 + cancelled 集合），`vault-index-progress` / `vault-index-queue` 事件仅做前端状态同步。

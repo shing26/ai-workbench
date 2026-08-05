@@ -336,6 +336,18 @@ export type IndexProgress = {
   status: string;
 };
 
+export type VaultIndexQueueEntry = {
+  runId: string;
+  path: string;
+  status: string;
+  position: number;
+};
+
+export type VaultIndexQueueStatus = {
+  active: VaultIndexQueueEntry | null;
+  queue: VaultIndexQueueEntry[];
+};
+
 export type RecommendedConcurrency = {
   recommended: number;
   cores: number;
@@ -1963,6 +1975,103 @@ export async function indexVault(
 
 const vaultIndexProgressHandlers: ((progress: IndexProgress) => void)[] = [];
 const vaultIndexCancelled = new Set<string>();
+const vaultIndexQueue: IndexQueueRequest[] = [];
+const vaultIndexQueueHandlers: ((status: VaultIndexQueueStatus) => void)[] = [];
+let vaultIndexActive: IndexQueueRequest | null = null;
+
+type IndexQueueRequest = {
+  runId: string;
+  path: string;
+  ignorePatterns: string[];
+  concurrency: number;
+};
+
+function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
+  return {
+    active: vaultIndexActive
+      ? {
+          runId: vaultIndexActive.runId,
+          path: vaultIndexActive.path,
+          status: "running",
+          position: 1,
+        }
+      : null,
+    queue: vaultIndexQueue.map((request, index) => ({
+      runId: request.runId,
+      path: request.path,
+      status: "queued",
+      position: index + 1,
+    })),
+  };
+}
+
+function emitVaultIndexQueue() {
+  const status = currentVaultIndexQueueStatus();
+  for (const handler of [...vaultIndexQueueHandlers]) handler(status);
+}
+
+function emitIndexProgress(progress: IndexProgress) {
+  for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
+}
+
+function pumpVaultIndexQueue() {
+  if (vaultIndexActive) {
+    emitVaultIndexQueue();
+    return;
+  }
+  const request = vaultIndexQueue.shift();
+  if (!request) {
+    emitVaultIndexQueue();
+    return;
+  }
+  vaultIndexActive = request;
+  emitVaultIndexQueue();
+  void runMockVaultIndex(request);
+}
+
+async function runMockVaultIndex(request: IndexQueueRequest) {
+  const { runId, path, ignorePatterns, concurrency } = request;
+  const result = await indexVault(path, ignorePatterns, concurrency);
+  let step = 0;
+  const tick = () => {
+    step += 1;
+    if (vaultIndexCancelled.has(runId)) {
+      emitIndexProgress({
+        runId,
+        path,
+        done: 0,
+        total: 0,
+        files: 0,
+        ignored: 0,
+        concurrencyUsed: 0,
+        status: "cancelled",
+      });
+      vaultIndexCancelled.delete(runId);
+      vaultIndexActive = null;
+      emitVaultIndexQueue();
+      pumpVaultIndexQueue();
+      return;
+    }
+    emitIndexProgress({
+      runId,
+      path,
+      done: Math.min(result.files, Math.ceil((result.files * step) / 6)),
+      total: result.files,
+      files: result.files,
+      ignored: result.ignored,
+      concurrencyUsed: result.concurrencyUsed,
+      status: step >= 6 ? "done" : "running",
+    });
+    if (step >= 6) {
+      vaultIndexActive = null;
+      emitVaultIndexQueue();
+      pumpVaultIndexQueue();
+      return;
+    }
+    setTimeout(tick, 120);
+  };
+  setTimeout(tick, 30);
+}
 
 export async function startVaultIndex(
   vaultPath: string,
@@ -1973,47 +2082,64 @@ export async function startVaultIndex(
     return invoke<string>("start_vault_index", { vaultPath, ignorePatterns, concurrency });
   }
   const runId = makeId();
-  const result = await indexVault(vaultPath, ignorePatterns, concurrency);
-  let step = 0;
-  const tick = () => {
-    step += 1;
-    if (vaultIndexCancelled.has(runId)) {
-      const progress: IndexProgress = {
-        runId,
-        path: vaultPath,
-        done: 0,
-        total: 0,
-        files: 0,
-        ignored: 0,
-        concurrencyUsed: 0,
-        status: "cancelled",
-      };
-      for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
-      vaultIndexCancelled.delete(runId);
-      return;
-    }
-    const progress: IndexProgress = {
-      runId,
-      path: vaultPath,
-      done: Math.min(result.files, Math.ceil((result.files * step) / 6)),
-      total: result.files,
-      files: result.files,
-      ignored: result.ignored,
-      concurrencyUsed: result.concurrencyUsed,
-      status: step >= 6 ? "done" : "running",
-    };
-    for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
-    if (step >= 6) vaultIndexCancelled.delete(runId);
-    if (step < 6) setTimeout(tick, 120);
-  };
-  setTimeout(tick, 30);
+  vaultIndexQueue.push({ runId, path: vaultPath, ignorePatterns, concurrency });
+  emitIndexProgress({
+    runId,
+    path: vaultPath,
+    done: 0,
+    total: 0,
+    files: 0,
+    ignored: 0,
+    concurrencyUsed: 0,
+    status: vaultIndexActive ? "queued" : "running",
+  });
+  emitVaultIndexQueue();
+  pumpVaultIndexQueue();
   return runId;
 }
 
 export async function cancelVaultIndex(runId: string): Promise<boolean> {
   if (isTauri()) return invoke<boolean>("cancel_vault_index", { runId });
-  vaultIndexCancelled.add(runId);
+  if (vaultIndexActive?.runId === runId) {
+    vaultIndexCancelled.add(runId);
+    return true;
+  }
+  const index = vaultIndexQueue.findIndex((request) => request.runId === runId);
+  if (index >= 0) {
+    const [request] = vaultIndexQueue.splice(index, 1);
+    emitIndexProgress({
+      runId: request.runId,
+      path: request.path,
+      done: 0,
+      total: 0,
+      files: 0,
+      ignored: 0,
+      concurrencyUsed: 0,
+      status: "cancelled",
+    });
+  }
+  emitVaultIndexQueue();
+  pumpVaultIndexQueue();
   return true;
+}
+
+export async function getVaultIndexQueueStatus(): Promise<VaultIndexQueueStatus> {
+  if (isTauri()) return invoke<VaultIndexQueueStatus>("get_vault_index_queue_status");
+  return currentVaultIndexQueueStatus();
+}
+
+export async function listenVaultIndexQueue(
+  handler: (status: VaultIndexQueueStatus) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<VaultIndexQueueStatus>("vault-index-queue", (event) => handler(event.payload));
+  }
+  vaultIndexQueueHandlers.push(handler);
+  return () => {
+    const index = vaultIndexQueueHandlers.indexOf(handler);
+    if (index >= 0) vaultIndexQueueHandlers.splice(index, 1);
+  };
 }
 
 export async function listenVaultIndexProgress(

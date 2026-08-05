@@ -237,3 +237,10 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 
 - `canonical_json` 递归排序对象 key 生成稳定字符串，`merge_json_value` 数组分支用它去重，`{id,label}` 与 `{label,id}` 不再重复保留。
 - TS fallback 新增 `canonicalJson`，与 Rust 同一语义；输出仍保持原始 item 顺序与内容。
+
+## Sprint 59：Vault Index 串行任务队列
+
+- `VaultIndexState` 升级为 `active + VecDeque 队列 + cancelled 集合`：`claim_next` 原子认领下一个请求，`finish_active` 在任务结束后清空 active，保证同一时间只有一个索引 worker。
+- `start_vault_index` 先入队并发出 `queued` / `running` 进度；worker 结束后自动调度队列中的下一个任务。
+- 新增 `get_vault_index_queue_status` 命令与 `vault-index-queue` 事件，快照包含 active 与排队任务的 position；`cancel_vault_index` 对排队任务直接出队。
+- TS fallback 镜像同一队列语义；Knowledge 显示 active + queued 队列条，排队任务也可取消。

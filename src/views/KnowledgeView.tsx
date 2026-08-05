@@ -28,6 +28,7 @@ export default function KnowledgeView() {
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
   const [indexProgress, setIndexProgress] = useState<db.IndexProgress | null>(null);
+  const [indexQueueStatus, setIndexQueueStatus] = useState<db.VaultIndexQueueStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -126,6 +127,27 @@ export default function KnowledgeView() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db.getVaultIndexQueueStatus().then((status) => {
+      if (!disposed) setIndexQueueStatus(status);
+    });
+    void db
+      .listenVaultIndexQueue((status) => {
+        if (disposed) return;
+        setIndexQueueStatus(status);
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten();
+    };
+  }, []);
+
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
   const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
   const visibleThoughts = results ?? filtered;
@@ -167,6 +189,7 @@ export default function KnowledgeView() {
       concurrencyUsed: 0,
       status: "running",
     });
+    void db.getVaultIndexQueueStatus().then(setIndexQueueStatus);
     await db.upsertVaultWatchTarget({
       path: vaultPath.trim(),
       ignorePatterns: parseIgnore(),
@@ -383,11 +406,13 @@ export default function KnowledgeView() {
                     ? `Indexed ${indexProgress.files} files`
                     : indexProgress.status === "running"
                       ? `Indexing ${indexProgress.done}/${indexProgress.total}`
-                      : indexProgress.status === "cancelled"
-                        ? "Cancelled"
-                        : indexProgress.status}
+                      : indexProgress.status === "queued"
+                        ? "Queued behind active index"
+                        : indexProgress.status === "cancelled"
+                          ? "Cancelled"
+                          : indexProgress.status}
                 </span>
-                {indexProgress.status === "running" && (
+                {(indexProgress.status === "running" || indexProgress.status === "queued") && (
                   <button
                     type="button"
                     data-index-cancel
@@ -401,6 +426,36 @@ export default function KnowledgeView() {
               </div>
             );
           })()}
+        {indexQueueStatus && (indexQueueStatus.active || indexQueueStatus.queue.length > 0) && (
+          <div data-vault-index-queue className="mt-2 flex flex-wrap items-center gap-1.5">
+            {indexQueueStatus.active && (
+              <span
+                data-vault-index-queue-active={indexQueueStatus.active.path}
+                className="flex max-w-[240px] items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
+              >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full accent-bg" />
+                <span className="truncate">{indexQueueStatus.active.path}</span>
+              </span>
+            )}
+            {indexQueueStatus.queue.length > 0 && (
+              <span
+                data-vault-index-queue-count={indexQueueStatus.queue.length}
+                className="shrink-0 rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-[9px] text-amber-300"
+              >
+                {indexQueueStatus.queue.length} queued
+              </span>
+            )}
+            {indexQueueStatus.queue.map((entry) => (
+              <span
+                key={entry.runId}
+                data-vault-index-queued-path={entry.path}
+                className="max-w-[180px] truncate rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-500"
+              >
+                {entry.path}
+              </span>
+            ))}
+          </div>
+        )}
         {vaultTargets.length > 0 && (
           <div data-vault-target-list className="mt-3 space-y-1.5">
             {vaultTargets.map((target) => {

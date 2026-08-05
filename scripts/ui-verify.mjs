@@ -984,6 +984,44 @@ try {
   }
   results.cancelIndex = cancelIndex;
 
+  const indexQueue = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (!input) return { ok: false, reason: "no vault input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "C:/vault");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const clickIndex = () => {
+      const btn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Index vault",
+      );
+      if (btn) btn.click();
+    };
+    clickIndex();
+    await sleep(60);
+    clickIndex();
+    let sawQueue = false;
+    let drained = false;
+    for (let i = 0; i < 80; i++) {
+      await sleep(100);
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const active = document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      if (count > 0) sawQueue = true;
+      if (sawQueue && count === 0 && !active) {
+        drained = true;
+        break;
+      }
+    }
+    return { ok: sawQueue && drained, sawQueue, drained };
+  })()`);
+  if (!indexQueue.ok) {
+    throw new Error(`Index queue assertion failed: ${JSON.stringify(indexQueue)}`);
+  }
+  results.indexQueue = indexQueue;
+
   const indexProgressCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let status = "";
