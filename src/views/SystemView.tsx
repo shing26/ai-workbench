@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, Webhook, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -45,6 +45,14 @@ export default function SystemView() {
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookPayload, setWebhookPayload] = useState(
+    '{"event":"daily.summary","source":"ai-workbench"}',
+  );
+  const [webhookMethod, setWebhookMethod] = useState("POST");
+  const [webhookToken, setWebhookToken] = useState("");
+  const [webhookResult, setWebhookResult] = useState<db.WebhookDeliveryResult | null>(null);
+  const [webhookBusy, setWebhookBusy] = useState(false);
   const [deviceId, setDeviceId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
@@ -557,6 +565,37 @@ export default function SystemView() {
   const runStreamSmoke = async (id: string) => {
     const result = await db.runProviderStreamSmokeTest(id);
     setStreamSmoke((prev) => ({ ...prev, [id]: result }));
+  };
+
+  const deliverWebhook = async () => {
+    if (!webhookUrl.trim()) {
+      setWebhookResult({
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        message: "Webhook URL required",
+      });
+      return;
+    }
+    setWebhookBusy(true);
+    try {
+      const result = await db.deliverWebhook(
+        webhookUrl.trim(),
+        webhookPayload.trim() || "{}",
+        webhookMethod,
+        webhookToken,
+      );
+      setWebhookResult(result);
+    } catch (err) {
+      setWebhookResult({
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setWebhookBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -1187,6 +1226,70 @@ export default function SystemView() {
             <option value="60">60s</option>
             <option value="300">5m</option>
           </select>
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Webhook delivery" subtitle="真实 HTTP JSON 投递" icon={Webhook} colSpan={12}>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={webhookUrl}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+            placeholder="Webhook URL"
+            data-webhook-url
+            className="h-9 min-w-0 flex-[2] rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <select
+            value={webhookMethod}
+            onChange={(e) => setWebhookMethod(e.target.value)}
+            aria-label="Webhook method"
+            data-webhook-method
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+          >
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="GET">GET</option>
+            <option value="DELETE">DELETE</option>
+          </select>
+          <input
+            value={webhookToken}
+            onChange={(e) => setWebhookToken(e.target.value)}
+            placeholder="Bearer token"
+            data-webhook-token
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+        </div>
+        <textarea
+          value={webhookPayload}
+          onChange={(e) => setWebhookPayload(e.target.value)}
+          placeholder="Payload (JSON)"
+          data-webhook-payload
+          className="mt-2 h-20 w-full resize-none rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 font-mono text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+        />
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            data-webhook-deliver
+            onClick={() => void deliverWebhook()}
+            disabled={webhookBusy}
+            className="flex h-9 items-center gap-1.5 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Webhook size={14} />
+            {webhookBusy ? "Delivering..." : "Deliver"}
+          </button>
+          {webhookResult && (
+            <span
+              data-webhook-result
+              className={`max-w-full rounded-md px-2 py-1 text-[10px] ${
+                webhookResult.ok
+                  ? "bg-emerald-500/10 text-emerald-300"
+                  : "bg-rose-500/10 text-rose-300"
+              }`}
+            >
+              {webhookResult.ok ? "OK" : "FAILED"} - HTTP {webhookResult.status || "-"} -{" "}
+              {webhookResult.durationMs}ms - {webhookResult.message}
+            </span>
+          )}
         </div>
       </BentoCard>
 

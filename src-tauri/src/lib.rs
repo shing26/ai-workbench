@@ -2353,6 +2353,15 @@ struct StreamSmokeResult {
     message: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookDeliveryResult {
+    ok: bool,
+    status: u16,
+    duration_ms: u128,
+    message: String,
+}
+
 #[tauri::command]
 fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Result<(), String> {
     state.mark(&run_id);
@@ -3549,6 +3558,80 @@ fn pull_sync_snapshot_http(
         .map_err(|e| format!("Invalid remote snapshot: {}", e))
 }
 
+fn deliver_webhook_http(
+    url: &str,
+    payload: &str,
+    method: &str,
+    token: Option<&str>,
+) -> Result<WebhookDeliveryResult, String> {
+    let method = method.trim().to_uppercase();
+    if !matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "GET" | "DELETE") {
+        return Err(format!("Unsupported webhook method: {}", method));
+    }
+    let payload = if payload.trim().is_empty() {
+        "{}"
+    } else {
+        payload
+    };
+    if serde_json::from_str::<Value>(payload).is_err() {
+        return Err("Webhook payload is not valid JSON".to_string());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+    let started = std::time::Instant::now();
+    let mut request = match method.as_str() {
+        "GET" => client.get(url),
+        "DELETE" => client.delete(url),
+        "PUT" => client.put(url),
+        "PATCH" => client.patch(url),
+        _ => client.post(url),
+    };
+    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+        request = request.header("Authorization", format!("Bearer {}", token.trim()));
+    }
+    let request = if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
+        request
+            .header("Content-Type", "application/json")
+            .body(payload.to_string())
+    } else {
+        request
+    };
+    let resp = request
+        .send()
+        .map_err(|e| format!("Webhook delivery failed: {}", e))?;
+    let status = resp.status();
+    let duration_ms = started.elapsed().as_millis();
+    let body = resp.text().unwrap_or_default();
+    let summary = if body.trim().is_empty() {
+        "empty response".to_string()
+    } else {
+        body.chars().take(400).collect::<String>()
+    };
+    Ok(WebhookDeliveryResult {
+        ok: status.is_success(),
+        status: status.as_u16(),
+        duration_ms,
+        message: format!("HTTP {} {}", status.as_u16(), summary),
+    })
+}
+
+#[tauri::command]
+fn deliver_webhook(
+    url: String,
+    payload: String,
+    method: Option<String>,
+    token: Option<String>,
+) -> Result<WebhookDeliveryResult, String> {
+    deliver_webhook_http(
+        &url,
+        &payload,
+        method.as_deref().unwrap_or("POST"),
+        token.as_deref(),
+    )
+}
+
 #[tauri::command]
 fn push_sync_snapshot(
     state: State<'_, db::Db>,
@@ -3940,6 +4023,7 @@ pub fn run() {
             cancel_ai_stream,
             check_provider_health,
             run_provider_heartbeat,
+            deliver_webhook,
             run_provider_stream_smoke_test
         ])
         .run(tauri::generate_context!())
@@ -5245,5 +5329,87 @@ mod tests {
         assert_eq!(result.device_id, "device-remote");
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    fn read_http_request_until(stream: &mut std::net::TcpStream, marker: &str) -> String {
+        use std::io::Read;
+        let mut request = String::new();
+        let mut buf = [0u8; 4096];
+        for _ in 0..100 {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            request.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if request.contains(marker) || (marker.is_empty() && request.contains("\r\n\r\n")) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        request
+    }
+
+    #[test]
+    fn webhook_delivery_posts_json_with_auth() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = r#"{"event":"daily.summary","ok":true}"#.to_string();
+        let payload_clone = payload.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request_until(&mut stream, "daily.summary");
+            let has_post = request.starts_with("POST /hooks/ai-workbench HTTP/1.1");
+            let has_json = request
+                .to_lowercase()
+                .contains("content-type: application/json");
+            let has_auth = request
+                .to_lowercase()
+                .contains("authorization: bearer wh-token-123");
+            let has_body = request.contains(&payload_clone);
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"received\":true}";
+            let _ = stream.write_all(response.as_bytes());
+            (request, has_post, has_json, has_auth, has_body)
+        });
+        let result = deliver_webhook_http(
+            &format!("http://{}/hooks/ai-workbench", addr),
+            &payload,
+            "POST",
+            Some("wh-token-123"),
+        )
+        .unwrap();
+        let (request, has_post, has_json, has_auth, has_body) = server.join().unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
+        assert!(result.message.contains("HTTP 200"), "{}", result.message);
+        assert!(has_post, "expected POST request line, got:\n{}", request);
+        assert!(has_json, "expected JSON content type, got:\n{}", request);
+        assert!(has_auth, "expected Authorization header, got:\n{}", request);
+        assert!(has_body, "expected JSON body, got:\n{}", request);
+    }
+
+    #[test]
+    fn webhook_delivery_reports_http_error_status() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request = read_http_request_until(&mut stream, "daily.summary");
+            let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nbad request";
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let result = deliver_webhook_http(
+            &format!("http://{}", addr),
+            r#"{"event":"daily.summary","ok":true}"#,
+            "POST",
+            None,
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.status, 400);
+        assert!(result.message.contains("HTTP 400"), "{}", result.message);
+        assert!(result.message.contains("bad request"), "{}", result.message);
     }
 }
