@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 62
+
+### What went well?
+
+- Error logs 从最近列表升级为趋势聚合：`error_log_summary` 按 UTC 日 / 周分组，每个 bucket 拆分 error / warning / info，缺失区间补零，Rust 与 TS fallback 语义一致。
+- System 错误日志卡片新增 Day / Week 切换、严重度下拉与分层柱状图，总数徽标与柱合计一致；命令层同时支持 source / severity 过滤。
+- 验证覆盖：`cargo test --lib` 69/69，fmt、clippy、build 全绿；两条 lane 的 `errorLogTrend` 的 total / barTotal / errorCount / warningCount / infoCount / filterOk 全部命中。
+
+### What went wrong?
+
+- UI 验证首版在 evaluate 内引用了 Node 侧变量 `errorLogSeed.ok`，浏览器作用域找不到会抛 ReferenceError；改为内联 `seedOk: true` 后通过。
+- 聚合测试若不清空 seed 的 `DB initialized` 记录会污染 total，先 `DELETE FROM error_logs` 再插入固定时间戳后断言稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列持久化、RAG 文档状态面板、git 活动看板、错误日志来源 / 设备组合筛选。
+- 后续扩展诊断面板时，保持趋势图与列表共用同一过滤条件与 UTC 时间语义。
+
 ## Sprint 61
 
 ### What went well?

@@ -449,3 +449,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 - `list_vault_watch_events(vault_path?, limit)` 按 `created_at DESC, id DESC` 返回；`clear_vault_watch_events(vault_path?)` 支持按 vault 或全量清空。
 - `delete_vault_watch_target` 删除目标时级联清理该 vault 的事件，避免孤儿记录。
 - 浏览器 fallback 用 `ai-workbench:vault-watch-events:v1` 保存同一时间线。
+
+## Sprint 62：错误日志趋势与聚合
+
+无表结构变更。`error_log_summary` 在内存中按 `error_logs.updated_at` 的 UTC 日（86400000ms 对齐）或周（周一 00:00）分组，支持可选 `source` / `severity` 过滤；bucket 内按 `error` / `warning` / `info` 拆分计数，bucket 数 <= 62 时补齐缺失区间。浏览器 fallback 在 `ai-workbench:db:v1` 的 `logs` 上执行同一聚合。

@@ -476,6 +476,25 @@ pub struct SyncAuditSummary {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ErrorLogBucket {
+    pub bucket: String,
+    pub start_at: i64,
+    pub count: i64,
+    pub error: i64,
+    pub warning: i64,
+    pub info: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorLogSummary {
+    pub granularity: String,
+    pub total: i64,
+    pub buckets: Vec<ErrorLogBucket>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RagSearchResult {
     pub id: String,
     pub content: String,
@@ -1840,6 +1859,92 @@ pub fn sync_audit_summary_range(
         buckets = filled;
     }
     Ok(SyncAuditSummary {
+        granularity: granularity.to_string(),
+        total,
+        buckets,
+    })
+}
+
+pub fn error_log_summary(
+    conn: &Connection,
+    granularity: &str,
+    source: Option<&str>,
+    severity: Option<&str>,
+) -> Result<ErrorLogSummary, String> {
+    let day_ms = 86_400_000i64;
+    let week_ms = day_ms * 7;
+    if granularity != "day" && granularity != "week" {
+        return Err("unsupported error log granularity; use day or week".to_string());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT severity, updated_at FROM error_logs
+             WHERE (?1 IS NULL OR source = ?1)
+               AND (?2 IS NULL OR severity = ?2)",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![source, severity], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut grouped: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+    let mut total = 0i64;
+    for row in rows {
+        let (severity_name, updated_at) = row.map_err(|e| e.to_string())?;
+        let start_at = if granularity == "week" {
+            let days = updated_at.div_euclid(day_ms);
+            let week_index = (days + 3).div_euclid(7);
+            (week_index * 7 - 3) * day_ms
+        } else {
+            updated_at.div_euclid(day_ms) * day_ms
+        };
+        let slot = grouped.entry(start_at).or_insert((0, 0, 0));
+        match severity_name.as_str() {
+            "error" => slot.0 += 1,
+            "warning" => slot.1 += 1,
+            _ => slot.2 += 1,
+        }
+        total += 1;
+    }
+    let mut buckets: Vec<ErrorLogBucket> = grouped
+        .iter()
+        .map(|(&start_at, &(error, warning, info))| ErrorLogBucket {
+            bucket: iso_date_from_epoch_ms(start_at),
+            start_at,
+            count: error + warning + info,
+            error,
+            warning,
+            info,
+        })
+        .collect();
+    buckets.sort_by_key(|bucket| bucket.start_at);
+    if !buckets.is_empty() && buckets.len() <= 62 {
+        let step = if granularity == "week" {
+            week_ms
+        } else {
+            day_ms
+        };
+        let mut filled = Vec::new();
+        let mut cursor = buckets[0].start_at;
+        for bucket in buckets {
+            while cursor < bucket.start_at {
+                filled.push(ErrorLogBucket {
+                    bucket: iso_date_from_epoch_ms(cursor),
+                    start_at: cursor,
+                    count: 0,
+                    error: 0,
+                    warning: 0,
+                    info: 0,
+                });
+                cursor += step;
+            }
+            filled.push(bucket);
+            cursor += step;
+        }
+        buckets = filled;
+    }
+    Ok(ErrorLogSummary {
         granularity: granularity.to_string(),
         total,
         buckets,
@@ -4003,6 +4108,75 @@ mod tests {
             .all(|bucket| bucket.resolve == 0 && bucket.other == 0));
 
         assert!(sync_audit_summary_range(&conn, "month", None, None, None, None).is_err());
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn error_log_summary_groups_by_day_week_and_severity() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-error-log-summary-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        conn.execute("DELETE FROM error_logs", []).unwrap();
+        let monday = 1_785_715_200_000i64;
+        let day_ms = 86_400_000i64;
+        conn.execute(
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
+             VALUES (?1, 'frontend', 'boom today', NULL, 'error', ?2, ?2)",
+            params![uid(), monday],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
+             VALUES (?1, 'tauri', 'warn today', NULL, 'warning', ?2, ?2)",
+            params![uid(), monday + 1000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
+             VALUES (?1, 'frontend', 'info tomorrow', NULL, 'info', ?2, ?2)",
+            params![uid(), monday + day_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at)
+             VALUES (?1, 'tauri', 'boom in two days', NULL, 'error', ?2, ?2)",
+            params![uid(), monday + day_ms * 2],
+        )
+        .unwrap();
+
+        let daily = error_log_summary(&conn, "day", None, None).unwrap();
+        assert_eq!(daily.total, 4);
+        assert_eq!(daily.buckets.len(), 3);
+        assert_eq!(daily.buckets[0].bucket, "2026-08-03");
+        assert_eq!(daily.buckets[0].count, 2);
+        assert_eq!(daily.buckets[0].error, 1);
+        assert_eq!(daily.buckets[0].warning, 1);
+        assert_eq!(daily.buckets[0].info, 0);
+        assert_eq!(daily.buckets[1].info, 1);
+        assert_eq!(daily.buckets[2].error, 1);
+
+        let weekly = error_log_summary(&conn, "week", None, None).unwrap();
+        assert_eq!(weekly.total, 4);
+        assert_eq!(weekly.buckets.len(), 1);
+        assert_eq!(weekly.buckets[0].bucket, "2026-08-03");
+        assert_eq!(weekly.buckets[0].count, 4);
+        assert_eq!(weekly.buckets[0].error, 2);
+        assert_eq!(weekly.buckets[0].warning, 1);
+        assert_eq!(weekly.buckets[0].info, 1);
+
+        let errors_only = error_log_summary(&conn, "day", None, Some("error")).unwrap();
+        assert_eq!(errors_only.total, 2);
+        assert!(errors_only
+            .buckets
+            .iter()
+            .all(|bucket| bucket.warning == 0 && bucket.info == 0));
+
+        let frontend_only = error_log_summary(&conn, "day", Some("frontend"), None).unwrap();
+        assert_eq!(frontend_only.total, 2);
+
+        assert!(error_log_summary(&conn, "month", None, None).is_err());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

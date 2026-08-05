@@ -1505,6 +1505,18 @@ fn list_error_logs(state: State<'_, db::Db>) -> Result<Vec<db::ErrorLog>, String
 }
 
 #[tauri::command]
+fn get_error_log_summary(
+    state: State<'_, db::Db>,
+    granularity: String,
+    source: Option<String>,
+    severity: Option<String>,
+) -> Result<db::ErrorLogSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::error_log_summary(&conn, &granularity, source.as_deref(), severity.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn export_sync_snapshot(
     app: tauri::AppHandle,
     state: State<'_, db::Db>,
@@ -3347,6 +3359,7 @@ pub fn run() {
             diff_message_version_with_current,
             list_clipboard,
             list_error_logs,
+            get_error_log_summary,
             export_sync_snapshot,
             import_sync_snapshot,
             push_sync_snapshot,
