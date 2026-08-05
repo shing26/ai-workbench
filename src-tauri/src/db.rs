@@ -197,6 +197,9 @@ CREATE TABLE IF NOT EXISTS vault_index_queue (
     ignore_patterns TEXT NOT NULL DEFAULT '[]',
     concurrency INTEGER NOT NULL DEFAULT 4,
     status TEXT NOT NULL DEFAULT 'queued',
+    priority INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -581,6 +584,9 @@ pub struct VaultIndexQueueRecord {
     pub ignore_patterns: Vec<String>,
     pub concurrency: usize,
     pub status: String,
+    pub priority: usize,
+    pub attempts: usize,
+    pub last_error: String,
 }
 
 fn now_millis() -> i64 {
@@ -622,6 +628,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_watch_targets(&conn)?;
     migrate_vault_watch_event_stats(&conn)?;
     migrate_knowledge_vault_path(&conn)?;
+    migrate_vault_index_queue_priority(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -669,6 +676,25 @@ fn migrate_knowledge_vault_path(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "knowledge_files", "vault_path")? {
         conn.execute_batch(
             "ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_vault_index_queue_priority(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "vault_index_queue", "priority")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_index_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "vault_index_queue", "attempts")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_index_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "vault_index_queue", "last_error")? {
+        conn.execute_batch(
+            "ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';",
         )?;
     }
     Ok(())
@@ -2973,26 +2999,33 @@ pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn persist_vault_index_queue(
-    conn: &Connection,
-    run_id: &str,
-    path: &str,
-    ignore_patterns: &[String],
-    concurrency: usize,
-    status: &str,
-) -> Result<()> {
-    let serialized = serde_json::to_string(ignore_patterns).unwrap_or_else(|_| "[]".to_string());
+pub fn persist_vault_index_queue(conn: &Connection, record: &VaultIndexQueueRecord) -> Result<()> {
+    let serialized =
+        serde_json::to_string(&record.ignore_patterns).unwrap_or_else(|_| "[]".to_string());
     let now = now_millis();
     conn.execute(
-        "INSERT INTO vault_index_queue (run_id, path, ignore_patterns, concurrency, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        "INSERT INTO vault_index_queue (run_id, path, ignore_patterns, concurrency, status, priority, attempts, last_error, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
          ON CONFLICT(run_id) DO UPDATE SET
            path = excluded.path,
            ignore_patterns = excluded.ignore_patterns,
            concurrency = excluded.concurrency,
            status = excluded.status,
+           priority = excluded.priority,
+           attempts = excluded.attempts,
+           last_error = excluded.last_error,
            updated_at = excluded.updated_at",
-        params![run_id, path, serialized, concurrency as i64, status, now],
+        params![
+            record.run_id,
+            record.path,
+            serialized,
+            record.concurrency as i64,
+            record.status,
+            record.priority as i64,
+            record.attempts as i64,
+            record.last_error,
+            now
+        ],
     )?;
     Ok(())
 }
@@ -3000,9 +3033,9 @@ pub fn persist_vault_index_queue(
 pub fn list_vault_index_queue(conn: &Connection) -> Result<Vec<VaultIndexQueueRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT run_id, path, ignore_patterns, concurrency, status
+            "SELECT run_id, path, ignore_patterns, concurrency, status, priority, attempts, last_error
              FROM vault_index_queue
-             ORDER BY created_at ASC, rowid ASC",
+             ORDER BY priority DESC, created_at ASC, rowid ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -3013,12 +3046,16 @@ pub fn list_vault_index_queue(conn: &Connection) -> Result<Vec<VaultIndexQueueRe
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut records = Vec::new();
     for row in rows {
-        let (run_id, path, serialized, concurrency, status) = row.map_err(|e| e.to_string())?;
+        let (run_id, path, serialized, concurrency, status, priority, attempts, last_error) =
+            row.map_err(|e| e.to_string())?;
         let ignore_patterns =
             serde_json::from_str::<Vec<String>>(&serialized).unwrap_or_else(|_| Vec::new());
         records.push(VaultIndexQueueRecord {
@@ -3027,6 +3064,9 @@ pub fn list_vault_index_queue(conn: &Connection) -> Result<Vec<VaultIndexQueueRe
             ignore_patterns,
             concurrency: concurrency.clamp(0, 16) as usize,
             status,
+            priority: priority.max(0) as usize,
+            attempts: attempts.max(0) as usize,
+            last_error,
         });
     }
     Ok(records)
@@ -4885,14 +4925,32 @@ mod tests {
         let conn = init_connection(&db_path).unwrap();
         persist_vault_index_queue(
             &conn,
-            "run-1",
-            "C:/vault",
-            &["Daily Notes".to_string(), "*.tmp".to_string()],
-            2,
-            "queued",
+            &VaultIndexQueueRecord {
+                run_id: "run-1".to_string(),
+                path: "C:/vault".to_string(),
+                ignore_patterns: vec!["Daily Notes".to_string(), "*.tmp".to_string()],
+                concurrency: 2,
+                status: "queued".to_string(),
+                priority: 1,
+                attempts: 0,
+                last_error: String::new(),
+            },
         )
         .unwrap();
-        persist_vault_index_queue(&conn, "run-2", "D:/vault", &[], 4, "running").unwrap();
+        persist_vault_index_queue(
+            &conn,
+            &VaultIndexQueueRecord {
+                run_id: "run-2".to_string(),
+                path: "D:/vault".to_string(),
+                ignore_patterns: Vec::new(),
+                concurrency: 4,
+                status: "running".to_string(),
+                priority: 0,
+                attempts: 1,
+                last_error: "boom".to_string(),
+            },
+        )
+        .unwrap();
         drop(conn);
 
         let conn = init_connection(&db_path).unwrap();
@@ -4903,7 +4961,13 @@ mod tests {
         assert_eq!(records[0].ignore_patterns, vec!["Daily Notes", "*.tmp"]);
         assert_eq!(records[0].concurrency, 2);
         assert_eq!(records[0].status, "queued");
+        assert_eq!(records[0].priority, 1);
+        assert_eq!(records[0].attempts, 0);
+        assert_eq!(records[0].last_error, "");
         assert_eq!(records[1].status, "running");
+        assert_eq!(records[1].priority, 0);
+        assert_eq!(records[1].attempts, 1);
+        assert_eq!(records[1].last_error, "boom");
 
         delete_vault_index_queue(&conn, "run-1").unwrap();
         let records = list_vault_index_queue(&conn).unwrap();
@@ -4911,6 +4975,47 @@ mod tests {
         assert_eq!(records[0].run_id, "run-2");
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_index_queue_migrates_priority_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE vault_index_queue (
+                run_id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                ignore_patterns TEXT NOT NULL DEFAULT '[]',
+                concurrency INTEGER NOT NULL DEFAULT 4,
+                status TEXT NOT NULL DEFAULT 'queued',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_vault_index_queue_priority(&conn).unwrap();
+        assert!(column_exists(&conn, "vault_index_queue", "priority").unwrap());
+        assert!(column_exists(&conn, "vault_index_queue", "attempts").unwrap());
+        assert!(column_exists(&conn, "vault_index_queue", "last_error").unwrap());
+        persist_vault_index_queue(
+            &conn,
+            &VaultIndexQueueRecord {
+                run_id: "run-1".to_string(),
+                path: "C:/vault".to_string(),
+                ignore_patterns: Vec::new(),
+                concurrency: 4,
+                status: "queued".to_string(),
+                priority: 1,
+                attempts: 2,
+                last_error: "boom".to_string(),
+            },
+        )
+        .unwrap();
+        let records = list_vault_index_queue(&conn).unwrap();
+        assert_eq!(records[0].priority, 1);
+        assert_eq!(records[0].attempts, 2);
+        assert_eq!(records[0].last_error, "boom");
+        migrate_vault_index_queue_priority(&conn).unwrap();
+        assert_eq!(list_vault_index_queue(&conn).unwrap().len(), 1);
     }
 
     #[test]
