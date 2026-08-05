@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Clipboard, CloudUpload, HeartPulse, Plus, Radio, RefreshCw, Terminal, Users } from "lucide-react";
+import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, HeartPulse, Pencil, Plus, Radio, RefreshCw, Terminal, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -31,6 +31,8 @@ export default function SystemView() {
   const [agentDeptId, setAgentDeptId] = useState("");
   const [agentName, setAgentName] = useState("");
   const [agentRole, setAgentRole] = useState("");
+  const [promptEditAgentId, setPromptEditAgentId] = useState<string | null>(null);
+  const [promptDraft, setPromptDraft] = useState("");
 
   useEffect(() => {
     void db.getSyncStatus().then((status) => {
@@ -59,6 +61,13 @@ export default function SystemView() {
     setDepartments(await db.listDepartments());
     setAgentName("");
     setAgentRole("");
+  };
+
+  const saveAgentPrompt = async (id: string) => {
+    await db.updateAgentSystemPrompt(id, promptDraft.trim());
+    setAgents(await db.listAgents());
+    setPromptEditAgentId(null);
+    setPromptDraft("");
   };
 
   const exportSync = async () => {
@@ -275,12 +284,57 @@ export default function SystemView() {
                 {agents
                   .filter((a) => a.departmentId === d.id)
                   .map((a) => (
-                    <div
-                      key={a.id}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5 text-[10px]"
-                    >
-                      <span className="truncate text-slate-300">{a.name}</span>
-                      <span className="shrink-0 text-slate-600">{a.role}</span>
+                    <div key={a.id}>
+                      <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5 text-[10px]">
+                        <span className="min-w-0 flex-1 truncate text-slate-300">{a.name}</span>
+                        <button
+                          type="button"
+                          aria-label={`Edit agent prompt: ${a.name}`}
+                          onClick={() => {
+                            setPromptEditAgentId(a.id);
+                            setPromptDraft(a.systemPrompt);
+                          }}
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/5 text-slate-500 hover:text-violet-300"
+                        >
+                          <Pencil size={10} />
+                        </button>
+                        <span className="shrink-0 text-slate-600">{a.role}</span>
+                      </div>
+                      {a.systemPrompt && (
+                        <p className="mt-0.5 truncate px-2 text-[9px] text-violet-400/70">{a.systemPrompt}</p>
+                      )}
+                      {promptEditAgentId === a.id && (
+                        <div className="agent-prompt-editor mt-1 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
+                          <textarea
+                            value={promptDraft}
+                            onChange={(e) => setPromptDraft(e.target.value)}
+                            rows={2}
+                            aria-label="Agent system prompt"
+                            className="w-full resize-none rounded-md border border-white/10 bg-black/20 px-2 py-1.5 text-[10px] text-slate-200 outline-none focus:border-violet-500/40"
+                          />
+                          <div className="mt-1.5 flex justify-end gap-1">
+                            <button
+                              type="button"
+                              aria-label="Cancel agent prompt"
+                              onClick={() => {
+                                setPromptEditAgentId(null);
+                                setPromptDraft("");
+                              }}
+                              className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                            >
+                              <X size={10} /> Cancel
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Save agent prompt"
+                              onClick={() => void saveAgentPrompt(a.id)}
+                              className="flex h-6 items-center gap-1 rounded-md bg-violet-500/20 px-1.5 text-[9px] text-violet-300 hover:bg-violet-500/30"
+                            >
+                              <Check size={10} /> Save
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
               </div>

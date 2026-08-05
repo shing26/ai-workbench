@@ -426,6 +426,77 @@ try {
   }
   results.streamStop = streamStop;
 
+  results.teamDispatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const teamBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Team");
+    if (!teamBtn) return { ok: false, reason: "no team mode button" };
+    teamBtn.click();
+    await sleep(120);
+    const deptSelect = document.querySelector('select[aria-label="Dispatch department"]');
+    if (!deptSelect) return { ok: false, reason: "no department select" };
+    const designOption = [...deptSelect.options].find((o) => o.textContent.includes("设计部"));
+    if (designOption) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(deptSelect, designOption.value);
+      deptSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await sleep(120);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "team dispatch check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let busySeen = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".thinking-dot")) {
+        busySeen = true;
+        break;
+      }
+      await sleep(30);
+    }
+    let inspectorText = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      const allThree =
+        bubbles.some((t) => t.includes("UI Designer")) &&
+        bubbles.some((t) => t.includes("Frontend Developer")) &&
+        bubbles.some((t) => t.includes("UI Finish-Gate Reviewer"));
+      if (allThree && !document.querySelector(".thinking-dot") && inspectorText.toLowerCase().includes("team trace")) {
+        break;
+      }
+      await sleep(120);
+    }
+    const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+    return {
+      ok: true,
+      busySeen,
+      busyGone: !document.querySelector(".thinking-dot"),
+      designBubbles: bubbles.filter(
+        (t) => t.includes("UI Designer") || t.includes("Frontend Developer") || t.includes("UI Finish-Gate Reviewer"),
+      ).length,
+      teamVisible: inspectorText.toLowerCase().includes("team trace"),
+      hasAgents: inspectorText.includes("UI Designer") && inspectorText.includes("Frontend Developer"),
+      inspectorText: inspectorText.slice(0, 160),
+    };
+  })()`);
+  if (
+    !results.teamDispatch.ok ||
+    !results.teamDispatch.busySeen ||
+    !results.teamDispatch.busyGone ||
+    results.teamDispatch.designBubbles < 3 ||
+    !results.teamDispatch.teamVisible ||
+    !results.teamDispatch.hasAgents
+  ) {
+    throw new Error(`AI Studio team dispatch assertion failed: ${JSON.stringify(results.teamDispatch)}`);
+  }
+  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click(); [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Single")?.click();`);
+  await delay(250);
+
   await clickDock("Projects");
   const gitGraph = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -701,7 +772,46 @@ try {
     addBtn.click();
     await sleep(300);
     const created = section.innerText.includes("QA Agent");
-    return { ok: designVisible && created, designVisible, created };
+    const editBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+    let promptSaved = false;
+    let persistedPrompt = false;
+    if (editBtn) {
+      editBtn.click();
+      await sleep(120);
+      const textarea = section.querySelector('textarea[aria-label="Agent system prompt"]');
+      if (textarea) {
+        const textSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+        textSetter.call(textarea, "You are a QA agent that verifies work with evidence.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        await sleep(80);
+        const saveBtn = section.querySelector('button[aria-label="Save agent prompt"]');
+        saveBtn?.click();
+        await sleep(250);
+        const currentEditBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        const qaContainer = currentEditBtn?.closest("div")?.parentElement;
+        promptSaved =
+          !!qaContainer && qaContainer.textContent.includes("You are a QA agent that verifies work with evidence.");
+        const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") || "{}");
+        const storedAgent = (stored.agents ?? []).find((a) => a.name === "QA Agent");
+        persistedPrompt =
+          storedAgent?.systemPrompt ===
+          "You are a QA agent that verifies work with evidence.";
+        return {
+          ok: designVisible && created && promptSaved && persistedPrompt,
+          designVisible,
+          created,
+          promptSaved,
+          persistedPrompt,
+        };
+      }
+    }
+    return {
+      ok: designVisible && created && promptSaved && persistedPrompt,
+      designVisible,
+      created,
+      promptSaved,
+      persistedPrompt,
+    };
   })()`);
   if (!results.agentDirectory.ok) {
     throw new Error(`System agent directory assertion failed: ${JSON.stringify(results.agentDirectory)}`);

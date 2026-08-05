@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 24
+
+### What went well?
+
+- 部门团队编排闭环：AI Studio 新增 Team 模式，按部门并行派发最多 3 个 Agent，每个气泡带 Agent/Role 标签独立流式输出；Inspector 显示 Team Trace（Department / Agents / Role / Model / Status）。
+- Prompt 全链路打通：12+ 种子 Agent 自带职责化 system_prompt，单 Agent 与 Team 派发都注入 system 消息；System Agent directory 行内编辑后立即持久化并展示预览。
+- 验证覆盖：`cargo test --lib` 19/19，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 Team 并行派发、Team Trace、prompt 编辑与 localStorage 持久化断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 种子 INSERT 使用了跳号的 `?7/?8` 占位符但只传 6 个参数，rusqlite 按最大索引校验报 `InvalidParameterCount(6, 8)`；改为连续 `?5/?6` 后通过。
+- `verify` 首轮用祖先容器定位 QA Agent 编辑按钮，实际点到了 UI Designer 的 prompt 编辑器；改为精确 `aria-label` 与最近容器断言后通过。
+- 一次重载后 dock 按钮短暂未出现，属时序波动，重跑通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调与 Team 结果汇总、自动生成 Commit/PR 草稿、Prompt 版本管理。
+- 后续改动 Agent 派发或 Prompt 时，保留 Team Trace 与 prompt 持久化断言。
+
 ## Sprint 23
 
 ### What went well?

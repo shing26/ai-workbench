@@ -23,6 +23,10 @@ export default function AIStudioView() {
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentId, setAgentId] = useState("");
   const [routedAgent, setRoutedAgent] = useState<db.Agent | null>(null);
+  const [teamMode, setTeamMode] = useState(false);
+  const [teamDeptId, setTeamDeptId] = useState("");
+  const teamRunIdsRef = useRef<string[]>([]);
+  const teamPendingRef = useRef(0);
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -42,13 +46,18 @@ export default function AIStudioView() {
   const [versionDiff, setVersionDiff] = useState<db.MessageDiff | null>(null);
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
-  const runsRef = useRef(new Map<string, { content: string; index: number }>());
+  const runsRef = useRef(new Map<string, { content: string; index: number; label?: string }>());
   const retryTargetRef = useRef<Message | null>(null);
   const activeProvider = providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
   const activeProviders = providers.filter((p) => p.isActive);
   const moaProviders = activeProviders.slice(0, 3);
+  const teamAgents = teamMode
+    ? agents.filter((a) => a.departmentId === teamDeptId && a.isActive).slice(0, 3)
+    : [];
+  const selectedDepartment = departments.find((d) => d.id === teamDeptId) ?? null;
 
-  const setMode = (mode: "single" | "moa" | "auto") => {
+  const setMode = (mode: "single" | "team" | "moa" | "auto") => {
+    setTeamMode(mode === "team");
     setMoa(mode === "moa");
     setAutoRoute(mode === "auto");
   };
@@ -61,6 +70,7 @@ export default function AIStudioView() {
       const run = runsRef.current.get(chunk.id);
       if (!run) return;
       if (chunk.done) {
+        const teamRun = teamPendingRef.current > 0;
         setMessages((prev) => {
           const next = [...prev];
           const idx = run.index;
@@ -80,17 +90,6 @@ export default function AIStudioView() {
           return next;
         });
         runsRef.current.delete(chunk.id);
-        if (chunk.error) {
-          setStreamStatus("error");
-          setStreamError(chunk.error);
-        } else if (chunk.cancelled) {
-          setStreamStatus("stopped");
-          setStreamError(null);
-        } else {
-          setStreamStatus("idle");
-          setStreamError(null);
-          retryTargetRef.current = null;
-        }
         if (!chunk.error && sessionIdRef.current && run.content) {
           void db.saveChatMessage(sessionIdRef.current, "assistant", run.content).then((saved) => {
             setMessages((prev) => {
@@ -102,11 +101,30 @@ export default function AIStudioView() {
             });
           });
         }
+        if (teamRun) {
+          teamPendingRef.current -= 1;
+          if (teamPendingRef.current > 0) {
+            setStreamStatus("streaming");
+            return;
+          }
+        }
+        if (chunk.error) {
+          setStreamStatus("error");
+          setStreamError(chunk.error);
+        } else if (chunk.cancelled) {
+          setStreamStatus("stopped");
+          setStreamError(null);
+        } else {
+          setStreamStatus("idle");
+          setStreamError(null);
+          retryTargetRef.current = null;
+        }
         setBusy(false);
         return;
       }
       setStreamStatus("streaming");
-      run.content += chunk.delta;
+      const delta = run.label && !run.content ? `${run.label}\n\n${chunk.delta}` : chunk.delta;
+      run.content += delta;
       setMessages((prev) => {
         const next = [...prev];
         const idx = run.index;
@@ -114,7 +132,7 @@ export default function AIStudioView() {
           const base = next[idx].content.startsWith("__stream__")
             ? next[idx].content.slice("__stream__".length)
             : run.content;
-          next[idx] = { ...next[idx], content: `__stream__${base}${chunk.delta}` };
+          next[idx] = { ...next[idx], content: `__stream__${base}${delta}` };
         }
         return next;
       });
@@ -154,6 +172,7 @@ export default function AIStudioView() {
     void Promise.all([db.listDepartments(), db.listAgents()]).then(([departmentList, agentList]) => {
       if (disposed) return;
       setDepartments(departmentList);
+      setTeamDeptId((current) => current || departmentList[0]?.id || "");
       const active = agentList.filter((a) => a.isActive);
       setAgents(active);
       const first = active[0];
@@ -168,25 +187,50 @@ export default function AIStudioView() {
   }, []);
 
   const stopStreaming = async () => {
-    const runId = `ai-${runIdRef.current}`;
+    const targetRuns =
+      teamPendingRef.current > 0
+        ? [...teamRunIdsRef.current]
+        : [`ai-${runIdRef.current}`];
     runIdRef.current += 1;
-    const run = runsRef.current.get(runId);
-    const finalContent = `${run?.content ?? ""} [stopped]`;
-    if (run) runsRef.current.delete(runId);
     setBusy(false);
     setStreamStatus("stopped");
     setStreamError(null);
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.role === "assistant" && m.content.startsWith("__stream__")
-          ? { ...m, content: finalContent }
-          : m,
-      ),
-    );
-    await db.cancelAiStream(runId);
-    if (sessionIdRef.current) {
-      await db.saveChatMessage(sessionIdRef.current, "assistant", finalContent);
+    const stoppedByIndex = new Map<number, string>();
+    for (const id of targetRuns) {
+      const run = runsRef.current.get(id);
+      if (run) {
+        const content = `${run.content} [stopped]`;
+        stoppedByIndex.set(run.index, content);
+        run.content = content;
+        runsRef.current.delete(id);
+      }
+      await db.cancelAiStream(id);
     }
+    setMessages((prev) => {
+      const next = [...prev];
+      for (const [index, content] of stoppedByIndex) {
+        if (next[index]?.role === "assistant") next[index] = { ...next[index], content };
+      }
+      return next;
+    });
+    if (stoppedByIndex.size === 0) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "assistant" && m.content === "__stream__"
+            ? { ...m, content: "[stopped]" }
+            : m,
+        ),
+      );
+    }
+    if (sessionIdRef.current) {
+      await Promise.all(
+        [...stoppedByIndex.values()].map((content) =>
+          db.saveChatMessage(sessionIdRef.current as string, "assistant", content),
+        ),
+      );
+    }
+    teamPendingRef.current = 0;
+    teamRunIdsRef.current = [];
   };
 
   const newChat = () => {
@@ -324,6 +368,9 @@ export default function AIStudioView() {
     if (selectedAgent) setRoutedAgent(selectedAgent);
     setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== "__stream__");
+    if (selectedAgent?.systemPrompt?.trim()) {
+      apiMessages.unshift({ role: "system", content: selectedAgent.systemPrompt.trim() });
+    }
     if (hits.length > 0) {
       apiMessages.unshift({
         role: "system",
@@ -386,6 +433,76 @@ export default function AIStudioView() {
     }
   };
 
+  const sendTeam = async (text: string, hits: db.RagSearchResult[]) => {
+    const selectedAgents = agents.filter((a) => a.departmentId === teamDeptId && a.isActive).slice(0, 3);
+    if (selectedAgents.length === 0) {
+      setBusy(false);
+      setStreamStatus("error");
+      setStreamError("no active agents in selected department");
+      return;
+    }
+    const runId = `ai-${++runIdRef.current}`;
+    const messageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const userMessage: Message = { id: messageId, role: "user", content: text };
+    const placeholders: Message[] = selectedAgents.map(() => ({ role: "assistant", content: "__stream__" }));
+    const next: Message[] = [...messages, userMessage, ...placeholders];
+    setMessages(next);
+    retryTargetRef.current = userMessage;
+    setStreamStatus("connecting");
+    setStreamError(null);
+    setInput("");
+    const session = await ensureSession(text);
+    await db.saveChatMessage(session.id, "user", text, messageId);
+    const history: Message[] = next.slice(0, next.length - selectedAgents.length);
+    const providerBase = activeProvider?.id ?? "";
+    teamPendingRef.current = selectedAgents.length;
+    teamRunIdsRef.current = [];
+    const agentRuns = selectedAgents.map((agent, index) => {
+      const subRunId = `${runId}-${index}`;
+      teamRunIdsRef.current.push(subRunId);
+      const providerIds = agent.providerId ? [agent.providerId] : providerBase ? [providerBase] : [];
+      const apiMessages: ApiMessage[] = history.filter((m) => m.content !== "__stream__");
+      if (agent.systemPrompt?.trim()) {
+        apiMessages.unshift({ role: "system", content: agent.systemPrompt.trim() });
+      }
+      if (hits.length > 0) {
+        apiMessages.unshift({
+          role: "system",
+          content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join("\n")}`,
+        });
+      }
+      runsRef.current.set(subRunId, {
+        content: "",
+        index: history.length + index,
+        label: `${agent.name} · ${agent.role}`,
+      });
+      return db.sendAiMessageStream({
+        providerIds,
+        messages: apiMessages,
+        moa: false,
+        runId: subRunId,
+      });
+    });
+    await Promise.all(agentRuns.map((promise) => promise.catch(() => {})));
+    const sections: InspectorSection[] = [
+      { label: "Department", value: selectedDepartment?.name ?? "" },
+      { label: "Agents", value: selectedAgents.map((a) => a.name).join(", ") },
+      { label: "Role", value: selectedAgents.map((a) => a.role).join(" / ") },
+      { label: "Model", value: selectedAgents.map((a) => a.model).join(", ") },
+      { label: "Status", value: "parallel streaming" },
+    ];
+    if (hits.length > 0) {
+      sections.push({ label: "RAG context", value: `${hits.length} local thought(s) injected` });
+      hits.slice(0, 5).forEach((hit, index) => {
+        sections.push({
+          label: `Source ${index + 1}`,
+          value: hit.content.replace(/\s+/g, " ").slice(0, 90),
+        });
+      });
+    }
+    openInspector(hits.length > 0 ? "Team Trace + RAG" : "Team Trace", sections);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -399,6 +516,10 @@ export default function AIStudioView() {
       }
     }
     setRagHits(hits);
+    if (teamMode) {
+      await sendTeam(text, hits);
+      return;
+    }
     const runId = `ai-${++runIdRef.current}`;
     const messageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const userMessage: Message = { id: messageId, role: "user", content: text };
@@ -516,6 +637,8 @@ export default function AIStudioView() {
         <div className="flex items-center gap-2">
           {autoRoute && routedProvider ? (
             <ModelBadge label={`auto → ${routedProvider.name}`} tone="green" status={routedProvider.fallbackFrom ? "fallback" : "active"} />
+          ) : teamMode ? (
+            <ModelBadge label={selectedDepartment?.name ?? "Team"} tone="blue" status={`${teamAgents.length} agents`} />
           ) : moa ? (
             <div className="moa-stack provider-stack">
               {moaProviders.map((p) => (
@@ -527,6 +650,7 @@ export default function AIStudioView() {
           ) : (
             <ModelBadge label={activeProvider?.name ?? "No provider"} tone="green" />
           )}
+          {teamMode && <ModelBadge label="Team" tone="blue" status="parallel" />}
           {moa && <ModelBadge label="MOA" tone="blue" status="3-way" />}
         </div>
         <div className="flex items-center gap-2">
@@ -534,9 +658,16 @@ export default function AIStudioView() {
             <button
               type="button"
               onClick={() => setMode("single")}
-              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${!moa ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500 hover:text-slate-300"}`}
+              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${!moa && !autoRoute && !teamMode ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500 hover:text-slate-300"}`}
             >
               Single
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("team")}
+              className={`rounded-[10px] px-3 py-1.5 text-[11px] ${teamMode ? "bg-violet-500/20 text-violet-300" : "text-slate-500 hover:text-slate-300"}`}
+            >
+              Team
             </button>
             <button
               type="button"
@@ -553,28 +684,57 @@ export default function AIStudioView() {
               Auto
             </button>
           </div>
-          <select
-            value={agentId}
-            onChange={(e) => {
-              setAgentId(e.target.value);
-              setRoutedAgent(agents.find((a) => a.id === e.target.value) ?? null);
-            }}
-            aria-label="Dispatch agent"
-            className="h-8 max-w-48 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
-          >
-            <option value="">Default agent</option>
-            {departments.map((d) => (
-              <optgroup key={d.id} label={d.name}>
-                {agents
-                  .filter((a) => a.departmentId === d.id)
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-              </optgroup>
-            ))}
-          </select>
+          {teamMode ? (
+            <select
+              value={teamDeptId}
+              onChange={(e) => setTeamDeptId(e.target.value)}
+              aria-label="Dispatch department"
+              className="h-8 max-w-52 rounded-xl border border-violet-500/25 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
+            >
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} · {agents.filter((a) => a.departmentId === d.id).length}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <>
+              <select
+                value={agentId}
+                onChange={(e) => {
+                  setAgentId(e.target.value);
+                  setRoutedAgent(agents.find((a) => a.id === e.target.value) ?? null);
+                }}
+                aria-label="Dispatch agent"
+                className="h-8 max-w-48 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
+              >
+                <option value="">Default agent</option>
+                {departments.map((d) => (
+                  <optgroup key={d.id} label={d.name}>
+                    {agents
+                      .filter((a) => a.departmentId === d.id)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
+              </select>
+              <select
+                value={providerId}
+                onChange={(e) => setProviderId(e.target.value)}
+                className="h-8 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
+              >
+                <option value="">Default active provider</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           <button
             type="button"
             role="switch"
@@ -593,18 +753,6 @@ export default function AIStudioView() {
             <span className={`h-1.5 w-1.5 rounded-full ${useRag ? "bg-amber-400" : "bg-slate-600"}`} />
             RAG
           </button>
-          <select
-            value={providerId}
-            onChange={(e) => setProviderId(e.target.value)}
-            className="h-8 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
-          >
-            <option value="">Default active provider</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
         </div>
       </div>
 

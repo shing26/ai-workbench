@@ -571,55 +571,55 @@ fn seed_agents_if_empty(conn: &Connection) -> Result<()> {
             params![&quality_id, now],
         )?;
         let design_agents = [
-            ("UI Designer", "设计系统与动效"),
-            ("Frontend Developer", "React/Tailwind 实现"),
-            ("UI Finish-Gate Reviewer", "视觉验收"),
+            ("UI Designer", "设计系统与动效", "你是 AI Workbench 的 UI Designer，负责设计系统、动效与视觉验收。输出需遵循 Design Token，并服务于 5 大主视图。"),
+            ("Frontend Developer", "React/Tailwind 实现", "你是 AI Workbench 的 Frontend Developer，负责 React/Tailwind 实现。输出需可运行、可验证，并保持布局稳定。"),
+            ("UI Finish-Gate Reviewer", "视觉验收", "你是 AI Workbench 的 UI Finish-Gate Reviewer，负责视觉验收。输出必须给出可测量的验收项与风险。"),
         ];
         let product_agents = [
-            ("Product Manager", "范围冻结与验收标准"),
-            ("UX Architect", "交互与信息架构"),
+            ("Product Manager", "范围冻结与验收标准", "你是 AI Workbench 的 Product Manager，负责范围冻结与验收标准。每个需求必须给出明确的 AC。"),
+            ("UX Architect", "交互与信息架构", "你是 AI Workbench 的 UX Architect，负责交互与信息架构。输出需考虑工作台高频路径与 5 大主视图。"),
         ];
         let backend_agents = [
-            ("Backend Architect", "Tauri 命令与分层设计"),
-            ("Data Engineer", "SQLite 表结构与迁移"),
+            ("Backend Architect", "Tauri 命令与分层设计", "你是 AI Workbench 的 Backend Architect，负责 Tauri 命令与分层设计。输出需保持模块边界清晰并考虑错误路径。"),
+            ("Data Engineer", "SQLite 表结构与迁移", "你是 AI Workbench 的 Data Engineer，负责 SQLite 表结构与迁移。输出需包含索引、外键与迁移脚本。"),
         ];
         let ai_agents = [
-            ("AI Engineer", "模型路由与流式链路"),
-            ("Prompt Engineer", "Prompt 版本与测试用例"),
-            ("Multi-Agent Systems Architect", "部门与 Agent 编排"),
+            ("AI Engineer", "模型路由与流式链路", "你是 AI Workbench 的 AI Engineer，负责模型路由与流式链路。输出需兼容 Tauri 与浏览器 fallback。"),
+            ("Prompt Engineer", "Prompt 版本与测试用例", "你是 AI Workbench 的 Prompt Engineer，负责 Prompt 版本与测试用例。输出需给出可复现的用例。"),
+            ("Multi-Agent Systems Architect", "部门与 Agent 编排", "你是 AI Workbench 的 Multi-Agent Systems Architect，负责部门与 Agent 编排。输出需明确分工、并行度与汇总结论。"),
         ];
         let quality_agents = [
-            ("Test Automation Engineer", "自动化验收与回归"),
-            ("Reality Checker", "证据驱动的发布门禁"),
+            ("Test Automation Engineer", "自动化验收与回归", "你是 AI Workbench 的 Test Automation Engineer，负责自动化验收与回归。输出需覆盖 verify:ui 与 Rust 单测。"),
+            ("Reality Checker", "证据驱动的发布门禁", "你是 AI Workbench 的 Reality Checker，负责证据驱动的发布门禁。输出必须引用实际文件与命令结果。"),
         ];
-        for (name, role) in design_agents {
+        for (name, role, prompt) in design_agents {
             conn.execute(
-                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
-                params![uid(), &design_id, name, role, now],
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, ?5, 1, ?6)",
+                params![uid(), &design_id, name, role, prompt, now],
             )?;
         }
-        for (name, role) in product_agents {
+        for (name, role, prompt) in product_agents {
             conn.execute(
-                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
-                params![uid(), &product_id, name, role, now],
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, ?5, 1, ?6)",
+                params![uid(), &product_id, name, role, prompt, now],
             )?;
         }
-        for (name, role) in backend_agents {
+        for (name, role, prompt) in backend_agents {
             conn.execute(
-                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
-                params![uid(), &backend_id, name, role, now],
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, ?5, 1, ?6)",
+                params![uid(), &backend_id, name, role, prompt, now],
             )?;
         }
-        for (name, role) in ai_agents {
+        for (name, role, prompt) in ai_agents {
             conn.execute(
-                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
-                params![uid(), &ai_id, name, role, now],
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, ?5, 1, ?6)",
+                params![uid(), &ai_id, name, role, prompt, now],
             )?;
         }
-        for (name, role) in quality_agents {
+        for (name, role, prompt) in quality_agents {
             conn.execute(
-                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
-                params![uid(), &quality_id, name, role, now],
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, ?5, 1, ?6)",
+                params![uid(), &quality_id, name, role, prompt, now],
             )?;
         }
     }
@@ -910,6 +910,18 @@ pub fn create_agent(
         params![id, department_id, name, role, model, provider_id, system_prompt, now_millis()],
     )?;
     get_agent(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn update_agent_system_prompt(
+    conn: &Connection,
+    id: &str,
+    system_prompt: &str,
+) -> Result<Agent> {
+    conn.execute(
+        "UPDATE agents SET system_prompt = ?1 WHERE id = ?2",
+        params![system_prompt, id],
+    )?;
+    get_agent(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
@@ -1649,6 +1661,36 @@ mod tests {
             .find(|d| d.id == design.id)
             .expect("design department should still exist");
         assert_eq!(after.agent_count, design.agent_count + 1);
+    }
+
+    #[test]
+    fn agent_system_prompt_updates_and_persists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        seed_agents_if_empty(&conn).unwrap();
+
+        let ui_designer = list_agents(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.name == "UI Designer")
+            .expect("UI Designer should be seeded");
+        assert!(!ui_designer.system_prompt.is_empty());
+
+        let updated = update_agent_system_prompt(
+            &conn,
+            &ui_designer.id,
+            "你是设计验收专家，先给验收清单再给结论。",
+        )
+        .unwrap();
+        assert_eq!(
+            updated.system_prompt,
+            "你是设计验收专家，先给验收清单再给结论。"
+        );
+
+        let reloaded = get_agent(&conn, &ui_designer.id)
+            .unwrap()
+            .expect("agent should still exist");
+        assert_eq!(reloaded.system_prompt, updated.system_prompt);
     }
 
     #[test]
