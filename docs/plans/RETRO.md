@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 52
+
+### What went well?
+
+- watch 事件闭环补齐目标级统计：`vault_watch_targets` 记录累计事件数与最后事件时间，watch 写回成功后埋点，Knowledge 目标行直接展示事件量。
+- 迁移保持幂等，旧库自动补列；`touch_vault_watch_event` 对缺失目标也自动补记录，避免 watcher 与配置时序不一致。
+- 验证覆盖：`cargo test --lib` 54/54，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言两个目标事件数均为 1，两条 lane 全绿。
+
+### What went wrong?
+
+- `touch_vault_watch_event` 首版期望 `&str`，实际传入 `PathBuf`；改用 `to_string_lossy().as_ref()` 后通过。
+- fallback `upsertVaultWatchTarget` 调用漏了新字段，TS 编译暴露后补齐。
+
+### Action Items
+
+- 下一 Sprint 候选：索引进度与取消队列、结构化字段级合并、自定义审计日期范围、watch 事件类型细分。
+- 后续扩展 watch 目标表时，保留事件统计迁移与 fallback 模拟。
+
 ## Sprint 51
 
 ### What went well?

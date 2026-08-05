@@ -1113,6 +1113,7 @@ try {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const targets = ["C:/vault", "D:/vault"];
     let counts = {};
+    let events = {};
     for (let i = 0; i < 30; i++) {
       counts = Object.fromEntries(
         [...document.querySelectorAll("[data-vault-target]")].map((row) => [
@@ -1122,10 +1123,26 @@ try {
           ),
         ]),
       );
-      if (targets.every((path) => (counts[path] ?? 0) > 0)) break;
+      events = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-target-events]")?.getAttribute("data-vault-target-events") ?? 0,
+          ),
+        ]),
+      );
+      if (targets.every((path) => (counts[path] ?? 0) > 0) && targets.some((path) => (events[path] ?? 0) > 0)) {
+        break;
+      }
       await sleep(200);
     }
-    return { ok: targets.every((path) => (counts[path] ?? 0) > 0), counts };
+    return {
+      ok:
+        targets.every((path) => (counts[path] ?? 0) > 0) &&
+        targets.some((path) => (events[path] ?? 0) > 0),
+      counts,
+      events,
+    };
   })()`);
   if (!vaultTargetStats.ok) {
     throw new Error(`Vault target stats assertion failed: ${JSON.stringify(vaultTargetStats)}`);

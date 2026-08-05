@@ -1511,6 +1511,8 @@ fn start_vault_watch_impl(
         let changed =
             sync_vault_event(&conn, &event.paths, &canonical_for_events, &ignore_patterns);
         if changed {
+            let _ =
+                db::touch_vault_watch_event(&conn, canonical_for_events.to_string_lossy().as_ref());
             if let Ok(status) = vault_watch_status(&app_clone, &conn) {
                 let _ = app_clone.emit("vault-watch-update", status);
             }

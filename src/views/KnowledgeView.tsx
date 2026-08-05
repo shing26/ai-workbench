@@ -140,6 +140,8 @@ export default function KnowledgeView() {
       ignorePatterns: parseIgnore(),
       enabled: watchStatus?.paths?.includes(vaultPath.trim()) ?? false,
       updatedAt: Date.now(),
+      lastEventAt: 0,
+      eventCount: 0,
     });
     await loadTargets();
   };
@@ -346,6 +348,12 @@ export default function KnowledgeView() {
                     className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
                   >
                     {targetFileCount} files
+                  </span>
+                  <span
+                    data-vault-target-events={target.eventCount ?? 0}
+                    className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
+                  >
+                    {target.eventCount ?? 0} events
                   </span>
                   {target.ignorePatterns.length > 0 && (
                     <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">
