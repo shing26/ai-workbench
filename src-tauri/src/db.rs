@@ -348,6 +348,7 @@ pub struct SessionSearchHit {
     pub match_type: String,
     pub snippet: String,
     pub score: i64,
+    pub message_id: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -4268,47 +4269,62 @@ pub fn search_sessions(
                 match_type: "all".to_string(),
                 snippet: String::new(),
                 score: 0,
+                message_id: None,
             })
             .collect());
     }
 
     let mut hits = Vec::new();
     for session in sessions {
-        let mut best: Option<(i64, &str, String)> = None;
+        let mut best: Option<(i64, &str, String, Option<String>)> = None;
         if let Some(score) = fuzzy_match_score(&session.title, q) {
-            best = Some((score, "title", session.title.clone()));
+            best = Some((score, "title", session.title.clone(), None));
         }
         if let Some(score) = fuzzy_match_score(&session.model, q) {
-            let candidate = (score, "model", session.model.clone());
-            if best.as_ref().is_none_or(|(current, _, _)| score > *current) {
+            let candidate = (score, "model", session.model.clone(), None);
+            if best
+                .as_ref()
+                .is_none_or(|(current, _, _, _)| score > *current)
+            {
                 best = Some(candidate);
             }
         }
         if include_messages {
             let mut stmt = conn.prepare(
-                "SELECT content FROM chat_messages
+                "SELECT id, content FROM chat_messages
                  WHERE session_id = ?1
                  ORDER BY created_at DESC
                  LIMIT 100",
             )?;
-            let rows = stmt.query_map(params![session.id], |row| row.get::<_, String>(0))?;
-            for content in rows {
-                let content = content?;
+            let rows = stmt.query_map(params![session.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (message_id, content) = row?;
                 if let Some(score) = fuzzy_match_score(&content, q) {
-                    let candidate = (score, "message", session_snippet(&content));
-                    if best.as_ref().is_none_or(|(current, _, _)| score > *current) {
+                    let candidate = (
+                        score,
+                        "message",
+                        session_snippet(&content),
+                        Some(message_id),
+                    );
+                    if best
+                        .as_ref()
+                        .is_none_or(|(current, _, _, _)| score > *current)
+                    {
                         best = Some(candidate);
                     }
                 }
             }
         }
-        if let Some((score, match_type, snippet)) = best {
+        if let Some((score, match_type, snippet, message_id)) = best {
             let pinned = session.pinned;
             hits.push(SessionSearchHit {
                 session,
                 match_type: match_type.to_string(),
                 snippet,
                 score: score + if pinned { 10 } else { 0 },
+                message_id,
             });
         }
     }
@@ -4858,7 +4874,7 @@ mod tests {
 
         let planning = create_session(&conn, "Sprint Planning", "openai").unwrap();
         let grocery = create_session(&conn, "Grocery list", "ollama").unwrap();
-        save_chat_message(
+        let planning_message = save_chat_message(
             &conn,
             &planning.id,
             "user",
@@ -4872,6 +4888,7 @@ mod tests {
         assert_eq!(title_hits.len(), 1);
         assert_eq!(title_hits[0].session.id, planning.id);
         assert_eq!(title_hits[0].match_type, "title");
+        assert!(title_hits[0].message_id.is_none());
 
         let model_hits = search_sessions(&conn, "ollama", None, None, None, true).unwrap();
         assert_eq!(model_hits.len(), 1);
@@ -4884,6 +4901,10 @@ mod tests {
         assert_eq!(message_hits[0].session.id, planning.id);
         assert_eq!(message_hits[0].match_type, "message");
         assert!(message_hits[0].snippet.contains("RAG architecture"));
+        assert_eq!(
+            message_hits[0].message_id.as_deref(),
+            Some(planning_message.id.as_str())
+        );
 
         let title_only =
             search_sessions(&conn, "RAG architecture", None, None, None, false).unwrap();

@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 105
+
+### What went well?
+
+- 会话搜索的消息命中现在携带真实 `messageId`：Rust `search_sessions` 查询 `SELECT id, content`，浏览器 fallback 同步携带 `message.id`，两侧行为一致。
+- AI Studio 点击命中会话会自动加载消息、滚动到命中位置并高亮，`data-message-id` 与 `message-jump-highlight` 为验证提供稳定锚点。
+- `verify:ui` / `verify:preview` 的 `sessionSearchEnhanced` lane 新增跳转断言，`jumpMessageId` 与 `highlightedMessageId` 在 preview 中一致。
+- Rust 118 条单测、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`npm run build`、lint、prettier、`verify:preview` 全绿。
+
+### What went wrong?
+
+- `@dnd-kit/utilities` 导出的 `CSS` 遮蔽了全局 `CSS.escape`，`tsc` 首次构建失败；改用 `window.CSS.escape` 后通过。
+- 跳转后 aside 可能重渲染，验证 lane 重新获取 fulltext 控件引用，避免陈旧 DOM 导致空态断言失败。
+
+### Action Items
+
+- 下一个 Sprint 候选：Provider 权重 / 路由排序、拼音模糊搜索、搜索历史与跨会话聚合统计。
+- 保留 `sessionSearchEnhanced` lane，修改会话搜索、消息渲染或跳转逻辑时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 104
 
 ### What went well?

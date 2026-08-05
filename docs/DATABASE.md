@@ -741,3 +741,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 104：MOA 三路共识摘要
 
 无表结构变更。`MoaConsensus` 是运行时派生数据：由三路流式输出在内存中计算共识关键词、分歧首行与结论，随 `chat_messages` 主消息一起落库，不新增表、索引或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` / `chatMessages`，不新增 localStorage key。
+
+## Sprint 105：会话消息跳转与高亮
+
+无表结构变更。`SessionSearchHit.message_id` 是运行时派生字段：`search_sessions` 复用 `chat_messages.id` 作为命中定位锚点，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。

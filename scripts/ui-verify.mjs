@@ -5141,8 +5141,19 @@ try {
       targetRow
         ?.querySelector("[data-session-match-type]")
         ?.getAttribute("data-session-match-type") ?? "";
+    const jumpButton = targetRow?.querySelector("button[aria-label='Open session']");
+    const jumpMessageId = jumpButton?.getAttribute("data-session-message-id") ?? "";
+    jumpButton?.click();
+    const jumpSeen = await waitFor(() =>
+      !!document.querySelector("[data-message-id].message-jump-highlight"),
+    );
+    const highlightedMessageId =
+      document
+        .querySelector("[data-message-id].message-jump-highlight")
+        ?.getAttribute("data-message-id") ?? "";
+    const fulltextAfterJump = document.querySelector("[data-session-fulltext]");
 
-    fulltext.click();
+    fulltextAfterJump?.click();
     await sleep(120);
     setValue(searchInput, "Streaming fallback");
     const noMessageHit = await waitFor(() => document.body.innerText.includes("No matching sessions"));
@@ -5150,7 +5161,7 @@ try {
       "main aside button[aria-label='Open session']",
     ).length;
 
-    fulltext.click();
+    fulltextAfterJump?.click();
     await sleep(120);
     setValue(searchInput, "");
     await sleep(300);
@@ -5163,6 +5174,9 @@ try {
       messageHit,
       messageSnippet,
       messageHitType,
+      jumpMessageId,
+      jumpSeen,
+      highlightedMessageId,
       noMessageHit,
       noMessageButtons,
       restoredButtons,
@@ -5174,6 +5188,9 @@ try {
     !sessionSearchEnhanced.messageHit ||
     !sessionSearchEnhanced.messageSnippet.includes('Streaming fallback') ||
     sessionSearchEnhanced.messageHitType !== 'message' ||
+    !sessionSearchEnhanced.jumpSeen ||
+    sessionSearchEnhanced.jumpMessageId.length === 0 ||
+    sessionSearchEnhanced.highlightedMessageId !== sessionSearchEnhanced.jumpMessageId ||
     !sessionSearchEnhanced.noMessageHit ||
     sessionSearchEnhanced.noMessageButtons !== 0 ||
     sessionSearchEnhanced.restoredButtons < 1
