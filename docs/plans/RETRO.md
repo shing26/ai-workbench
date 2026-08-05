@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 59
+
+### What went well?
+
+- Vault Index 从“谁先抢到锁谁跑”升级为显式 FIFO 队列：`VaultIndexState` 持有 active + 队列，`claim_next` / `finish_active` 保证同一时间只有一个索引 worker。
+- `start_vault_index` 入队后立即发出 `queued` / `running` 进度，任务结束后自动调度下一个；新增 `get_vault_index_queue_status` 与 `vault-index-queue` 事件，前端可实时看到 active 与排队位置。
+- 排队任务支持取消：`cancel_vault_index` 直接出队并发出 cancelled 进度；TS fallback 与 Knowledge UI 语义一致。
+- 验证覆盖：`cargo test --lib` 66/66，fmt、clippy、build 全绿；两条 lane 的 `indexQueue.sawQueue` / `drained` 均为 true。
+
+### What went wrong?
+
+- UI 验证最初用 `C:/queue` 触发两次索引，`runIndex` 会把该路径 upsert 成第三个 watch target，污染后续 multi-vault 断言；改为复用 `C:/vault` 后队列 lane 不再产生多余 target。
+- `mark` / `remove_queued` 最初只被测试引用，clippy `-D warnings` 报 dead code；改为命令路径直接复用 `mark` 与 `take_queued` 后消除。
+
+### Action Items
+
+- 下一 Sprint 候选：审计按日/周聚合图表、watch 事件时间线、索引队列持久化。
+- 后续索引调度保持“单 worker + FIFO”约束，watch 触发任务可考虑优先级扩展。
+
 ## Sprint 58
 
 ### What went well?

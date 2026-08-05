@@ -2,7 +2,7 @@ use keyring::Entry;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -140,30 +140,122 @@ struct VaultWatchState {
     active: std::sync::Mutex<Vec<ActiveVaultWatch>>,
 }
 
+#[derive(Clone)]
+struct VaultIndexRequest {
+    run_id: String,
+    path: String,
+    ignore_patterns: Vec<String>,
+    concurrency: usize,
+}
+
 #[derive(Default)]
 struct VaultIndexState {
-    cancelled: std::sync::Mutex<HashSet<String>>,
+    inner: std::sync::Mutex<VaultIndexQueue>,
+}
+
+#[derive(Default)]
+struct VaultIndexQueue {
+    cancelled: HashSet<String>,
+    active: Option<VaultIndexRequest>,
+    queue: VecDeque<VaultIndexRequest>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultIndexQueueEntry {
+    run_id: String,
+    path: String,
+    status: String,
+    position: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultIndexQueueStatus {
+    active: Option<VaultIndexQueueEntry>,
+    queue: Vec<VaultIndexQueueEntry>,
 }
 
 impl VaultIndexState {
+    fn enqueue(&self, request: VaultIndexRequest) -> Result<usize, String> {
+        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+        let position = guard.queue.len() + 1;
+        guard.queue.push_back(request);
+        Ok(position)
+    }
+
     fn mark(&self, run_id: &str) -> bool {
-        self.cancelled
+        self.inner
             .lock()
-            .map(|mut set| set.insert(run_id.to_string()))
+            .map(|mut guard| guard.cancelled.insert(run_id.to_string()))
             .unwrap_or(false)
     }
 
     fn is_cancelled(&self, run_id: &str) -> bool {
-        self.cancelled
+        self.inner
             .lock()
-            .map(|set| set.contains(run_id))
+            .map(|guard| guard.cancelled.contains(run_id))
             .unwrap_or(false)
     }
 
     fn clear(&self, run_id: &str) {
-        if let Ok(mut set) = self.cancelled.lock() {
-            set.remove(run_id);
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.cancelled.remove(run_id);
         }
+    }
+
+    fn take_queued(&self, run_id: &str) -> Option<VaultIndexRequest> {
+        self.inner.lock().ok().and_then(|mut guard| {
+            let index = guard
+                .queue
+                .iter()
+                .position(|request| request.run_id == run_id)?;
+            guard.queue.remove(index)
+        })
+    }
+
+    fn claim_next(&self) -> Result<Option<VaultIndexRequest>, String> {
+        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+        if guard.active.is_some() {
+            return Ok(None);
+        }
+        let next = guard.queue.pop_front();
+        if let Some(request) = &next {
+            guard.active = Some(request.clone());
+        }
+        Ok(next)
+    }
+
+    fn finish_active(&self, run_id: &str) -> Result<(), String> {
+        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+        guard.cancelled.remove(run_id);
+        if guard.active.as_ref().map(|r| r.run_id.as_str()) == Some(run_id) {
+            guard.active = None;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<VaultIndexQueueStatus, String> {
+        let guard = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(VaultIndexQueueStatus {
+            active: guard.active.as_ref().map(|request| VaultIndexQueueEntry {
+                run_id: request.run_id.clone(),
+                path: request.path.clone(),
+                status: "running".to_string(),
+                position: 1,
+            }),
+            queue: guard
+                .queue
+                .iter()
+                .enumerate()
+                .map(|(index, request)| VaultIndexQueueEntry {
+                    run_id: request.run_id.clone(),
+                    path: request.path.clone(),
+                    status: "queued".to_string(),
+                    position: index + 1,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -1500,17 +1592,22 @@ struct IndexProgress {
     status: String,
 }
 
-#[tauri::command]
-fn start_vault_index(
+fn emit_vault_index_queue(app: &tauri::AppHandle) {
+    if let Ok(status) = app.state::<VaultIndexState>().snapshot() {
+        let _ = app.emit("vault-index-queue", status);
+    }
+}
+
+fn spawn_vault_index_worker(
     app: tauri::AppHandle,
-    vault_path: String,
-    ignore_patterns: Vec<String>,
-    concurrency: usize,
-) -> Result<String, String> {
-    let run_id = uuid::Uuid::new_v4().to_string();
+    request: VaultIndexRequest,
+) -> Result<(), String> {
+    let run_id = request.run_id.clone();
     let app_clone = app.clone();
-    let run_path = vault_path.clone();
+    let run_path = request.path.clone();
     let thread_run_id = run_id.clone();
+    let ignore_patterns = request.ignore_patterns.clone();
+    let concurrency = request.concurrency;
     let latest = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize)));
     let latest_clone = latest.clone();
     thread::Builder::new()
@@ -1574,14 +1671,112 @@ fn start_vault_index(
             };
             let _ = app_clone.emit("vault-index-progress", payload);
             clear_vault_index_cancel(&app_clone, &thread_run_id);
+            let _ = app_clone
+                .state::<VaultIndexState>()
+                .finish_active(&thread_run_id);
+            let _ = maybe_start_next_vault_index(&app_clone);
         })
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn maybe_start_next_vault_index(app: &tauri::AppHandle) -> Result<(), String> {
+    let request = app.state::<VaultIndexState>().claim_next()?;
+    if let Some(request) = request {
+        if let Err(error) = spawn_vault_index_worker(app.clone(), request.clone()) {
+            let _ = app
+                .state::<VaultIndexState>()
+                .finish_active(&request.run_id);
+            emit_vault_index_queue(app);
+            return Err(error);
+        }
+    }
+    emit_vault_index_queue(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn start_vault_index(
+    app: tauri::AppHandle,
+    vault_path: String,
+    ignore_patterns: Vec<String>,
+    concurrency: usize,
+) -> Result<String, String> {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let position = app.state::<VaultIndexState>().enqueue(VaultIndexRequest {
+        run_id: run_id.clone(),
+        path: vault_path.clone(),
+        ignore_patterns,
+        concurrency,
+    })?;
+    let _ = app.emit(
+        "vault-index-progress",
+        IndexProgress {
+            run_id: run_id.clone(),
+            path: vault_path,
+            done: 0,
+            total: 0,
+            files: 0,
+            ignored: 0,
+            concurrency_used: 0,
+            status: if position > 1 {
+                "queued".to_string()
+            } else {
+                "running".to_string()
+            },
+        },
+    );
+    maybe_start_next_vault_index(&app)?;
     Ok(run_id)
 }
 
 #[tauri::command]
-fn cancel_vault_index(state: State<'_, VaultIndexState>, run_id: String) -> Result<bool, String> {
-    Ok(state.mark(&run_id))
+fn cancel_vault_index(
+    app: tauri::AppHandle,
+    state: State<'_, VaultIndexState>,
+    run_id: String,
+) -> Result<bool, String> {
+    let active = state
+        .inner
+        .lock()
+        .map_err(|e| e.to_string())?
+        .active
+        .as_ref()
+        .map(|request| request.run_id == run_id)
+        .unwrap_or(false);
+    let _ = state.mark(&run_id);
+    let removed_path = if active {
+        None
+    } else {
+        state.take_queued(&run_id).map(|request| request.path)
+    };
+    if !active {
+        if let Some(path) = removed_path {
+            let _ = app.emit(
+                "vault-index-progress",
+                IndexProgress {
+                    run_id,
+                    path,
+                    done: 0,
+                    total: 0,
+                    files: 0,
+                    ignored: 0,
+                    concurrency_used: 0,
+                    status: "cancelled".to_string(),
+                },
+            );
+        }
+        emit_vault_index_queue(&app);
+        maybe_start_next_vault_index(&app)?;
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_vault_index_queue_status(
+    state: State<'_, VaultIndexState>,
+) -> Result<VaultIndexQueueStatus, String> {
+    state.snapshot()
 }
 
 #[tauri::command]
@@ -3133,6 +3328,7 @@ pub fn run() {
             index_vault_ex,
             start_vault_index,
             cancel_vault_index,
+            get_vault_index_queue_status,
             get_knowledge_index_status,
             recommend_index_concurrency,
             list_vault_target_stats,
@@ -3473,6 +3669,51 @@ mod tests {
         assert!(state.is_cancelled("run-1"));
         state.clear("run-1");
         assert!(!state.is_cancelled("run-1"));
+    }
+
+    #[test]
+    fn vault_index_queue_serializes_and_promotes_next() {
+        let state = VaultIndexState::default();
+        let request = |run_id: &str, path: &str| VaultIndexRequest {
+            run_id: run_id.to_string(),
+            path: path.to_string(),
+            ignore_patterns: Vec::new(),
+            concurrency: 4,
+        };
+        state.enqueue(request("run-1", "C:/a")).unwrap();
+        state.enqueue(request("run-2", "C:/b")).unwrap();
+        let first = state.claim_next().unwrap().expect("first run");
+        assert_eq!(first.run_id, "run-1");
+        assert!(state.claim_next().unwrap().is_none());
+        state.finish_active("run-1").unwrap();
+        let second = state.claim_next().unwrap().expect("second run");
+        assert_eq!(second.run_id, "run-2");
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.active.unwrap().run_id, "run-2");
+        assert!(snapshot.queue.is_empty());
+    }
+
+    #[test]
+    fn vault_index_cancel_removes_only_queued_run() {
+        let state = VaultIndexState::default();
+        let request = |run_id: &str, path: &str| VaultIndexRequest {
+            run_id: run_id.to_string(),
+            path: path.to_string(),
+            ignore_patterns: Vec::new(),
+            concurrency: 4,
+        };
+        state.enqueue(request("run-1", "C:/a")).unwrap();
+        state.enqueue(request("run-2", "C:/b")).unwrap();
+        state.enqueue(request("run-3", "C:/c")).unwrap();
+        let first = state.claim_next().unwrap().expect("first run");
+        assert_eq!(first.run_id, "run-1");
+        let removed = state.take_queued("run-2").expect("queued run");
+        assert_eq!(removed.path, "C:/b");
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.queue.len(), 1);
+        assert_eq!(snapshot.queue[0].run_id, "run-3");
+        assert_eq!(snapshot.queue[0].position, 1);
+        assert_eq!(snapshot.active.unwrap().run_id, "run-1");
     }
 
     #[test]
