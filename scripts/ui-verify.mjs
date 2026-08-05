@@ -1648,13 +1648,13 @@ try {
       title: "Workbench",
       tags: ["work"],
       meta: { count: 1 },
-      notes: ["a"],
+      notes: [{ id: 1, label: "a" }],
     });
     const remoteContent = JSON.stringify({
       title: "Workbench",
       tags: ["work", "life"],
       meta: { count: 2, done: true },
-      notes: ["a", "b"],
+      notes: [{ label: "a", id: 1 }, { id: 2, label: "b" }],
     });
     base.content = localContent;
     base.updatedAt = Date.now();
@@ -1690,19 +1690,24 @@ try {
     mergeBtn.click();
     let merged = false;
     let stored = "";
+    let notesLength = 0;
     for (let i = 0; i < 30; i++) {
       const current = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
       const item = (current.clipboard ?? []).find((c) => c.id === base.id);
       stored = item?.content ?? "";
+      try {
+        notesLength = JSON.parse(stored).notes?.length ?? 0;
+      } catch {}
       merged =
         stored.includes('"life"') &&
         stored.includes('"done": true') &&
         stored.includes('"count": 2') &&
+        notesLength === 2 &&
         !document.querySelector("[data-sync-conflicts]");
       if (merged) break;
       await sleep(100);
     }
-    return { ok: merged, stored };
+    return { ok: merged, stored, notesLength };
   })()`);
   if (!structuredSyncCheck.ok) {
     throw new Error(

@@ -232,3 +232,8 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 - `vault_watch_targets` 新增 `created_events` / `modified_events` / `removed_events`，`touch_vault_watch_event` 按 `event_kind` 累计，`event_count` 保持总数。
 - lib.rs watcher 将 notify 的 `Create / Modify / Remove` 映射为事件类型；`vault_target_stats` 透传三类计数。
 - Knowledge 目标行新增 `+N` / `~N` / `-N` 徽标；浏览器 fallback 启动 watch 时模拟一次 created 事件。
+
+## Sprint 58：结构化合并对象数组按 key 去重
+
+- `canonical_json` 递归排序对象 key 生成稳定字符串，`merge_json_value` 数组分支用它去重，`{id,label}` 与 `{label,id}` 不再重复保留。
+- TS fallback 新增 `canonicalJson`，与 Rust 同一语义；输出仍保持原始 item 顺序与内容。

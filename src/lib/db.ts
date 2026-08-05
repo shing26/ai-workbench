@@ -1448,12 +1448,25 @@ export async function resolveSyncConflictsUnion(conflicts: SyncConflictItem[]): 
   return conflicts.length;
 }
 
+function canonicalJson(value: any): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function mergeJsonValue(local: any, remote: any, preferLocal: boolean): any {
   if (Array.isArray(local) && Array.isArray(remote)) {
     const seen = new Set<string>();
     const out: any[] = [];
     for (const item of [...local, ...remote]) {
-      const marker = JSON.stringify(item);
+      const marker = canonicalJson(item);
       if (!seen.has(marker)) {
         seen.add(marker);
         out.push(item);

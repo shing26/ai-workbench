@@ -418,3 +418,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAU
 ```
 
 - `migrate_vault_watch_event_stats` 按列存在性幂等补三列；`touch_vault_watch_event(path, event_kind)` 分别累计三类计数。
+
+## Sprint 58：结构化合并对象数组按 key 去重
+
+无表结构变更。去重逻辑为纯函数，仅在内存中对 JSON 数组项做规范化标记。

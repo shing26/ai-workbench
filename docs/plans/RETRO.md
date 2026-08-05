@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 58
+
+### What went well?
+
+- 对象数组去重从 `to_string()` 升级为 `canonical_json`：递归排序对象 key 后生成稳定标记，`{id,label}` 与 `{label,id}` 不再重复。
+- Rust 与 TS fallback 语义一致，UI 验证把 `notes` 改为对象数组并断言合并后长度 2，覆盖真实场景。
+- 验证覆盖：`cargo test --lib` 64/64，fmt、clippy、build 全绿；两条 lane 的 `structuredSync.notesLength` 均为 2。
+
+### What went wrong?
+
+- 首次实现若直接用 `item.to_string()`，key 顺序不同的对象会被当成两条；改为 canonical 序列化后修复。
+- UI 验证需要解析合并后的 JSON 才能断言数组长度，补充 `notesLength` 后稳定通过。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列、审计按日/周聚合图表、watch 事件时间线。
+- 后续扩展结构化合并时，保持 canonical 去重与原始内容顺序分离。
+
 ## Sprint 57
 
 ### What went well?
