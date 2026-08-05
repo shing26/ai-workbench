@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 67
+
+### What went well?
+
+- Projects 从 per-project Git 状态收拢为一张活动看板：`get_git_activity` 聚合分支、提交数、最近提交、变更文件数与 dirty 状态，按最近提交时间排序，一眼看出哪些项目正在推进。
+- `GitContext` 新增 `last_commit_at`，从 reflog 末行解析 epoch 秒并转毫秒；TS fallback 与 Rust 共用同一聚合 / 排序 / 统计语义。
+- 验证覆盖：`cargo test --lib` 75/75，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `gitActivity` 均断言 >=2 个项目、总数与行汇总一致、dirty 可见。
+
+### What went wrong?
+
+- `verify:ui` 偶发在页面重载后拿不到 System dock 按钮，属已知竞态；`clickDock` 改为最多重试 10 次、间隔 150ms 后稳定通过。
+- reflog 解析依赖标准行格式（hash / 父 hash / author / email / 时间戳 / message），非标准 reflog 只影响单个项目的时间与消息，不影响整体看板。
+
+### Action Items
+
+- 下一 Sprint 候选：错误日志来源 / 设备组合筛选、文档健康修复的自动定时巡检、git 看板按时间范围过滤与提交人维度。
+- 索引队列优先级与失败重试策略继续保留在 Backlog。
+
 ## Sprint 66
 
 ### What went well?

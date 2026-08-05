@@ -2515,6 +2515,7 @@ struct GitContext {
     branch: String,
     commit_count: usize,
     latest_commit: String,
+    last_commit_at: i64,
     changes: Vec<String>,
 }
 
@@ -2524,6 +2525,7 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
     let mut branch = String::from("unknown");
     let mut commit_count = 0usize;
     let mut latest_commit = String::from("no commits");
+    let mut last_commit_at = 0i64;
     let head_path = Path::new(&path).join(".git").join("HEAD");
     if let Ok(content) = fs::read_to_string(&head_path) {
         let trimmed = content.trim();
@@ -2539,11 +2541,20 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         commit_count = lines.len();
         if let Some(last) = lines.last() {
-            let hash: String = last.split_whitespace().take(1).collect();
+            let parts: Vec<&str> = last.split_whitespace().collect();
+            let hash: String = parts.first().copied().unwrap_or("").to_string();
+            if let Some(seconds) = parts.get(4).and_then(|value| value.parse::<i64>().ok()) {
+                last_commit_at = seconds.saturating_mul(1000);
+            }
+            let raw_message = parts.get(5..).map(|m| m.join(" ")).unwrap_or_default();
+            let message = raw_message
+                .strip_prefix("commit:")
+                .unwrap_or(&raw_message)
+                .trim();
             latest_commit = format!(
                 "{} {}",
                 if hash.len() >= 8 { &hash[..8] } else { &hash },
-                last.split(": ").nth(1).unwrap_or("")
+                message
             );
         }
     }
@@ -2586,8 +2597,77 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         branch,
         commit_count,
         latest_commit,
+        last_commit_at,
         changes,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitActivityItem {
+    project_id: String,
+    project_name: String,
+    path: String,
+    branch: String,
+    commit_count: usize,
+    latest_commit: String,
+    last_commit_at: i64,
+    changed_files: usize,
+    dirty: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitActivityBoard {
+    total_projects: usize,
+    total_commits: usize,
+    dirty_projects: usize,
+    items: Vec<GitActivityItem>,
+}
+
+fn build_git_activity(projects: Vec<db::Project>) -> GitActivityBoard {
+    let mut items = Vec::new();
+    let mut total_commits = 0usize;
+    let mut dirty_projects = 0usize;
+    for project in projects {
+        let Some(path) = project.path.clone() else {
+            continue;
+        };
+        let Ok(ctx) = get_project_git_context(path.clone()) else {
+            continue;
+        };
+        let changed_files = ctx.changes.len();
+        let dirty = changed_files > 0;
+        if dirty {
+            dirty_projects += 1;
+        }
+        total_commits += ctx.commit_count;
+        items.push(GitActivityItem {
+            project_id: project.id,
+            project_name: project.name,
+            path,
+            branch: ctx.branch,
+            commit_count: ctx.commit_count,
+            latest_commit: ctx.latest_commit,
+            last_commit_at: ctx.last_commit_at,
+            changed_files,
+            dirty,
+        });
+    }
+    items.sort_by_key(|item| std::cmp::Reverse(item.last_commit_at));
+    GitActivityBoard {
+        total_projects: items.len(),
+        total_commits,
+        dirty_projects,
+        items,
+    }
+}
+
+#[tauri::command]
+fn get_git_activity(state: State<'_, db::Db>) -> Result<GitActivityBoard, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let projects = db::list_projects(&conn).map_err(|e| e.to_string())?;
+    Ok(build_git_activity(projects))
 }
 
 #[derive(Serialize)]
@@ -3502,6 +3582,7 @@ pub fn run() {
             get_vault_watch_config,
             set_vault_watch_config,
             get_project_git_context,
+            get_git_activity,
             generate_commit_pr_draft,
             apply_commit,
             create_remote_pr,
@@ -3573,9 +3654,75 @@ mod tests {
         assert_eq!(ctx.commit_count, 2);
         assert!(ctx.latest_commit.starts_with("bbbb0002"));
         assert!(ctx.latest_commit.contains("second"));
+        assert_eq!(ctx.last_commit_at, 1_720_000_100_000);
         assert!(ctx.changes.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_activity_aggregates_and_sorts_projects() {
+        let first = std::env::temp_dir().join(format!("aiwb-git-board-a-{}", uuid::Uuid::new_v4()));
+        let second =
+            std::env::temp_dir().join(format!("aiwb-git-board-b-{}", uuid::Uuid::new_v4()));
+        for (dir, head, log) in [
+            (
+                &first,
+                "ref: refs/heads/develop\n",
+                "aaaa0001 0000000000000000000000000000000000000000 Alice <a@x> 1720000000 +0800\tcommit: first\n",
+            ),
+            (
+                &second,
+                "ref: refs/heads/main\n",
+                "bbbb0002 aaaa00010000000000000000000000000000000000 Bob <b@x> 1720000100 +0800\tcommit: second\n",
+            ),
+        ] {
+            let git_dir = dir.join(".git");
+            std::fs::create_dir_all(git_dir.join("logs")).unwrap();
+            std::fs::write(git_dir.join("HEAD"), head).unwrap();
+            std::fs::write(git_dir.join("logs").join("HEAD"), log).unwrap();
+        }
+        std::fs::write(second.join("notes.md"), "wip").unwrap();
+
+        let projects = vec![
+            db::Project {
+                id: "p-a".to_string(),
+                name: "Alpha".to_string(),
+                path: Some(first.to_string_lossy().to_string()),
+                revenue: 0.0,
+                status: "active".to_string(),
+                created_at: 1,
+            },
+            db::Project {
+                id: "p-b".to_string(),
+                name: "Beta".to_string(),
+                path: Some(second.to_string_lossy().to_string()),
+                revenue: 0.0,
+                status: "active".to_string(),
+                created_at: 2,
+            },
+            db::Project {
+                id: "p-c".to_string(),
+                name: "No Git".to_string(),
+                path: None,
+                revenue: 0.0,
+                status: "active".to_string(),
+                created_at: 3,
+            },
+        ];
+        let board = build_git_activity(projects);
+        assert_eq!(board.total_projects, 2);
+        assert_eq!(board.total_commits, 2);
+        assert_eq!(board.dirty_projects, 1);
+        assert_eq!(board.items[0].project_name, "Beta");
+        assert_eq!(board.items[0].branch, "main");
+        assert!(board.items[0].dirty);
+        assert_eq!(board.items[0].changed_files, 1);
+        assert_eq!(board.items[1].project_name, "Alpha");
+        assert!(!board.items[1].dirty);
+
+        std::fs::remove_dir_all(&first).unwrap();
+        std::fs::remove_dir_all(&second).unwrap();
     }
 
     #[test]

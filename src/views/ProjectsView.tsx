@@ -24,6 +24,17 @@ export default function ProjectsView() {
   const [rebaseResults, setRebaseResults] = useState<Record<string, db.GitRebaseResult>>({});
   const [rebaseErrors, setRebaseErrors] = useState<Record<string, string>>({});
   const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>({});
+  const [gitActivity, setGitActivity] = useState<db.GitActivityBoard | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    void db.getGitActivity().then((board) => {
+      if (!disposed) setGitActivity(board);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -191,6 +202,68 @@ export default function ProjectsView() {
           </button>
         </div>
       </BentoCard>
+
+      {gitActivity && (
+        <BentoCard
+          title="Git activity"
+          subtitle={`${gitActivity.totalProjects} projects`}
+          icon={GitBranch}
+          colSpan={12}
+        >
+          <div data-git-activity className="space-y-2">
+            <div
+              data-git-activity-total={gitActivity.totalProjects}
+              data-git-activity-commits={gitActivity.totalCommits}
+              data-git-activity-dirty={gitActivity.dirtyProjects}
+              className="flex flex-wrap items-center gap-2"
+            >
+              <StatPill label="Projects" value={String(gitActivity.totalProjects)} />
+              <StatPill
+                label="Commits"
+                value={String(gitActivity.totalCommits)}
+                tone="blue"
+              />
+              <StatPill
+                label="Dirty"
+                value={String(gitActivity.dirtyProjects)}
+                tone={gitActivity.dirtyProjects > 0 ? "neutral" : "green"}
+              />
+            </div>
+            {gitActivity.items.map((item) => (
+              <div
+                key={item.projectId}
+                data-git-activity-project
+                data-git-activity-branch={item.branch}
+                data-git-activity-commits={item.commitCount}
+                data-git-activity-changed={item.changedFiles}
+                data-git-activity-latest={item.latestCommit}
+                data-git-activity-dirty={item.dirty}
+                className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+              >
+                <span className="text-[10px] font-medium text-slate-300">
+                  {item.projectName}
+                </span>
+                <ModelBadge label={item.branch} tone="blue" />
+                <span className="text-[9px] text-slate-500">
+                  {item.commitCount} commits
+                </span>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[8px] ${
+                    item.dirty
+                      ? "bg-amber-500/10 text-amber-300"
+                      : "bg-emerald-500/10 text-emerald-300"
+                  }`}
+                >
+                  {item.dirty ? "dirty" : "clean"}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                  {item.latestCommit}
+                </span>
+              </div>
+            ))}
+          </div>
+        </BentoCard>
+      )}
 
       {projects.map((p, i) => (
         <BentoCard

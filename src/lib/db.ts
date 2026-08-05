@@ -242,7 +242,27 @@ export type GitContext = {
   branch: string;
   commitCount: number;
   latestCommit: string;
+  lastCommitAt: number;
   changes: string[];
+};
+
+export type GitActivityItem = {
+  projectId: string;
+  projectName: string;
+  path: string;
+  branch: string;
+  commitCount: number;
+  latestCommit: string;
+  lastCommitAt: number;
+  changedFiles: number;
+  dirty: boolean;
+};
+
+export type GitActivityBoard = {
+  totalProjects: number;
+  totalCommits: number;
+  dirtyProjects: number;
+  items: GitActivityItem[];
 };
 
 export type CommitPrDraft = {
@@ -2816,7 +2836,40 @@ export async function getProjectGitContext(path: string): Promise<GitContext> {
     branch: "develop",
     commitCount: 21,
     latestCommit: "d676ced feat(sprint-20): message version graph with parent lineage",
+    lastCommitAt: Date.now() - 3_600_000,
     changes: ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
+  };
+}
+
+export async function getGitActivity(): Promise<GitActivityBoard> {
+  if (isTauri()) return invoke<GitActivityBoard>("get_git_activity");
+  const projects = readLocal().projects.filter((project) => project.path);
+  const now = Date.now();
+  const samples: Array<[string, number, string, number]> = [
+    ["develop", 21, "d676ced feat(sprint-20): message version graph with parent lineage", 2],
+    ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0],
+  ];
+  const items = projects.map((project, index) => {
+    const [branch, commitCount, latestCommit, changedFiles] =
+      samples[index % samples.length];
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      path: project.path ?? "",
+      branch,
+      commitCount,
+      latestCommit,
+      lastCommitAt: now - (index + 1) * 3_600_000,
+      changedFiles,
+      dirty: changedFiles > 0,
+    };
+  });
+  items.sort((a, b) => b.lastCommitAt - a.lastCommitAt);
+  return {
+    totalProjects: items.length,
+    totalCommits: items.reduce((sum, item) => sum + item.commitCount, 0),
+    dirtyProjects: items.filter((item) => item.dirty).length,
+    items,
   };
 }
 
