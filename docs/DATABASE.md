@@ -500,3 +500,7 @@ ALTER TABLE error_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT '';
 ## Sprint 69：文档健康自动定时巡检
 
 无表结构变更。自动巡检配置（开关、间隔、上次运行时间与结果）仅保存在前端 `ai-workbench:doc-health-auto:v1`；巡检复用 `cleanup_knowledge_files` 命令，不新增持久化字段。
+
+## Sprint 70：Git 看板时间范围与提交人过滤
+
+无表结构变更。`get_git_activity` 继续复用 `projects` 表既有列；`sinceMs / untilMs / committer` 均为运行时过滤参数，`committer` 与 `committers` 来自 `logs/HEAD` 运行时解析，不落库。

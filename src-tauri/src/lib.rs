@@ -2530,8 +2530,41 @@ struct GitContext {
     branch: String,
     commit_count: usize,
     latest_commit: String,
+    committer: String,
     last_commit_at: i64,
     changes: Vec<String>,
+}
+
+fn reflog_metadata_tokens(line: &str) -> Vec<&str> {
+    line.split('\t')
+        .next()
+        .unwrap_or(line)
+        .split_whitespace()
+        .collect()
+}
+
+fn reflog_committer(line: &str) -> String {
+    let tokens = reflog_metadata_tokens(line);
+    if tokens.len() < 5 {
+        return String::new();
+    }
+    let email_index = tokens.len() - 3;
+    if email_index > 2 && tokens[email_index].starts_with('<') {
+        return tokens[2..email_index].join(" ");
+    }
+    tokens.get(2).copied().unwrap_or("").to_string()
+}
+
+fn reflog_timestamp_ms(line: &str) -> i64 {
+    let tokens = reflog_metadata_tokens(line);
+    if tokens.len() < 5 {
+        return 0;
+    }
+    tokens[tokens.len() - 2]
+        .parse::<i64>()
+        .ok()
+        .unwrap_or(0)
+        .saturating_mul(1000)
 }
 
 #[tauri::command]
@@ -2540,6 +2573,7 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
     let mut branch = String::from("unknown");
     let mut commit_count = 0usize;
     let mut latest_commit = String::from("no commits");
+    let mut committer = String::new();
     let mut last_commit_at = 0i64;
     let head_path = Path::new(&path).join(".git").join("HEAD");
     if let Ok(content) = fs::read_to_string(&head_path) {
@@ -2556,12 +2590,18 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         commit_count = lines.len();
         if let Some(last) = lines.last() {
-            let parts: Vec<&str> = last.split_whitespace().collect();
-            let hash: String = parts.first().copied().unwrap_or("").to_string();
-            if let Some(seconds) = parts.get(4).and_then(|value| value.parse::<i64>().ok()) {
-                last_commit_at = seconds.saturating_mul(1000);
-            }
-            let raw_message = parts.get(5..).map(|m| m.join(" ")).unwrap_or_default();
+            let hash: String = last.split_whitespace().next().unwrap_or("").to_string();
+            last_commit_at = reflog_timestamp_ms(last);
+            committer = reflog_committer(last);
+            let raw_message = last
+                .split_once('\t')
+                .map(|(_, message)| message.to_string())
+                .unwrap_or_else(|| {
+                    last.split_whitespace()
+                        .skip(5)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
             let message = raw_message
                 .strip_prefix("commit:")
                 .unwrap_or(&raw_message)
@@ -2612,6 +2652,7 @@ fn get_project_git_context(path: String) -> Result<GitContext, String> {
         branch,
         commit_count,
         latest_commit,
+        committer,
         last_commit_at,
         changes,
     })
@@ -2626,6 +2667,7 @@ struct GitActivityItem {
     branch: String,
     commit_count: usize,
     latest_commit: String,
+    committer: String,
     last_commit_at: i64,
     changed_files: usize,
     dirty: bool,
@@ -2637,13 +2679,24 @@ struct GitActivityBoard {
     total_projects: usize,
     total_commits: usize,
     dirty_projects: usize,
+    committers: Vec<String>,
     items: Vec<GitActivityItem>,
 }
 
-fn build_git_activity(projects: Vec<db::Project>) -> GitActivityBoard {
+fn build_git_activity(
+    projects: Vec<db::Project>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    committer: Option<String>,
+) -> GitActivityBoard {
     let mut items = Vec::new();
+    let mut committers = Vec::new();
+    let mut seen_committers = std::collections::HashSet::new();
     let mut total_commits = 0usize;
     let mut dirty_projects = 0usize;
+    let committer_filter = committer
+        .map(|filter| filter.trim().to_string())
+        .filter(|filter| !filter.is_empty());
     for project in projects {
         let Some(path) = project.path.clone() else {
             continue;
@@ -2651,6 +2704,24 @@ fn build_git_activity(projects: Vec<db::Project>) -> GitActivityBoard {
         let Ok(ctx) = get_project_git_context(path.clone()) else {
             continue;
         };
+        if !ctx.committer.is_empty() && seen_committers.insert(ctx.committer.clone()) {
+            committers.push(ctx.committer.clone());
+        }
+        if let Some(since) = since_ms {
+            if ctx.last_commit_at < since {
+                continue;
+            }
+        }
+        if let Some(until) = until_ms {
+            if ctx.last_commit_at > until {
+                continue;
+            }
+        }
+        if let Some(filter) = committer_filter.as_deref() {
+            if !ctx.committer.eq_ignore_ascii_case(filter) {
+                continue;
+            }
+        }
         let changed_files = ctx.changes.len();
         let dirty = changed_files > 0;
         if dirty {
@@ -2664,25 +2735,33 @@ fn build_git_activity(projects: Vec<db::Project>) -> GitActivityBoard {
             branch: ctx.branch,
             commit_count: ctx.commit_count,
             latest_commit: ctx.latest_commit,
+            committer: ctx.committer,
             last_commit_at: ctx.last_commit_at,
             changed_files,
             dirty,
         });
     }
+    committers.sort();
     items.sort_by_key(|item| std::cmp::Reverse(item.last_commit_at));
     GitActivityBoard {
         total_projects: items.len(),
         total_commits,
         dirty_projects,
+        committers,
         items,
     }
 }
 
 #[tauri::command]
-fn get_git_activity(state: State<'_, db::Db>) -> Result<GitActivityBoard, String> {
+fn get_git_activity(
+    state: State<'_, db::Db>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    committer: Option<String>,
+) -> Result<GitActivityBoard, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let projects = db::list_projects(&conn).map_err(|e| e.to_string())?;
-    Ok(build_git_activity(projects))
+    Ok(build_git_activity(projects, since_ms, until_ms, committer))
 }
 
 #[derive(Serialize)]
@@ -3669,10 +3748,18 @@ mod tests {
         assert_eq!(ctx.commit_count, 2);
         assert!(ctx.latest_commit.starts_with("bbbb0002"));
         assert!(ctx.latest_commit.contains("second"));
+        assert_eq!(ctx.committer, "Bob");
         assert_eq!(ctx.last_commit_at, 1_720_000_100_000);
         assert!(ctx.changes.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reflog_parses_committer_with_spaces() {
+        let line = "aaaa0001 0000000000000000000000000000000000000000 John Doe <john@x> 1720000000 +0800\tcommit: first";
+        assert_eq!(reflog_committer(line), "John Doe");
+        assert_eq!(reflog_timestamp_ms(line), 1_720_000_000_000);
     }
 
     #[test]
@@ -3725,16 +3812,91 @@ mod tests {
                 created_at: 3,
             },
         ];
-        let board = build_git_activity(projects);
+        let board = build_git_activity(projects, None, None, None);
         assert_eq!(board.total_projects, 2);
         assert_eq!(board.total_commits, 2);
         assert_eq!(board.dirty_projects, 1);
+        assert_eq!(
+            board.committers,
+            vec!["Alice".to_string(), "Bob".to_string()]
+        );
         assert_eq!(board.items[0].project_name, "Beta");
         assert_eq!(board.items[0].branch, "main");
+        assert_eq!(board.items[0].committer, "Bob");
         assert!(board.items[0].dirty);
         assert_eq!(board.items[0].changed_files, 1);
         assert_eq!(board.items[1].project_name, "Alpha");
+        assert_eq!(board.items[1].committer, "Alice");
         assert!(!board.items[1].dirty);
+
+        std::fs::remove_dir_all(&first).unwrap();
+        std::fs::remove_dir_all(&second).unwrap();
+    }
+
+    #[test]
+    fn git_activity_filters_by_time_and_committer() {
+        let first =
+            std::env::temp_dir().join(format!("aiwb-git-filter-a-{}", uuid::Uuid::new_v4()));
+        let second =
+            std::env::temp_dir().join(format!("aiwb-git-filter-b-{}", uuid::Uuid::new_v4()));
+        for (dir, head, log) in [
+            (
+                &first,
+                "ref: refs/heads/develop\n",
+                "aaaa0001 0000000000000000000000000000000000000000 Alice <a@x> 1720000000 +0800\tcommit: first\n",
+            ),
+            (
+                &second,
+                "ref: refs/heads/main\n",
+                "bbbb0002 aaaa00010000000000000000000000000000000000 Bob <b@x> 1720000100 +0800\tcommit: second\n",
+            ),
+        ] {
+            let git_dir = dir.join(".git");
+            std::fs::create_dir_all(git_dir.join("logs")).unwrap();
+            std::fs::write(git_dir.join("HEAD"), head).unwrap();
+            std::fs::write(git_dir.join("logs").join("HEAD"), log).unwrap();
+        }
+
+        let projects = vec![
+            db::Project {
+                id: "p-a".to_string(),
+                name: "Alpha".to_string(),
+                path: Some(first.to_string_lossy().to_string()),
+                revenue: 0.0,
+                status: "active".to_string(),
+                created_at: 1,
+            },
+            db::Project {
+                id: "p-b".to_string(),
+                name: "Beta".to_string(),
+                path: Some(second.to_string_lossy().to_string()),
+                revenue: 0.0,
+                status: "active".to_string(),
+                created_at: 2,
+            },
+        ];
+
+        let all = build_git_activity(projects.clone(), None, None, None);
+        assert_eq!(all.total_projects, 2);
+        assert_eq!(all.committers, vec!["Alice".to_string(), "Bob".to_string()]);
+
+        let recent = build_git_activity(projects.clone(), Some(1_720_000_050_000), None, None);
+        assert_eq!(recent.total_projects, 1);
+        assert_eq!(recent.items[0].project_name, "Beta");
+        assert_eq!(recent.total_commits, 1);
+
+        let old = build_git_activity(projects.clone(), None, Some(1_720_000_050_000), None);
+        assert_eq!(old.total_projects, 1);
+        assert_eq!(old.items[0].project_name, "Alpha");
+
+        let alice = build_git_activity(projects.clone(), None, None, Some("alice".to_string()));
+        assert_eq!(alice.total_projects, 1);
+        assert_eq!(alice.items[0].committer, "Alice");
+
+        let nobody = build_git_activity(projects.clone(), None, None, Some("nobody".to_string()));
+        assert_eq!(nobody.total_projects, 0);
+        assert_eq!(nobody.total_commits, 0);
+        assert_eq!(nobody.committers.len(), 2);
 
         std::fs::remove_dir_all(&first).unwrap();
         std::fs::remove_dir_all(&second).unwrap();

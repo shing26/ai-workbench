@@ -243,6 +243,7 @@ export type GitContext = {
   branch: string;
   commitCount: number;
   latestCommit: string;
+  committer: string;
   lastCommitAt: number;
   changes: string[];
 };
@@ -254,6 +255,7 @@ export type GitActivityItem = {
   branch: string;
   commitCount: number;
   latestCommit: string;
+  committer: string;
   lastCommitAt: number;
   changedFiles: number;
   dirty: boolean;
@@ -263,6 +265,7 @@ export type GitActivityBoard = {
   totalProjects: number;
   totalCommits: number;
   dirtyProjects: number;
+  committers: string[];
   items: GitActivityItem[];
 };
 
@@ -2883,22 +2886,34 @@ export async function getProjectGitContext(path: string): Promise<GitContext> {
     branch: "develop",
     commitCount: 21,
     latestCommit: "d676ced feat(sprint-20): message version graph with parent lineage",
+    committer: "Alice",
     lastCommitAt: Date.now() - 3_600_000,
     changes: ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
   };
 }
 
-export async function getGitActivity(): Promise<GitActivityBoard> {
-  if (isTauri()) return invoke<GitActivityBoard>("get_git_activity");
+export async function getGitActivity(options?: {
+  sinceMs?: number;
+  untilMs?: number;
+  committer?: string;
+}): Promise<GitActivityBoard> {
+  if (isTauri()) {
+    return invoke<GitActivityBoard>("get_git_activity", {
+      sinceMs: options?.sinceMs ?? null,
+      untilMs: options?.untilMs ?? null,
+      committer: options?.committer ?? null,
+    });
+  }
   const projects = readLocal().projects.filter((project) => project.path);
   const now = Date.now();
-  const samples: Array<[string, number, string, number]> = [
-    ["develop", 21, "d676ced feat(sprint-20): message version graph with parent lineage", 2],
-    ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0],
+  const samples: Array<[string, number, string, number, string]> = [
+    ["develop", 21, "d676ced feat(sprint-20): message version graph with parent lineage", 2, "Alice"],
+    ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0, "Bob"],
   ];
   const items = projects.map((project, index) => {
-    const [branch, commitCount, latestCommit, changedFiles] =
+    const [branch, commitCount, latestCommit, changedFiles, committer] =
       samples[index % samples.length];
+    const hoursAgo = index % samples.length === 1 ? 26 : index + 1;
     return {
       projectId: project.id,
       projectName: project.name,
@@ -2906,17 +2921,32 @@ export async function getGitActivity(): Promise<GitActivityBoard> {
       branch,
       commitCount,
       latestCommit,
-      lastCommitAt: now - (index + 1) * 3_600_000,
+      lastCommitAt: now - hoursAgo * 3_600_000,
       changedFiles,
       dirty: changedFiles > 0,
+      committer,
     };
   });
-  items.sort((a, b) => b.lastCommitAt - a.lastCommitAt);
+  const committers = [...new Set(items.map((item) => item.committer))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  const sinceMs = options?.sinceMs ?? 0;
+  const untilMs = options?.untilMs ?? Number.MAX_SAFE_INTEGER;
+  const committerFilter = (options?.committer ?? "").trim().toLowerCase();
+  const filtered = items
+    .filter(
+      (item) =>
+        item.lastCommitAt >= sinceMs &&
+        item.lastCommitAt <= untilMs &&
+        (!committerFilter || item.committer.toLowerCase() === committerFilter),
+    )
+    .sort((a, b) => b.lastCommitAt - a.lastCommitAt);
   return {
-    totalProjects: items.length,
-    totalCommits: items.reduce((sum, item) => sum + item.commitCount, 0),
-    dirtyProjects: items.filter((item) => item.dirty).length,
-    items,
+    totalProjects: filtered.length,
+    totalCommits: filtered.reduce((sum, item) => sum + item.commitCount, 0),
+    dirtyProjects: filtered.filter((item) => item.dirty).length,
+    committers,
+    items: filtered,
   };
 }
 

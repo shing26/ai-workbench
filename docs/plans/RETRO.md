@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 70
+
+### What went well?
+
+- Git activity 看板从“全量展示”升级为“时间范围 + 提交人下钻”：`get_git_activity` 支持 `sinceMs / untilMs / committer`，先过滤再聚合排序；`GitContext` / `GitActivityItem` 新增 `committer`，reflog 解析按时间戳 / 时区倒推 email 列，姓名含空格也能正确提取。
+- `GitActivityBoard` 新增全量去重 `committers`，Projects 卡片新增 All / 24h / 7d / 30d 与提交人下拉，统计徽标与行列表共用同一过滤条件；TS fallback 镜像同一语义。
+- 验证覆盖：`cargo test --lib` 77/77，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `gitActivity` 与新增 `gitActivityFilters` 均断言通过：24h 过滤后 1 项、提交人下拉包含 Alice / Bob、按 Alice 过滤后 1 项。
+
+### What went wrong?
+
+- 首版 fallback 两条示例提交都在 24 小时内，无法稳定验证时间过滤；把第二条示例固定为 26 小时前的历史提交后，过滤断言与原有看板断言同时稳定通过。
+- reflog 解析仍以标准行格式为前提（hash / 父 hash / 身份 / 时间戳 / 时区），非标准行只影响单个项目的提交人与时间，不拖垮整张看板。
+
+### Action Items
+
+- 下一 Sprint 候选：索引队列优先级与失败重试策略。
+- 自动巡检运行历史与通知提醒继续保留在 Backlog。
+
 ## Sprint 69
 
 ### What went well?

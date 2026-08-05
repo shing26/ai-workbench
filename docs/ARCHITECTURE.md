@@ -313,3 +313,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `DocHealthAutoConfig { enabled, intervalMs, lastRunAt, lastResult }` 与 `getDocHealthAutoConfig` / `setDocHealthAutoConfig`，配置持久化到 `ai-workbench:doc-health-auto:v1`。
 - Knowledge Document status 新增 Auto toggle 与 5m / 15m / 30m / 1h / 6h 间隔；启用后立即执行一次 `cleanup_knowledge_files`，之后按间隔自动巡检，停止时清理定时器。
 - 每次巡检刷新文档列表、vault 统计与 RAG 状态，并展示上次运行时间与 `removed / reindexed` 结果；刷新后恢复开关、间隔与上次结果。
+
+## Sprint 70：Git 看板时间范围与提交人过滤
+
+- `GitContext` 与 `GitActivityItem` 新增 `committer`，从 reflog 末行解析提交人姓名（按时间戳 / 时区倒推 email 列，兼容姓名含空格）。
+- `get_git_activity` 新增 `sinceMs? / untilMs? / committer?`：先按 `lastCommitAt` 与 committer（大小写不敏感）过滤，再聚合与排序；`GitActivityBoard` 新增全量去重 `committers` 供下拉使用。
+- Projects Git activity 卡片新增时间范围（All / 24h / 7d / 30d）与提交人下拉，切换后刷新统计与行列表；浏览器 fallback 基于 localStorage projects 镜像同一过滤语义。
