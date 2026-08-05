@@ -64,6 +64,8 @@ export default function SystemView() {
   const [auditToDate, setAuditToDate] = useState(() => dateInput(new Date()));
   const [auditDevice, setAuditDevice] = useState("all");
   const [auditExportMessage, setAuditExportMessage] = useState("");
+  const [auditSummary, setAuditSummary] = useState<db.SyncAuditSummary | null>(null);
+  const [auditGranularity, setAuditGranularity] = useState<"day" | "week">("day");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -81,6 +83,7 @@ export default function SystemView() {
     });
     void db.listSyncConflicts("unresolved").then(setSyncConflicts);
     void db.listSyncAudit(50).then(setSyncAudit);
+    void db.getSyncAuditSummary("day").then(setAuditSummary);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -226,6 +229,30 @@ export default function SystemView() {
         device === "current" ? deviceId : undefined,
       ),
     );
+    setAuditSummary(
+      await db.getSyncAuditSummary(
+        auditGranularity,
+        filter === "all" ? undefined : filter,
+        range.sinceMs,
+        range.untilMs,
+        device === "current" ? deviceId : undefined,
+      ),
+    );
+  };
+
+  const changeAuditGranularity = (granularity: "day" | "week") => {
+    setAuditGranularity(granularity);
+    setAuditExportMessage("");
+    const range = resolveAuditRange(auditSince, auditFromDate, auditToDate);
+    void db
+      .getSyncAuditSummary(
+        granularity,
+        auditFilter === "all" ? undefined : auditFilter,
+        range.sinceMs,
+        range.untilMs,
+        auditDevice === "current" ? deviceId : undefined,
+      )
+      .then(setAuditSummary);
   };
 
   const changeAuditFilter = (filter: string) => {
@@ -405,6 +432,7 @@ export default function SystemView() {
   const clearAudit = async () => {
     const cleared = await db.clearSyncAudit();
     setSyncAudit(await db.listSyncAudit(50));
+    setAuditSummary({ granularity: auditGranularity, total: 0, buckets: [] });
     setSyncError(false);
     setSyncMessage(`Cleared ${cleared} sync audit event(s)`);
   };
@@ -905,6 +933,81 @@ export default function SystemView() {
             >
               Clear
             </button>
+          </div>
+          <div className="mt-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] uppercase tracking-wide text-slate-600">
+                Activity
+              </span>
+              <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+                <button
+                  type="button"
+                  data-audit-granularity-day
+                  aria-pressed={auditGranularity === "day"}
+                  onClick={() => changeAuditGranularity("day")}
+                  className={`h-5 rounded px-1.5 text-[9px] ${
+                    auditGranularity === "day"
+                      ? "accent-bg-15 accent-text-strong"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  Day
+                </button>
+                <button
+                  type="button"
+                  data-audit-granularity-week
+                  aria-pressed={auditGranularity === "week"}
+                  onClick={() => changeAuditGranularity("week")}
+                  className={`h-5 rounded px-1.5 text-[9px] ${
+                    auditGranularity === "week"
+                      ? "accent-bg-15 accent-text-strong"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  Week
+                </button>
+              </div>
+              <span
+                data-sync-audit-total
+                className="ml-auto shrink-0 text-[9px] text-slate-500"
+              >
+                {auditSummary?.total ?? 0} events
+              </span>
+            </div>
+            <div
+              data-sync-audit-chart
+              data-audit-granularity={auditGranularity}
+              className="mt-1.5 flex h-14 items-end gap-1"
+            >
+              {(auditSummary?.buckets.length ?? 0) === 0 && (
+                <div className="py-4 text-[9px] text-slate-600">No activity</div>
+              )}
+              {(auditSummary?.buckets ?? []).map((bucket) => {
+                const max = Math.max(
+                  1,
+                  ...(auditSummary?.buckets ?? []).map((b) => b.count),
+                );
+                const height = Math.max(4, Math.round((bucket.count / max) * 42));
+                return (
+                  <div
+                    key={bucket.bucket}
+                    className="flex min-w-0 flex-1 flex-col items-center gap-0.5"
+                  >
+                    <div
+                      data-sync-audit-bar
+                      data-audit-bucket={bucket.bucket}
+                      data-audit-count={bucket.count}
+                      title={`${bucket.bucket}: ${bucket.count}`}
+                      className="w-full rounded-t-sm accent-bg-20"
+                      style={{ height }}
+                    />
+                    <span className="max-w-full truncate text-[7px] text-slate-600">
+                      {bucket.bucket.slice(5)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           {auditExportMessage && (
             <div

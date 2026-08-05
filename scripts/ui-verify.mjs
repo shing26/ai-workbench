@@ -1786,6 +1786,79 @@ try {
   }
   results.syncHistoryPersisted = syncHistoryPersisted;
 
+  const syncAuditChart = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-sync-audit-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-sync-audit-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      let storedAudit = 0;
+      let sample = null;
+      let recomputedBuckets = 0;
+      try {
+        const entries = JSON.parse(localStorage.getItem("ai-workbench:sync-audit:v1") ?? "[]");
+        storedAudit = entries.length;
+        sample = entries[0] ?? null;
+        const dayMs = 86_400_000;
+        const groups = new Map();
+        for (const entry of entries) {
+          const startAt = Math.floor(entry.createdAt / dayMs) * dayMs;
+          groups.set(startAt, (groups.get(startAt) ?? 0) + 1);
+        }
+        recomputedBuckets = groups.size;
+      } catch {}
+      return {
+        ok: false,
+        reason: "no audit chart bars",
+        storedAudit,
+        sample,
+        recomputedBuckets,
+        chartText: chart()?.textContent ?? "",
+        summaryShown: chart()?.textContent?.includes("No activity") ?? false,
+      };
+    }
+    const totalText = document.querySelector("[data-sync-audit-total]")?.textContent ?? "";
+    const total = Number(totalText.replace(/[^0-9]/g, "") || 0);
+    const barTotal = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const countsMatch = total > 0 && barTotal === total;
+    const dayAttr = chart()?.getAttribute("data-audit-granularity");
+    document.querySelector("[data-audit-granularity-week]")?.click();
+    let weekOk = false;
+    let weekBars = 0;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      weekBars = document.querySelectorAll("[data-sync-audit-bar]").length;
+      weekOk =
+        chart()?.getAttribute("data-audit-granularity") === "week" && weekBars > 0;
+      if (weekOk) break;
+    }
+    const weekTotalText = document.querySelector("[data-sync-audit-total]")?.textContent ?? "";
+    const weekTotal = Number(weekTotalText.replace(/[^0-9]/g, "") || 0);
+    document.querySelector("[data-audit-granularity-day]")?.click();
+    await sleep(250);
+    const dayRestored = chart()?.getAttribute("data-audit-granularity") === "day";
+    return {
+      ok: countsMatch && weekOk && weekTotal === total && dayRestored,
+      total,
+      barTotal,
+      dayAttr,
+      weekBars,
+      weekTotal,
+      dayRestored,
+    };
+  })()`);
+  if (!syncAuditChart.ok) {
+    throw new Error(`Sync audit chart assertion failed: ${JSON.stringify(syncAuditChart)}`);
+  }
+  results.syncAuditChart = syncAuditChart;
+
   const syncAuditCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let items = [...document.querySelectorAll("[data-sync-audit-item]")];

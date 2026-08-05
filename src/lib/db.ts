@@ -201,6 +201,21 @@ export type SyncAuditEntry = {
   createdAt: number;
 };
 
+export type SyncAuditBucket = {
+  bucket: string;
+  startAt: number;
+  count: number;
+  merge: number;
+  resolve: number;
+  other: number;
+};
+
+export type SyncAuditSummary = {
+  granularity: "day" | "week";
+  total: number;
+  buckets: SyncAuditBucket[];
+};
+
 export type RemoteSyncPushResult = {
   ok: boolean;
   syncedAt: number;
@@ -1692,6 +1707,96 @@ export async function listSyncAudit(
     .filter((entry) => until == null || entry.createdAt <= until)
     .filter((entry) => !deviceId || entry.deviceId === deviceId)
     .slice(0, Math.max(1, Math.min(200, limit)));
+}
+
+const AUDIT_DAY_MS = 86_400_000;
+
+function isoDateFromEpochMs(epochMs: number): string {
+  const d = new Date(epochMs);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate(),
+  ).padStart(2, "0")}`;
+}
+
+function summarizeSyncAudit(
+  entries: SyncAuditEntry[],
+  granularity: "day" | "week",
+  event?: string,
+  since?: number,
+  until?: number,
+  deviceId?: string,
+): SyncAuditSummary {
+  const filtered = entries
+    .filter((entry) => !event || entry.event === event)
+    .filter((entry) => since == null || entry.createdAt >= since)
+    .filter((entry) => until == null || entry.createdAt <= until)
+    .filter((entry) => !deviceId || entry.deviceId === deviceId);
+  const grouped = new Map<number, { merge: number; resolve: number; other: number }>();
+  let total = 0;
+  for (const entry of filtered) {
+    const startAt =
+      granularity === "week"
+        ? (Math.floor((Math.floor(entry.createdAt / AUDIT_DAY_MS) + 3) / 7) * 7 - 3) *
+          AUDIT_DAY_MS
+        : Math.floor(entry.createdAt / AUDIT_DAY_MS) * AUDIT_DAY_MS;
+    const slot = grouped.get(startAt) ?? { merge: 0, resolve: 0, other: 0 };
+    if (entry.event.startsWith("sync.merge")) slot.merge += 1;
+    else if (entry.event.startsWith("sync.resolve")) slot.resolve += 1;
+    else slot.other += 1;
+    grouped.set(startAt, slot);
+    total += 1;
+  }
+  let buckets = [...grouped.entries()]
+    .map(([startAt, counts]) => ({
+      bucket: isoDateFromEpochMs(startAt),
+      startAt,
+      count: counts.merge + counts.resolve + counts.other,
+      merge: counts.merge,
+      resolve: counts.resolve,
+      other: counts.other,
+    }))
+    .sort((a, b) => a.startAt - b.startAt);
+  if (buckets.length > 0 && buckets.length <= 62) {
+    const step = granularity === "week" ? AUDIT_DAY_MS * 7 : AUDIT_DAY_MS;
+    const filled: SyncAuditBucket[] = [];
+    let cursor = buckets[0].startAt;
+    for (const bucket of buckets) {
+      while (cursor < bucket.startAt) {
+        filled.push({
+          bucket: isoDateFromEpochMs(cursor),
+          startAt: cursor,
+          count: 0,
+          merge: 0,
+          resolve: 0,
+          other: 0,
+        });
+        cursor += step;
+      }
+      filled.push(bucket);
+      cursor += step;
+    }
+    buckets = filled;
+  }
+  return { granularity, total, buckets };
+}
+
+export async function getSyncAuditSummary(
+  granularity: "day" | "week",
+  event?: string,
+  since?: number,
+  until?: number,
+  deviceId?: string,
+): Promise<SyncAuditSummary> {
+  if (isTauri()) {
+    return invoke<SyncAuditSummary>("get_sync_audit_summary", {
+      granularity,
+      event: event ?? null,
+      since: since ?? null,
+      until: until ?? null,
+      deviceId: deviceId ?? null,
+    });
+  }
+  return summarizeSyncAudit(readSyncAudit(), granularity, event, since, until, deviceId);
 }
 
 export async function exportSyncAudit(

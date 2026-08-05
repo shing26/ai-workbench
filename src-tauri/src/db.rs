@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -433,6 +434,25 @@ pub struct SyncAuditEntry {
     pub detail: String,
     pub device_id: String,
     pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAuditBucket {
+    pub bucket: String,
+    pub start_at: i64,
+    pub count: i64,
+    pub merge: i64,
+    pub resolve: i64,
+    pub other: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAuditSummary {
+    pub granularity: String,
+    pub total: i64,
+    pub buckets: Vec<SyncAuditBucket>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1697,6 +1717,114 @@ pub fn list_sync_audit_range(
         out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+fn iso_date_from_epoch_ms(epoch_ms: i64) -> String {
+    let day_ms = 86_400_000i64;
+    let days = epoch_ms.div_euclid(day_ms);
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year_base = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year_base + 1 } else { year_base };
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+pub fn sync_audit_summary_range(
+    conn: &Connection,
+    granularity: &str,
+    event: Option<&str>,
+    since: Option<i64>,
+    until: Option<i64>,
+    device_id: Option<&str>,
+) -> Result<SyncAuditSummary, String> {
+    let day_ms = 86_400_000i64;
+    let week_ms = day_ms * 7;
+    if granularity != "day" && granularity != "week" {
+        return Err("unsupported audit summary granularity; use day or week".to_string());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT created_at, event FROM sync_audit_log
+             WHERE (?1 IS NULL OR event = ?1)
+               AND (?2 IS NULL OR created_at >= ?2)
+               AND (?3 IS NULL OR created_at <= ?3)
+               AND (?4 IS NULL OR device_id = ?4)",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![event, since, until, device_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut grouped: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+    let mut total = 0i64;
+    for row in rows {
+        let (created_at, event_name) = row.map_err(|e| e.to_string())?;
+        let start_at = if granularity == "week" {
+            let days = created_at.div_euclid(day_ms);
+            let week_index = (days + 3).div_euclid(7);
+            (week_index * 7 - 3) * day_ms
+        } else {
+            created_at.div_euclid(day_ms) * day_ms
+        };
+        let slot = grouped.entry(start_at).or_insert((0, 0, 0));
+        if event_name.starts_with("sync.merge") {
+            slot.0 += 1;
+        } else if event_name.starts_with("sync.resolve") {
+            slot.1 += 1;
+        } else {
+            slot.2 += 1;
+        }
+        total += 1;
+    }
+    let mut buckets: Vec<SyncAuditBucket> = grouped
+        .iter()
+        .map(|(&start_at, &(merge, resolve, other))| SyncAuditBucket {
+            bucket: iso_date_from_epoch_ms(start_at),
+            start_at,
+            count: merge + resolve + other,
+            merge,
+            resolve,
+            other,
+        })
+        .collect();
+    buckets.sort_by_key(|bucket| bucket.start_at);
+    if !buckets.is_empty() && buckets.len() <= 62 {
+        let step = if granularity == "week" {
+            week_ms
+        } else {
+            day_ms
+        };
+        let mut filled = Vec::new();
+        let mut cursor = buckets[0].start_at;
+        for bucket in buckets {
+            while cursor < bucket.start_at {
+                filled.push(SyncAuditBucket {
+                    bucket: iso_date_from_epoch_ms(cursor),
+                    start_at: cursor,
+                    count: 0,
+                    merge: 0,
+                    resolve: 0,
+                    other: 0,
+                });
+                cursor += step;
+            }
+            filled.push(bucket);
+            cursor += step;
+        }
+        buckets = filled;
+    }
+    Ok(SyncAuditSummary {
+        granularity: granularity.to_string(),
+        total,
+        buckets,
+    })
 }
 
 fn csv_escape(value: &str) -> String {
@@ -3725,6 +3853,62 @@ mod tests {
         assert!(csv.contains("\"quoted \"\"detail\"\", line1\nline2\""));
 
         assert!(export_sync_audit(&conn, "yaml", None, None, None).is_err());
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_audit_summary_groups_by_day_and_week() {
+        assert_eq!(iso_date_from_epoch_ms(0), "1970-01-01");
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-audit-summary-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let monday = 1_785_715_200_000i64;
+        let day_ms = 86_400_000i64;
+        conn.execute(
+            "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+             VALUES (?1, '', 'device-a', ?2)",
+            params!["sync.merge", monday],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+             VALUES (?1, '', 'device-a', ?2)",
+            params!["sync.merge", monday + day_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+             VALUES (?1, '', 'device-b', ?2)",
+            params!["sync.resolve", monday + day_ms * 2],
+        )
+        .unwrap();
+
+        let daily = sync_audit_summary_range(&conn, "day", None, None, None, None).unwrap();
+        assert_eq!(daily.total, 3);
+        assert_eq!(daily.buckets.len(), 3);
+        assert_eq!(daily.buckets[0].bucket, "2026-08-03");
+        assert_eq!(daily.buckets[0].merge, 1);
+        assert_eq!(daily.buckets[2].resolve, 1);
+
+        let weekly = sync_audit_summary_range(&conn, "week", None, None, None, None).unwrap();
+        assert_eq!(weekly.total, 3);
+        assert_eq!(weekly.buckets.len(), 1);
+        assert_eq!(weekly.buckets[0].bucket, "2026-08-03");
+        assert_eq!(weekly.buckets[0].count, 3);
+        assert_eq!(weekly.buckets[0].merge, 2);
+        assert_eq!(weekly.buckets[0].resolve, 1);
+
+        let merged_only =
+            sync_audit_summary_range(&conn, "day", Some("sync.merge"), None, None, None).unwrap();
+        assert_eq!(merged_only.total, 2);
+        assert!(merged_only
+            .buckets
+            .iter()
+            .all(|bucket| bucket.resolve == 0 && bucket.other == 0));
+
+        assert!(sync_audit_summary_range(&conn, "month", None, None, None, None).is_err());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

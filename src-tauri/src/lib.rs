@@ -3157,6 +3157,27 @@ fn export_sync_audit(
 }
 
 #[tauri::command]
+fn get_sync_audit_summary(
+    state: State<'_, db::Db>,
+    granularity: String,
+    event: Option<String>,
+    since: Option<i64>,
+    until: Option<i64>,
+    device_id: Option<String>,
+) -> Result<db::SyncAuditSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::sync_audit_summary_range(
+        &conn,
+        &granularity,
+        event.as_deref(),
+        since,
+        until,
+        device_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn clear_sync_audit(state: State<'_, db::Db>) -> Result<usize, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::clear_sync_audit(&conn).map_err(|e| e.to_string())
@@ -3318,6 +3339,7 @@ pub fn run() {
             list_sync_conflicts,
             clear_resolved_sync_conflicts,
             list_sync_audit,
+            get_sync_audit_summary,
             clear_sync_audit,
             export_sync_audit,
             report_frontend_error,

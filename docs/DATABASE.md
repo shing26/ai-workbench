@@ -426,3 +426,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAU
 ## Sprint 59：Vault Index 串行任务队列
 
 无表结构变更。队列状态保存在 `VaultIndexState` 内存中（active 请求 + FIFO 队列 + cancelled 集合），`vault-index-progress` / `vault-index-queue` 事件仅做前端状态同步。
+
+## Sprint 60：审计按日/周聚合图表
+
+无表结构变更。`get_sync_audit_summary` 在内存中按 `created_at` 的 UTC 日（86400000ms 对齐）或周（周一 00:00）分组，统计 merge / resolve / other 三类；bucket 数 <= 62 时补齐缺失日期/周。浏览器 fallback 在 `ai-workbench:sync-audit:v1` 上执行同一聚合。
