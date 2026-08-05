@@ -191,6 +191,20 @@ export type CommitPrDraft = {
   changes: string[];
 };
 
+export type GitCommitResult = {
+  committed: boolean;
+  hash: string;
+  branch: string;
+  message: string;
+};
+
+export type RemotePrResult = {
+  created: boolean;
+  url: string | null;
+  title: string;
+  branch: string;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -1353,6 +1367,30 @@ export async function generateCommitPrDraft(path: string, projectName: string): 
     .map((c) => `- ${c}`)
     .join("\n")}\n\n## DoD\n\n- [ ] Code compiles and tests pass.\n- [ ] UI follows design tokens and stays stable.\n- [ ] Database changes include migrations if needed.\n- [ ] PR description matches the actual diff.\n`;
   return { branch: ctx.branch, commitMessage, prTitle, prBody, changes };
+}
+
+export async function applyCommit(path: string, message: string): Promise<GitCommitResult> {
+  if (isTauri()) return invoke<GitCommitResult>("apply_commit", { path, message });
+  return {
+    committed: true,
+    hash: `local-${makeId().slice(0, 8)}`,
+    branch: "develop",
+    message,
+  };
+}
+
+export async function createRemotePr(
+  path: string,
+  title: string,
+  body: string,
+): Promise<RemotePrResult> {
+  if (isTauri()) return invoke<RemotePrResult>("create_remote_pr", { path, title, body });
+  return {
+    created: true,
+    url: "https://example.local/ai-workbench/pull/1",
+    title,
+    branch: "develop",
+  };
 }
 
 export async function buildTeamSummary(contents: string[]): Promise<string> {

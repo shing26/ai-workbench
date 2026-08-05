@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 29
+
+### What went well?
+
+- Commit/PR 从草稿升级为可执行：`apply_commit` 跑 `git add -A` + `git commit -m`，`create_remote_pr` 跑 `gh pr create`，Projects 面板实时回显 hash / URL / 错误。
+- 空提交不报错：`git commit` 的 “nothing to commit” 写进 stdout 而非 stderr，改为 stdout/stderr 双通道判断后返回 `committed: false`。
+- 验证覆盖：`cargo test --lib` 27/27，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 Commit changes 与 Create PR 结果断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 首轮空提交单测失败：只检查 stderr，而 git 把 “nothing to commit” 输出到 stdout，导致误报错误；补 stdout 判断后通过。
+- 前端 `RemotePrResult.url` 为 `string | null`，直接塞进 `<a href>` 触发 TS2322；补 `?? undefined` 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、PR 冲突解决与自动 rebase。
+- 后续改动 Git 执行命令时，保留真实临时仓库单测与 Commit/PR UI 断言。
+
 ## Sprint 28
 
 ### What went well?
