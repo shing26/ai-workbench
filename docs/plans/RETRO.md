@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 65
+
+### What went well?
+
+- 文档健康从“看得见”升级为“可修复”：`cleanup_knowledge_files` 一键删除 missing 索引、重读磁盘内容重索引 stale 文档，返回 `{ removed, reindexed, failed }`，fresh 文档与跨 vault 数据不受影响。
+- Document status 面板新增 Clean 按钮与 `removed / reindexed` 结果徽标，按当前 vault 过滤生效；TS fallback 用 `exists` / `stale` 模拟状态镜像同一语义。
+- 验证覆盖：`cargo test --lib` 72/72，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `knowledgeDocClean` 均断言 removed=1 / reindexed=1 / 剩余 2 份全部 ok。
+
+### What went wrong?
+
+- 单测首次在 missing 文档入库前漏写磁盘文件，`remove_file` 直接 NotFound；补上 `fs::write` 后覆盖完整。
+- UI 验证首版在浏览器 evaluate 内引用 Node 侧变量 `knowledgeDocCleanSeed.files` 抛 ReferenceError；改为内联常量后通过。
+- 外层模板字面量把正则 `\d` 转义吞掉导致结果匹配失败，改为 `[0-9]` 后稳定通过。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列持久化、git 活动看板、错误日志来源 / 设备组合筛选。
+- 文档健康修复可扩展为自动定时巡检，纳入后续 Sprint。
+
 ## Sprint 64
 
 ### What went well?

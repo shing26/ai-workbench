@@ -361,6 +361,12 @@ export type KnowledgeFileRecord = {
   stale: boolean;
 };
 
+export type KnowledgeCleanupResult = {
+  removed: number;
+  reindexed: number;
+  failed: number;
+};
+
 export type VaultWatchConfig = {
   path: string;
   ignorePatterns: string[];
@@ -1975,6 +1981,8 @@ type VaultFileRecord = {
   tags: string;
   content: string;
   indexedAt?: number;
+  exists?: boolean;
+  stale?: boolean;
 };
 
 function readVaultFiles(): VaultFileRecord[] {
@@ -2239,9 +2247,54 @@ export async function listKnowledgeFiles(
       tags: file.tags,
       vaultPath: inferVault(file.path),
       indexedAt: file.indexedAt ?? 0,
-      exists: true,
-      stale: false,
+      exists: file.exists ?? true,
+      stale: file.stale ?? false,
     }));
+}
+
+export async function cleanupKnowledgeFiles(
+  vaultPath?: string,
+): Promise<KnowledgeCleanupResult> {
+  if (isTauri()) {
+    return invoke<KnowledgeCleanupResult>("cleanup_knowledge_files", {
+      vaultPath: vaultPath ?? null,
+    });
+  }
+  const targets = readVaultWatchTargets();
+  const inferVault = (path: string) =>
+    targets.find(
+      (target) => path === target.path || path.startsWith(`${target.path}\\`),
+    )?.path ?? "";
+  const files = readVaultFiles();
+  const removed: VaultFileRecord[] = [];
+  const reindexed: VaultFileRecord[] = [];
+  const kept: VaultFileRecord[] = [];
+  for (const file of files) {
+    const vault = inferVault(file.path);
+    if (vaultPath && vault !== vaultPath) {
+      kept.push(file);
+      continue;
+    }
+    if (file.exists === false) {
+      removed.push(file);
+    } else if (file.stale === true) {
+      reindexed.push({
+        ...file,
+        stale: false,
+        exists: true,
+        indexedAt: Date.now(),
+      });
+      kept.push(reindexed[reindexed.length - 1]);
+    } else {
+      kept.push(file);
+    }
+  }
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(kept));
+  return {
+    removed: removed.length,
+    reindexed: reindexed.length,
+    failed: 0,
+  };
 }
 
 export async function indexVault(

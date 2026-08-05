@@ -1461,6 +1461,138 @@ try {
   }
   results.knowledgeDocStatus = knowledgeDocStatus;
 
+  const knowledgeDocCleanSeed = await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Stale.md",
+          title: "Stale",
+          tags: "#work",
+          content: "old",
+          indexedAt: startOfToday - 7_200_000,
+          stale: true,
+        },
+        {
+          path: "C:/vault\\\\Missing.md",
+          title: "Missing",
+          tags: "#life",
+          content: "gone",
+          indexedAt: startOfToday - 86_400_000,
+          exists: false,
+        },
+        {
+          path: "D:/vault\\\\Notes.md",
+          title: "Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 3_600_000,
+        },
+      ]),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const knowledgeDocClean = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (
+        docs.length >= 3 &&
+        docs.every(
+          (doc) => doc.querySelector("[data-knowledge-doc-status]") !== null,
+        )
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const beforeStatuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    const missingBefore = Number(
+      document
+        .querySelector("[data-knowledge-docs-missing]")
+        ?.getAttribute("data-knowledge-docs-missing") ?? 0,
+    );
+    const staleBefore = Number(
+      document
+        .querySelector("[data-knowledge-docs-stale]")
+        ?.getAttribute("data-knowledge-docs-stale") ?? 0,
+    );
+    const cleanBtn = document.querySelector("[data-knowledge-docs-clean]");
+    if (!cleanBtn) {
+      return {
+        ok: false,
+        reason: "no clean button",
+        beforeStatuses,
+        missingBefore,
+        staleBefore,
+      };
+    }
+    cleanBtn.click();
+    let cleanResult = null;
+    for (let i = 0; i < 40; i++) {
+      const text =
+        document.querySelector("[data-knowledge-clean-result]")?.textContent ?? "";
+      const match = text.match(/removed ([0-9]+) reindexed ([0-9]+)/);
+      if (match) {
+        cleanResult = {
+          removed: Number(match[1]),
+          reindexed: Number(match[2]),
+        };
+        break;
+      }
+      await sleep(100);
+    }
+    for (let i = 0; i < 20; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (docs.length === 2) break;
+      await sleep(100);
+    }
+    const resultText =
+      document.querySelector("[data-knowledge-clean-result]")?.textContent ?? "";
+    const spanExists = !!document.querySelector("[data-knowledge-clean-result]");
+    const afterStatuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    return {
+      ok:
+        beforeStatuses.includes("missing") &&
+        beforeStatuses.includes("stale") &&
+        missingBefore === 1 &&
+        staleBefore === 1 &&
+        cleanResult?.removed === 1 &&
+        cleanResult?.reindexed === 1 &&
+        docs.length === 2 &&
+        afterStatuses.every((status) => status === "ok"),
+      beforeStatuses,
+      missingBefore,
+      staleBefore,
+      cleanResult,
+      resultText,
+      spanExists,
+      afterStatuses,
+      docs: docs.length,
+      seedFiles: 3,
+    };
+  })()`);
+  if (!knowledgeDocClean.ok) {
+    throw new Error(
+      `Knowledge document clean assertion failed: ${JSON.stringify(knowledgeDocClean)}`,
+    );
+  }
+  results.knowledgeDocClean = knowledgeDocClean;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

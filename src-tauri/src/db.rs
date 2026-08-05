@@ -553,6 +553,14 @@ pub struct KnowledgeFileRecord {
     pub stale: bool,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeCleanupResult {
+    pub removed: i64,
+    pub reindexed: i64,
+    pub failed: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2994,6 +3002,72 @@ fn knowledge_file_stale(path: &str, indexed_at: i64) -> bool {
     (modified_ms.as_millis() as i64).saturating_sub(indexed_at) > 1_000
 }
 
+fn parse_knowledge_document(content: &str) -> (String, String, String) {
+    match parse_frontmatter(content) {
+        Some((fields, body)) => {
+            let title = fields
+                .iter()
+                .find(|(key, _)| key == "title")
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| "Untitled".to_string());
+            let tags = fields
+                .iter()
+                .find(|(key, _)| key == "tags")
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default();
+            (title, tags, body)
+        }
+        None => ("Untitled".to_string(), String::new(), content.to_string()),
+    }
+}
+
+pub fn cleanup_knowledge_files(
+    conn: &Connection,
+    vault_path: Option<&str>,
+) -> Result<KnowledgeCleanupResult, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, vault_path, indexed_at FROM knowledge_files
+             WHERE (?1 IS NULL OR vault_path = ?1)",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![vault_path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut removed = 0i64;
+    let mut reindexed = 0i64;
+    let mut failed = 0i64;
+    for row in rows {
+        let (path, doc_vault_path, indexed_at) = row.map_err(|e| e.to_string())?;
+        let path_ref = std::path::Path::new(&path);
+        if !path_ref.exists() {
+            delete_knowledge_file(conn, &path).map_err(|e| e.to_string())?;
+            removed += 1;
+        } else if knowledge_file_stale(&path, indexed_at) {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let (title, tags, body) = parse_knowledge_document(&content);
+                    upsert_knowledge_file(conn, &path, &title, &tags, &body, &doc_vault_path)
+                        .map_err(|e| e.to_string())?;
+                    reindexed += 1;
+                }
+                Err(_) => failed += 1,
+            }
+        }
+    }
+    Ok(KnowledgeCleanupResult {
+        removed,
+        reindexed,
+        failed,
+    })
+}
+
 pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<RagSearchResult>> {
     let query_tokens = tokenize(query);
     if query_tokens.is_empty() {
@@ -4612,6 +4686,62 @@ mod tests {
         let missing = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
         assert!(!missing[0].exists);
         assert!(!missing[0].stale);
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn knowledge_cleanup_removes_missing_and_reindexes_stale() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-cleanup-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+
+        let stale_path = dir.join("stale.md");
+        std::fs::write(&stale_path, "---\ntitle: Stale\n---\n# old").unwrap();
+        let stale_str = stale_path.to_string_lossy().to_string();
+        upsert_knowledge_file(&conn, &stale_str, "Stale", "", "# old", "C:/vault").unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET indexed_at = 0 WHERE path = ?1",
+            params![stale_str],
+        )
+        .unwrap();
+        std::fs::write(&stale_path, "---\ntitle: Stale\n---\n# new").unwrap();
+
+        let missing_path = dir.join("missing.md");
+        let missing_str = missing_path.to_string_lossy().to_string();
+        std::fs::write(&missing_path, "gone").unwrap();
+        upsert_knowledge_file(&conn, &missing_str, "Missing", "", "gone", "C:/vault").unwrap();
+        std::fs::remove_file(&missing_path).unwrap();
+
+        let fresh_path = dir.join("fresh.md");
+        let fresh_str = fresh_path.to_string_lossy().to_string();
+        std::fs::write(&fresh_path, "# fresh").unwrap();
+        upsert_knowledge_file(&conn, &fresh_str, "Fresh", "", "# fresh", "D:/vault").unwrap();
+
+        let result = cleanup_knowledge_files(&conn, Some("C:/vault")).unwrap();
+        assert_eq!(result.removed, 1);
+        assert_eq!(result.reindexed, 1);
+        assert_eq!(result.failed, 0);
+
+        let remaining = list_knowledge_files(&conn, None, None).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.iter().all(|doc| doc.path != missing_str));
+
+        let stale_doc = remaining.iter().find(|doc| doc.path == stale_str).unwrap();
+        assert!(stale_doc.exists);
+        assert!(!stale_doc.stale);
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM knowledge_files WHERE path = ?1",
+                params![stale_str],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(content.contains("new"));
+
+        let fresh_doc = remaining.iter().find(|doc| doc.path == fresh_str).unwrap();
+        assert_eq!(fresh_doc.vault_path, "D:/vault");
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
