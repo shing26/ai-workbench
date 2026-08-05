@@ -1780,6 +1780,41 @@ try {
       rangeItems.every(
         (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
       );
+    sinceSelect.value = "custom";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(150);
+    const fromInput = document.querySelector("[data-sync-audit-from]");
+    const toInput = document.querySelector("[data-sync-audit-to]");
+    let customOk = false;
+    if (fromInput && toInput) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const day = (offset) => {
+        const d = new Date(Date.now() + offset * 86400000);
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+      };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(fromInput, day(-1));
+      fromInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fromInput.dispatchEvent(new Event("change", { bubbles: true }));
+      setter.call(toInput, day(0));
+      toInput.dispatchEvent(new Event("input", { bubbles: true }));
+      toInput.dispatchEvent(new Event("change", { bubbles: true }));
+      let customItems = [];
+      for (let i = 0; i < 20; i++) {
+        await sleep(100);
+        customItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+        if (customItems.length > 0) break;
+      }
+      const inRange = customItems.length > 0;
+      setter.call(fromInput, day(1));
+      fromInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fromInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(300);
+      customOk = inRange && document.querySelectorAll("[data-sync-audit-item]").length === 0;
+    }
+    sinceSelect.value = "all";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(250);
     deviceSelect.value = "all";
     deviceSelect.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(200);
@@ -1810,11 +1845,12 @@ try {
     await sleep(300);
     const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
     return {
-      ok: mergeSeen && resolveSeen && filterOk && rangeOk && exportOk && cleared,
+      ok: mergeSeen && resolveSeen && filterOk && rangeOk && customOk && exportOk && cleared,
       mergeSeen,
       resolveSeen,
       filterOk,
       rangeOk,
+      customOk,
       exportOk,
       cleared,
       count: items.length,

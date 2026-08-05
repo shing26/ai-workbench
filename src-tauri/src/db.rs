@@ -1635,18 +1635,30 @@ pub fn list_sync_audit(
     since: Option<i64>,
     device_id: Option<&str>,
 ) -> Result<Vec<SyncAuditEntry>, String> {
+    list_sync_audit_range(conn, limit, event, since, None, device_id)
+}
+
+pub fn list_sync_audit_range(
+    conn: &Connection,
+    limit: i64,
+    event: Option<&str>,
+    since: Option<i64>,
+    until: Option<i64>,
+    device_id: Option<&str>,
+) -> Result<Vec<SyncAuditEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, event, detail, device_id, created_at
              FROM sync_audit_log
              WHERE (?1 IS NULL OR event = ?1)
                AND (?2 IS NULL OR created_at >= ?2)
-               AND (?3 IS NULL OR device_id = ?3)
-             ORDER BY created_at DESC, id DESC LIMIT ?4",
+               AND (?3 IS NULL OR created_at <= ?3)
+               AND (?4 IS NULL OR device_id = ?4)
+             ORDER BY created_at DESC, id DESC LIMIT ?5",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![event, since, device_id, limit], |row| {
+        .query_map(params![event, since, until, device_id, limit], |row| {
             Ok(SyncAuditEntry {
                 id: row.get(0)?,
                 event: row.get(1)?,
@@ -1678,7 +1690,18 @@ pub fn export_sync_audit(
     since: Option<i64>,
     device_id: Option<&str>,
 ) -> Result<String, String> {
-    let entries = list_sync_audit(conn, 10_000, event, since, device_id)?;
+    export_sync_audit_range(conn, format, event, since, None, device_id)
+}
+
+pub fn export_sync_audit_range(
+    conn: &Connection,
+    format: &str,
+    event: Option<&str>,
+    since: Option<i64>,
+    until: Option<i64>,
+    device_id: Option<&str>,
+) -> Result<String, String> {
+    let entries = list_sync_audit_range(conn, 10_000, event, since, until, device_id)?;
     match format {
         "json" => serde_json::to_string_pretty(&entries).map_err(|e| e.to_string()),
         "csv" => {
@@ -3597,6 +3620,43 @@ mod tests {
         let json = export_sync_audit(&conn, "json", None, Some(past), Some("device-b")).unwrap();
         assert!(json.contains("device-b"));
         assert!(!json.contains("device-a"));
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_audit_filters_by_custom_range() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-audit-range-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let now = now_millis();
+        conn.execute(
+            "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["sync.merge", "old event", "device-a", now - 2000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_audit_log (event, detail, device_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["sync.resolve", "recent event", "device-b", now],
+        )
+        .unwrap();
+
+        let ranged =
+            list_sync_audit_range(&conn, 10, None, Some(now - 1000), Some(now), None).unwrap();
+        assert_eq!(ranged.len(), 1);
+        assert_eq!(ranged[0].event, "sync.resolve");
+        assert!(
+            list_sync_audit_range(&conn, 10, None, Some(now + 1), None, None)
+                .unwrap()
+                .is_empty()
+        );
+        let json = export_sync_audit_range(&conn, "json", None, Some(now - 1000), Some(now), None)
+            .unwrap();
+        assert!(json.contains("recent event"));
+        assert!(!json.contains("old event"));
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

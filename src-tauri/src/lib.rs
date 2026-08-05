@@ -2900,17 +2900,30 @@ fn list_sync_audit(
     limit: Option<i64>,
     event: Option<String>,
     since: Option<i64>,
+    until: Option<i64>,
     device_id: Option<String>,
 ) -> Result<Vec<db::SyncAuditEntry>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_sync_audit(
-        &conn,
-        limit.unwrap_or(50).clamp(1, 200),
-        event.as_deref(),
-        since,
-        device_id.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    if let Some(until) = until {
+        db::list_sync_audit_range(
+            &conn,
+            limit.unwrap_or(50).clamp(1, 200),
+            event.as_deref(),
+            since,
+            Some(until),
+            device_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    } else {
+        db::list_sync_audit(
+            &conn,
+            limit.unwrap_or(50).clamp(1, 200),
+            event.as_deref(),
+            since,
+            device_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -2919,17 +2932,30 @@ fn export_sync_audit(
     format: Option<String>,
     event: Option<String>,
     since: Option<i64>,
+    until: Option<i64>,
     device_id: Option<String>,
 ) -> Result<String, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::export_sync_audit(
-        &conn,
-        &format.unwrap_or_else(|| "json".to_string()),
-        event.as_deref(),
-        since,
-        device_id.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    if let Some(until) = until {
+        db::export_sync_audit_range(
+            &conn,
+            &format.unwrap_or_else(|| "json".to_string()),
+            event.as_deref(),
+            since,
+            Some(until),
+            device_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    } else {
+        db::export_sync_audit(
+            &conn,
+            &format.unwrap_or_else(|| "json".to_string()),
+            event.as_deref(),
+            since,
+            device_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]

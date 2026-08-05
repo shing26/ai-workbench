@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 56
+
+### What went well?
+
+- 审计范围从固定预设扩展为任意起止日期：`list_sync_audit_range` / `export_sync_audit_range` 共用 `since + until` SQL，列表与导出所见一致。
+- System 时间选择器新增 `Custom` 与两个日期输入，切换即时刷新；旧命令在 `until = None` 时保持原路径。
+- 验证覆盖：`cargo test --lib` 63/63，fmt、clippy、build 全绿；两条 lane 的 `customOk` 均为 true，未来范围断言为空。
+
+### What went wrong?
+
+- clippy 报 `list_sync_audit` / `export_sync_audit` 在 `--lib` 下 dead code，改为 `until = None` 时复用原路径后消除。
+- UI 验证首次把内嵌模板字符串写进 evaluate 外层模板，触发 Node 语法错误，改为字符串拼接后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：watch 事件类型细分、索引任务队列、对象数组按 key 去重、审计按日/周聚合图表。
+- 后续扩展审计查询时，保持列表与导出共用同一过滤函数。
+
 ## Sprint 55
 
 ### What went well?

@@ -220,3 +220,9 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 - `structured_merge_content` 优先识别 JSON 对象/数组：对象按键递归合并，数组按 JSON 序列化去重并集，标量冲突取更新时间较新一侧；Markdown frontmatter 按字段合并，逗号列表取并集，正文沿用行级 union，纯文本回退 union。
 - 新增 `resolve_sync_conflict_structured` / `resolve_sync_conflicts_structured` 命令，审计事件 `sync.resolve.structured` / `sync.resolve.structured.batch`。
 - System 冲突卡片与批量区新增 `Merge fields` 入口；浏览器 fallback 与 Rust 共用同一合并语义。
+
+## Sprint 56：自定义审计日期范围
+
+- `list_sync_audit_range` / `export_sync_audit_range` 支持 `since` + `until`，SQL 增加 `created_at <= until`；`until` 为 `None` 时沿用原查询路径。
+- System Sync audit 新增 `Custom` 选项与起止日期输入，列表与导出共用 `resolveAuditRange` 语义。
+- 浏览器 fallback 按 `createdAt >= since && createdAt <= until` 过滤，与 Rust 语义一致。

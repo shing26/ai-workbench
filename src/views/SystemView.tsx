@@ -10,6 +10,28 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function dateInput(value: Date): string {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(
+    value.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function resolveAuditRange(
+  since: string,
+  fromDate: string,
+  toDate: string,
+): { sinceMs?: number; untilMs?: number } {
+  if (since === "today") return { sinceMs: Date.now() - 24 * 60 * 60 * 1000 };
+  if (since === "7d") return { sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1000 };
+  if (since === "custom") {
+    return {
+      sinceMs: fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : undefined,
+      untilMs: toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : undefined,
+    };
+  }
+  return {};
+}
+
 export default function SystemView() {
   const providers = useWorkbenchStore((s) => s.providers);
   const addProvider = useWorkbenchStore((s) => s.addProvider);
@@ -38,6 +60,8 @@ export default function SystemView() {
   const [syncAudit, setSyncAudit] = useState<db.SyncAuditEntry[]>([]);
   const [auditFilter, setAuditFilter] = useState("all");
   const [auditSince, setAuditSince] = useState("all");
+  const [auditFromDate, setAuditFromDate] = useState(() => dateInput(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
+  const [auditToDate, setAuditToDate] = useState(() => dateInput(new Date()));
   const [auditDevice, setAuditDevice] = useState("all");
   const [auditExportMessage, setAuditExportMessage] = useState("");
   const [departments, setDepartments] = useState<db.Department[]>([]);
@@ -189,18 +213,16 @@ export default function SystemView() {
     filter = auditFilter,
     since = auditSince,
     device = auditDevice,
+    fromDate = auditFromDate,
+    toDate = auditToDate,
   ) => {
-    const sinceMs =
-      since === "today"
-        ? Date.now() - 24 * 60 * 60 * 1000
-        : since === "7d"
-          ? Date.now() - 7 * 24 * 60 * 60 * 1000
-          : undefined;
+    const range = resolveAuditRange(since, fromDate, toDate);
     setSyncAudit(
       await db.listSyncAudit(
         200,
         filter === "all" ? undefined : filter,
-        sinceMs,
+        range.sinceMs,
+        range.untilMs,
         device === "current" ? deviceId : undefined,
       ),
     );
@@ -224,18 +246,30 @@ export default function SystemView() {
     void loadAudit(auditFilter, auditSince, device);
   };
 
+  const changeAuditFromDate = (value: string) => {
+    setAuditFromDate(value);
+    setAuditExportMessage("");
+    if (auditSince === "custom") {
+      void loadAudit(auditFilter, "custom", auditDevice, value, auditToDate);
+    }
+  };
+
+  const changeAuditToDate = (value: string) => {
+    setAuditToDate(value);
+    setAuditExportMessage("");
+    if (auditSince === "custom") {
+      void loadAudit(auditFilter, "custom", auditDevice, auditFromDate, value);
+    }
+  };
+
   const exportAudit = async (format: "json" | "csv") => {
     try {
-      const sinceMs =
-        auditSince === "today"
-          ? Date.now() - 24 * 60 * 60 * 1000
-          : auditSince === "7d"
-            ? Date.now() - 7 * 24 * 60 * 60 * 1000
-            : undefined;
+      const range = resolveAuditRange(auditSince, auditFromDate, auditToDate);
       const text = await db.exportSyncAudit(
         format,
         auditFilter === "all" ? undefined : auditFilter,
-        sinceMs,
+        range.sinceMs,
+        range.untilMs,
         auditDevice === "current" ? deviceId : undefined,
       );
       const count =
@@ -812,7 +846,28 @@ export default function SystemView() {
               <option value="all">All time</option>
               <option value="today">Today</option>
               <option value="7d">Last 7 days</option>
+              <option value="custom">Custom</option>
             </select>
+            {auditSince === "custom" && (
+              <>
+                <input
+                  type="date"
+                  aria-label="Sync audit start date"
+                  data-sync-audit-from
+                  value={auditFromDate}
+                  onChange={(e) => changeAuditFromDate(e.target.value)}
+                  className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+                />
+                <input
+                  type="date"
+                  aria-label="Sync audit end date"
+                  data-sync-audit-to
+                  value={auditToDate}
+                  onChange={(e) => changeAuditToDate(e.target.value)}
+                  className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+                />
+              </>
+            )}
             <select
               aria-label="Sync audit device"
               data-sync-audit-device
