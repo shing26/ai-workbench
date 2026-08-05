@@ -819,13 +819,28 @@ try {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector("[data-ai-daily-recap]");
     if (!btn) return { ok: false, reason: "no recap button" };
+    const recapPrompt = "请帮我生成今日复盘";
+    const userBefore = [...document.querySelectorAll(".message-in")].filter(
+      (n) => (n.textContent ?? "").includes(recapPrompt),
+    ).length;
     btn.click();
+    let userAdded = false;
+    for (let i = 0; i < 20; i++) {
+      const count = [...document.querySelectorAll(".message-in")].filter(
+        (n) => (n.textContent ?? "").includes(recapPrompt),
+      ).length;
+      if (count > userBefore) {
+        userAdded = true;
+        break;
+      }
+      await sleep(100);
+    }
     let reply = "";
     for (let i = 0; i < 60; i++) {
       const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
-      reply =
-        bubbles.find((t) => t.includes("Streaming fallback") && !t.includes("请帮我生成今日复盘")) ??
-        "";
+      reply = [...bubbles]
+        .reverse()
+        .find((t) => t.includes("Streaming fallback") && !t.includes(recapPrompt)) ?? "";
       if (reply) break;
       await sleep(100);
     }
@@ -844,7 +859,16 @@ try {
     }
     const saveBtn = document.querySelector("[data-ai-recap-save]");
     if (!saveBtn) return { ok: false, reason: "no save button" };
-    if (saveBtn.disabled) return { ok: false, reason: "save button disabled", idle };
+    let enabled = false;
+    for (let i = 0; i < 40; i++) {
+      if (!saveBtn.disabled) {
+        enabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!enabled) return { ok: false, reason: "save button disabled", idle, userAdded };
+    if (!userAdded) return { ok: false, reason: "recap user message not added", idle };
     saveBtn.click();
     let result = "";
     for (let i = 0; i < 30; i++) {
@@ -862,6 +886,7 @@ try {
     return {
       ok,
       idle,
+      userAdded,
       result,
       savedTags: saved?.tags,
       savedType: saved?.type,
@@ -3731,6 +3756,111 @@ try {
     throw new Error(`remote sync assertion failed: ${JSON.stringify(remoteSyncCheck)}`);
   }
   results.remoteSync = remoteSyncCheck;
+
+  const syncE2eCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    localStorage.removeItem("ai-workbench:sync-encrypted:v1");
+    const toggle = document.querySelector("[data-sync-e2e-toggle]");
+    const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');
+    const importBtn = document.querySelector('button[aria-label="Import sync snapshot"]');
+    if (!toggle || !exportBtn || !importBtn) {
+      return { ok: false, reason: "e2e controls missing" };
+    }
+    if (!toggle.checked) toggle.click();
+    await sleep(120);
+    const passInput = document.querySelector("[data-sync-passphrase]");
+    if (!passInput) return { ok: false, reason: "passphrase input missing" };
+    setValue(passInput, "test-passphrase");
+    await sleep(120);
+    exportBtn.click();
+    let exported = false;
+    let envelopeRaw = "";
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      envelopeRaw = localStorage.getItem("ai-workbench:sync-encrypted:v1") ?? "";
+      if (msg.includes("Exported encrypted snapshot") && envelopeRaw) {
+        exported = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let envelope = null;
+    try {
+      envelope = JSON.parse(envelopeRaw);
+    } catch {
+      envelope = null;
+    }
+    const envelopeOk =
+      !!envelope &&
+      envelope.v === 1 &&
+      envelope.alg === "AES-256-GCM" &&
+      !!envelope.salt &&
+      !!envelope.iv &&
+      !!envelope.ciphertext &&
+      !envelopeRaw.includes("device-local");
+    importBtn.click();
+    let imported = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      if (msg.includes("Merged encrypted +")) {
+        imported = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let wrongFailed = false;
+    for (let attempt = 0; attempt < 3 && !wrongFailed; attempt++) {
+      setValue(passInput, "wrong-passphrase");
+      await sleep(150);
+      importBtn.click();
+      for (let i = 0; i < 20; i++) {
+        const msgEl = document.querySelector("[data-sync-message]");
+        if (msgEl && msgEl.className.includes("text-rose-400") && msgEl.textContent) {
+          wrongFailed = true;
+          break;
+        }
+        await sleep(100);
+      }
+    }
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    const pushBtn = document.querySelector('button[aria-label="Push sync snapshot"]');
+    setValue(urlInput, "https://sync.example.test/e2e");
+    await sleep(80);
+    pushBtn.click();
+    let pushedEncrypted = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      if (msg.includes("Pushed encrypted snapshot to remote")) {
+        pushedEncrypted = true;
+        break;
+      }
+      await sleep(100);
+    }
+    setValue(passInput, "");
+    await sleep(120);
+    if (toggle.checked) toggle.click();
+    await sleep(120);
+    localStorage.removeItem("ai-workbench:sync-encrypted:v1");
+    return {
+      ok: exported && envelopeOk && imported && wrongFailed && pushedEncrypted,
+      exported,
+      envelopeOk,
+      imported,
+      wrongFailed,
+      pushedEncrypted,
+      alg: envelope?.alg,
+    };
+  })()`);
+  if (!syncE2eCheck.ok) {
+    throw new Error(
+      `sync E2E encryption assertion failed: ${JSON.stringify(syncE2eCheck)}`,
+    );
+  }
+  results.syncE2e = syncE2eCheck;
 
   const syncResolveCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

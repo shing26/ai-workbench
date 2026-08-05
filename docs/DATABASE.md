@@ -645,3 +645,7 @@ ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;
 ## Sprint 91：RAG 命中人工确认
 
 无表结构变更。命中确认是 AI Studio 会话内的前端状态：`ragConfirmMode` / `pendingSend` / `pendingSelected` 均不持久化，也不新增 localStorage key 或 SQLite 字段。
+
+## Sprint 92：Sync E2E 加密
+
+无表结构变更。E2E 加密只作用于同步 payload：Rust 侧在内存中完成 PBKDF2 + AES-GCM，浏览器侧使用 `ai-workbench:sync-encrypted:v1` 保存加密 envelope，不新增 SQLite 表或字段，也不把 salt / nonce / 口令写入数据库。

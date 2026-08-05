@@ -185,6 +185,14 @@ export type SyncSnapshot = {
   quickPromptUsage?: QuickPromptUsageEntry[];
 };
 
+export type SyncEnvelope = {
+  v: 1;
+  alg: "AES-256-GCM";
+  salt: string;
+  iv: string;
+  ciphertext: string;
+};
+
 export type SyncResult = {
   deviceId: string;
   syncedAt: number;
@@ -1394,6 +1402,7 @@ export async function listenClipboardUpdated(
 }
 
 const SYNC_LS_KEY = "ai-workbench:sync-snapshot:v1";
+const SYNC_ENCRYPTED_LS_KEY = "ai-workbench:sync-encrypted:v1";
 const SYNC_AUTO_LS_KEY = "ai-workbench:sync-auto:v1";
 const SYNC_CONFLICTS_LS_KEY = "ai-workbench:sync-conflicts:v1";
 const SYNC_AUDIT_LS_KEY = "ai-workbench:sync-audit:v1";
@@ -1449,32 +1458,143 @@ export async function importSyncSnapshot(): Promise<SyncResult> {
   return mergeSnapshotIntoLocal(JSON.parse(raw) as SyncSnapshot);
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function deriveBrowserSyncKey(
+  passphrase: string,
+  salt: Uint8Array,
+): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(passphrase),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+export async function encryptSyncPayload(
+  payload: string,
+  passphrase: string,
+): Promise<string> {
+  if (!passphrase.trim()) throw new Error("Passphrase is required");
+  if (isTauri()) {
+    return invoke<string>("encrypt_sync_payload_command", { payload, passphrase });
+  }
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveBrowserSyncKey(passphrase, salt);
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      new TextEncoder().encode(payload),
+    ),
+  );
+  const envelope: SyncEnvelope = {
+    v: 1,
+    alg: "AES-256-GCM",
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(ciphertext),
+  };
+  return JSON.stringify(envelope);
+}
+
+export async function decryptSyncPayload(
+  envelope: string,
+  passphrase: string,
+): Promise<string> {
+  if (!passphrase.trim()) throw new Error("Passphrase is required");
+  if (isTauri()) {
+    return invoke<string>("decrypt_sync_payload_command", { envelope, passphrase });
+  }
+  const parsed = JSON.parse(envelope) as SyncEnvelope;
+  if (parsed.v !== 1 || parsed.alg !== "AES-256-GCM") {
+    throw new Error("Unsupported encrypted payload");
+  }
+  const key = await deriveBrowserSyncKey(passphrase, base64ToBytes(parsed.salt));
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(parsed.iv) },
+    key,
+    base64ToBytes(parsed.ciphertext),
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+export async function exportEncryptedSyncSnapshot(passphrase: string): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("export_encrypted_sync_snapshot", { passphrase });
+  }
+  const snapshot = await exportSyncSnapshot();
+  const envelope = await encryptSyncPayload(JSON.stringify(snapshot), passphrase);
+  localStorage.setItem(SYNC_ENCRYPTED_LS_KEY, envelope);
+  return envelope;
+}
+
+export async function importEncryptedSyncSnapshot(passphrase: string): Promise<SyncResult> {
+  if (isTauri()) {
+    return invoke<SyncResult>("import_encrypted_sync_snapshot", { passphrase });
+  }
+  const raw = localStorage.getItem(SYNC_ENCRYPTED_LS_KEY);
+  if (!raw) throw new Error("Encrypted sync snapshot not found");
+  const payload = await decryptSyncPayload(raw, passphrase);
+  return mergeSnapshotIntoLocal(JSON.parse(payload) as SyncSnapshot);
+}
+
 export async function pushSyncSnapshot(
   remoteUrl: string,
   token?: string,
+  passphrase?: string,
 ): Promise<RemoteSyncPushResult> {
   if (isTauri()) {
     return invoke<RemoteSyncPushResult>("push_sync_snapshot", {
       remoteUrl,
       token: token?.trim() ? token.trim() : null,
+      passphrase: passphrase?.trim() ? passphrase.trim() : null,
     });
   }
   const snapshot = await exportSyncSnapshot();
   return {
     ok: true,
     syncedAt: snapshot.exportedAt,
-    message: "Pushed snapshot to remote",
+    message: passphrase?.trim()
+      ? "Pushed encrypted snapshot to remote"
+      : "Pushed snapshot to remote",
   };
 }
 
 export async function pullSyncSnapshot(
   remoteUrl: string,
   token?: string,
+  passphrase?: string,
 ): Promise<SyncResult> {
   if (isTauri()) {
     return invoke<SyncResult>("pull_sync_snapshot", {
       remoteUrl,
       token: token?.trim() ? token.trim() : null,
+      passphrase: passphrase?.trim() ? passphrase.trim() : null,
     });
   }
   const remote: SyncSnapshot = {
@@ -1515,6 +1635,11 @@ export async function pullSyncSnapshot(
       timestamp: Date.now(),
       updatedAt: baseClip.updatedAt + 1,
     });
+  }
+  if (passphrase?.trim()) {
+    const envelope = await encryptSyncPayload(JSON.stringify(remote), passphrase);
+    const payload = await decryptSyncPayload(envelope, passphrase);
+    Object.assign(remote, JSON.parse(payload) as SyncSnapshot);
   }
   return mergeSnapshotIntoLocal(remote);
 }
