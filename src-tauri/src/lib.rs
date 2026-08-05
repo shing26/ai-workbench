@@ -779,6 +779,52 @@ fn set_provider_active(
 }
 
 #[tauri::command]
+fn list_departments(state: State<'_, db::Db>) -> Result<Vec<db::Department>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_departments(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_agents(state: State<'_, db::Db>) -> Result<Vec<db::Agent>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_agents(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_department(
+    state: State<'_, db::Db>,
+    name: String,
+    description: String,
+    color: String,
+) -> Result<db::Department, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_department(&conn, &name, &description, &color).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_agent(
+    state: State<'_, db::Db>,
+    department_id: String,
+    name: String,
+    role: String,
+    model: String,
+    provider_id: Option<String>,
+    system_prompt: String,
+) -> Result<db::Agent, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_agent(
+        &conn,
+        &department_id,
+        &name,
+        &role,
+        &model,
+        provider_id,
+        &system_prompt,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_habits(state: State<'_, db::Db>) -> Result<Vec<db::Habit>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_habits(&conn).map_err(|e| e.to_string())
@@ -1430,6 +1476,10 @@ pub fn run() {
             list_providers,
             create_provider,
             set_provider_active,
+            list_departments,
+            list_agents,
+            create_department,
+            create_agent,
             list_habits,
             create_habit,
             toggle_habit,

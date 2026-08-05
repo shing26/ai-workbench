@@ -19,6 +19,10 @@ export default function AIStudioView() {
   const [moa, setMoa] = useState(false);
   const [autoRoute, setAutoRoute] = useState(false);
   const [routedProvider, setRoutedProvider] = useState<{ name: string; fallbackFrom: string | null } | null>(null);
+  const [departments, setDepartments] = useState<db.Department[]>([]);
+  const [agents, setAgents] = useState<db.Agent[]>([]);
+  const [agentId, setAgentId] = useState("");
+  const [routedAgent, setRoutedAgent] = useState<db.Agent | null>(null);
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -138,6 +142,24 @@ export default function AIStudioView() {
         if (stored.length > 0) {
           setMessages(stored.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content })));
         }
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all([db.listDepartments(), db.listAgents()]).then(([departmentList, agentList]) => {
+      if (disposed) return;
+      setDepartments(departmentList);
+      const active = agentList.filter((a) => a.isActive);
+      setAgents(active);
+      const first = active[0];
+      if (first) {
+        setAgentId(first.id);
+        setRoutedAgent(first);
       }
     });
     return () => {
@@ -270,6 +292,7 @@ export default function AIStudioView() {
     if (!runsRef.current.has(runId)) {
       runsRef.current.set(runId, { content: "", index: history.length });
     }
+    const selectedAgent = agentId ? agents.find((a) => a.id === agentId) ?? null : null;
     let providerIds: string[] = [];
     let routedName: string | null = null;
     let fallbackFrom: string | null = null;
@@ -292,8 +315,13 @@ export default function AIStudioView() {
         return;
       }
     } else {
-      providerIds = activeProvider ? [activeProvider.id] : [];
+      providerIds = selectedAgent?.providerId
+        ? [selectedAgent.providerId]
+        : activeProvider
+          ? [activeProvider.id]
+          : [];
     }
+    if (selectedAgent) setRoutedAgent(selectedAgent);
     setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== "__stream__");
     if (hits.length > 0) {
@@ -316,6 +344,14 @@ export default function AIStudioView() {
       setStreamError("stream unavailable");
     }
     const sections: InspectorSection[] = [];
+    if (selectedAgent) {
+      sections.push(
+        { label: "Department", value: selectedAgent.departmentName },
+        { label: "Agent", value: selectedAgent.name },
+        { label: "Role", value: selectedAgent.role },
+        { label: "Model", value: selectedAgent.model },
+      );
+    }
     if (moa) {
       sections.push(
         { label: "Providers", value: providerIds.length ? providerIds.join(", ") : "none" },
@@ -336,7 +372,15 @@ export default function AIStudioView() {
     }
     if (sections.length > 0) {
       openInspector(
-        moa && hits.length > 0 ? "MOA Trace + RAG" : hits.length > 0 ? "RAG Context" : "MOA Trace",
+        selectedAgent
+          ? hits.length > 0
+            ? "Agent Trace + RAG"
+            : "Agent Trace"
+          : moa && hits.length > 0
+            ? "MOA Trace + RAG"
+            : hits.length > 0
+              ? "RAG Context"
+              : "MOA Trace",
         sections,
       );
     }
@@ -478,6 +522,8 @@ export default function AIStudioView() {
                 <ModelBadge key={p.id} label={p.name} tone="blue" status="active" />
               ))}
             </div>
+          ) : routedAgent ? (
+            <ModelBadge label={routedAgent.name} tone="blue" status={routedAgent.departmentName} />
           ) : (
             <ModelBadge label={activeProvider?.name ?? "No provider"} tone="green" />
           )}
@@ -507,6 +553,28 @@ export default function AIStudioView() {
               Auto
             </button>
           </div>
+          <select
+            value={agentId}
+            onChange={(e) => {
+              setAgentId(e.target.value);
+              setRoutedAgent(agents.find((a) => a.id === e.target.value) ?? null);
+            }}
+            aria-label="Dispatch agent"
+            className="h-8 max-w-48 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none"
+          >
+            <option value="">Default agent</option>
+            {departments.map((d) => (
+              <optgroup key={d.id} label={d.name}>
+                {agents
+                  .filter((a) => a.departmentId === d.id)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+              </optgroup>
+            ))}
+          </select>
           <button
             type="button"
             role="switch"

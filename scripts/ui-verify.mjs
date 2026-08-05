@@ -259,6 +259,22 @@ try {
     throw new Error(`UI theme/stage assertion failed: ${JSON.stringify(results.uiDynamics)}`);
   }
 
+  results.uiDynamics.agentSelect = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const select = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (select && select.options.length >= 12) {
+        return { ok: true, options: select.options.length, selected: select.value };
+      }
+      await sleep(100);
+    }
+    const select = document.querySelector('select[aria-label="Dispatch agent"]');
+    return { ok: false, options: select?.options.length ?? 0 };
+  })()`);
+  if (!results.uiDynamics.agentSelect.ok) {
+    throw new Error(`AI Studio agent selector assertion failed: ${JSON.stringify(results.uiDynamics.agentSelect)}`);
+  }
+
   await send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: "light" }],
   });
@@ -351,6 +367,15 @@ try {
   if (!streamStarted.ragBadge.includes("RAG +") || !streamStarted.inspectorText.toLowerCase().includes("rag context")) {
     throw new Error(
       `AI Studio RAG injection assertion failed: badge=${JSON.stringify(streamStarted.ragBadge)} inspector=${JSON.stringify(streamStarted.inspectorText.slice(0, 160))}`,
+    );
+  }
+  if (
+    !streamStarted.inspectorText.toLowerCase().includes("department") ||
+    !streamStarted.inspectorText.includes("UI Designer") ||
+    !streamStarted.inspectorText.includes("设计部")
+  ) {
+    throw new Error(
+      `AI Studio agent trace assertion failed: ${JSON.stringify(streamStarted.inspectorText.slice(0, 220))}`,
     );
   }
   results.streaming = streamStarted;
@@ -651,6 +676,35 @@ try {
   }
   if (!results.system.listening || results.system.clipEntries < 1 || results.system.logEntries < 1) {
     throw new Error("system capture assertions failed");
+  }
+  results.agentDirectory = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const section = [...document.querySelectorAll("main section")]
+      .find((s) => s.querySelector("h2")?.textContent === "Agent directory");
+    if (!section) return { ok: false, reason: "agent directory missing" };
+    const text = section.innerText;
+    const designVisible =
+      text.includes("设计部") && text.includes("UI Designer") && text.includes("Frontend Developer");
+    const select = section.querySelector('select[aria-label="Agent department"]');
+    const addBtn = section.querySelector('button[aria-label="Add agent"]');
+    const input = section.querySelector('input[placeholder="Agent name"]');
+    const roleInput = section.querySelector('input[placeholder="Role"]');
+    if (!select || !addBtn || !input || !roleInput) {
+      return { ok: false, reason: "agent form missing", designVisible };
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "QA Agent");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(roleInput, "Verify");
+    roleInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    addBtn.click();
+    await sleep(300);
+    const created = section.innerText.includes("QA Agent");
+    return { ok: designVisible && created, designVisible, created };
+  })()`);
+  if (!results.agentDirectory.ok) {
+    throw new Error(`System agent directory assertion failed: ${JSON.stringify(results.agentDirectory)}`);
   }
   const healthCheck = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Check");

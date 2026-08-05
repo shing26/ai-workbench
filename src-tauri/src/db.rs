@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS providers (
     api_key TEXT,
     is_active INTEGER DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS departments (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    color TEXT DEFAULT 'emerald',
+    created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    department_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT,
+    model TEXT DEFAULT 'openai',
+    provider_id TEXT,
+    system_prompt TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER,
+    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agents_department ON agents(department_id, is_active);
 CREATE TABLE IF NOT EXISTS habits (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -197,6 +217,32 @@ pub struct Provider {
     pub base_url: String,
     pub api_key: String,
     pub is_active: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Department {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub color: String,
+    pub agent_count: i64,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Agent {
+    pub id: String,
+    pub department_id: String,
+    pub department_name: String,
+    pub name: String,
+    pub role: String,
+    pub model: String,
+    pub provider_id: Option<String>,
+    pub system_prompt: String,
+    pub is_active: bool,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -375,6 +421,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
         seed_habits_if_empty(conn)?;
         seed_events_if_empty(conn)?;
         seed_system_if_empty(conn)?;
+        seed_agents_if_empty(conn)?;
         return Ok(());
     }
     let now = now_millis();
@@ -413,6 +460,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
     seed_habits_if_empty(conn)?;
     seed_events_if_empty(conn)?;
     seed_system_if_empty(conn)?;
+    seed_agents_if_empty(conn)?;
     Ok(())
 }
 
@@ -489,6 +537,92 @@ fn seed_logs_if_empty(conn: &Connection) -> Result<()> {
         "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at) VALUES (?1, 'tauri', 'DB initialized', NULL, 'info', ?2, ?3)",
         params![uid(), now_millis() - 7000, now_millis() - 7000],
     )?;
+    Ok(())
+}
+
+fn seed_agents_if_empty(conn: &Connection) -> Result<()> {
+    let now = now_millis();
+    let department_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM departments", [], |row| row.get(0))?;
+    if department_count == 0 {
+        let design_id = uid();
+        let product_id = uid();
+        let backend_id = uid();
+        let ai_id = uid();
+        let quality_id = uid();
+        conn.execute(
+            "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, '设计部', '界面、交互与视觉动效', 'iris', ?2)",
+            params![&design_id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, '产品与体验部', '需求、用户路径与优先级', 'ocean', ?2)",
+            params![&product_id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, '后端与系统部', '数据层、Tauri 命令与运维', 'emerald', ?2)",
+            params![&backend_id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, 'AI 策略与引擎部', '模型路由、Prompt 与多 Agent 编排', 'amber', ?2)",
+            params![&ai_id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, '质量与工程效率部', '测试、DoD 与自动化验收', 'sakura', ?2)",
+            params![&quality_id, now],
+        )?;
+        let design_agents = [
+            ("UI Designer", "设计系统与动效"),
+            ("Frontend Developer", "React/Tailwind 实现"),
+            ("UI Finish-Gate Reviewer", "视觉验收"),
+        ];
+        let product_agents = [
+            ("Product Manager", "范围冻结与验收标准"),
+            ("UX Architect", "交互与信息架构"),
+        ];
+        let backend_agents = [
+            ("Backend Architect", "Tauri 命令与分层设计"),
+            ("Data Engineer", "SQLite 表结构与迁移"),
+        ];
+        let ai_agents = [
+            ("AI Engineer", "模型路由与流式链路"),
+            ("Prompt Engineer", "Prompt 版本与测试用例"),
+            ("Multi-Agent Systems Architect", "部门与 Agent 编排"),
+        ];
+        let quality_agents = [
+            ("Test Automation Engineer", "自动化验收与回归"),
+            ("Reality Checker", "证据驱动的发布门禁"),
+        ];
+        for (name, role) in design_agents {
+            conn.execute(
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
+                params![uid(), &design_id, name, role, now],
+            )?;
+        }
+        for (name, role) in product_agents {
+            conn.execute(
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
+                params![uid(), &product_id, name, role, now],
+            )?;
+        }
+        for (name, role) in backend_agents {
+            conn.execute(
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
+                params![uid(), &backend_id, name, role, now],
+            )?;
+        }
+        for (name, role) in ai_agents {
+            conn.execute(
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
+                params![uid(), &ai_id, name, role, now],
+            )?;
+        }
+        for (name, role) in quality_agents {
+            conn.execute(
+                "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, 'openai', NULL, '', 1, ?5)",
+                params![uid(), &quality_id, name, role, now],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -667,6 +801,115 @@ pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Resu
         params![is_active as i64, id],
     )?;
     Ok(())
+}
+
+pub fn list_departments(conn: &Connection) -> Result<Vec<Department>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.name, COALESCE(d.description, ''), COALESCE(d.color, 'emerald'), d.created_at,
+                (SELECT COUNT(*) FROM agents a WHERE a.department_id = d.id)
+         FROM departments d
+         ORDER BY d.created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Department {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            color: row.get(3)?,
+            created_at: row.get(4)?,
+            agent_count: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn list_agents(conn: &Connection) -> Result<Vec<Agent>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.department_id, COALESCE(d.name, ''), a.name, COALESCE(a.role, ''),
+                COALESCE(a.model, 'openai'), a.provider_id, COALESCE(a.system_prompt, ''), a.is_active, a.created_at
+         FROM agents a
+         LEFT JOIN departments d ON d.id = a.department_id
+         ORDER BY d.created_at ASC, a.created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Agent {
+            id: row.get(0)?,
+            department_id: row.get(1)?,
+            department_name: row.get(2)?,
+            name: row.get(3)?,
+            role: row.get(4)?,
+            model: row.get(5)?,
+            provider_id: row.get(6)?,
+            system_prompt: row.get(7)?,
+            is_active: row.get::<_, i64>(8)? != 0,
+            created_at: row.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+fn get_agent(conn: &Connection, id: &str) -> Result<Option<Agent>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.department_id, COALESCE(d.name, ''), a.name, COALESCE(a.role, ''),
+                COALESCE(a.model, 'openai'), a.provider_id, COALESCE(a.system_prompt, ''), a.is_active, a.created_at
+         FROM agents a
+         LEFT JOIN departments d ON d.id = a.department_id
+         WHERE a.id = ?1",
+    )?;
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(Agent {
+            id: row.get(0)?,
+            department_id: row.get(1)?,
+            department_name: row.get(2)?,
+            name: row.get(3)?,
+            role: row.get(4)?,
+            model: row.get(5)?,
+            provider_id: row.get(6)?,
+            system_prompt: row.get(7)?,
+            is_active: row.get::<_, i64>(8)? != 0,
+            created_at: row.get(9)?,
+        })
+    })?;
+    rows.next().transpose()
+}
+
+pub fn create_department(
+    conn: &Connection,
+    name: &str,
+    description: &str,
+    color: &str,
+) -> Result<Department> {
+    let id = uid();
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO departments (id, name, description, color, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, name, description, color, now],
+    )?;
+    Ok(Department {
+        id,
+        name: name.to_string(),
+        description: description.to_string(),
+        color: color.to_string(),
+        agent_count: 0,
+        created_at: now,
+    })
+}
+
+pub fn create_agent(
+    conn: &Connection,
+    department_id: &str,
+    name: &str,
+    role: &str,
+    model: &str,
+    provider_id: Option<String>,
+    system_prompt: &str,
+) -> Result<Agent> {
+    let id = uid();
+    conn.execute(
+        "INSERT INTO agents (id, department_id, name, role, model, provider_id, system_prompt, is_active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+        params![id, department_id, name, role, model, provider_id, system_prompt, now_millis()],
+    )?;
+    get_agent(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
@@ -1369,6 +1612,43 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn departments_and_agents_persist_with_counts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        seed_agents_if_empty(&conn).unwrap();
+
+        let departments = list_departments(&conn).unwrap();
+        let design = departments
+            .iter()
+            .find(|d| d.name == "设计部")
+            .expect("design department should be seeded");
+        assert!(design.agent_count >= 3);
+
+        let agents = list_agents(&conn).unwrap();
+        assert!(agents
+            .iter()
+            .any(|a| a.department_id == design.id && a.name == "UI Designer"));
+
+        let created = create_agent(
+            &conn,
+            &design.id,
+            "New Designer",
+            "Design QA",
+            "openai",
+            None,
+            "Check visuals",
+        )
+        .unwrap();
+        assert_eq!(created.department_name, "设计部");
+        let after = list_departments(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == design.id)
+            .expect("design department should still exist");
+        assert_eq!(after.agent_count, design.agent_count + 1);
     }
 
     #[test]

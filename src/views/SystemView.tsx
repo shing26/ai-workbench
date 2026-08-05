@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Clipboard, CloudUpload, HeartPulse, Plus, Radio, RefreshCw, Terminal } from "lucide-react";
+import { Activity, AlertTriangle, Clipboard, CloudUpload, HeartPulse, Plus, Radio, RefreshCw, Terminal, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -26,6 +26,11 @@ export default function SystemView() {
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
+  const [departments, setDepartments] = useState<db.Department[]>([]);
+  const [agents, setAgents] = useState<db.Agent[]>([]);
+  const [agentDeptId, setAgentDeptId] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentRole, setAgentRole] = useState("");
 
   useEffect(() => {
     void db.getSyncStatus().then((status) => {
@@ -33,6 +38,28 @@ export default function SystemView() {
       setLastSyncedAt(status.lastSyncedAt);
     });
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all([db.listDepartments(), db.listAgents()]).then(([departmentList, agentList]) => {
+      if (disposed) return;
+      setDepartments(departmentList);
+      setAgents(agentList);
+      setAgentDeptId((current) => current || departmentList[0]?.id || "");
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const createAgentItem = async () => {
+    if (!agentDeptId || !agentName.trim()) return;
+    await db.createAgent(agentDeptId, agentName.trim(), agentRole.trim(), "openai", null, "");
+    setAgents(await db.listAgents());
+    setDepartments(await db.listDepartments());
+    setAgentName("");
+    setAgentRole("");
+  };
 
   const exportSync = async () => {
     const snapshot = await db.exportSyncSnapshot();
@@ -230,6 +257,75 @@ export default function SystemView() {
               <RefreshCw size={12} /> Import
             </button>
           </span>
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Agent directory" subtitle="部门与 Agent 数据模型" icon={Users} colSpan={12}>
+        <div className="grid gap-3 md:grid-cols-5">
+          {departments.map((d) => (
+            <div key={d.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] font-medium text-slate-300">{d.name}</span>
+                <span className="shrink-0 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-400">
+                  {d.agentCount}
+                </span>
+              </div>
+              <p className="mt-1 text-[10px] text-slate-500">{d.description}</p>
+              <div className="mt-2 space-y-1">
+                {agents
+                  .filter((a) => a.departmentId === d.id)
+                  .map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5 text-[10px]"
+                    >
+                      <span className="truncate text-slate-300">{a.name}</span>
+                      <span className="shrink-0 text-slate-600">{a.role}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <select
+            value={agentDeptId}
+            onChange={(e) => setAgentDeptId(e.target.value)}
+            aria-label="Agent department"
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-xs text-slate-300 outline-none"
+          >
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <input
+            value={agentName}
+            onChange={(e) => setAgentName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createAgentItem();
+            }}
+            placeholder="Agent name"
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={agentRole}
+            onChange={(e) => setAgentRole(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createAgentItem();
+            }}
+            placeholder="Role"
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <button
+            type="button"
+            onClick={() => void createAgentItem()}
+            aria-label="Add agent"
+            className="flex h-9 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-xs font-medium text-emerald-400 hover:bg-emerald-500/30"
+          >
+            <Plus size={14} /> Add agent
+          </button>
         </div>
       </BentoCard>
 

@@ -157,3 +157,34 @@ CREATE TABLE IF NOT EXISTS error_logs (
 ## 迁移
 
 启动时执行 `CREATE TABLE IF NOT EXISTS`，迁移脚本放在 Rust 后台初始化流程中。示例数据仅在各表为空时写入：`projects`、`tasks`、`thoughts`、`providers`、`sessions`、`habits`、`schedule_events`、`clipboard_history`、`error_logs` 独立判断，避免已有库跳过新表 seed，也不覆盖真实采集记录。
+
+## Sprint 23：Departments & Agents
+
+一个部门可以拥有多个 Agent，Agent 可选绑定 Provider。
+
+```sql
+CREATE TABLE IF NOT EXISTS departments (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    color TEXT DEFAULT 'emerald',
+    created_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    department_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT,
+    model TEXT DEFAULT 'openai',
+    provider_id TEXT,
+    system_prompt TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER,
+    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_department ON agents(department_id, is_active);
+```
+
+命令：`list_departments` / `list_agents` / `create_department` / `create_agent`。
