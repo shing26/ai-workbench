@@ -239,4 +239,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_prompt_versions_agent ON agent_prompt_versi
 - `index_vault_ex(vault_path, ignore_patterns)`：支持目录名（匹配任意层级）与 `**` / `*` glob；命中目录整体跳过。
 - `index_vault(vault_path)`：默认空 ignore，保持旧行为兼容。
 
-`start_vault_watch` 的初始全量索引仍使用空 ignore；watch 状态下的增量监听与 `knowledge_files` 查询不变。
+watch 状态下的增量监听 ignore 语义见 Sprint 36。
+
+## Sprint 36：Vault watch 遵守 ignore 列表
+
+watch 场景与全量扫描对齐 ignore 语义。新增 `start_vault_watch_ex(vault_path, ignore_patterns)`：启动时初始全量索引应用 ignore，后续增量事件经 `sync_vault_event` 先计算相对路径并执行 `should_ignore_path`，命中路径跳过 upsert/delete。
+
+`start_vault_watch(vault_path)` 保持空 ignore 兼容。`knowledge_files` 表结构不变，`vault-watch-update` 事件与前端 watch 状态协议不变。

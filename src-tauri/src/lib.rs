@@ -811,6 +811,28 @@ fn sync_vault_path(conn: &rusqlite::Connection, path: &Path) -> Result<bool, Str
     }
 }
 
+fn sync_vault_event(
+    conn: &rusqlite::Connection,
+    paths: &[std::path::PathBuf],
+    vault_path: &Path,
+    ignore_patterns: &[String],
+) -> bool {
+    let mut changed = false;
+    for path in paths {
+        let rel = path
+            .strip_prefix(vault_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if should_ignore_path(&rel, ignore_patterns) {
+            continue;
+        }
+        if let Ok(synced) = sync_vault_path(conn, path) {
+            changed |= synced;
+        }
+    }
+    changed
+}
+
 fn start_vault_watcher(
     vault_path: String,
     mut on_event: impl FnMut(&Event) + Send + 'static,
@@ -1356,12 +1378,12 @@ fn get_knowledge_index_status(
     db::knowledge_index_status(&conn).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn start_vault_watch(
+fn start_vault_watch_impl(
     app: tauri::AppHandle,
     state: State<'_, VaultWatchState>,
     db_state: State<'_, db::Db>,
     vault_path: String,
+    ignore_patterns: Vec<String>,
 ) -> Result<VaultWatchStatus, String> {
     let dir = Path::new(&vault_path);
     if !dir.is_dir() {
@@ -1378,9 +1400,10 @@ fn start_vault_watch(
     }
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        index_vault_files(&conn, &canonical_str, &[])?;
+        index_vault_files(&conn, &canonical_str, &ignore_patterns)?;
     }
     let app_clone = app.clone();
+    let canonical_for_events = canonical.clone();
     let on_event = move |event: &Event| {
         if !matches!(
             event.kind,
@@ -1394,12 +1417,8 @@ fn start_vault_watch(
         let Ok(conn) = db_state.0.lock() else {
             return;
         };
-        let mut changed = false;
-        for path in &event.paths {
-            if let Ok(synced) = sync_vault_path(&conn, path) {
-                changed |= synced;
-            }
-        }
+        let changed =
+            sync_vault_event(&conn, &event.paths, &canonical_for_events, &ignore_patterns);
         if changed {
             if let Ok(status) = vault_watch_status(&app_clone, &conn) {
                 let _ = app_clone.emit("vault-watch-update", status);
@@ -1412,6 +1431,27 @@ fn start_vault_watch(
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
     Ok(status)
+}
+
+#[tauri::command]
+fn start_vault_watch(
+    app: tauri::AppHandle,
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+    vault_path: String,
+) -> Result<VaultWatchStatus, String> {
+    start_vault_watch_impl(app, state, db_state, vault_path, Vec::new())
+}
+
+#[tauri::command]
+fn start_vault_watch_ex(
+    app: tauri::AppHandle,
+    state: State<'_, VaultWatchState>,
+    db_state: State<'_, db::Db>,
+    vault_path: String,
+    ignore_patterns: Vec<String>,
+) -> Result<VaultWatchStatus, String> {
+    start_vault_watch_impl(app, state, db_state, vault_path, ignore_patterns)
 }
 
 #[tauri::command]
@@ -2562,6 +2602,7 @@ pub fn run() {
             index_vault_ex,
             get_knowledge_index_status,
             start_vault_watch,
+            start_vault_watch_ex,
             stop_vault_watch,
             get_vault_watch_status,
             get_project_git_context,
@@ -2857,6 +2898,37 @@ mod tests {
         );
         assert!(removed, "watcher did not remove deleted markdown file");
         handle.stop();
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn vault_watch_event_respects_ignore_patterns() {
+        let temp = std::env::temp_dir().join(format!(
+            "aiwb-vault-watch-ignore-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(vault.join("node_modules")).unwrap();
+        std::fs::create_dir_all(vault.join("notes")).unwrap();
+        std::fs::write(vault.join("seed.md"), "# Seed\n\ninitial note").unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let patterns = vec!["node_modules".to_string()];
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns).unwrap();
+        assert_eq!(result.files, 1);
+        assert_eq!(result.ignored, 1);
+        let ignored_path = vault.join("node_modules").join("dep.md");
+        let indexed_path = vault.join("notes").join("new.md");
+        std::fs::write(&ignored_path, "# Dep\n\nignored").unwrap();
+        std::fs::write(&indexed_path, "# New\n\nindexed").unwrap();
+        let changed = sync_vault_event(&conn, &[ignored_path, indexed_path], &vault, &patterns);
+        assert!(changed);
+        let status = db::knowledge_index_status(&conn).unwrap();
+        assert_eq!(status.files, 2);
+        let ignored_search = db::search_thoughts(&conn, "ignored", 5).unwrap();
+        assert!(!ignored_search.iter().any(|r| r.content.contains("ignored")));
+        let indexed_search = db::search_thoughts(&conn, "indexed", 5).unwrap();
+        assert!(indexed_search.iter().any(|r| r.content.contains("indexed")));
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }
