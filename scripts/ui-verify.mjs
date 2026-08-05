@@ -564,6 +564,21 @@ try {
     throw new Error(`project git graph assertion failed: ${JSON.stringify(gitGraph)}`);
   }
   results.gitGraph = gitGraph;
+  results.rebaseApply = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-rebase-branch]');
+    if (!btn) return { ok: false, reason: "no rebase button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-rebase-result]')) break;
+      await sleep(100);
+    }
+    const text = document.querySelector('[data-rebase-result]')?.textContent ?? "";
+    return { ok: text.includes("Rebased"), text };
+  })()`);
+  if (!results.rebaseApply.ok) {
+    throw new Error(`Git rebase assertion failed: ${JSON.stringify(results.rebaseApply)}`);
+  }
   results.commitPrDraft = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = [...document.querySelectorAll("main button")].find(

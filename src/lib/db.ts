@@ -205,6 +205,15 @@ export type RemotePrResult = {
   branch: string;
 };
 
+export type GitRebaseResult = {
+  rebased: boolean;
+  conflict: boolean;
+  files: string[];
+  base: string;
+  branch: string;
+  head: string;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -1391,6 +1400,23 @@ export async function createRemotePr(
     title,
     branch: "develop",
   };
+}
+
+export async function rebaseBranch(path: string, base: string): Promise<GitRebaseResult> {
+  if (isTauri()) return invoke<GitRebaseResult>("rebase_branch", { path, baseBranch: base });
+  return {
+    rebased: true,
+    conflict: false,
+    files: [],
+    base,
+    branch: "feature/sprint-31",
+    head: `local-rebase-${makeId().slice(0, 8)}`,
+  };
+}
+
+export async function abortRebase(path: string): Promise<string> {
+  if (isTauri()) return invoke<string>("abort_rebase", { path });
+  return "Rebase aborted on feature/sprint-31";
 }
 
 export async function buildTeamSummary(contents: string[]): Promise<string> {
