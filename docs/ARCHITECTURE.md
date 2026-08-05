@@ -208,3 +208,9 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 - `start_vault_index` 命令在后台线程异步索引并返回 `runId`，通过 `vault-index-progress` 事件推送 `{ runId, path, done, total, files, ignored, concurrencyUsed, status }`，完成或错误时发送终态。
 - `index_vault_files_inner` 每写入 5 个文件或全部写完时调用进度回调；`index_vault_files` 保持同步兼容包装。
 - Knowledge Vault Index 显示进度条与完成状态，完成后刷新文件数、RAG 状态与目标统计；浏览器 fallback 用 3 步模拟进度。
+
+## Sprint 54：可取消 vault 索引任务
+
+- `VaultIndexState` 维护 cancelled runId 集合，`cancel_vault_index(run_id)` 命令幂等标记，后台线程每个文件前检查取消标记。
+- `index_vault_files_inner` 新增 `should_cancel` 回调，取消时返回 `Vault index cancelled`，`start_vault_index` 映射为 `status = cancelled` 终态并携带最近进度，完成后清理标记。
+- Knowledge 进度条运行中显示 Cancel 按钮，取消后显示 `Cancelled`；浏览器 fallback 用 Set 模拟取消，6 步分块推送进度。

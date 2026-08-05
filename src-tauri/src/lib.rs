@@ -140,6 +140,33 @@ struct VaultWatchState {
     active: std::sync::Mutex<Vec<ActiveVaultWatch>>,
 }
 
+#[derive(Default)]
+struct VaultIndexState {
+    cancelled: std::sync::Mutex<HashSet<String>>,
+}
+
+impl VaultIndexState {
+    fn mark(&self, run_id: &str) -> bool {
+        self.cancelled
+            .lock()
+            .map(|mut set| set.insert(run_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    fn is_cancelled(&self, run_id: &str) -> bool {
+        self.cancelled
+            .lock()
+            .map(|set| set.contains(run_id))
+            .unwrap_or(false)
+    }
+
+    fn clear(&self, run_id: &str) {
+        if let Ok(mut set) = self.cancelled.lock() {
+            set.remove(run_id);
+        }
+    }
+}
+
 struct ActiveVaultWatch {
     path: String,
     stop: Sender<()>,
@@ -173,6 +200,18 @@ fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
 
 fn clear_stream_cancel(app: &tauri::AppHandle, run_id: &str) {
     if let Some(state) = app.try_state::<StreamCancellation>() {
+        state.clear(run_id);
+    }
+}
+
+fn is_vault_index_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
+    app.try_state::<VaultIndexState>()
+        .map(|state| state.is_cancelled(run_id))
+        .unwrap_or(false)
+}
+
+fn clear_vault_index_cancel(app: &tauri::AppHandle, run_id: &str) {
+    if let Some(state) = app.try_state::<VaultIndexState>() {
         state.clear(run_id);
     }
 }
@@ -738,7 +777,7 @@ fn index_vault_files(
     ignore_patterns: &[String],
     concurrency: usize,
 ) -> Result<db::IndexResult, String> {
-    index_vault_files_inner(conn, vault_path, ignore_patterns, concurrency, None)
+    index_vault_files_inner(conn, vault_path, ignore_patterns, concurrency, None, None)
 }
 
 fn index_vault_files_inner(
@@ -747,6 +786,7 @@ fn index_vault_files_inner(
     ignore_patterns: &[String],
     concurrency: usize,
     mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Result<db::IndexResult, String> {
     let dir = Path::new(vault_path);
     if !dir.is_dir() {
@@ -791,7 +831,15 @@ fn index_vault_files_inner(
     };
     let mut indexed = 0i64;
     let file_count = files.len();
+    if file_count > 0 {
+        if let Some(callback) = on_progress.as_deref_mut() {
+            callback(0, file_count);
+        }
+    }
     for (path, title, tags, content) in files.iter() {
+        if should_cancel.map(|check| check()).unwrap_or(false) {
+            return Err("Vault index cancelled".into());
+        }
         db::upsert_knowledge_file(conn, path, title, tags, content, vault_path)
             .map_err(|e| e.to_string())?;
         indexed += 1;
@@ -1463,6 +1511,8 @@ fn start_vault_index(
     let app_clone = app.clone();
     let run_path = vault_path.clone();
     let thread_run_id = run_id.clone();
+    let latest = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize)));
+    let latest_clone = latest.clone();
     thread::Builder::new()
         .name("vault-index".to_string())
         .spawn(move || {
@@ -1473,6 +1523,9 @@ fn start_vault_index(
                 return;
             };
             let mut emit_progress = |done: usize, total: usize| {
+                if let Ok(mut slot) = latest_clone.lock() {
+                    *slot = (done, total);
+                }
                 let payload = IndexProgress {
                     run_id: thread_run_id.clone(),
                     path: run_path.clone(),
@@ -1485,13 +1538,18 @@ fn start_vault_index(
                 };
                 let _ = app_clone.emit("vault-index-progress", payload);
             };
+            let cancel_run_id = thread_run_id.clone();
+            let is_cancelled = || is_vault_index_cancelled(&app_clone, &cancel_run_id);
             let result = index_vault_files_inner(
                 &conn,
                 &run_path,
                 &ignore_patterns,
                 concurrency,
                 Some(&mut emit_progress),
+                Some(&is_cancelled),
             );
+            let cancelled = is_cancelled();
+            let (last_done, last_total) = latest.lock().map(|slot| *slot).unwrap_or((0, 0));
             let (status, done, total, files, ignored, concurrency_used) = match result {
                 Ok(index_result) => (
                     "done".to_string(),
@@ -1501,10 +1559,11 @@ fn start_vault_index(
                     index_result.ignored,
                     index_result.concurrency_used,
                 ),
+                Err(_) if cancelled => ("cancelled".to_string(), last_done, last_total, 0, 0, 0),
                 Err(error) => (format!("error: {}", error), 0, 0, 0, 0, 0),
             };
             let payload = IndexProgress {
-                run_id: thread_run_id,
+                run_id: thread_run_id.clone(),
                 path: run_path,
                 done,
                 total,
@@ -1514,9 +1573,15 @@ fn start_vault_index(
                 status,
             };
             let _ = app_clone.emit("vault-index-progress", payload);
+            clear_vault_index_cancel(&app_clone, &thread_run_id);
         })
         .map_err(|e| e.to_string())?;
     Ok(run_id)
+}
+
+#[tauri::command]
+fn cancel_vault_index(state: State<'_, VaultIndexState>, run_id: String) -> Result<bool, String> {
+    Ok(state.mark(&run_id))
 }
 
 #[tauri::command]
@@ -2942,6 +3007,7 @@ pub fn run() {
             app.manage(StreamCancellation::default());
             app.manage(ProviderHeartbeat::default());
             app.manage(VaultWatchState::default());
+            app.manage(VaultIndexState::default());
             restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
@@ -3017,6 +3083,7 @@ pub fn run() {
             index_vault,
             index_vault_ex,
             start_vault_index,
+            cancel_vault_index,
             get_knowledge_index_status,
             recommend_index_concurrency,
             list_vault_target_stats,
@@ -3318,6 +3385,7 @@ mod tests {
             &[],
             4,
             Some(&mut |done, total| calls.push((done, total))),
+            None,
         )
         .unwrap();
         assert_eq!(result.files, 3);
@@ -3325,6 +3393,37 @@ mod tests {
         assert_eq!(calls.last(), Some(&(3usize, 3usize)));
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn index_vault_files_stops_when_cancelled() {
+        let temp = std::env::temp_dir().join(format!("aiwb-vault-cancel-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        for name in ["a.md", "b.md", "c.md"] {
+            std::fs::write(vault.join(name), format!("# {}\n\n{}", name, name)).unwrap();
+        }
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let result =
+            index_vault_files_inner(&conn, vault.to_str().unwrap(), &[], 4, None, Some(&|| true));
+        let error = match result {
+            Ok(_) => panic!("expected cancellation"),
+            Err(error) => error,
+        };
+        assert!(error.contains("cancelled"));
+        assert_eq!(db::knowledge_index_status(&conn).unwrap().files, 0);
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn vault_index_cancel_state_marks_and_clears() {
+        let state = VaultIndexState::default();
+        assert!(state.mark("run-1"));
+        assert!(!state.mark("run-1"));
+        assert!(state.is_cancelled("run-1"));
+        state.clear("run-1");
+        assert!(!state.is_cancelled("run-1"));
     }
 
     #[test]

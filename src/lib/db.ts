@@ -1754,6 +1754,7 @@ export async function indexVault(
 }
 
 const vaultIndexProgressHandlers: ((progress: IndexProgress) => void)[] = [];
+const vaultIndexCancelled = new Set<string>();
 
 export async function startVaultIndex(
   vaultPath: string,
@@ -1768,21 +1769,43 @@ export async function startVaultIndex(
   let step = 0;
   const tick = () => {
     step += 1;
+    if (vaultIndexCancelled.has(runId)) {
+      const progress: IndexProgress = {
+        runId,
+        path: vaultPath,
+        done: 0,
+        total: 0,
+        files: 0,
+        ignored: 0,
+        concurrencyUsed: 0,
+        status: "cancelled",
+      };
+      for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
+      vaultIndexCancelled.delete(runId);
+      return;
+    }
     const progress: IndexProgress = {
       runId,
       path: vaultPath,
-      done: Math.min(result.files, Math.ceil((result.files * step) / 3)),
+      done: Math.min(result.files, Math.ceil((result.files * step) / 6)),
       total: result.files,
       files: result.files,
       ignored: result.ignored,
       concurrencyUsed: result.concurrencyUsed,
-      status: step >= 3 ? "done" : "running",
+      status: step >= 6 ? "done" : "running",
     };
     for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
-    if (step < 3) setTimeout(tick, 60);
+    if (step >= 6) vaultIndexCancelled.delete(runId);
+    if (step < 6) setTimeout(tick, 120);
   };
   setTimeout(tick, 30);
   return runId;
+}
+
+export async function cancelVaultIndex(runId: string): Promise<boolean> {
+  if (isTauri()) return invoke<boolean>("cancel_vault_index", { runId });
+  vaultIndexCancelled.add(runId);
+  return true;
 }
 
 export async function listenVaultIndexProgress(

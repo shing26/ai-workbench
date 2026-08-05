@@ -396,3 +396,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 
 ## Sprint 53：vault 索引进度事件
 
 无表结构变更。索引进度通过 Tauri Event 推送，`start_vault_index` 返回 `runId` 供前端追踪，不新增持久化字段。
+
+## Sprint 54：可取消 vault 索引任务
+
+无表结构变更。取消状态仅保存在运行期 `VaultIndexState` 内存集合中，随任务终态清理，不落库。

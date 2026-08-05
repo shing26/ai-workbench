@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 54
+
+### What went well?
+
+- 索引取消闭环补齐：`cancel_vault_index` 标记 runId，后台线程每个文件前检查，取消终态携带最近进度并清理标记，避免集合膨胀。
+- 前端 Cancel 按钮只在运行中显示，取消后显示 `Cancelled`；浏览器 fallback 用 Set 模拟取消语义，两条 lane 均可断言。
+- 验证覆盖：`cargo test --lib` 57/57，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `cancelIndex` 均为 `Cancelled`。
+
+### What went wrong?
+
+- fallback 3 步 60ms 模拟太快，UI 测试点击 Cancel 时进度已结束，改为 6 步 120ms 并让测试尽早点击后稳定通过。
+- 取消单测最初用 `unwrap_err` 触发 `IndexResult: Debug` 约束，改用 match 提取错误文案后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：结构化字段级合并、自定义审计日期范围、watch 事件类型细分、索引任务队列。
+- 后续扩展索引进度时，保留取消语义与 fallback 模拟的一致性。
+
 ## Sprint 53
 
 ### What went well?
