@@ -84,6 +84,7 @@ export type Provider = {
   name: string;
   baseUrl: string;
   apiKey: string;
+  model: string;
   isActive: boolean;
 };
 
@@ -638,9 +639,9 @@ function seedShape(): LocalShape {
       { id: makeId(), content: "RAG index stays pending in Sprint 1.", tags: "#work,#life", type: "doc", createdAt: now - 2000 },
     ],
     providers: [
-      { id: makeId(), name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "OPENAI_API_KEY", isActive: true },
-      { id: makeId(), name: "Ollama", baseUrl: "http://localhost:11434", apiKey: "", isActive: true },
-      { id: makeId(), name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "OPENROUTER_API_KEY", isActive: false },
+      { id: makeId(), name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "OPENAI_API_KEY", model: "", isActive: true },
+      { id: makeId(), name: "Ollama", baseUrl: "http://localhost:11434", apiKey: "", model: "", isActive: true },
+      { id: makeId(), name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "OPENROUTER_API_KEY", model: "", isActive: false },
     ],
     promptVersions: [],
     departments: [
@@ -784,10 +785,10 @@ export async function listProviders(): Promise<Provider[]> {
   return isTauri() ? invoke<Provider[]>("list_providers") : readLocal().providers;
 }
 
-export async function createProvider(name: string, baseUrl: string, apiKey: string): Promise<Provider> {
-  if (isTauri()) return invoke<Provider>("create_provider", { name, baseUrl, apiKey });
+export async function createProvider(name: string, baseUrl: string, apiKey: string, model = ""): Promise<Provider> {
+  if (isTauri()) return invoke<Provider>("create_provider", { name, baseUrl, apiKey, model });
   const shape = readLocal();
-  const provider: Provider = { id: makeId(), name, baseUrl, apiKey, isActive: false };
+  const provider: Provider = { id: makeId(), name, baseUrl, apiKey, model, isActive: false };
   shape.providers.unshift(provider);
   writeLocal(shape);
   return provider;
@@ -801,6 +802,17 @@ export async function setProviderActive(id: string, isActive: boolean): Promise<
   const shape = readLocal();
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.isActive = isActive;
+  writeLocal(shape);
+}
+
+export async function updateProviderModel(id: string, model: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("update_provider_model", { id, model });
+    return;
+  }
+  const shape = readLocal();
+  const provider = shape.providers.find((p) => p.id === id);
+  if (provider) provider.model = model;
   writeLocal(shape);
 }
 
@@ -3384,6 +3396,134 @@ export type StreamChunk = {
 
 const localCancelledRuns = new Set<string>();
 
+function isOllamaProvider(name: string, baseUrl: string): boolean {
+  return name.toLowerCase().includes("ollama") || baseUrl.toLowerCase().includes("11434");
+}
+
+function canRealStream(provider: Provider): boolean {
+  if (!provider.model?.trim() || !/^https?:\/\//i.test(provider.baseUrl)) return false;
+  return true;
+}
+
+async function streamProviderLive(
+  provider: Provider,
+  args: { providerIds: string[]; messages: { role: string; content: string }[]; moa: boolean; runId: string },
+): Promise<void> {
+  const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
+  const base = provider.baseUrl.replace(/\/+$/, "");
+  const endpoint = isOllama ? `${base}/api/chat` : `${base}/chat/completions`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (!isOllama && provider.apiKey.trim()) {
+    headers.Authorization = `Bearer ${provider.apiKey.trim()}`;
+  }
+  const controller = new AbortController();
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: provider.model.trim(),
+      messages: args.messages,
+      stream: true,
+    }),
+    signal: controller.signal,
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Provider ${response.status}: ${body.slice(0, 200) || response.statusText}`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Provider response has no body");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  const flush = async (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (isOllama) {
+      const json = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
+      if (json.message?.content) {
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: json.message.content,
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+      }
+      if (json.done === true) finished = true;
+      return;
+    }
+    if (!trimmed.startsWith("data:")) return;
+    const data = trimmed.slice(5).trim();
+    if (data === "[DONE]") {
+      finished = true;
+      return;
+    }
+    const json = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
+    const delta = json.choices?.[0]?.delta?.content ?? "";
+    if (delta) {
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta,
+        done: false,
+        error: null,
+        cancelled: false,
+      });
+    }
+  };
+  try {
+    for (;;) {
+      if (localCancelledRuns.has(args.runId)) {
+        controller.abort();
+        break;
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) await flush(line);
+      if (finished) break;
+    }
+    if (buffer.trim()) await flush(buffer);
+  } catch (err) {
+    if (localCancelledRuns.has(args.runId)) {
+      localCancelledRuns.delete(args.runId);
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: "",
+        done: true,
+        error: null,
+        cancelled: true,
+      });
+      return;
+    }
+    throw err;
+  }
+  const wasCancelled = localCancelledRuns.has(args.runId);
+  localCancelledRuns.delete(args.runId);
+  if (wasCancelled) {
+    emitLocalStreamChunk({
+      id: args.runId,
+      delta: "",
+      done: true,
+      error: null,
+      cancelled: true,
+    });
+    return;
+  }
+  if (!finished) {
+    throw new Error(isOllama ? "Ollama stream ended without done: true" : "AI stream ended without [DONE]");
+  }
+  emitLocalStreamChunk({
+    id: args.runId,
+    delta: "",
+    done: true,
+    error: null,
+    cancelled: false,
+  });
+}
+
 export async function sendAiMessageStream(args: {
   providerIds: string[];
   messages: { role: string; content: string }[];
@@ -3412,6 +3552,27 @@ export async function sendAiMessageStream(args: {
         cancelled: false,
       });
     }, 120);
+    return;
+  }
+
+  const shape = readLocal();
+  const provider =
+    shape.providers.find((p) => p.isActive && args.providerIds.includes(p.id)) ??
+    shape.providers.find((p) => args.providerIds.includes(p.id)) ??
+    shape.providers.find((p) => p.isActive) ??
+    null;
+  if (provider && canRealStream(provider)) {
+    try {
+      await streamProviderLive(provider, args);
+    } catch (err) {
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: "",
+        done: true,
+        error: err instanceof Error ? err.message : String(err),
+        cancelled: false,
+      });
+    }
     return;
   }
 

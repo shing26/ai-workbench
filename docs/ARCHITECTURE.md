@@ -482,3 +482,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `knowledge_files` 新增 `embedding TEXT`：新库建列，旧库 `migrate_knowledge_embedding` 幂等补列；`upsert_knowledge_file` 写 JSON 向量，迁移已加入 `init_connection`。
 - Knowledge 搜索结果新增 `data-cross-file-hits` 文件选择器（来源文件数 >=2 时显示），chips 逐文件过滤，结果行带 `data-rag-file` / `data-rag-vector-score`，底部 `data-vector-status`。
 - `verify:ui` / `verify:preview` 新增 `vectorRagCrossFile` lane；Rust 单测覆盖确定性、余弦排序、迁移补列与向量评分。
+
+## Sprint 95：Provider 模型配置与端到端流式联调
+
+- `providers` 新增 `model TEXT DEFAULT ''`：新库 SCHEMA 建列，旧库 `migrate_provider_model` 幂等补列；新增 `update_provider_model` Tauri 命令，`create_provider` 命令接受可选 `model`。
+- System Providers 卡片支持模型编辑：`data-provider-model-input` 回车 / 失焦保存，`data-provider-model` 徽标显示 `live` / `fallback`；新建表单新增 `data-provider-model-new`。
+- Rust 流式链路按 `provider.model` 请求：`stream_ai_message` / `run_provider_stream_smoke_test` / `call_provider` 空值回退 `gpt-4o-mini` / `qwen2.5:3b`；`stream_ollama` / `chat_ollama` 改用 `provider.base_url`。
+- 浏览器 `sendAiMessageStream` 新增真实流式：配置 model 的 http(s) Provider 用 `fetch` 消费 OpenAI-compatible SSE 或 Ollama NDJSON，支持取消与错误回显；未配置 model 保持模拟流。
+- `verify:ui` / `verify:preview` 新增 `providerLiveStream` lane；Rust 单测覆盖 model 迁移 / 持久化与请求体模型名。

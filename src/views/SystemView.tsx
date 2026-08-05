@@ -44,12 +44,14 @@ export default function SystemView() {
   const providers = useWorkbenchStore((s) => s.providers);
   const addProvider = useWorkbenchStore((s) => s.addProvider);
   const toggleProvider = useWorkbenchStore((s) => s.toggleProvider);
+  const setProviderModel = useWorkbenchStore((s) => s.setProviderModel);
   const clipboard = useWorkbenchStore((s) => s.clipboard);
   const logs = useWorkbenchStore((s) => s.logs);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
@@ -729,10 +731,11 @@ export default function SystemView() {
 
   const create = async () => {
     if (!name.trim() || !baseUrl.trim()) return;
-    await addProvider(name.trim(), baseUrl.trim(), apiKey.trim());
+    await addProvider(name.trim(), baseUrl.trim(), apiKey.trim(), model.trim());
     setName("");
     setBaseUrl("");
     setApiKey("");
+    setModel("");
   };
 
   const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
@@ -797,6 +800,26 @@ export default function SystemView() {
                   </button>
                 </div>
                 <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <input
+                    data-provider-model-input
+                    defaultValue={p.model}
+                    onBlur={(e) => void setProviderModel(p.id, e.target.value.trim())}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    }}
+                    placeholder="model"
+                    className="h-6 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[10px] text-slate-300 outline-none placeholder:text-slate-600 focus:border-emerald-500/40"
+                  />
+                  <span
+                    data-provider-model={p.model}
+                    className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
+                      p.model ? "bg-emerald-500/10 text-emerald-300" : "bg-white/[0.03] text-slate-500"
+                    }`}
+                  >
+                    {p.model ? "live" : "fallback"}
+                  </span>
+                </div>
                 <div className="mt-1 flex items-center gap-1.5 text-[10px]">
                   <span className={`h-1.5 w-1.5 rounded-full ${state?.ok ? "bg-emerald-400" : "bg-red-400"}`} />
                   <span className={state?.ok ? "text-emerald-400" : "text-red-300"}>{statusLabel}</span>
@@ -855,6 +878,13 @@ export default function SystemView() {
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder="API key ref"
+            className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            data-provider-model-new
+            placeholder="Model"
             className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
           <button

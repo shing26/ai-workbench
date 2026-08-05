@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -5264,6 +5265,100 @@ try {
     throw new Error(`AI Studio stream error mapping assertion failed: ${JSON.stringify(streamError)}`);
   }
   results.streamError = streamError;
+
+  let liveServer = null;
+  try {
+    liveServer = http.createServer((req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === "/v1/chat/completions") {
+        let raw = "";
+        req.on("data", (chunk) => (raw += chunk));
+        req.on("end", () => {
+          const parsed = JSON.parse(raw || "{}");
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Live provider "}}]}\n\n`);
+          res.write(`data: {"choices":[{"delta":{"content":"stream ok "}}]}\n\n`);
+          res.write(`data: {"choices":[{"delta":{"content":"model=${parsed.model}"}}]}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => liveServer.listen(0, "127.0.0.1", resolve));
+    const livePort = liveServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "live-provider",
+        name: "Live Mock",
+        baseUrl: "http://127.0.0.1:${livePort}/v1",
+        apiKey: "test-key",
+        model: "mock-gpt",
+        isActive: true,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await send("Page.reload", { ignoreCache: true });
+    await waitForApp();
+    const providerLiveStream = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing after reload" };
+      dock.click();
+      await sleep(350);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input after reload" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "live stream check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(100);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let liveSeen = false;
+      let modelSeen = false;
+      for (let i = 0; i < 30; i++) {
+        const body = document.body.innerText;
+        liveSeen = body.includes("Live provider stream ok");
+        modelSeen = body.includes("model=mock-gpt");
+        if (liveSeen && modelSeen) break;
+        await sleep(100);
+      }
+      await sleep(250);
+      return {
+        ok: liveSeen && modelSeen,
+        liveSeen,
+        modelSeen,
+        busyGone: !document.querySelector(".thinking-dot") && !document.querySelector(".stream-caret"),
+      };
+    })()`);
+    if (!providerLiveStream.ok || !providerLiveStream.busyGone) {
+      throw new Error(`Provider live stream assertion failed: ${JSON.stringify(providerLiveStream)}`);
+    }
+    results.providerLiveStream = providerLiveStream;
+  } finally {
+    if (liveServer) liveServer.close();
+  }
 
   console.log(JSON.stringify(results, null, 2));
 } finally {

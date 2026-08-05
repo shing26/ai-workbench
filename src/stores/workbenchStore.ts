@@ -25,8 +25,9 @@ type WorkbenchState = {
   setTaskToday: (id: string, isToday: boolean) => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   addThought: (content: string, tags: string, type: db.ThoughtType) => Promise<void>;
-  addProvider: (name: string, baseUrl: string, apiKey: string) => Promise<void>;
+  addProvider: (name: string, baseUrl: string, apiKey: string, model?: string) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
+  setProviderModel: (id: string, model: string) => Promise<void>;
   addHabit: (name: string, weekGoal: number, color: db.Habit["color"]) => Promise<void>;
   toggleHabit: (id: string) => Promise<void>;
   addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
@@ -87,12 +88,16 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.createThought(content, tags, type);
     set({ thoughts: await db.listThoughts() });
   },
-  addProvider: async (name, baseUrl, apiKey) => {
-    await db.createProvider(name, baseUrl, apiKey);
+  addProvider: async (name, baseUrl, apiKey, model = "") => {
+    await db.createProvider(name, baseUrl, apiKey, model);
     set({ providers: await db.listProviders() });
   },
   toggleProvider: async (id, isActive) => {
     await db.setProviderActive(id, isActive);
+    set({ providers: await db.listProviders() });
+  },
+  setProviderModel: async (id, model) => {
+    await db.updateProviderModel(id, model);
     set({ providers: await db.listProviders() });
   },
   addHabit: async (name, weekGoal, color) => {
