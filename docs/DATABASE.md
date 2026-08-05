@@ -589,3 +589,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, i
 ## Sprint 85：Git 暂存 / 未暂存分组与提交前 lint 门禁
 
 无表结构变更。`change_groups` 与 lint 门禁结果均为运行时计算：前者来自 `git status --short` 的 XY 前缀，后者来自提交前对工作区文件的读取，不新增持久化字段或表。
+
+## Sprint 86：AI 复盘结果一键保存为知识笔记
+
+无表结构变更。复盘笔记复用既有 `thoughts` 表（Rust 侧）或 `ai-workbench:db:v1` 的 `thoughts` 数组（浏览器 fallback），新增记录为 `type='note'`、`tags='#daily,#recap'`，不新增字段或表。

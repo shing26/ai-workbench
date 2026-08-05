@@ -1,4 +1,4 @@
-import { CalendarDays, Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, GitCompare, GitFork, History, Pencil, Plus, RefreshCw, Save, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { buildDailyRecapPrompt } from "../lib/dailyRecap";
@@ -24,6 +24,7 @@ export default function AIStudioView() {
   const tasks = useWorkbenchStore((s) => s.tasks);
   const habits = useWorkbenchStore((s) => s.habits);
   const scheduleEvents = useWorkbenchStore((s) => s.scheduleEvents);
+  const addThought = useWorkbenchStore((s) => s.addThought);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: "Ready. Ask anything or switch to MOA for multi-model consensus." },
@@ -67,6 +68,9 @@ export default function AIStudioView() {
   const [customLabel, setCustomLabel] = useState("");
   const [customCategory, setCustomCategory] = useState<"life" | "work">("work");
   const [customText, setCustomText] = useState("");
+  const [recapReady, setRecapReady] = useState(false);
+  const [recapSaving, setRecapSaving] = useState(false);
+  const [recapSaveResult, setRecapSaveResult] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
@@ -293,6 +297,8 @@ export default function AIStudioView() {
     setStreamError(null);
     setInput("");
     setRagHits([]);
+    setRecapReady(false);
+    setRecapSaveResult(null);
   };
 
   const selectSession = async (id: string) => {
@@ -567,6 +573,8 @@ export default function AIStudioView() {
 
   const sendText = async (text: string) => {
     if (!text.trim() || busy) return;
+    setRecapReady(false);
+    setRecapSaveResult(null);
     setBusy(true);
     let hits: db.RagSearchResult[] = [];
     if (useRag) {
@@ -604,8 +612,35 @@ export default function AIStudioView() {
     await sendText(input.trim());
   };
 
-  const runDailyRecap = () => {
-    void sendText(buildDailyRecapPrompt(tasks, habits, scheduleEvents));
+  const runDailyRecap = async () => {
+    if (busy) return;
+    await sendText(buildDailyRecapPrompt(tasks, habits, scheduleEvents));
+    setRecapReady(true);
+  };
+
+  const saveRecapNote = async () => {
+    if (!recapReady || recapSaving) return;
+    const reply = [...messages]
+      .reverse()
+      .find(
+        (m) =>
+          m.role === "assistant" &&
+          m.content &&
+          !m.content.startsWith("__stream__") &&
+          !m.content.includes("Ready. Ask anything"),
+      )?.content;
+    if (!reply) return;
+    setRecapSaving(true);
+    setRecapSaveResult(null);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      await addThought(`# 今日复盘 ${today}\n\n${reply}`, "#daily,#recap", "note");
+      setRecapSaveResult(`Saved recap note (${today})`);
+    } catch (error) {
+      setRecapSaveResult(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRecapSaving(false);
+    }
   };
 
   const startEdit = (message: Message) => {
@@ -1225,6 +1260,24 @@ export default function AIStudioView() {
             <CalendarDays size={10} />
             今日复盘
           </button>
+          <button
+            type="button"
+            data-ai-recap-save
+            onClick={() => void saveRecapNote()}
+            disabled={!recapReady || recapSaving}
+            className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-500 transition-colors hover:border-blue-500/30 hover:bg-blue-500/10 hover:text-blue-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Save size={10} />
+            {recapSaving ? "Saving" : "保存复盘"}
+          </button>
+          {recapSaveResult && (
+            <span
+              data-ai-recap-save-result
+              className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400"
+            >
+              {recapSaveResult}
+            </span>
+          )}
           <button
             type="button"
             data-quick-prompt-manage
