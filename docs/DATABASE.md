@@ -593,3 +593,25 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, i
 ## Sprint 86：AI 复盘结果一键保存为知识笔记
 
 无表结构变更。复盘笔记复用既有 `thoughts` 表（Rust 侧）或 `ai-workbench:db:v1` 的 `thoughts` 数组（浏览器 fallback），新增记录为 `type='note'`、`tags='#daily,#recap'`，不新增字段或表。
+
+## Sprint 87：自定义 Quick Prompt 与使用次数多端同步
+
+```sql
+CREATE TABLE IF NOT EXISTS quick_prompts (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    category TEXT NOT NULL,
+    text TEXT NOT NULL,
+    custom INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quick_prompt_usage (
+    id TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- 新表由 `SCHEMA` 自动创建，无旧库迁移；浏览器 fallback 继续使用 `ai-workbench:quick-prompts:v1` / `ai-workbench:quick-prompt-usage:v1`。
+- `quick_prompt_usage.id` 覆盖内置与自定义 prompt；`record_quick_prompt_usage` 以 `ON CONFLICT(id) DO UPDATE SET count = count + 1` 累加，同步合并取两端较大 count。

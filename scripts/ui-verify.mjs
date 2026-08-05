@@ -540,6 +540,104 @@ try {
       `Quick prompt usage persistence assertion failed: ${JSON.stringify(results.quickPromptUsagePersist)}`,
     );
   }
+
+  await clickDock("System");
+  results.quickPromptSync = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const remote = {
+      deviceId: "device-sync-quick",
+      exportedAt: Date.now() + 1000,
+      clipboard: [],
+      logs: [],
+      quickPrompts: [
+        {
+          id: "sync-quick-custom",
+          label: "Sync quick",
+          category: "work",
+          text: "sprint 87 sync quick prompt",
+          custom: true,
+          updatedAt: Date.now() + 1000,
+          createdAt: Date.now() + 1000,
+        },
+      ],
+      quickPromptUsage: [
+        { id: "sync-quick-custom", count: 2, updatedAt: Date.now() + 1000 },
+        { id: "daily-recap", count: 5, updatedAt: Date.now() + 1000 },
+      ],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(remote));
+    document.querySelector('button[aria-label="Import sync snapshot"]')?.click();
+    let imported = false;
+    for (let i = 0; i < 20; i++) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+      const usage = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+      imported =
+        stored.some((p) => p.id === "sync-quick-custom") &&
+        usage["sync-quick-custom"] === 2 &&
+        usage["daily-recap"] === 5;
+      if (imported) break;
+      await sleep(100);
+    }
+    return { ok: imported, imported };
+  })()`);
+  if (!results.quickPromptSync.ok) {
+    throw new Error(`Quick prompt sync merge assertion failed: ${JSON.stringify(results.quickPromptSync)}`);
+  }
+  await clickDock("AI Studio");
+  results.quickPromptSyncVisible = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom")) break;
+      await sleep(100);
+    }
+    const order = chips.map((el) => el.getAttribute("data-quick-prompt"));
+    const syncChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom");
+    const dailyChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "daily-recap");
+    const ok =
+      !!syncChip &&
+      order[0] === "daily-recap" &&
+      dailyChip?.getAttribute("data-quick-prompt-usage") === "5" &&
+      syncChip.getAttribute("data-quick-prompt-usage") === "2";
+    return {
+      ok,
+      order: order.slice(0, 5),
+      dailyUsage: dailyChip?.getAttribute("data-quick-prompt-usage") ?? "",
+      syncUsage: syncChip?.getAttribute("data-quick-prompt-usage") ?? "",
+    };
+  })()`);
+  if (!results.quickPromptSyncVisible.ok) {
+    throw new Error(
+      `Quick prompt sync visibility assertion failed: ${JSON.stringify(results.quickPromptSyncVisible)}`,
+    );
+  }
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDockFast("AI Studio");
+  results.quickPromptSyncPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const usage = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom") &&
+      stored.some((p) => p.id === "sync-quick-custom") &&
+      usage["sync-quick-custom"] === 2 &&
+      usage["daily-recap"] === 5;
+    return { ok, stored, usage };
+  })()`);
+  if (!results.quickPromptSyncPersist.ok) {
+    throw new Error(
+      `Quick prompt sync persistence assertion failed: ${JSON.stringify(results.quickPromptSyncPersist)}`,
+    );
+  }
+
   results.aiDailyRecap = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector("[data-ai-daily-recap]");

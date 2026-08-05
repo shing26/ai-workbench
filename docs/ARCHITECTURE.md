@@ -419,3 +419,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 保存逻辑取最近一条非占位 assistant 回复，组装为 `# 今日复盘 YYYY-MM-DD\n\n回复`，通过 store `addThought(..., "#daily,#recap", "note")` 写入既有 thoughts 链路；成功回显 `data-ai-recap-save-result`，失败回显错误，保存期间防重复点击。
 - 保存后 store 刷新 `thoughts`，Knowledge Thought Inbox 立即可见新笔记，RAG 文档数同步更新。
 - `verify:ui` / `verify:preview` 新增 `aiRecapSave` / `aiRecapKnowledgeVisible` lane，断言 localStorage 内容（tags / type）与 Knowledge 视图可见性。
+
+## Sprint 87：自定义 Quick Prompt 与使用次数多端同步
+
+- Rust 新增 `quick_prompts` / `quick_prompt_usage` 表与 `QuickPrompt` / `QuickPromptUsageEntry` 模型；新增 Tauri 命令 `list_quick_prompts` / `add_custom_quick_prompt` / `delete_custom_quick_prompt` / `list_quick_prompt_usage` / `record_quick_prompt_usage`。
+- `SyncSnapshot` 增加 `quickPrompts` / `quickPromptUsage`；`merge_sync_snapshot` 按 `updatedAt` 合并 prompt、按 max count 合并 usage，`quick_prompt` 冲突存两端完整 JSON，`resolve_conflict` / union / structured 均支持该 kind。
+- `db.ts` 新增 `listQuickPrompts` / `listCustomQuickPrompts` / `loadQuickPromptsByUsage` / `getQuickPromptUsage` / `recordQuickPromptUsage` / `addCustomQuickPrompt` / `deleteCustomQuickPrompt` 异步 API；AIStudioView 迁移到 `db.*`，浏览器 fallback 沿用 `ai-workbench:quick-prompts:v1` / `ai-workbench:quick-prompt-usage:v1`。
+- `verify:ui` / `verify:preview` 新增 `quickPromptSync` / `quickPromptSyncVisible` / `quickPromptSyncPersist` lane；Rust 单测覆盖同步合并与冲突仲裁。

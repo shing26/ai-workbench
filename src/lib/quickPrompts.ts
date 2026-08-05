@@ -1,8 +1,11 @@
 export type QuickPrompt = {
   id: string;
   label: string;
-  category: "life" | "work";
+  category: string;
   text: string;
+  custom?: boolean;
+  updatedAt?: number;
+  createdAt?: number;
 };
 
 export type CustomQuickPrompt = QuickPrompt & {
@@ -52,7 +55,7 @@ export const QUICK_PROMPTS: QuickPrompt[] = [
 ];
 
 export function isCustomQuickPrompt(prompt: QuickPrompt): prompt is CustomQuickPrompt {
-  return "custom" in prompt;
+  return prompt.custom === true;
 }
 
 export function loadQuickPrompts(): QuickPrompt[] {
@@ -111,6 +114,8 @@ export function addCustomQuickPrompt(
     category,
     text,
     custom: true,
+    updatedAt: Date.now(),
+    createdAt: Date.now(),
   };
   localStorage.setItem(
     QUICK_PROMPT_LS_KEY,

@@ -2,16 +2,6 @@ import { CalendarDays, Check, GitCompare, GitFork, History, Pencil, Plus, Refres
 import { useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import { buildDailyRecapPrompt } from "../lib/dailyRecap";
-import {
-  addCustomQuickPrompt,
-  deleteCustomQuickPrompt,
-  getQuickPromptUsage,
-  listCustomQuickPrompts,
-  loadQuickPromptsByUsage,
-  recordQuickPromptUsage,
-  type CustomQuickPrompt,
-  type QuickPrompt,
-} from "../lib/quickPrompts";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import type { InspectorSection } from "../stores/workbenchStore";
 import ModelBadge from "../components/ui/ModelBadge";
@@ -57,13 +47,9 @@ export default function AIStudioView() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const [prompts, setPrompts] = useState<QuickPrompt[]>(() => loadQuickPromptsByUsage());
-  const [usageCounts, setUsageCounts] = useState<Record<string, number>>(() =>
-    getQuickPromptUsage(),
-  );
-  const [customPrompts, setCustomPrompts] = useState<CustomQuickPrompt[]>(() =>
-    listCustomQuickPrompts(),
-  );
+  const [prompts, setPrompts] = useState<db.QuickPrompt[]>([]);
+  const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
+  const [customPrompts, setCustomPrompts] = useState<db.CustomQuickPrompt[]>([]);
   const [manageOpen, setManageOpen] = useState(false);
   const [customLabel, setCustomLabel] = useState("");
   const [customCategory, setCustomCategory] = useState<"life" | "work">("work");
@@ -87,23 +73,28 @@ export default function AIStudioView() {
     : [];
   const selectedDepartment = departments.find((d) => d.id === teamDeptId) ?? null;
 
-  const refreshQuickPrompts = () => {
-    setPrompts(loadQuickPromptsByUsage());
-    setUsageCounts(getQuickPromptUsage());
-    setCustomPrompts(listCustomQuickPrompts());
+  const refreshQuickPrompts = async () => {
+    const [loadedPrompts, usage, custom] = await Promise.all([
+      db.loadQuickPromptsByUsage(),
+      db.getQuickPromptUsage(),
+      db.listCustomQuickPrompts(),
+    ]);
+    setPrompts(loadedPrompts);
+    setUsageCounts(usage);
+    setCustomPrompts(custom);
   };
 
-  const addCustom = () => {
+  const addCustom = async () => {
     if (!customLabel.trim() || !customText.trim()) return;
-    addCustomQuickPrompt(customLabel.trim(), customCategory, customText.trim());
-    refreshQuickPrompts();
+    await db.addCustomQuickPrompt(customLabel.trim(), customCategory, customText.trim());
+    await refreshQuickPrompts();
     setCustomLabel("");
     setCustomText("");
   };
 
-  const removeCustom = (id: string) => {
-    deleteCustomQuickPrompt(id);
-    refreshQuickPrompts();
+  const removeCustom = async (id: string) => {
+    await db.deleteCustomQuickPrompt(id);
+    await refreshQuickPrompts();
   };
 
   const setMode = (mode: "single" | "team" | "moa" | "auto") => {
@@ -111,6 +102,23 @@ export default function AIStudioView() {
     setMoa(mode === "moa");
     setAutoRoute(mode === "auto");
   };
+
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all([
+      db.loadQuickPromptsByUsage(),
+      db.getQuickPromptUsage(),
+      db.listCustomQuickPrompts(),
+    ]).then(([loadedPrompts, usage, custom]) => {
+      if (disposed) return;
+      setPrompts(loadedPrompts);
+      setUsageCounts(usage);
+      setCustomPrompts(custom);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -1234,11 +1242,12 @@ export default function AIStudioView() {
               data-quick-prompt-category={prompt.category}
               data-quick-prompt-usage={usageCounts[prompt.id] ?? 0}
               onClick={() => {
-                recordQuickPromptUsage(prompt.id);
-                setUsageCounts(getQuickPromptUsage());
-                setPrompts(loadQuickPromptsByUsage());
-                setInput(prompt.text);
-                composerRef.current?.focus();
+                void (async () => {
+                  await db.recordQuickPromptUsage(prompt.id);
+                  setInput(prompt.text);
+                  composerRef.current?.focus();
+                  await refreshQuickPrompts();
+                })();
               }}
               className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-300"
             >
@@ -1320,7 +1329,7 @@ export default function AIStudioView() {
               <button
                 type="button"
                 data-quick-prompt-add
-                onClick={addCustom}
+                onClick={() => void addCustom()}
                 className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/20 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/30"
               >
                 <Plus size={11} /> Add
@@ -1338,7 +1347,7 @@ export default function AIStudioView() {
                       type="button"
                       data-quick-prompt-custom-delete={prompt.id}
                       aria-label={`Delete ${prompt.label}`}
-                      onClick={() => removeCustom(prompt.id)}
+                      onClick={() => void removeCustom(prompt.id)}
                       className="text-slate-600 hover:text-rose-400"
                     >
                       <Trash2 size={10} />
