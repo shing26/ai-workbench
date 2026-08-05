@@ -653,3 +653,14 @@ ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;
 ## Sprint 93：UI 动效残留补全
 
 无表结构变更。Project 轮播是前端视图状态（`orbit` / `fan` 模式、当前索引、autoplay 开关均不持久化）；Material 设置保存在前端 `ai-workbench:material-settings:v1`，只改 CSS 变量，不新增 SQLite 表或字段。
+
+## Sprint 94：本地向量 RAG
+
+```sql
+-- Sprint 94 建表后，旧库由 migrate_knowledge_embedding 补充该列
+ALTER TABLE knowledge_files ADD COLUMN embedding TEXT DEFAULT '';
+```
+
+- 新库的 `knowledge_files` 建表语句已直接包含 `embedding TEXT DEFAULT ''`；`migrate_knowledge_embedding` 按列存在性幂等补列并把 `NULL` 回写为空串，已加入 `init_connection` 迁移链。
+- `upsert_knowledge_file` 在写入文档内容时同步生成 256 维确定性向量并序列化为 JSON 存入 `embedding`；`search_thoughts` 读取该列，为空时回退按内容即时计算。
+- 向量不参与同步快照：`SyncSnapshot` 结构与协议不变，跨设备仍只同步文档内容，检索端各自生成等价 embedding。

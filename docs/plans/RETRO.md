@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 94
+
+### What went well?
+
+- 本地确定性向量嵌入上线：Rust 与 TS 镜像实现 256 维 hash 向量（fnv1a + Unicode token/char gram），`search_thoughts` 升级为 BM25 + 1.2 * 余弦的混合评分，结果新增 `vector_score`。
+- `knowledge_files` 新增 `embedding TEXT`：`migrate_knowledge_embedding` 幂等补列，`upsert_knowledge_file` 写入 JSON 向量，`RagIndexStatus` 返回 `vectorIndexed`；浏览器 fallback 同构。
+- Knowledge 搜索结果新增跨文件命中选择器：`data-cross-file-hits` chips 逐文件过滤，结果带 `data-rag-file` / `data-rag-vector-score`，底部 `data-vector-status` 显示真实状态。
+- `verify:ui` / `verify:preview` 新增 `vectorRagCrossFile` lane，dev 与生产构建全绿；Rust 106 个单测通过，clippy 零告警。
+
+### What went wrong?
+
+- 新 Rust 测试只建了 `knowledge_files` 表，`search_thoughts` 查询 `thoughts` 时报 no such table；补建 thoughts 表后通过。
+- `visibleThoughts` 是 `Thought | RagSearchResult` 联合类型，直接访问 `t.vectorScore` 触发 TS2339；改为 `"vectorScore" in t` 窄化后通过。
+- 六元组文档类型触发 clippy type-complexity；重构为 `SearchDoc` 结构体后清零。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、复杂 Webhook 触发器 / 消息队列式投递、前端 ESLint/Prettier + husky/lint-staged。
+- 本地向量后续可接真实 Embedding 模型、向量分片 / 近似索引，并继续留在 Backlog。
+- 保留 `vectorRagCrossFile` lane，改动检索或 Knowledge UI 时重跑 `verify:ui`。
+
 ## Sprint 93
 
 ### What went well?

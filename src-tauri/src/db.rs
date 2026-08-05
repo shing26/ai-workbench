@@ -128,7 +128,8 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
     tags TEXT,
     content TEXT NOT NULL,
     vault_path TEXT NOT NULL DEFAULT '',
-    indexed_at INTEGER
+    indexed_at INTEGER,
+    embedding TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_files_path ON knowledge_files(path);
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -583,6 +584,7 @@ pub struct RagSearchResult {
     #[serde(rename = "type")]
     pub kind: String,
     pub score: f64,
+    pub vector_score: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -591,6 +593,7 @@ pub struct RagIndexStatus {
     pub documents: i64,
     pub indexed: bool,
     pub last_indexed_at: i64,
+    pub vector_indexed: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -847,6 +850,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_watch_targets(&conn)?;
     migrate_vault_watch_event_stats(&conn)?;
     migrate_knowledge_vault_path(&conn)?;
+    migrate_knowledge_embedding(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
@@ -899,6 +903,17 @@ fn migrate_knowledge_vault_path(conn: &Connection) -> Result<()> {
             "ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';",
         )?;
     }
+    Ok(())
+}
+
+fn migrate_knowledge_embedding(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "knowledge_files", "embedding")? {
+        conn.execute_batch("ALTER TABLE knowledge_files ADD COLUMN embedding TEXT DEFAULT '';")?;
+    }
+    conn.execute(
+        "UPDATE knowledge_files SET embedding = '' WHERE embedding IS NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -3399,6 +3414,75 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+const EMBED_DIM: usize = 256;
+const FNV_OFFSET: u32 = 2166136261;
+const FNV_PRIME: u32 = 16777619;
+
+fn fnv1a(bytes: &[u8], seed: u32) -> u32 {
+    let mut hash = seed;
+    for byte in bytes {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn embed_text(text: &str) -> Vec<f64> {
+    let lower = text.to_lowercase();
+    let chars: Vec<char> = lower.chars().filter(|c| c.is_alphanumeric()).collect();
+    let mut features = std::collections::BTreeSet::new();
+    for word in tokenize(text) {
+        features.insert(word);
+    }
+    for width in 1..=4usize {
+        for window in chars.windows(width) {
+            features.insert(window.iter().collect::<String>());
+        }
+    }
+    let mut vector = vec![0.0f64; EMBED_DIM];
+    for feature in features {
+        let bytes = feature.as_bytes();
+        let bucket = (fnv1a(bytes, FNV_OFFSET) as usize) % EMBED_DIM;
+        let sign = if fnv1a(bytes, FNV_PRIME) & 1 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
+        vector[bucket] += sign;
+    }
+    let norm = vector.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if norm > 0.0 {
+        for value in &mut vector {
+            *value /= norm;
+        }
+    }
+    vector
+}
+
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0;
+    let mut norm_a = 0.0;
+    let mut norm_b = 0.0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom > 0.0 {
+        dot / denom
+    } else {
+        0.0
+    }
+}
+
+fn serialize_embedding(vector: &[f64]) -> String {
+    serde_json::to_string(vector).unwrap_or_else(|_| "[]".to_string())
+}
+
 pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
     let documents: i64 = conn.query_row("SELECT COUNT(*) FROM thoughts", [], |row| row.get(0))?;
     let files: i64 =
@@ -3413,6 +3497,7 @@ pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
         documents: documents + files,
         indexed: documents + files > 0,
         last_indexed_at: last.max(file_last).unwrap_or(0),
+        vector_indexed: documents + files > 0,
     })
 }
 
@@ -3424,16 +3509,18 @@ pub fn upsert_knowledge_file(
     content: &str,
     vault_path: &str,
 ) -> Result<()> {
+    let embedding = serialize_embedding(&embed_text(content));
     conn.execute(
-        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at, embedding)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(path) DO UPDATE SET
            title = excluded.title,
            tags = excluded.tags,
            content = excluded.content,
            vault_path = excluded.vault_path,
-           indexed_at = excluded.indexed_at",
-        params![uid(), path, title, tags, content, vault_path, now_millis()],
+           indexed_at = excluded.indexed_at,
+           embedding = excluded.embedding",
+        params![uid(), path, title, tags, content, vault_path, now_millis(), embedding],
     )?;
     Ok(())
 }
@@ -3715,6 +3802,15 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
     if query_tokens.is_empty() {
         return Ok(Vec::new());
     }
+    let query_embedding = embed_text(query);
+    struct SearchDoc {
+        id: String,
+        content: String,
+        tags: String,
+        kind: String,
+        tokens: Vec<String>,
+        embedding: Vec<f64>,
+    }
     let mut stmt = conn.prepare("SELECT id, content, tags, type FROM thoughts")?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -3724,60 +3820,82 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
             row.get::<_, String>(3)?,
         ))
     })?;
-    let mut docs: Vec<(String, String, String, String, Vec<String>)> = rows
+    let mut docs: Vec<SearchDoc> = rows
         .filter_map(Result::ok)
         .map(|(id, content, tags, kind)| {
             let tokens = tokenize(&content);
-            (id, content, tags, kind, tokens)
+            let embedding = embed_text(&content);
+            SearchDoc {
+                id,
+                content,
+                tags,
+                kind,
+                tokens,
+                embedding,
+            }
         })
         .collect();
-    let mut file_stmt = conn.prepare("SELECT id, content, tags FROM knowledge_files")?;
+    let mut file_stmt = conn.prepare("SELECT id, content, tags, embedding FROM knowledge_files")?;
     let file_rows = file_stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     for file in file_rows.flatten() {
-        let (id, content, tags) = file;
+        let (id, content, tags, embedding_raw) = file;
         let tokens = tokenize(&content);
-        docs.push((id, content, tags, "doc".to_string(), tokens));
+        let embedding = if embedding_raw.is_empty() {
+            embed_text(&content)
+        } else {
+            serde_json::from_str(&embedding_raw).unwrap_or_else(|_| embed_text(&content))
+        };
+        docs.push(SearchDoc {
+            id,
+            content,
+            tags,
+            kind: "doc".to_string(),
+            tokens,
+            embedding,
+        });
     }
     if docs.is_empty() {
         return Ok(Vec::new());
     }
     let doc_count = docs.len() as f64;
-    let avg_len = docs.iter().map(|d| d.3.len() as f64).sum::<f64>() / doc_count;
+    let avg_len = docs.iter().map(|d| d.tokens.len() as f64).sum::<f64>() / doc_count;
 
     let mut scored: Vec<(f64, RagSearchResult)> = Vec::new();
-    for (id, content, tags, kind, tokens) in &docs {
+    for doc in &docs {
         let doc_freq: f64 = docs
             .iter()
-            .filter(|d| d.4.iter().any(|t| query_tokens.contains(t)))
+            .filter(|d| d.tokens.iter().any(|t| query_tokens.contains(t)))
             .count() as f64;
         let idf = ((doc_count - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
-        let mut score = 0.0;
+        let mut bm25 = 0.0;
         for term in &query_tokens {
-            let tf = tokens.iter().filter(|t| *t == term).count() as f64;
+            let tf = doc.tokens.iter().filter(|t| *t == term).count() as f64;
             if tf > 0.0 {
-                let norm = tokens.len() as f64;
-                score +=
+                let norm = doc.tokens.len() as f64;
+                bm25 +=
                     idf * (tf * 1.5) / (tf + 1.5 * (1.0 - 0.75 + 0.75 * (norm / avg_len.max(1.0))));
             }
         }
-        if score > 0.0 {
-            scored.push((
+        let vector_score = cosine_similarity(&query_embedding, &doc.embedding);
+        let score = bm25 + 1.2 * vector_score;
+        scored.push((
+            score,
+            RagSearchResult {
+                id: doc.id.clone(),
+                content: doc.content.clone(),
+                tags: doc.tags.clone(),
+                kind: doc.kind.clone(),
                 score,
-                RagSearchResult {
-                    id: id.clone(),
-                    content: content.clone(),
-                    tags: tags.clone(),
-                    kind: kind.clone(),
-                    score,
-                },
-            ));
-        }
+                vector_score,
+            },
+        ));
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     Ok(scored
@@ -5816,5 +5934,70 @@ mod tests {
             .unwrap();
         assert_eq!(secret, "");
         assert_eq!(retries, 1);
+    }
+
+    #[test]
+    fn embed_text_is_deterministic_and_cosine_ranks_similar() {
+        let a = embed_text("Rust SQLite migration plan with tasks and sprints");
+        let b = embed_text("Rust SQLite migration plan with tasks and sprints");
+        let c = embed_text("Dinner recipe for tomato pasta");
+        let same = cosine_similarity(&a, &b);
+        let different = cosine_similarity(&a, &c);
+        assert!((same - 1.0).abs() < 1e-9);
+        assert!(different >= 0.0 && different < same);
+        let empty = embed_text("");
+        let norm = empty.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(norm <= 1e-9);
+    }
+
+    #[test]
+    fn knowledge_embedding_migration_adds_column_and_search_reports_vector() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE knowledge_files (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT,
+                tags TEXT,
+                content TEXT NOT NULL,
+                vault_path TEXT NOT NULL DEFAULT '',
+                indexed_at INTEGER
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE thoughts (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT 'inbox',
+                created_at INTEGER
+            );",
+        )
+        .unwrap();
+        migrate_knowledge_embedding(&conn).unwrap();
+        assert!(column_exists(&conn, "knowledge_files", "embedding").unwrap());
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/notes.md",
+            "Notes",
+            "#work",
+            "Local RAG vector search",
+            "C:/vault",
+        )
+        .unwrap();
+        let embedding: String = conn
+            .query_row(
+                "SELECT embedding FROM knowledge_files WHERE path = 'C:/vault/notes.md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!embedding.is_empty());
+        let results = search_thoughts(&conn, "local vector search", 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results[0].vector_score > 0.0);
+        let status = rag_index_status(&conn).unwrap();
+        assert!(status.vector_indexed);
     }
 }

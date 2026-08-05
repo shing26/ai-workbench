@@ -10,6 +10,7 @@ import {
   type CustomQuickPrompt,
   type QuickPrompt,
 } from "./quickPrompts";
+import { cosineSimilarity, embedText, hybridRagScore } from "./embed";
 
 export type { CustomQuickPrompt, QuickPrompt };
 
@@ -421,12 +422,14 @@ export type RagSearchResult = {
   tags: string;
   type: ThoughtType;
   score: number;
+  vectorScore?: number;
 };
 
 export type RagIndexStatus = {
   documents: number;
   indexed: boolean;
   lastIndexedAt: number;
+  vectorIndexed?: boolean;
 };
 
 export type KnowledgeIndexStatus = {
@@ -2453,6 +2456,25 @@ function tokenizeSearch(text: string): string[] {
   );
 }
 
+function bm25Score(
+  queryTokens: string[],
+  docTokens: string[],
+  docCount: number,
+  avgDocLength: number,
+  docsWithHits: number,
+): number {
+  const idf = Math.log((docCount - docsWithHits + 0.5) / (docsWithHits + 0.5) + 1.0);
+  let score = 0;
+  for (const term of queryTokens) {
+    const tf = docTokens.filter((token) => token === term).length;
+    if (tf > 0) {
+      const norm = Math.max(1, docTokens.length);
+      score += idf * ((tf * 1.5) / (tf + 1.5 * (1 - 0.75 + 0.75 * (norm / Math.max(1, avgDocLength)))));
+    }
+  }
+  return score;
+}
+
 type VaultFileRecord = {
   path: string;
   title: string;
@@ -3300,11 +3322,22 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
       type: "doc" as ThoughtType,
     })),
   ];
+  const docCount = docs.length;
+  const avgDocLength =
+    docs.reduce((sum, doc) => sum + tokenizeSearch(doc.content).length, 0) / Math.max(1, docCount);
+  const docsWithHits = docs.filter((doc) =>
+    tokenizeSearch(doc.content).some((token) => tokens.includes(token)),
+  ).length;
+  const queryEmbedding = embedText(query);
   const scored = docs
     .map((t) => {
       const hay = tokenizeSearch(t.content);
-      const score = tokens.reduce((sum, term) => sum + (hay.includes(term) ? 1 : 0), 0);
-      return { id: t.id, content: t.content, tags: t.tags, type: t.type, score };
+      const vectorScore = cosineSimilarity(queryEmbedding, embedText(t.content));
+      const score = hybridRagScore(
+        bm25Score(tokens, hay, docCount, avgDocLength, docsWithHits),
+        vectorScore,
+      );
+      return { id: t.id, content: t.content, tags: t.tags, type: t.type, score, vectorScore };
     })
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -3321,6 +3354,7 @@ export async function getRagIndexStatus(): Promise<RagIndexStatus> {
     documents: total,
     indexed: total > 0,
     lastIndexedAt: shape.thoughts[0]?.createdAt ?? (vaultFiles.length ? Date.now() : 0),
+    vectorIndexed: total > 0,
   };
 }
 
