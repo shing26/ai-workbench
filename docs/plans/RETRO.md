@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 69
+
+### What went well?
+
+- 文档健康从“手动 Clean”升级为“自动定时巡检”：Knowledge Document status 新增 Auto toggle 与 5m / 15m / 30m / 1h / 6h 间隔，启用后立即执行一次并按间隔调用 `cleanup_knowledge_files`。
+- 配置、上次运行时间与结果持久化到 `ai-workbench:doc-health-auto:v1`，刷新后恢复；每次巡检后自动刷新文档列表、vault 统计与 RAG 状态。
+- 验证覆盖：`cargo test --lib` 75/75，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `docHealthAuto` 断言 seed 1 missing + 1 stale 后启用即 removed=1 / reindexed=1，`docHealthAutoPersist` 断言刷新后仍为 on 且结果保留。
+
+### What went wrong?
+
+- 自动巡检采用前端定时器，窗口关闭或应用退出后不会继续巡检；这是与 Auto sync 一致的应用内自动执行模型，后续如需后台常驻再迁移到 Rust 侧。
+- 首次实现把 `intervalMs` 存成分钟数误读为秒，统一为 `intervalMs` 毫秒后与 Auto sync 语义一致。
+
+### Action Items
+
+- 下一 Sprint 候选：git 看板按时间范围过滤与提交人维度、索引队列优先级与失败重试策略。
+- 自动巡检运行历史与通知提醒继续保留在 Backlog。
+
 ## Sprint 68
 
 ### What went well?

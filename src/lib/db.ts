@@ -388,6 +388,13 @@ export type KnowledgeCleanupResult = {
   failed: number;
 };
 
+export type DocHealthAutoConfig = {
+  enabled: boolean;
+  intervalMs: number;
+  lastRunAt: number;
+  lastResult: KnowledgeCleanupResult | null;
+};
+
 export type VaultWatchConfig = {
   path: string;
   ignorePatterns: string[];
@@ -434,6 +441,7 @@ const VAULT_LS_KEY = "ai-workbench:vault:v1";
 const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
 const VAULT_WATCH_TARGETS_LS_KEY = "ai-workbench:vault-watch-targets:v1";
 const VAULT_WATCH_EVENTS_LS_KEY = "ai-workbench:vault-watch-events:v1";
+const DOC_HEALTH_AUTO_LS_KEY = "ai-workbench:doc-health-auto:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -2332,6 +2340,28 @@ export async function cleanupKnowledgeFiles(
     reindexed: reindexed.length,
     failed: 0,
   };
+}
+
+export async function getDocHealthAutoConfig(): Promise<DocHealthAutoConfig> {
+  try {
+    const raw = localStorage.getItem(DOC_HEALTH_AUTO_LS_KEY);
+    if (raw) return JSON.parse(raw) as DocHealthAutoConfig;
+  } catch {
+    // fall through to defaults
+  }
+  return {
+    enabled: false,
+    intervalMs: 60 * 60 * 1000,
+    lastRunAt: 0,
+    lastResult: null,
+  };
+}
+
+export async function setDocHealthAutoConfig(
+  config: DocHealthAutoConfig,
+): Promise<DocHealthAutoConfig> {
+  localStorage.setItem(DOC_HEALTH_AUTO_LS_KEY, JSON.stringify(config));
+  return config;
 }
 
 export async function indexVault(

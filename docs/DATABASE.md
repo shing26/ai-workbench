@@ -496,3 +496,7 @@ ALTER TABLE error_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT '';
 
 - `migrate_error_log_device` 按列存在性幂等补列，旧库升级不丢记录；`report_frontend_error` 与 `merge_error_log` 写入 / 更新 device_id。
 - `error_log_summary` 在内存中按 `device_id` 组合过滤，不新增额外表；浏览器 fallback 在 `ai-workbench:db:v1` 的 logs 上执行同一过滤。
+
+## Sprint 69：文档健康自动定时巡检
+
+无表结构变更。自动巡检配置（开关、间隔、上次运行时间与结果）仅保存在前端 `ai-workbench:doc-health-auto:v1`；巡检复用 `cleanup_knowledge_files` 命令，不新增持久化字段。

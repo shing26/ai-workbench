@@ -1707,6 +1707,133 @@ try {
   }
   results.knowledgeDocClean = knowledgeDocClean;
 
+  const docHealthAutoSeed = await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Auto Stale.md",
+          title: "Auto Stale",
+          tags: "#work",
+          content: "old",
+          indexedAt: startOfToday - 7_200_000,
+          stale: true,
+        },
+        {
+          path: "C:/vault\\\\Auto Missing.md",
+          title: "Auto Missing",
+          tags: "#life",
+          content: "gone",
+          indexedAt: startOfToday - 86_400_000,
+          exists: false,
+        },
+        {
+          path: "D:/vault\\\\Auto Notes.md",
+          title: "Auto Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 3_600_000,
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "ai-workbench:doc-health-auto:v1",
+      JSON.stringify({ enabled: false, intervalMs: 60000, lastRunAt: 0, lastResult: null }),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const docHealthAuto = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (docs.length >= 3) break;
+      await sleep(100);
+    }
+    const autoBtn = () => document.querySelector("[data-doc-health-auto]");
+    for (let i = 0; i < 20 && !autoBtn(); i++) {
+      await sleep(100);
+    }
+    const initialAuto = autoBtn()?.getAttribute("data-doc-health-auto") ?? "missing";
+    autoBtn()?.click();
+    let enabled = false;
+    let resultText = "";
+    let lastRun = 0;
+    let docsAfter = 0;
+    for (let i = 0; i < 40; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      enabled = autoBtn()?.getAttribute("data-doc-health-auto") === "on";
+      resultText = document.querySelector("[data-doc-health-result]")?.textContent ?? "";
+      lastRun = Number(
+        document.querySelector("[data-doc-health-last-run]")?.getAttribute("data-doc-health-last-run") ?? 0,
+      );
+      docsAfter = docs.length;
+      if (enabled && resultText.includes("removed 1 reindexed 1") && docsAfter === 2 && lastRun > 0) {
+        break;
+      }
+      await sleep(100);
+    }
+    let stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem("ai-workbench:doc-health-auto:v1") ?? "null");
+    } catch {}
+    const ok =
+      initialAuto === "off" &&
+      enabled &&
+      resultText.includes("removed 1 reindexed 1") &&
+      docsAfter === 2 &&
+      lastRun > 0 &&
+      stored?.enabled === true &&
+      stored?.lastResult?.removed === 1 &&
+      stored?.lastResult?.reindexed === 1;
+    return {
+      ok,
+      initialAuto,
+      enabled,
+      resultText,
+      docsAfter,
+      lastRun,
+      stored,
+    };
+  })()`);
+  if (!docHealthAuto.ok) {
+    throw new Error(`Doc health auto inspect assertion failed: ${JSON.stringify(docHealthAuto)}`);
+  }
+  results.docHealthAuto = docHealthAuto;
+
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const docHealthAutoPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let auto = "";
+    let docs = 0;
+    for (let i = 0; i < 30; i++) {
+      auto = document.querySelector("[data-doc-health-auto]")?.getAttribute("data-doc-health-auto") ?? "";
+      docs = document.querySelectorAll("[data-knowledge-doc]").length;
+      if (auto === "on" && docs === 2) break;
+      await sleep(100);
+    }
+    const resultText = document.querySelector("[data-doc-health-result]")?.textContent ?? "";
+    return {
+      ok: auto === "on" && docs === 2 && resultText.includes("removed 1 reindexed 1"),
+      auto,
+      docs,
+      resultText,
+    };
+  })()`);
+  if (!docHealthAutoPersist.ok) {
+    throw new Error(
+      `Doc health auto persist assertion failed: ${JSON.stringify(docHealthAutoPersist)}`,
+    );
+  }
+  results.docHealthAutoPersist = docHealthAutoPersist;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

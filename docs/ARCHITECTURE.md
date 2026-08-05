@@ -307,3 +307,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `error_logs` 新增 `device_id`（默认空串），`migrate_error_log_device` 幂等补列；`ErrorLog` / `report_frontend_error` / `list_error_logs` / `merge_error_log` 全程携带设备归属，同步快照合并后仍可区分日志来源设备。
 - `get_error_log_summary` 新增 `device_id?`，与 source / severity 组合过滤；System Error logs 卡片新增来源下拉与设备下拉，趋势图、总数徽标与明细列表共用同一过滤条件。
 - 前端 `reportFrontendError` 自动读取当前 sync device id 并随命令写入；浏览器 fallback 在 localStorage 上镜像同一过滤语义。
+
+## Sprint 69：文档健康自动定时巡检
+
+- `db.ts` 新增 `DocHealthAutoConfig { enabled, intervalMs, lastRunAt, lastResult }` 与 `getDocHealthAutoConfig` / `setDocHealthAutoConfig`，配置持久化到 `ai-workbench:doc-health-auto:v1`。
+- Knowledge Document status 新增 Auto toggle 与 5m / 15m / 30m / 1h / 6h 间隔；启用后立即执行一次 `cleanup_knowledge_files`，之后按间隔自动巡检，停止时清理定时器。
+- 每次巡检刷新文档列表、vault 统计与 RAG 状态，并展示上次运行时间与 `removed / reindexed` 结果；刷新后恢复开关、间隔与上次结果。

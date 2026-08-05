@@ -29,6 +29,9 @@ export default function KnowledgeView() {
   const [knowledgeDocs, setKnowledgeDocs] = useState<db.KnowledgeFileRecord[]>([]);
   const [docVaultFilter, setDocVaultFilter] = useState("all");
   const [cleanResult, setCleanResult] = useState<db.KnowledgeCleanupResult | null>(null);
+  const [docAutoConfig, setDocAutoConfig] = useState<db.DocHealthAutoConfig | null>(null);
+  const [docAutoInterval, setDocAutoInterval] = useState("60");
+  const [docAutoRunning, setDocAutoRunning] = useState(false);
   const [expandedTimeline, setExpandedTimeline] = useState<string | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
@@ -62,6 +65,18 @@ export default function KnowledgeView() {
     void db.listVaultTargetStats().then(setTargetStats);
     void loadDocs();
     void loadWatchEvents();
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void db.getDocHealthAutoConfig().then((config) => {
+      if (disposed) return;
+      setDocAutoConfig(config);
+      setDocAutoInterval(String(Math.max(1, Math.round(config.intervalMs / 60_000))));
+    });
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   const loadWatchEvents = async (vaultPath?: string) => {
@@ -242,6 +257,69 @@ export default function KnowledgeView() {
     void db.getKnowledgeIndexStatus().then(setVaultStatus);
     void db.getRagIndexStatus().then(setIndexStatus);
   };
+
+  const runDocHealthAutoInspect = async (config: db.DocHealthAutoConfig) => {
+    setDocAutoRunning(true);
+    try {
+      const result = await db.cleanupKnowledgeFiles(
+        docVaultFilter === "all" ? undefined : docVaultFilter,
+      );
+      const next: db.DocHealthAutoConfig = {
+        ...config,
+        lastRunAt: Date.now(),
+        lastResult: result,
+      };
+      setDocAutoConfig(next);
+      await db.setDocHealthAutoConfig(next);
+      await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+      await loadTargets();
+      setVaultStatus(await db.getKnowledgeIndexStatus());
+      setIndexStatus(await db.getRagIndexStatus());
+    } finally {
+      setDocAutoRunning(false);
+    }
+  };
+
+  const toggleDocAuto = async () => {
+    const current = docAutoConfig ?? {
+      enabled: false,
+      intervalMs: 60 * 60 * 1000,
+      lastRunAt: 0,
+      lastResult: null,
+    };
+    const next: db.DocHealthAutoConfig = {
+      ...current,
+      enabled: !current.enabled,
+      intervalMs: Number(docAutoInterval) * 60 * 1000,
+    };
+    setDocAutoConfig(next);
+    await db.setDocHealthAutoConfig(next);
+    if (next.enabled) {
+      await runDocHealthAutoInspect(next);
+    }
+  };
+
+  const changeDocAutoInterval = (value: string) => {
+    setDocAutoInterval(value);
+    if (!docAutoConfig?.enabled) return;
+    const next: db.DocHealthAutoConfig = {
+      ...docAutoConfig,
+      intervalMs: Number(value) * 60 * 1000,
+    };
+    setDocAutoConfig(next);
+    void db.setDocHealthAutoConfig(next);
+  };
+
+  useEffect(() => {
+    if (!docAutoConfig?.enabled) return;
+    const intervalMs = Math.max(docAutoConfig.intervalMs, 10_000);
+    const timer = window.setInterval(() => {
+      void db.getDocHealthAutoConfig().then((latest) => {
+        if (latest.enabled) void runDocHealthAutoInspect(latest);
+      });
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [docAutoConfig?.enabled, docAutoConfig?.intervalMs, docVaultFilter]);
 
   const toggleWatch = async () => {
     const currentWatching =
@@ -679,7 +757,7 @@ export default function KnowledgeView() {
           data-knowledge-docs
           className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-3"
         >
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <span className="text-[10px] font-medium text-slate-300">
               Document status
             </span>
@@ -701,7 +779,34 @@ export default function KnowledgeView() {
             >
               {staleDocCount} stale
             </span>
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                aria-label="Toggle auto doc health inspect"
+                data-doc-health-auto={docAutoConfig?.enabled ? "on" : "off"}
+                onClick={() => void toggleDocAuto()}
+                className={`flex h-6 items-center gap-1 rounded-md border px-2 text-[9px] ${
+                  docAutoConfig?.enabled
+                    ? "border-emerald-500/25 bg-emerald-500/15 text-emerald-300"
+                    : "border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]"
+                }`}
+              >
+                <Clock size={11} className={docAutoRunning ? "animate-spin" : ""} />
+                Auto {docAutoConfig?.enabled ? "on" : "off"}
+              </button>
+              <select
+                data-doc-health-auto-interval
+                value={docAutoInterval}
+                onChange={(e) => changeDocAutoInterval(e.target.value)}
+                aria-label="Auto doc health interval"
+                className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-400 outline-none"
+              >
+                <option value="5">5m</option>
+                <option value="15">15m</option>
+                <option value="30">30m</option>
+                <option value="60">1h</option>
+                <option value="360">6h</option>
+              </select>
               <select
                 data-knowledge-doc-filter
                 value={docVaultFilter}
@@ -730,6 +835,25 @@ export default function KnowledgeView() {
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
                 >
                   removed {cleanResult.removed} reindexed {cleanResult.reindexed}
+                </span>
+              )}
+              {docAutoConfig && docAutoConfig.lastRunAt > 0 && (
+                <span
+                  data-doc-health-last-run={docAutoConfig.lastRunAt}
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
+                >
+                  {new Date(docAutoConfig.lastRunAt).toLocaleTimeString("zh-CN", {
+                    hour12: false,
+                  })}
+                </span>
+              )}
+              {docAutoConfig?.lastResult && (
+                <span
+                  data-doc-health-result={`removed ${docAutoConfig.lastResult.removed} reindexed ${docAutoConfig.lastResult.reindexed}`}
+                  className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300"
+                >
+                  removed {docAutoConfig.lastResult.removed} reindexed{" "}
+                  {docAutoConfig.lastResult.reindexed}
                 </span>
               )}
             </div>
