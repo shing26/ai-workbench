@@ -1,4 +1,4 @@
-import { Copy, FolderKanban, GitBranch, Plus } from "lucide-react";
+import { Check, Copy, ExternalLink, FolderKanban, GitBranch, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -17,6 +17,10 @@ export default function ProjectsView() {
   const [path, setPath] = useState("");
   const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
   const [drafts, setDrafts] = useState<Record<string, db.CommitPrDraft>>({});
+  const [commitResults, setCommitResults] = useState<Record<string, db.GitCommitResult>>({});
+  const [prResults, setPrResults] = useState<Record<string, db.RemotePrResult>>({});
+  const [commitErrors, setCommitErrors] = useState<Record<string, string>>({});
+  const [prErrors, setPrErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let disposed = false;
@@ -51,6 +55,46 @@ export default function ProjectsView() {
   const generateDraft = async (project: db.Project) => {
     const draft = await db.generateCommitPrDraft(project.path ?? "", project.name);
     setDrafts((prev) => ({ ...prev, [project.id]: draft }));
+  };
+
+  const applyDraft = async (project: db.Project) => {
+    const draft = drafts[project.id];
+    if (!draft) return;
+    try {
+      const result = await db.applyCommit(project.path ?? "", draft.commitMessage);
+      setCommitResults((prev) => ({ ...prev, [project.id]: result }));
+      setCommitErrors((prev) => {
+        const next = { ...prev };
+        delete next[project.id];
+        return next;
+      });
+      const ctx = await db.getProjectGitContext(project.path ?? "");
+      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
+    } catch (error) {
+      setCommitErrors((prev) => ({
+        ...prev,
+        [project.id]: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
+
+  const createPr = async (project: db.Project) => {
+    const draft = drafts[project.id];
+    if (!draft) return;
+    try {
+      const result = await db.createRemotePr(project.path ?? "", draft.prTitle, draft.prBody);
+      setPrResults((prev) => ({ ...prev, [project.id]: result }));
+      setPrErrors((prev) => {
+        const next = { ...prev };
+        delete next[project.id];
+        return next;
+      });
+    } catch (error) {
+      setPrErrors((prev) => ({
+        ...prev,
+        [project.id]: error instanceof Error ? error.message : String(error),
+      }));
+    }
   };
 
   return (
@@ -154,6 +198,60 @@ export default function ProjectsView() {
                   <Copy size={9} /> Copy PR
                 </button>
               </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  aria-label="Apply commit"
+                  data-apply-commit
+                  onClick={() => void applyDraft(p)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                >
+                  <Check size={9} /> Commit changes
+                </button>
+                <button
+                  type="button"
+                  aria-label="Create remote PR"
+                  data-create-pr
+                  onClick={() => void createPr(p)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-blue-500/15 px-1.5 text-[9px] text-[#7FB4FF] hover:bg-blue-500/25"
+                >
+                  <ExternalLink size={9} /> Create PR
+                </button>
+              </div>
+              {commitResults[p.id] && (
+                <div
+                  data-commit-result
+                  className="mt-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/[0.06] px-1.5 py-1 text-[9px] text-emerald-300/90"
+                >
+                  {commitResults[p.id].committed
+                    ? `Committed ${commitResults[p.id].hash} on ${commitResults[p.id].branch}`
+                    : `Nothing to commit on ${commitResults[p.id].branch}`}
+                </div>
+              )}
+              {commitErrors[p.id] && (
+                <div data-commit-error className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90">
+                  {commitErrors[p.id]}
+                </div>
+              )}
+              {prResults[p.id] && (
+                <div
+                  data-pr-result
+                  className="mt-1.5 truncate rounded-md border border-blue-500/20 bg-blue-500/[0.06] px-1.5 py-1 text-[9px] text-[#7FB4FF]"
+                >
+                  {prResults[p.id].url ? (
+                    <a href={prResults[p.id].url ?? undefined} target="_blank" rel="noreferrer">
+                      {prResults[p.id].url}
+                    </a>
+                  ) : (
+                    `PR created on ${prResults[p.id].branch}`
+                  )}
+                </div>
+              )}
+              {prErrors[p.id] && (
+                <div data-pr-error className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90">
+                  {prErrors[p.id]}
+                </div>
+              )}
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2">

@@ -1648,6 +1648,24 @@ struct CommitPrDraft {
     changes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitResult {
+    committed: bool,
+    hash: String,
+    branch: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePrResult {
+    created: bool,
+    url: Option<String>,
+    title: String,
+    branch: String,
+}
+
 fn commit_type_for(changes: &[String], branch: &str) -> &'static str {
     let has_docs = changes
         .iter()
@@ -1750,6 +1768,134 @@ fn generate_commit_pr_draft(path: String, project_name: String) -> Result<Commit
         pr_body,
         changes: ctx.changes,
     })
+}
+
+fn run_git(path: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("git command failed: {}", e))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("git {} failed", args.first().copied().unwrap_or("command"))
+        } else {
+            stderr
+        })
+    }
+}
+
+fn git_branch(path: &str) -> String {
+    run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|branch| !branch.is_empty() && branch != "HEAD")
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[tauri::command]
+fn apply_commit(path: String, message: String) -> Result<GitCommitResult, String> {
+    if message.trim().is_empty() {
+        return Err("Commit message is empty".into());
+    }
+    run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    run_git(&path, &["add", "-A"])?;
+    let output = Command::new("git")
+        .args(["commit", "-m", &message])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("git commit failed: {}", e))?;
+    let head = run_git(&path, &["rev-parse", "HEAD"])?;
+    let hash = head.chars().take(8).collect();
+    let branch = git_branch(&path);
+    if output.status.success() {
+        return Ok(GitCommitResult {
+            committed: true,
+            hash,
+            branch,
+            message,
+        });
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stderr.contains("nothing to commit")
+        || stdout.contains("nothing to commit")
+        || stderr.contains("no changes added")
+        || stdout.contains("no changes added")
+    {
+        Ok(GitCommitResult {
+            committed: false,
+            hash,
+            branch,
+            message,
+        })
+    } else {
+        let detail = stderr.trim();
+        Err(if detail.is_empty() {
+            stdout.trim().to_string()
+        } else {
+            detail.to_string()
+        })
+    }
+}
+
+fn pr_create_args(title: &str, body: &str, branch: &str) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "create".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+        "--body".to_string(),
+        body.to_string(),
+        "--head".to_string(),
+        branch.to_string(),
+    ]
+}
+
+fn has_gh_cli() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn create_remote_pr(path: String, title: String, body: String) -> Result<RemotePrResult, String> {
+    let branch = git_branch(&path);
+    if branch == "unknown" {
+        return Err("Not a git repository".into());
+    }
+    if run_git(&path, &["remote", "get-url", "origin"]).is_err() {
+        return Err("No git remote configured".into());
+    }
+    if !has_gh_cli() {
+        return Err("gh CLI not available".into());
+    }
+    let args = pr_create_args(&title, &body, &branch);
+    let output = Command::new("gh")
+        .args(&args)
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("gh command failed: {}", e))?;
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(RemotePrResult {
+            created: true,
+            url: if url.is_empty() { None } else { Some(url) },
+            title,
+            branch,
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "gh pr create failed".to_string()
+        } else {
+            stderr
+        })
+    }
 }
 
 fn build_team_summary_text(contents: Vec<String>) -> String {
@@ -1906,6 +2052,8 @@ pub fn run() {
             get_vault_watch_status,
             get_project_git_context,
             generate_commit_pr_draft,
+            apply_commit,
+            create_remote_pr,
             build_team_summary,
             send_ai_message,
             stream_ai_message,
@@ -2165,5 +2313,73 @@ mod tests {
         handle.stop();
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    fn init_test_git_repo(dir: &Path) -> String {
+        let path = dir.to_string_lossy().to_string();
+        assert!(run_git(&path, &["init"]).is_ok());
+        assert!(run_git(&path, &["config", "user.email", "aiwb@test.local"]).is_ok());
+        assert!(run_git(&path, &["config", "user.name", "AI Workbench Test"]).is_ok());
+        path
+    }
+
+    #[test]
+    fn apply_commit_commits_changes_in_real_repo() {
+        let temp = std::env::temp_dir().join(format!("aiwb-commit-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "# Test\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        std::fs::write(temp.join("feature.md"), "# Feature\n").unwrap();
+
+        let result = apply_commit(path.clone(), "feat(test): apply commit".to_string()).unwrap();
+        assert!(result.committed);
+        assert_eq!(result.hash.len(), 8);
+        assert_eq!(
+            run_git(&path, &["log", "-1", "--format=%s"]).unwrap(),
+            "feat(test): apply commit"
+        );
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn apply_commit_reports_nothing_to_commit() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-commit-empty-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "# Test\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+
+        let result = apply_commit(path.clone(), "chore(test): nothing".to_string()).unwrap();
+        assert!(!result.committed);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn create_remote_pr_rejects_missing_remote() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-pr-remote-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "# Test\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+
+        let err =
+            create_remote_pr(path, "feat(test): pr".to_string(), "body".to_string()).unwrap_err();
+        assert!(err.contains("No git remote"), "unexpected error: {}", err);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn pr_create_args_include_title_body_and_head() {
+        let args = pr_create_args("feat(test): pr", "body text", "feature/sprint-29");
+        assert_eq!(args[0], "pr");
+        assert!(args.contains(&"feat(test): pr".to_string()));
+        assert!(args.contains(&"body text".to_string()));
+        assert!(args.contains(&"feature/sprint-29".to_string()));
     }
 }

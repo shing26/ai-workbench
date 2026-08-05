@@ -564,6 +564,38 @@ try {
   ) {
     throw new Error(`Commit PR draft assertion failed: ${JSON.stringify(results.commitPrDraft)}`);
   }
+  results.commitApply = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const applyBtn = document.querySelector('[data-apply-commit]');
+    if (!applyBtn) return { ok: false, reason: "no apply commit button" };
+    applyBtn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-commit-result]')) break;
+      await sleep(100);
+    }
+    const result = document.querySelector('[data-commit-result]')?.textContent ?? "";
+    const ok = result.includes("Committed local-") || result.includes("Nothing to commit");
+    const graphRefreshed = document.querySelector(".project-git-graph")?.textContent?.includes("develop") ?? false;
+    return { ok, result, graphRefreshed };
+  })()`);
+  if (!results.commitApply.ok) {
+    throw new Error(`Commit apply assertion failed: ${JSON.stringify(results.commitApply)}`);
+  }
+  results.remotePr = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const prBtn = document.querySelector('[data-create-pr]');
+    if (!prBtn) return { ok: false, reason: "no create pr button" };
+    prBtn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-pr-result]')) break;
+      await sleep(100);
+    }
+    const result = document.querySelector('[data-pr-result]')?.textContent ?? "";
+    return { ok: result.includes("pull/1"), result };
+  })()`);
+  if (!results.remotePr.ok) {
+    throw new Error(`Remote PR assertion failed: ${JSON.stringify(results.remotePr)}`);
+  }
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
   const inspectorOpened = await evaluate(`(() => {
     const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");
