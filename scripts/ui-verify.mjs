@@ -615,6 +615,53 @@ try {
     throw new Error(`Git activity board assertion failed: ${JSON.stringify(gitActivity)}`);
   }
   results.gitActivity = gitActivity;
+  results.gitActivityFilters = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const board = () => document.querySelector("[data-git-activity]");
+    const setSelect = (selector, value) => {
+      const el = document.querySelector(selector);
+      if (!el) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    };
+    for (let i = 0; i < 20; i++) {
+      if (board()?.querySelectorAll("[data-git-activity-project]").length >= 2) break;
+      await sleep(100);
+    }
+    const initialRows = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const committerOptions = [...document.querySelectorAll("[data-git-activity-committer-select] option")]
+      .map((o) => o.textContent.trim())
+      .filter((t) => t !== "All committers");
+    setSelect("[data-git-activity-range]", "24h");
+    await sleep(400);
+    const after24h = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const after24hTotal = Number(document.querySelector("[data-git-activity-total]")?.getAttribute("data-git-activity-total") ?? 0);
+    const after24hCommits = Number(document.querySelector("[data-git-activity-commits]")?.getAttribute("data-git-activity-commits") ?? 0);
+    setSelect("[data-git-activity-range]", "all");
+    await sleep(400);
+    const afterAll = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    setSelect("[data-git-activity-committer-select]", "Alice");
+    await sleep(400);
+    const afterAlice = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const aliceRows = [...(board()?.querySelectorAll("[data-git-activity-project]") ?? [])]
+      .filter((p) => p.getAttribute("data-git-activity-committer") === "Alice").length;
+    const ok =
+      initialRows >= 2 &&
+      committerOptions.includes("Alice") &&
+      committerOptions.includes("Bob") &&
+      after24h === 1 &&
+      after24hTotal === 1 &&
+      after24hCommits === 21 &&
+      afterAll === initialRows &&
+      afterAlice === 1 &&
+      aliceRows === 1;
+    return { ok, initialRows, committerOptions, after24h, after24hTotal, after24hCommits, afterAll, afterAlice, aliceRows };
+  })()`);
+  if (!results.gitActivityFilters.ok) {
+    throw new Error(`Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`);
+  }
   results.rebaseApply = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector('[data-rebase-branch]');

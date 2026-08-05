@@ -8,6 +8,12 @@ import ModelBadge from "../components/ui/ModelBadge";
 import { resetTilt, tiltCard } from "../lib/tilt";
 
 const PROJECT_MATERIALS = ["cyan", "original", "rain", "chrome"] as const;
+const GIT_RANGES = [
+  { value: "all", label: "All time", ms: 0 },
+  { value: "24h", label: "24 hours", ms: 86_400_000 },
+  { value: "7d", label: "7 days", ms: 7 * 86_400_000 },
+  { value: "30d", label: "30 days", ms: 30 * 86_400_000 },
+];
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
@@ -25,16 +31,23 @@ export default function ProjectsView() {
   const [rebaseErrors, setRebaseErrors] = useState<Record<string, string>>({});
   const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>({});
   const [gitActivity, setGitActivity] = useState<db.GitActivityBoard | null>(null);
+  const [gitRange, setGitRange] = useState("all");
+  const [gitCommitter, setGitCommitter] = useState("");
+  const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
 
   useEffect(() => {
     let disposed = false;
-    void db.getGitActivity().then((board) => {
-      if (!disposed) setGitActivity(board);
-    });
+    const range = GIT_RANGES.find((r) => r.value === gitRange);
+    const sinceMs = range && range.ms > 0 ? Date.now() - range.ms : undefined;
+    void db
+      .getGitActivity({ sinceMs, committer: gitCommitter || undefined })
+      .then((board) => {
+        if (!disposed) setGitActivity(board);
+      });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [gitRange, gitCommitter, projectKey]);
 
   useEffect(() => {
     let disposed = false;
@@ -48,7 +61,7 @@ export default function ProjectsView() {
     return () => {
       disposed = true;
     };
-  }, [projects.map((p) => `${p.id}:${p.path}`).join("|")]);
+  }, [projectKey]);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -211,6 +224,33 @@ export default function ProjectsView() {
           colSpan={12}
         >
           <div data-git-activity className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                data-git-activity-range
+                value={gitRange}
+                onChange={(e) => setGitRange(e.target.value)}
+                className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+              >
+                {GIT_RANGES.map((range) => (
+                  <option key={range.value} value={range.value}>
+                    {range.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                data-git-activity-committer-select
+                value={gitCommitter}
+                onChange={(e) => setGitCommitter(e.target.value)}
+                className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+              >
+                <option value="">All committers</option>
+                {gitActivity.committers.map((committer) => (
+                  <option key={committer} value={committer}>
+                    {committer}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div
               data-git-activity-total={gitActivity.totalProjects}
               data-git-activity-commits={gitActivity.totalCommits}
@@ -237,6 +277,7 @@ export default function ProjectsView() {
                 data-git-activity-commits={item.commitCount}
                 data-git-activity-changed={item.changedFiles}
                 data-git-activity-latest={item.latestCommit}
+                data-git-activity-committer={item.committer}
                 data-git-activity-dirty={item.dirty}
                 className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
               >
@@ -244,6 +285,9 @@ export default function ProjectsView() {
                   {item.projectName}
                 </span>
                 <ModelBadge label={item.branch} tone="blue" />
+                <span className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400">
+                  {item.committer || "unknown"}
+                </span>
                 <span className="text-[9px] text-slate-500">
                   {item.commitCount} commits
                 </span>
