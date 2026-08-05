@@ -2729,6 +2729,58 @@ fn git_change_paths(changes: &[String]) -> Vec<String> {
         .collect()
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitChangeGroup {
+    path: String,
+    status: String,
+    group: String,
+}
+
+fn git_change_groups(changes: &[String]) -> Vec<GitChangeGroup> {
+    changes
+        .iter()
+        .filter_map(|line| {
+            let raw = line.trim_end();
+            let has_status_prefix = raw.len() >= 3 && raw.as_bytes()[2] == b' ';
+            let (status, raw_path) = if has_status_prefix {
+                (raw.get(..2).unwrap_or("").to_string(), raw.get(3..)?)
+            } else {
+                (" ".to_string(), raw.trim())
+            };
+            let path = raw_path.split(" -> ").last().unwrap_or(raw_path).trim();
+            if path.is_empty() {
+                return None;
+            }
+            let group = if status == "??" {
+                "untracked"
+            } else {
+                let bytes = status.as_bytes();
+                let staged = bytes
+                    .first()
+                    .copied()
+                    .is_some_and(|b| b != b' ' && b != b'?');
+                let unstaged = bytes
+                    .get(1)
+                    .copied()
+                    .is_some_and(|b| b != b' ' && b != b'?');
+                if staged && unstaged {
+                    "both"
+                } else if staged {
+                    "staged"
+                } else {
+                    "unstaged"
+                }
+            };
+            Some(GitChangeGroup {
+                path: path.to_string(),
+                status,
+                group: group.to_string(),
+            })
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GitFileDiff {
@@ -2896,6 +2948,7 @@ struct GitActivityItem {
     last_commit_at: i64,
     changed_files: usize,
     changed_paths: Vec<String>,
+    change_groups: Vec<GitChangeGroup>,
     dirty: bool,
 }
 
@@ -3000,6 +3053,7 @@ fn build_git_activity(
             last_commit_at: ctx.last_commit_at,
             changed_files,
             changed_paths: git_change_paths(&ctx.changes),
+            change_groups: git_change_groups(&ctx.changes),
             dirty,
         });
     }
@@ -3043,6 +3097,14 @@ struct GitCommitResult {
     committed: bool,
     hash: String,
     branch: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLintIssue {
+    file: String,
+    line: usize,
     message: String,
 }
 
@@ -3190,6 +3252,46 @@ fn generate_commit_pr_draft(path: String, project_name: String) -> Result<Commit
     })
 }
 
+fn run_commit_lint_gate_impl(path: &str, files: &[String]) -> Result<Vec<GitLintIssue>, String> {
+    let mut issues = Vec::new();
+    for file in files {
+        let target = Path::new(path).join(file);
+        let Ok(content) = fs::read_to_string(&target) else {
+            issues.push(GitLintIssue {
+                file: file.clone(),
+                line: 0,
+                message: "File could not be read".to_string(),
+            });
+            continue;
+        };
+        for (index, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("<<<<<<<") || trimmed.starts_with(">>>>>>>") {
+                issues.push(GitLintIssue {
+                    file: file.clone(),
+                    line: index + 1,
+                    message: "Unresolved merge conflict marker".to_string(),
+                });
+            }
+        }
+        if file.to_lowercase().ends_with(".json")
+            && serde_json::from_str::<Value>(&content).is_err()
+        {
+            issues.push(GitLintIssue {
+                file: file.clone(),
+                line: 0,
+                message: "JSON is not valid".to_string(),
+            });
+        }
+    }
+    Ok(issues)
+}
+
+#[tauri::command]
+fn run_commit_lint_gate(path: String, files: Vec<String>) -> Result<Vec<GitLintIssue>, String> {
+    run_commit_lint_gate_impl(&path, &files)
+}
+
 fn run_git(path: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
@@ -3280,6 +3382,15 @@ fn commit_git_files(
     }
     if files.is_empty() {
         return Err("No files selected".into());
+    }
+    let lint_issues = run_commit_lint_gate_impl(&path, &files)?;
+    if !lint_issues.is_empty() {
+        let detail = lint_issues
+            .iter()
+            .map(|issue| format!("{}:{} {}", issue.file, issue.line, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("Lint gate failed: {}", detail));
     }
     run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let mut add_args: Vec<&str> = vec!["add", "--"];
@@ -4132,6 +4243,7 @@ pub fn run() {
             generate_commit_pr_draft,
             apply_commit,
             commit_git_files,
+            run_commit_lint_gate,
             create_remote_pr,
             rebase_branch,
             abort_rebase,
@@ -4237,6 +4349,46 @@ mod tests {
                 "src/b.ts".to_string(),
                 "README.md".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn git_change_groups_classifies_staged_unstaged_and_untracked() {
+        let changes = vec![
+            "M  staged.txt".to_string(),
+            " M unstaged.txt".to_string(),
+            "MM both.txt".to_string(),
+            "?? untracked.txt".to_string(),
+        ];
+        let groups = git_change_groups(&changes);
+        assert_eq!(groups.len(), 4);
+        assert_eq!(
+            groups
+                .iter()
+                .find(|g| g.path == "staged.txt")
+                .unwrap()
+                .group,
+            "staged"
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .find(|g| g.path == "unstaged.txt")
+                .unwrap()
+                .group,
+            "unstaged"
+        );
+        assert_eq!(
+            groups.iter().find(|g| g.path == "both.txt").unwrap().group,
+            "both"
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .find(|g| g.path == "untracked.txt")
+                .unwrap()
+                .group,
+            "untracked"
         );
     }
 
@@ -5112,6 +5264,61 @@ mod tests {
             "unexpected error: {}",
             err
         );
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn commit_lint_gate_blocks_conflict_markers_and_invalid_json() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-lint-gate-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("README.md"), "# Test\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        std::fs::write(
+            temp.join("conflict.md"),
+            "# title\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n",
+        )
+        .unwrap();
+        std::fs::write(temp.join("broken.json"), "{ not json").unwrap();
+        std::fs::write(temp.join("clean.md"), "# clean\n").unwrap();
+
+        let issues = run_commit_lint_gate_impl(
+            &path,
+            &[
+                "conflict.md".to_string(),
+                "broken.json".to_string(),
+                "clean.md".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.file == "conflict.md" && issue.message.contains("conflict")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.file == "broken.json" && issue.message.contains("JSON")));
+
+        let err = commit_git_files(
+            path.clone(),
+            vec!["conflict.md".to_string()],
+            "feat(test): blocked".to_string(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Lint gate failed"),
+            "unexpected error: {}",
+            err
+        );
+
+        let result = commit_git_files(
+            path.clone(),
+            vec!["clean.md".to_string()],
+            "feat(test): clean".to_string(),
+        )
+        .unwrap();
+        assert!(result.committed);
         std::fs::remove_dir_all(&temp).unwrap();
     }
 

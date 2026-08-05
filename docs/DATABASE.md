@@ -585,3 +585,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, i
 ```
 
 - 新表由 `SCHEMA` 自动创建，无旧库迁移；浏览器 fallback 使用 `ai-workbench:webhook-rules:v1` 保存同一模型。
+
+## Sprint 85：Git 暂存 / 未暂存分组与提交前 lint 门禁
+
+无表结构变更。`change_groups` 与 lint 门禁结果均为运行时计算：前者来自 `git status --short` 的 XY 前缀，后者来自提交前对工作区文件的读取，不新增持久化字段或表。

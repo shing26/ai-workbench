@@ -14,6 +14,12 @@ const GIT_RANGES = [
   { value: "7d", label: "7 days", ms: 7 * 86_400_000 },
   { value: "30d", label: "30 days", ms: 30 * 86_400_000 },
 ];
+const GIT_CHANGE_GROUPS = [
+  { key: "staged", label: "Staged" },
+  { key: "unstaged", label: "Unstaged" },
+  { key: "untracked", label: "Untracked" },
+  { key: "both", label: "Both" },
+] as const;
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
@@ -42,6 +48,7 @@ export default function ProjectsView() {
   } | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, string[]>>({});
+  const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -107,6 +114,21 @@ export default function ProjectsView() {
     const files = selectedFiles[item.projectId] ?? [];
     if (files.length === 0) return;
     try {
+      const issues = await db.runCommitLintGate(item.path, files);
+      if (issues.length > 0) {
+        setLintGate((prev) => ({ ...prev, [item.projectId]: { issues } }));
+        setCommitResults((prev) => {
+          const next = { ...prev };
+          delete next[item.projectId];
+          return next;
+        });
+        return;
+      }
+      setLintGate((prev) => {
+        const next = { ...prev };
+        delete next[item.projectId];
+        return next;
+      });
       let draft = drafts[item.projectId];
       if (!draft) {
         draft = await db.generateCommitPrDraft(item.path, item.projectName);
@@ -284,6 +306,76 @@ export default function ProjectsView() {
         [project.id]: error instanceof Error ? error.message : String(error),
       }));
     }
+  };
+
+  const renderGitFiles = (item: db.GitActivityItem) => {
+    const groups =
+      item.changeGroups.length > 0
+        ? item.changeGroups
+        : item.changedPaths.map((path) => ({
+            path,
+            status: "",
+            group: "unstaged" as const,
+          }));
+    return GIT_CHANGE_GROUPS.flatMap((meta) => {
+      const files = groups.filter((entry) => entry.group === meta.key);
+      if (files.length === 0) return [];
+      return [
+        <div key={meta.key} className="flex flex-col gap-1">
+          <div
+            data-git-change-group-header={meta.key}
+            className="rounded bg-white/[0.03] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.08em] text-slate-500"
+          >
+            {meta.label} · {files.length}
+          </div>
+          {files.map((entry) => (
+            <div
+              key={entry.path}
+              data-git-file={entry.path}
+              data-git-change-group={entry.group}
+              className="flex min-w-0 flex-col gap-1"
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  data-git-select-file={entry.path}
+                  checked={(selectedFiles[item.projectId] ?? []).includes(entry.path)}
+                  onChange={() => toggleSelectFile(item.projectId, entry.path)}
+                  aria-label={`Select ${entry.path}`}
+                  className="h-3 w-3 shrink-0 accent-emerald-500"
+                />
+                <span className="min-w-0 flex-1 truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
+                  {entry.path}
+                </span>
+                <button
+                  type="button"
+                  data-git-diff-toggle={entry.path}
+                  onClick={() => toggleGitDiff(item.projectId, item.path, entry.path)}
+                  className="shrink-0 rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
+                >
+                  {loadingDiffs[`${item.projectId}:${entry.path}`]
+                    ? "Loading"
+                    : gitDiffs[`${item.projectId}:${entry.path}`]
+                      ? "Hide diff"
+                      : "Diff"}
+                </button>
+              </div>
+              {gitDiffs[`${item.projectId}:${entry.path}`] && (
+                <pre
+                  data-git-diff-content={entry.path}
+                  data-git-diff-status={
+                    gitDiffs[`${item.projectId}:${entry.path}`].status
+                  }
+                  className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
+                >
+                  {gitDiffs[`${item.projectId}:${entry.path}`].diff}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>,
+      ];
+    });
   };
 
   return (
@@ -490,46 +582,21 @@ export default function ProjectsView() {
                                 : "Nothing to commit"}
                           </span>
                         )}
-                      </div>
-                    </div>
-                    {item.changedPaths.map((file) => (
-                      <div key={file} className="flex min-w-0 flex-col gap-1">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            data-git-select-file={file}
-                            checked={(selectedFiles[item.projectId] ?? []).includes(file)}
-                            onChange={() => toggleSelectFile(item.projectId, file)}
-                            aria-label={`Select ${file}`}
-                            className="h-3 w-3 shrink-0 accent-emerald-500"
-                          />
-                          <span className="min-w-0 flex-1 truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
-                            {file}
+                        {lintGate[item.projectId] && (
+                          <span
+                            data-git-lint-gate={item.projectId}
+                            data-git-lint-gate-issues={lintGate[item.projectId].issues.length}
+                            className="min-w-0 truncate rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-300"
+                          >
+                            Lint gate blocked:{" "}
+                            {lintGate[item.projectId].issues
+                              .map((issue) => `${issue.file}:${issue.line} ${issue.message}`)
+                              .join("; ")}
                           </span>
-                          <button
-                            type="button"
-                            data-git-diff-toggle={file}
-                            onClick={() => toggleGitDiff(item.projectId, item.path, file)}
-                            className="shrink-0 rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
-                          >
-                            {loadingDiffs[`${item.projectId}:${file}`]
-                              ? "Loading"
-                              : gitDiffs[`${item.projectId}:${file}`]
-                                ? "Hide diff"
-                                : "Diff"}
-                          </button>
-                        </div>
-                        {gitDiffs[`${item.projectId}:${file}`] && (
-                          <pre
-                            data-git-diff-content={file}
-                            data-git-diff-status={gitDiffs[`${item.projectId}:${file}`].status}
-                            className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
-                          >
-                            {gitDiffs[`${item.projectId}:${file}`].diff}
-                          </pre>
                         )}
                       </div>
-                    ))}
+                    </div>
+                    {renderGitFiles(item)}
                   </div>
                 )}
               </div>

@@ -947,6 +947,81 @@ try {
   if (!results.gitDirtyPreview.ok) {
     throw new Error(`Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`);
   }
+  results.gitStagedUnstaged = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const panel = document.querySelector(
+        '[data-git-activity-preview-files="' + projectId + '"]',
+      );
+      const headers = [...(panel?.querySelectorAll("[data-git-change-group-header]") ?? [])].map(
+        (el) => el.getAttribute("data-git-change-group-header"),
+      );
+      const fileGroups = [...(panel?.querySelectorAll("[data-git-change-group]") ?? [])].map(
+        (el) => ({
+          file: el.getAttribute("data-git-file"),
+          group: el.getAttribute("data-git-change-group"),
+        }),
+      );
+      const staged = fileGroups.find(
+        (g) => (g.file ?? "").includes("ProjectsView.tsx") && g.group === "staged",
+      );
+      const unstaged = fileGroups.find(
+        (g) =>
+          (g.file ?? "").includes("sprint-21-project-git-graph.md") && g.group === "unstaged",
+      );
+      const untracked = fileGroups.find(
+        (g) => (g.file ?? "").includes("broken-lint.json") && g.group === "untracked",
+      );
+      if (
+        headers.includes("staged") &&
+        headers.includes("unstaged") &&
+        headers.includes("untracked") &&
+        staged &&
+        unstaged &&
+        untracked
+      ) {
+        previewBtn.click();
+        for (let k = 0; k < 20; k++) {
+          if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+            break;
+          }
+          await sleep(50);
+        }
+        return {
+          ok: true,
+          projectId,
+          headers,
+          staged: staged.file,
+          unstaged: unstaged.file,
+          untracked: untracked.file,
+        };
+      }
+      return {
+        ok: false,
+        reason: "group assertions missing",
+        headers,
+        fileGroups: fileGroups.slice(0, 8),
+      };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitStagedUnstaged.ok) {
+    throw new Error(`Git staged/unstaged grouping assertion failed: ${JSON.stringify(results.gitStagedUnstaged)}`);
+  }
   results.gitDirtyDiff = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
@@ -1099,6 +1174,60 @@ try {
   })()`);
   if (!results.gitCommitSelected.ok) {
     throw new Error(`Git commit selected assertion failed: ${JSON.stringify(results.gitCommitSelected)}`);
+  }
+  results.gitCommitLintGate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const checkbox = dirty.querySelector('[data-git-select-file="broken-lint.json"]');
+      if (!checkbox) return { ok: false, reason: "no broken-lint.json checkbox" };
+      checkbox.click();
+      await sleep(80);
+      const commitBtn = dirty.querySelector("[data-git-commit-selected]");
+      if (!commitBtn) return { ok: false, reason: "no commit selected button" };
+      commitBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const gate = dirty.querySelector('[data-git-lint-gate="' + projectId + '"]');
+        const issues = Number(gate?.getAttribute("data-git-lint-gate-issues") ?? 0);
+        const result =
+          dirty.querySelector('[data-git-commit-selected-result="' + projectId + '"]')
+            ?.textContent ?? "";
+        const text = gate?.textContent ?? "";
+        if (
+          gate &&
+          issues >= 1 &&
+          text.includes("Lint gate blocked") &&
+          !result.includes("Committed")
+        ) {
+          return {
+            ok: true,
+            projectId,
+            issues,
+            text: text.slice(0, 140),
+            noCommit: true,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "lint gate result missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitCommitLintGate.ok) {
+    throw new Error(`Git commit lint gate assertion failed: ${JSON.stringify(results.gitCommitLintGate)}`);
   }
   results.gitCommitTrend = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

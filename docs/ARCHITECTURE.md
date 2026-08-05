@@ -404,3 +404,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 Tauri 命令并启动 `spawn_webhook_scheduler` 后台线程：每秒检查 enabled 规则，`now - last_run_at >= interval_seconds * 1000` 时真实投递并写回 `last_run_at / last_status / last_message`。
 - `db.ts` 新增 `WebhookRule` 与 CRUD / `runWebhookRule`，fallback 持久化到 `ai-workbench:webhook-rules:v1`；System Webhook delivery 卡片新增 Scheduled rules 区（创建 / 开关 / Run now / 删除）。
 - `verify:ui` / `verify:preview` 新增 `webhookRules` lane；Rust 单测覆盖 CRUD、due 选择与真实投递状态回写。
+
+## Sprint 85：Git 暂存 / 未暂存分组与提交前 lint 门禁
+
+- Rust 新增 `GitChangeGroup { path, status, group }` 与 `git_change_groups`：解析 `git status --short` 的两位状态前缀（保留空格以区分 staged / unstaged），归类为 `staged` / `unstaged` / `untracked` / `both`，rename 箭头取目标路径；`GitActivityItem` 新增 `change_groups`。
+- Rust 新增 `GitLintIssue { file, line, message }` 与 `run_commit_lint_gate` Tauri 命令：逐文件扫描 `<<<<<<<` / `>>>>>>>` 冲突标记，`.json` 文件校验 `serde_json` 合法性；`commit_git_files` 提交前先执行门禁，失败返回 `Lint gate failed` 并拒绝提交。
+- Projects dirty 预览按四个分组渲染（`data-git-change-group` / `data-git-change-group-header`）；Commit selected 前先调 `db.runCommitLintGate`，失败时展示 `data-git-lint-gate` / `data-git-lint-gate-issues`。
+- `db.ts` 新增 `GitChangeGroup` / `GitLintIssue` / `changeGroups` / `runCommitLintGate`；浏览器 fallback 对 broken / conflict 文件返回确定性问题，其余文件放行。
+- `verify:ui` / `verify:preview` 新增 `gitStagedUnstaged` / `gitCommitLintGate` lane；Rust 单测覆盖 XY 分组与冲突标记 / 非法 JSON 拦截。
