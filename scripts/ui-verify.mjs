@@ -1611,6 +1611,38 @@ try {
       filteredItems.every(
         (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
       );
+    const sinceSelect = document.querySelector("[data-sync-audit-since]");
+    const deviceSelect = document.querySelector("[data-sync-audit-device]");
+    if (!sinceSelect || !deviceSelect) {
+      return {
+        ok: false,
+        reason: "no sync audit range controls",
+        mergeSeen,
+        resolveSeen,
+        filterOk,
+      };
+    }
+    sinceSelect.value = "today";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    let rangeItems = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      rangeItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+      const allResolve =
+        rangeItems.length > 0 &&
+        rangeItems.every(
+          (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+        );
+      if (allResolve) break;
+    }
+    const rangeOk =
+      rangeItems.length > 0 &&
+      rangeItems.every(
+        (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+      );
+    deviceSelect.value = "all";
+    deviceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(200);
     jsonBtn.click();
     let exportedText = "";
     for (let i = 0; i < 20; i++) {
@@ -1638,10 +1670,11 @@ try {
     await sleep(300);
     const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
     return {
-      ok: mergeSeen && resolveSeen && filterOk && exportOk && cleared,
+      ok: mergeSeen && resolveSeen && filterOk && rangeOk && exportOk && cleared,
       mergeSeen,
       resolveSeen,
       filterOk,
+      rangeOk,
       exportOk,
       cleared,
       count: items.length,

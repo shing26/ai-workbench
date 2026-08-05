@@ -37,6 +37,8 @@ export default function SystemView() {
   const [showResolved, setShowResolved] = useState(false);
   const [syncAudit, setSyncAudit] = useState<db.SyncAuditEntry[]>([]);
   const [auditFilter, setAuditFilter] = useState("all");
+  const [auditSince, setAuditSince] = useState("all");
+  const [auditDevice, setAuditDevice] = useState("all");
   const [auditExportMessage, setAuditExportMessage] = useState("");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
@@ -183,8 +185,25 @@ export default function SystemView() {
     setSyncConflicts(await db.listSyncConflicts("unresolved"));
   };
 
-  const loadAudit = async (filter = auditFilter) => {
-    setSyncAudit(await db.listSyncAudit(200, filter === "all" ? undefined : filter));
+  const loadAudit = async (
+    filter = auditFilter,
+    since = auditSince,
+    device = auditDevice,
+  ) => {
+    const sinceMs =
+      since === "today"
+        ? Date.now() - 24 * 60 * 60 * 1000
+        : since === "7d"
+          ? Date.now() - 7 * 24 * 60 * 60 * 1000
+          : undefined;
+    setSyncAudit(
+      await db.listSyncAudit(
+        200,
+        filter === "all" ? undefined : filter,
+        sinceMs,
+        device === "current" ? deviceId : undefined,
+      ),
+    );
   };
 
   const changeAuditFilter = (filter: string) => {
@@ -193,11 +212,31 @@ export default function SystemView() {
     void loadAudit(filter);
   };
 
+  const changeAuditRange = (range: string) => {
+    setAuditSince(range);
+    setAuditExportMessage("");
+    void loadAudit(auditFilter, range, auditDevice);
+  };
+
+  const changeAuditDevice = (device: string) => {
+    setAuditDevice(device);
+    setAuditExportMessage("");
+    void loadAudit(auditFilter, auditSince, device);
+  };
+
   const exportAudit = async (format: "json" | "csv") => {
     try {
+      const sinceMs =
+        auditSince === "today"
+          ? Date.now() - 24 * 60 * 60 * 1000
+          : auditSince === "7d"
+            ? Date.now() - 7 * 24 * 60 * 60 * 1000
+            : undefined;
       const text = await db.exportSyncAudit(
         format,
         auditFilter === "all" ? undefined : auditFilter,
+        sinceMs,
+        auditDevice === "current" ? deviceId : undefined,
       );
       const count =
         format === "json"
@@ -713,6 +752,27 @@ export default function SystemView() {
               <option value="sync.resolve.batch">batch resolve</option>
               <option value="sync.resolve.union.batch">batch union</option>
               <option value="sync.history.cleared">history cleared</option>
+            </select>
+            <select
+              aria-label="Sync audit time range"
+              data-sync-audit-since
+              value={auditSince}
+              onChange={(e) => changeAuditRange(e.target.value)}
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+            >
+              <option value="all">All time</option>
+              <option value="today">Today</option>
+              <option value="7d">Last 7 days</option>
+            </select>
+            <select
+              aria-label="Sync audit device"
+              data-sync-audit-device
+              value={auditDevice}
+              onChange={(e) => changeAuditDevice(e.target.value)}
+              className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+            >
+              <option value="all">All devices</option>
+              <option value="current">Current device</option>
             </select>
             <button
               type="button"

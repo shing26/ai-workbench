@@ -371,6 +371,10 @@ ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
 
 无表结构变更。`sync_conflicts.resolved_choice` 新增 `union` 取值：`resolve_conflict_union` 按行并集写回 clipboard/log 并标记 union；`resolve_conflicts_union` 单事务批量执行；审计新增 `sync.resolve.union` 与 `sync.resolve.union.batch`。
 
+## Sprint 51：审计时间与设备组合筛选
+
+无表结构变更。`list_sync_audit` 新增 `since` / `device_id` 参数，与既有 `event` 组合过滤；`export_sync_audit` 透传相同条件，确保导出与列表一致。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。
