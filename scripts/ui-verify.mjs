@@ -2187,6 +2187,68 @@ try {
   }
   results.vaultIndex = vaultIndex;
 
+  const vectorRagCrossFile = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await sleep(400);
+    const picker = document.querySelector("[data-cross-file-hits]");
+    if (!picker) return { ok: false, reason: "no cross file picker" };
+    const chips = [...picker.querySelectorAll("[data-cross-file-hit]")];
+    if (chips.length < 2) {
+      return {
+        ok: false,
+        reason: "cross file chips below 2",
+        chips: chips.map((el) => el.getAttribute("data-cross-file-hit") ?? ""),
+      };
+    }
+    const vectorScores = [...document.querySelectorAll("[data-rag-vector-score]")]
+      .map((el) => el.getAttribute("data-rag-vector-score") ?? "")
+      .filter((value) => Number(value) > 0);
+    const vectorStatus = document.querySelector("[data-vector-status]")?.getAttribute("data-vector-status") ?? "";
+    const firstPath = chips[0].getAttribute("data-cross-file-hit") ?? "";
+    chips[0].click();
+    await sleep(150);
+    const visibleDocFiles = [...document.querySelectorAll("[data-rag-result][data-rag-file]")]
+      .map((el) => el.getAttribute("data-rag-file") ?? "")
+      .filter(Boolean);
+    const activeAfterToggle =
+      document.querySelectorAll("[data-cross-file-hit]")[0]?.getAttribute("data-cross-file-active") === "false";
+    const onlyOtherFile = visibleDocFiles.every((file) => file !== firstPath);
+    document.querySelectorAll("[data-cross-file-hit]")[0]?.click();
+    await sleep(150);
+    const restoredActive = [...document.querySelectorAll("[data-cross-file-hit]")]
+      .every((el) => el.getAttribute("data-cross-file-active") === "true");
+    return {
+      ok: true,
+      chipCount: chips.length,
+      hasVectorScore: vectorScores.length > 0,
+      vectorStatus,
+      activeAfterToggle,
+      onlyOtherFile,
+      restoredActive,
+    };
+  })()`);
+  if (
+    !vectorRagCrossFile.ok ||
+    vectorRagCrossFile.chipCount < 2 ||
+    !vectorRagCrossFile.hasVectorScore ||
+    vectorRagCrossFile.vectorStatus !== "on" ||
+    !vectorRagCrossFile.activeAfterToggle ||
+    !vectorRagCrossFile.onlyOtherFile ||
+    !vectorRagCrossFile.restoredActive
+  ) {
+    throw new Error(`Vector RAG cross file assertion failed: ${JSON.stringify(vectorRagCrossFile)}`);
+  }
+  results.vectorRagCrossFile = vectorRagCrossFile;
+
   const concurrencyAuto = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const autoBtn = document.querySelector("[data-index-concurrency-auto]");

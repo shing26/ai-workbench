@@ -474,3 +474,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `src/components/layout/MaterialDrawer.tsx`：Header 入口打开 `data-material-drawer`，实时调整 `data-material-preset` / `data-material-opacity` / `data-material-blur`，改写 `--material-opacity-base` / `--material-blur-base` 与 `data-material-global`，localStorage `ai-workbench:material-settings:v1` 持久化。
 - Motion DoD 断言改为按 `aside.drawer-panel` 定位 Inspector，避免新增 Material `<aside>` 后误取。
 - `verify:ui` / `verify:preview` 新增 `projectCarousel` / `projectCarouselReduced` / `materialDrawer` lane。
+
+## Sprint 94：本地向量 RAG 与跨文件命中
+
+- 新增 `src/lib/embed.ts`（浏览器）与 Rust `embed_text` / `cosine_similarity` / `serialize_embedding`（Tauri）镜像实现：256 维确定性 hash 向量，Unicode token + 1-4 char gram，离线可用且双端结果一致。
+- `search_thoughts` 升级为混合评分 `bm25 + 1.2 * vector`，Rust 返回 `vector_score`，浏览器 fallback 用同构 `hybridRagScore`；`RagSearchResult` / `RagIndexStatus` 增加 `vectorScore` / `vectorIndexed`。
+- `knowledge_files` 新增 `embedding TEXT`：新库建列，旧库 `migrate_knowledge_embedding` 幂等补列；`upsert_knowledge_file` 写 JSON 向量，迁移已加入 `init_connection`。
+- Knowledge 搜索结果新增 `data-cross-file-hits` 文件选择器（来源文件数 >=2 时显示），chips 逐文件过滤，结果行带 `data-rag-file` / `data-rag-vector-score`，底部 `data-vector-status`。
+- `verify:ui` / `verify:preview` 新增 `vectorRagCrossFile` lane；Rust 单测覆盖确定性、余弦排序、迁移补列与向量评分。

@@ -15,6 +15,7 @@ export default function KnowledgeView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
+  const [crossFileFilter, setCrossFileFilter] = useState<string[] | null>(null);
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
   const [vaultPath, setVaultPath] = useState("");
   const [ignorePatterns, setIgnorePatterns] = useState("");
@@ -192,7 +193,20 @@ export default function KnowledgeView() {
 
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
   const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
-  const visibleThoughts = results ?? filtered;
+  const docFiles = results
+    ? Array.from(new Set(results.filter((r) => r.type === "doc").map((r) => r.id)))
+    : [];
+  const docFileCounts = results
+    ? results.reduce<Record<string, number>>((acc, r) => {
+        if (r.type === "doc") acc[r.id] = (acc[r.id] ?? 0) + 1;
+        return acc;
+      }, {})
+    : {};
+  const filteredResults =
+    results && crossFileFilter && crossFileFilter.length < docFiles.length
+      ? results.filter((r) => r.type !== "doc" || crossFileFilter.includes(r.id))
+      : results;
+  const visibleThoughts = filteredResults ?? filtered;
   const selected = visibleThoughts.find((t) => t.id === selectedId) ?? visibleThoughts[0] ?? null;
 
   const add = async () => {
@@ -206,7 +220,17 @@ export default function KnowledgeView() {
       setResults(null);
       return;
     }
+    setCrossFileFilter(null);
     setResults(await db.searchThoughts(query.trim(), 5));
+  };
+
+  const toggleCrossFile = (path: string) => {
+    setCrossFileFilter((prev) => {
+      const current = prev ?? docFiles;
+      return current.includes(path)
+        ? current.filter((file) => file !== path)
+        : [...current, path];
+    });
   };
 
   const parseIgnore = () =>
@@ -1084,6 +1108,33 @@ export default function KnowledgeView() {
               Search
             </button>
           </div>
+          {results && docFiles.length >= 2 && (
+            <div
+              data-cross-file-hits
+              className="flex shrink-0 flex-wrap items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5"
+            >
+              <span className="text-[9px] text-slate-500">Files</span>
+              {docFiles.map((file) => {
+                const active = !crossFileFilter || crossFileFilter.includes(file);
+                return (
+                  <button
+                    key={file}
+                    type="button"
+                    data-cross-file-hit={file}
+                    data-cross-file-active={String(active)}
+                    onClick={() => toggleCrossFile(file)}
+                    className={`rounded-md border px-1.5 py-0.5 text-[9px] transition-colors ${
+                      active
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                        : "border-white/10 bg-white/[0.03] text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    {file.split(/[\\/]/).pop() ?? file} · {docFileCounts[file] ?? 0}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {results !== null && results.length > 0 && (
             <div className="shrink-0 border-b border-white/10 pb-2 text-[10px] text-slate-500">
               {results.length} RAG matches
@@ -1093,6 +1144,13 @@ export default function KnowledgeView() {
             <button
               key={t.id}
               type="button"
+              data-rag-result
+              data-rag-vector-score={
+                "vectorScore" in t && typeof t.vectorScore === "number"
+                  ? t.vectorScore.toFixed(2)
+                  : ""
+              }
+              data-rag-file={t.type === "doc" ? t.id : ""}
               onClick={() => setSelectedId(t.id)}
               className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
                 selected?.id === t.id
@@ -1102,7 +1160,12 @@ export default function KnowledgeView() {
             >
               <span className="block truncate">{t.content.split("\n")[0]}</span>
               {"score" in t && typeof t.score === "number" && (
-                <span className="mt-0.5 block text-[10px] text-slate-500">score {t.score.toFixed(2)}</span>
+                <span className="mt-0.5 block text-[10px] text-slate-500">
+                  score {t.score.toFixed(2)}
+                  {typeof t.vectorScore === "number" && (
+                    <span className="ml-2 text-slate-600">vector {t.vectorScore.toFixed(2)}</span>
+                  )}
+                </span>
               )}
             </button>
           ))}
@@ -1133,6 +1196,12 @@ export default function KnowledgeView() {
               tone="blue"
               status={indexStatus?.indexed ? `${indexStatus.documents} docs` : "pending"}
             />
+            <span
+              data-vector-status={indexStatus?.vectorIndexed ? "on" : "off"}
+              className="mt-1.5 inline-block rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-slate-500"
+            >
+              vector {indexStatus?.vectorIndexed ? "on" : "off"}
+            </span>
           </div>
         </div>
       </div>
