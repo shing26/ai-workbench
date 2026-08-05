@@ -2959,70 +2959,125 @@ async fn stream_ai_message(
     run_id: String,
 ) -> Result<(), String> {
     let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
-    let run_id_clone = run_id.clone();
-    let app_clone = app.clone();
+    let selected: Vec<db::Provider> = {
+        let state = app.state::<db::Db>();
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let mut selected = Vec::new();
+        for id in provider_ids {
+            if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
+                selected.push(p);
+            }
+        }
+        selected
+    };
+    if selected.is_empty() {
+        return Err("No providers configured".to_string());
+    }
 
-    let done = tauri::async_runtime::spawn_blocking(move || {
-        if moa {
-            for provider_id in &provider_ids {
-                if is_stream_cancelled(&app_clone, &run_id_clone) {
+    let done: Result<(), String> = if moa {
+        let mut tasks = Vec::new();
+        for provider in selected.into_iter().take(3) {
+            let app = app.clone();
+            let run_id = run_id.clone();
+            let messages_json = messages_json.clone();
+            tasks.push(tauri::async_runtime::spawn_blocking(move || {
+                if is_stream_cancelled(&app, &run_id) {
                     return Ok(());
                 }
-                let entry =
-                    keyring::Entry::new("ai-workbench", &format!("aiwb-stream-{}", provider_id))
-                        .map_err(|e| e.to_string())?;
-                let key = entry
-                    .get_password()
-                    .unwrap_or_else(|_| "OPENAI_API_KEY".to_string());
-                let api_key = get_api_key(&key)?;
-                stream_openai_compatible(
-                    &app_clone,
-                    &run_id_clone,
-                    "https://api.openai.com/v1",
-                    &api_key,
-                    &messages_json,
-                    "gpt-4o-mini",
-                )?;
-            }
-            Ok::<(), String>(())
-        } else {
-            let state = app_clone.state::<db::Db>();
-            let conn = state.0.lock().map_err(|e| e.to_string())?;
-            let mut selected = Vec::new();
-            for id in provider_ids {
-                if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
-                    selected.push(p);
+                let _ = app.emit(
+                    "stream-chunk",
+                    StreamChunk {
+                        id: run_id.clone(),
+                        delta: format!("\n\n## {}\n\n", provider.name),
+                        done: false,
+                        error: None,
+                        cancelled: false,
+                    },
+                );
+                let result: Result<(), String> = (|| {
+                    if is_ollama_provider(&provider.name, &provider.base_url) {
+                        let model = if provider.model.is_empty() {
+                            "qwen2.5:3b".to_string()
+                        } else {
+                            provider.model.clone()
+                        };
+                        stream_ollama(&app, &run_id, &provider.base_url, &messages_json, &model)
+                    } else {
+                        let key_ref = if provider.api_key.is_empty() {
+                            "OPENAI_API_KEY".to_string()
+                        } else {
+                            provider.api_key.clone()
+                        };
+                        let api_key = get_api_key(&key_ref)?;
+                        let model = if provider.model.is_empty() {
+                            "gpt-4o-mini".to_string()
+                        } else {
+                            provider.model.clone()
+                        };
+                        stream_openai_compatible(
+                            &app,
+                            &run_id,
+                            &provider.base_url,
+                            &api_key,
+                            &messages_json,
+                            &model,
+                        )
+                    }
+                })();
+                if let Err(err) = result {
+                    if !is_stream_cancelled(&app, &run_id) {
+                        let _ = app.emit(
+                            "stream-chunk",
+                            StreamChunk {
+                                id: run_id.clone(),
+                                delta: format!("\n[{} error: {}]\n", provider.name, err),
+                                done: false,
+                                error: None,
+                                cancelled: false,
+                            },
+                        );
+                    }
                 }
-            }
-            drop(conn);
-            if selected.is_empty() {
-                return Err("No providers configured".to_string());
-            }
-            let provider = selected[0].clone();
+                Ok::<(), String>(())
+            }));
+        }
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.map_err(|e| e.to_string())?);
+        }
+        for result in results {
+            result?;
+        }
+        Ok(())
+    } else {
+        let app_clone = app.clone();
+        let run_id_clone = run_id.clone();
+        let provider = selected.into_iter().next().unwrap();
+        tauri::async_runtime::spawn_blocking(move || {
             if is_ollama_provider(&provider.name, &provider.base_url) {
                 let model = if provider.model.is_empty() {
-                    "qwen2.5:3b"
+                    "qwen2.5:3b".to_string()
                 } else {
-                    &provider.model
+                    provider.model.clone()
                 };
                 stream_ollama(
                     &app_clone,
                     &run_id_clone,
                     &provider.base_url,
                     &messages_json,
-                    model,
+                    &model,
                 )
             } else {
                 let key_ref = if provider.api_key.is_empty() {
-                    "OPENAI_API_KEY"
+                    "OPENAI_API_KEY".to_string()
                 } else {
-                    &provider.api_key
+                    provider.api_key.clone()
                 };
-                let api_key = get_api_key(key_ref)?;
+                let api_key = get_api_key(&key_ref)?;
                 let model = if provider.model.is_empty() {
-                    "gpt-4o-mini"
+                    "gpt-4o-mini".to_string()
                 } else {
-                    &provider.model
+                    provider.model.clone()
                 };
                 stream_openai_compatible(
                     &app_clone,
@@ -3030,13 +3085,13 @@ async fn stream_ai_message(
                     &provider.base_url,
                     &api_key,
                     &messages_json,
-                    model,
+                    &model,
                 )
             }
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
 
     let error = done.err().map(|e| e.to_string());
     let cancelled = is_stream_cancelled(&app, &run_id);
