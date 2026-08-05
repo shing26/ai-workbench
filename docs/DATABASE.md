@@ -465,3 +465,21 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 ## Sprint 65：文档健康一键清理与重新索引
 
 无表结构变更。`cleanup_knowledge_files` 复用 `knowledge_files` 既有列：missing 文档执行 `DELETE`，stale 文档重读磁盘内容后按 `path` upsert 并刷新 `indexed_at`；浏览器 fallback 在 `ai-workbench:vault:v1` 上写回 `exists` / `stale` 模拟状态与清理结果。
+
+## Sprint 66：Vault 索引任务队列持久化
+
+```sql
+CREATE TABLE IF NOT EXISTS vault_index_queue (
+    run_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    ignore_patterns TEXT NOT NULL DEFAULT '[]',
+    concurrency INTEGER NOT NULL DEFAULT 4,
+    status TEXT NOT NULL DEFAULT 'queued',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+```
+
+- `persist_vault_index_queue` 按 run_id upsert，`ignore_patterns` 以 JSON 数组序列化；`list_vault_index_queue` 按 `created_at ASC, rowid ASC` 返回 pending 记录。
+- `delete_vault_index_queue` 在任务完成、出错或排队取消时删除记录；启动恢复时 `running` 记录重置为 `queued` 重新入队。
+- 浏览器 fallback 用 `ai-workbench:vault-index-queue:v1` 保存同一队列，重载后自动恢复并 drain。

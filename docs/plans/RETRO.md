@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 66
+
+### What went well?
+
+- Vault 索引队列从内存状态升级为 SQLite 持久化：`vault_index_queue` 表按 run_id upsert，`ignore_patterns` 以 JSON 数组存储，worker 完成 / 取消 / 出错后自动清理记录。
+- setup 启动时恢复 pending 任务，`running` 记录重置为 `queued` 重新入队并继续调度；TS fallback 用 `ai-workbench:vault-index-queue:v1` 实现同一恢复语义。
+- 验证覆盖：`cargo test --lib` 74/74，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `indexQueuePersist` 均 seed 6 条任务后重载，断言恢复执行并最终 drain。
+
+### What went wrong?
+
+- setup 首次调用 `restore_vault_index_queue` 误传 `AppHandle` 值而非引用，编译错误；改为 `app.handle()` 直接传引用后通过。
+- clippy 报 `collapsible_if`，把恢复入队的嵌套 if 合并为单条件后通过。
+- UI 验证如果只 seed 2 条任务，重载后可能赶不上观察队列；改为 6 条后稳定捕获 `sawQueue` / `activeSeen`。
+
+### Action Items
+
+- 下一 Sprint 候选：git 活动看板、错误日志来源 / 设备组合筛选、文档健康自动定时巡检。
+- 索引队列后续可扩展优先级与失败重试策略。
+
 ## Sprint 65
 
 ### What went well?

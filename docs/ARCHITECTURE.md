@@ -289,3 +289,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 清理按当前 vault 过滤生效：传入 `vault_path` 只处理该 vault，不传则全量；fresh 文档保持不动，读取失败计入 `failed`。
 - Document status 面板头部新增 Clean 按钮与 `removed / reindexed` 结果徽标，完成后自动刷新文档列表、vault 统计与 RAG 状态。
 - 浏览器 fallback 在 localStorage 上执行同一清理语义，`VaultFileRecord` 支持 `exists` / `stale` 模拟状态，保证 UI 验证可运行。
+
+## Sprint 66：Vault 索引任务队列持久化
+
+- 新增 `vault_index_queue` 表（run_id 主键、path、ignore_patterns JSON、concurrency、status、created_at、updated_at），`start_vault_index` 入队即落库。
+- worker 完成 / 取消 / 出错后删除持久化记录；取消排队任务同步删除；`restore_vault_index_queue` 在 setup 启动时读取 pending 记录，`running` 重置为 `queued` 重新入队并继续调度。
+- 浏览器 fallback 用 `ai-workbench:vault-index-queue:v1` 保存同一队列，重载后自动恢复并 drain；Knowledge 视图队列条行为不变。

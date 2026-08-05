@@ -1022,6 +1022,69 @@ try {
   }
   results.indexQueue = indexQueue;
 
+  await evaluate(`(() => {
+    const records = Array.from({ length: 6 }, (_, i) => ({
+      runId: "persist-run-" + (i + 1),
+      path: "C:/persist-" + (i + 1),
+      ignorePatterns: [],
+      concurrency: 4,
+      status: "queued",
+    }));
+    localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
+    return { ok: true, seeded: records.length };
+  })()`);
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const indexQueuePersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let sawQueue = false;
+    let activeSeen = "";
+    let drained = false;
+    for (let i = 0; i < 120; i++) {
+      await sleep(100);
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      if (count > 0) sawQueue = true;
+      if (active) activeSeen = active;
+      let records = [];
+      try {
+        records = JSON.parse(
+          localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+        );
+      } catch {}
+      if ((sawQueue || activeSeen) && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok: sawQueue && drained,
+      sawQueue,
+      activeSeen,
+      drained,
+      seedFiles: 6,
+    };
+  })()`);
+  if (!indexQueuePersist.ok) {
+    throw new Error(
+      `Index queue persist assertion failed: ${JSON.stringify(indexQueuePersist)}`,
+    );
+  }
+  results.indexQueuePersist = indexQueuePersist;
+  await evaluate(`(() => {
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (input) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(input, "C:/vault");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return true;
+  })()`);
+
   const indexProgressCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let status = "";
