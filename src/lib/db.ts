@@ -4175,6 +4175,12 @@ export type StreamChunk = {
   cancelled: boolean;
 };
 
+export type StreamFallback = {
+  id: string;
+  from: string;
+  to: string;
+};
+
 export type MoaConsensus = {
   summary: string;
   common: string[];
@@ -4336,6 +4342,7 @@ export async function sendAiMessageStream(args: {
   messages: { role: string; content: string }[];
   moa: boolean;
   runId: string;
+  autoFallback?: boolean;
 }): Promise<void> {
   if (isTauri()) {
     await invoke('stream_ai_message', {
@@ -4343,6 +4350,7 @@ export async function sendAiMessageStream(args: {
       messages: args.messages,
       moa: args.moa,
       runId: args.runId,
+      autoFallback: args.autoFallback ?? false,
     });
     return;
   }
@@ -4365,9 +4373,14 @@ export async function sendAiMessageStream(args: {
 
   const shape = readLocal();
   const candidates = shape.providers.filter((p) => p.isActive || args.providerIds.includes(p.id));
-  const providers = candidates
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
-    .slice(0, args.moa ? 3 : 1);
+  const byPassedOrder = args.providerIds
+    .map((id) => candidates.find((p) => p.id === id))
+    .filter((p): p is Provider => !!p);
+  const providers = args.moa
+    ? candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 3)
+    : args.autoFallback && byPassedOrder.length > 0
+      ? byPassedOrder
+      : candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 1);
   const realProviders = providers.filter(canRealStream);
   if (args.moa && realProviders.length > 0) {
     const outputs = new Map<string, string>();
@@ -4428,6 +4441,35 @@ export async function sendAiMessageStream(args: {
     try {
       await streamProviderLive(provider, args);
     } catch (err) {
+      if (args.autoFallback && realProviders.length > 1) {
+        let lastError = err instanceof Error ? err.message : String(err);
+        for (let i = 1; i < realProviders.length; i += 1) {
+          const next = realProviders[i];
+          const marker = `\n[auto fallback: ${provider.name} → ${next.name}]\n`;
+          emitLocalStreamChunk({
+            id: args.runId,
+            delta: marker,
+            done: false,
+            error: null,
+            cancelled: false,
+          });
+          emitLocalStreamFallback({ id: args.runId, from: provider.name, to: next.name });
+          try {
+            await streamProviderLive(next, args);
+            return;
+          } catch (nextErr) {
+            lastError = nextErr instanceof Error ? nextErr.message : String(nextErr);
+          }
+        }
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: '',
+          done: true,
+          error: lastError,
+          cancelled: false,
+        });
+        return;
+      }
       emitLocalStreamChunk({
         id: args.runId,
         delta: '',
@@ -4485,6 +4527,12 @@ function emitLocalStreamChunk(chunk: StreamChunk) {
   for (const handler of localChunkHandlers) handler(chunk);
 }
 
+const localFallbackHandlers = new Set<(fallback: StreamFallback) => void>();
+
+function emitLocalStreamFallback(fallback: StreamFallback) {
+  for (const handler of localFallbackHandlers) handler(fallback);
+}
+
 export async function listenStreamChunks(
   handler: (chunk: StreamChunk) => void,
 ): Promise<() => void> {
@@ -4494,6 +4542,17 @@ export async function listenStreamChunks(
   }
   localChunkHandlers.add(handler);
   return () => localChunkHandlers.delete(handler);
+}
+
+export async function listenStreamFallbacks(
+  handler: (fallback: StreamFallback) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import('@tauri-apps/api/event');
+    return listen<StreamFallback>('stream-fallback', (event) => handler(event.payload));
+  }
+  localFallbackHandlers.add(handler);
+  return () => localFallbackHandlers.delete(handler);
 }
 
 export async function getProjectGitContext(path: string): Promise<GitContext> {

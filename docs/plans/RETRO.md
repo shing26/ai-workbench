@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 109
+
+### What went well?
+
+- Rust `stream_ai_message` 新增 `auto_fallback`：非 MOA 分支按 `provider_ids` 顺序逐个尝试，失败时 emit `stream-fallback` 并追加 `[auto fallback: A → B]` 文本块；`auto_fallback_marker` 单测覆盖格式。
+- 浏览器 fallback 与 Tauri 同构：`StreamFallback` / `listenStreamFallbacks` 统一事件模型，`sendAiMessageStream` 同序降级，全部失败才返回最终错误。
+- AI Studio Single / Auto 模式传入全部 active Provider，头部 `data-ai-fallback-chain` 徽标与 Inspector `Fallback chain` 区块展示回退链；`autoFallback` lane 用 500 + SSE 双 mock 覆盖消息标记、回复、徽标与 Inspector。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（121 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- `autoFallback` lane 首次失败是因为上个 lane 遗留的 Agent 选择仍生效，请求走了 agent 专属 Provider；显式重置为 Default agent 后稳定。
+- lane 结束后停在 AI Studio，导致后续 `webhookSystemEvents` 找不到 System 视图按钮；在 lane 前补 `clickDock('System')` 后恢复全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：MOA 链式路由、跨流 token 预算、错误日志趋势优化、审计跨时间轴图、AI 复盘结果一键保存更多入口。
+- 保留 `autoFallback` lane，修改流式链路、Provider 排序或 AI Studio 模式选择时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 108
 
 ### What went well?

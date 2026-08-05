@@ -154,6 +154,8 @@ export default function AIStudioView() {
     name: string;
     fallbackFrom: string | null;
   } | null>(null);
+  const [fallbackChain, setFallbackChain] = useState<db.StreamFallback[]>([]);
+  const fallbackChainRef = useRef<db.StreamFallback[]>([]);
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentId, setAgentId] = useState('');
@@ -442,6 +444,25 @@ export default function AIStudioView() {
     });
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db
+      .listenStreamFallbacks((fallback) => {
+        if (disposed) return;
+        fallbackChainRef.current = [...fallbackChainRef.current, fallback].slice(-4);
+        setFallbackChain(fallbackChainRef.current);
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten();
     };
   }, []);
 
@@ -757,6 +778,8 @@ export default function AIStudioView() {
     if (!runsRef.current.has(runId)) {
       runsRef.current.set(runId, { content: '', index: history.length });
     }
+    fallbackChainRef.current = [];
+    setFallbackChain([]);
     const selectedAgent = agentId ? (agents.find((a) => a.id === agentId) ?? null) : null;
     let providerIds: string[];
     let routedName: string | null = null;
@@ -766,7 +789,7 @@ export default function AIStudioView() {
     } else if (autoRoute) {
       const routed = await db.routeProvider(activeProviders.map((p) => p.id));
       if (routed.provider) {
-        providerIds = [routed.provider.id];
+        providerIds = activeProviders.map((p) => p.id);
         routedName = routed.provider.name;
         fallbackFrom = routed.fallbackFrom;
       } else {
@@ -786,8 +809,8 @@ export default function AIStudioView() {
     } else {
       providerIds = selectedAgent?.providerId
         ? [selectedAgent.providerId]
-        : activeProvider
-          ? [activeProvider.id]
+        : activeProviders.length > 0
+          ? activeProviders.map((p) => p.id)
           : [];
     }
     if (selectedAgent) setRoutedAgent(selectedAgent);
@@ -808,6 +831,7 @@ export default function AIStudioView() {
         messages: apiMessages,
         moa,
         runId,
+        autoFallback: !moa && (autoRoute || !selectedAgent),
       });
     } catch {
       setMessages((prev) =>
@@ -853,6 +877,14 @@ export default function AIStudioView() {
       sections.push({ label: 'Router', value: `auto → ${routedName}` });
       sections.push({ label: 'Fallback from', value: fallbackFrom || 'none' });
     }
+    if (fallbackChainRef.current.length > 0) {
+      sections.push({
+        label: 'Fallback chain',
+        value: fallbackChainRef.current
+          .map((fallback) => `${fallback.from} → ${fallback.to}`)
+          .join(', '),
+      });
+    }
     if (hits.length > 0) {
       sections.push({ label: 'RAG context', value: `${hits.length} local thought(s) injected` });
       hits.slice(0, 5).forEach((hit, index) => {
@@ -872,7 +904,9 @@ export default function AIStudioView() {
             ? 'MOA Trace + RAG'
             : hits.length > 0
               ? 'RAG Context'
-              : 'MOA Trace',
+              : fallbackChainRef.current.length > 0
+                ? 'Router Trace'
+                : 'MOA Trace',
         sections,
       );
     }
@@ -1201,6 +1235,18 @@ export default function AIStudioView() {
           )}
           {teamMode && <ModelBadge label="Team" tone="blue" status="parallel" />}
           {moa && <ModelBadge label="MOA" tone="blue" status="3-way+summary" />}
+          {fallbackChain.length > 0 && (
+            <span
+              data-ai-fallback-chain
+              className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              auto fallback ×{fallbackChain.length}
+              <span className="opacity-70">
+                {fallbackChain.map((f) => `${f.from} → ${f.to}`).join(', ')}
+              </span>
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-0.5">

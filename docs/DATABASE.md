@@ -761,3 +761,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 108：搜索历史与跨会话聚合统计
 
 无表结构变更。搜索历史保存在前端 `ai-workbench:session-search-history:v1`（每条含 `query / at / hits`），聚合统计由 `summarizeSearchHits` 在运行时对当前命中结果计算，不写入 SQLite；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`。
+
+## Sprint 109：多 Provider 自动降级
+
+无表结构变更。自动降级是运行时链路：`stream-fallback` 事件与 `[auto fallback: A → B]` 文本块不新增持久化字段，Provider 仍由 `providers` 表与 `ai-workbench:db:v1` 保存；浏览器 fallback 不新增 localStorage key。
