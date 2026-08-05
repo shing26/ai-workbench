@@ -178,6 +178,8 @@ export type SyncConflictItem = {
   remoteUpdatedAt: number;
   resolvedTo: "remote" | "local";
   preview: string;
+  localContent: string;
+  remoteContent: string;
 };
 
 export type SyncStatus = {
@@ -1134,6 +1136,7 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
       clipboardAdded++;
     } else if (item.updatedAt > local.updatedAt) {
       const localUpdatedAt = local.updatedAt;
+      const localContent = local.content;
       Object.assign(local, item);
       clipboardUpdated++;
       conflicts.push({
@@ -1143,6 +1146,8 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
         remoteUpdatedAt: item.updatedAt,
         resolvedTo: "remote",
         preview: item.content.slice(0, 120),
+        localContent,
+        remoteContent: item.content,
       });
     } else if (item.updatedAt < local.updatedAt) {
       conflicts.push({
@@ -1152,6 +1157,8 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
         remoteUpdatedAt: item.updatedAt,
         resolvedTo: "local",
         preview: item.content.slice(0, 120),
+        localContent: local.content,
+        remoteContent: item.content,
       });
     }
   }
@@ -1164,6 +1171,7 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
       logsAdded++;
     } else if (log.updatedAt > local.updatedAt) {
       const localUpdatedAt = local.updatedAt;
+      const localContent = local.message;
       Object.assign(local, log);
       logsUpdated++;
       conflicts.push({
@@ -1173,6 +1181,8 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
         remoteUpdatedAt: log.updatedAt,
         resolvedTo: "remote",
         preview: log.message.slice(0, 120),
+        localContent,
+        remoteContent: log.message,
       });
     } else if (log.updatedAt < local.updatedAt) {
       conflicts.push({
@@ -1182,6 +1192,8 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
         remoteUpdatedAt: log.updatedAt,
         resolvedTo: "local",
         preview: log.message.slice(0, 120),
+        localContent: local.message,
+        remoteContent: log.message,
       });
     }
   }
@@ -1199,6 +1211,33 @@ function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   shape.lastSyncedAt = result.syncedAt;
   writeLocal(shape);
   return result;
+}
+
+export async function resolveSyncConflict(
+  conflict: SyncConflictItem,
+  choice: "local" | "remote",
+): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("resolve_sync_conflict", { conflict, choice });
+  }
+  const shape = readLocal();
+  const content = choice === "local" ? conflict.localContent : conflict.remoteContent;
+  const updatedAt = Date.now();
+  if (conflict.kind === "clipboard") {
+    const item = shape.clipboard.find((c) => c.id === conflict.id);
+    if (!item) throw new Error(`clipboard conflict not found: ${conflict.id}`);
+    item.content = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  } else {
+    const item = shape.logs.find((l) => l.id === conflict.id);
+    if (!item) throw new Error(`log conflict not found: ${conflict.id}`);
+    item.message = content;
+    item.timestamp = updatedAt;
+    item.updatedAt = updatedAt;
+  }
+  writeLocal(shape);
+  return `Resolved ${conflict.kind} conflict ${conflict.id} with ${choice}`;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {

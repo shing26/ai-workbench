@@ -2449,6 +2449,20 @@ fn pull_sync_snapshot(
     db::merge_sync_snapshot(&conn, snapshot).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn resolve_sync_conflict(
+    state: State<'_, db::Db>,
+    conflict: db::SyncConflictItem,
+    choice: String,
+) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::resolve_conflict(&conn, &conflict, &choice)?;
+    Ok(format!(
+        "Resolved {} conflict {} with {}",
+        conflict.kind, conflict.id, choice
+    ))
+}
+
 fn build_team_summary_text(contents: Vec<String>) -> String {
     let mut lines = Vec::new();
     for content in contents {
@@ -2594,6 +2608,7 @@ pub fn run() {
             import_sync_snapshot,
             push_sync_snapshot,
             pull_sync_snapshot,
+            resolve_sync_conflict,
             report_frontend_error,
             capture_clipboard,
             search_thoughts,

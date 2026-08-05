@@ -169,6 +169,31 @@ export default function SystemView() {
     }
   };
 
+  const resolveConflictItem = async (
+    conflict: db.SyncConflictItem,
+    choice: "local" | "remote",
+  ) => {
+    try {
+      const message = await db.resolveSyncConflict(conflict, choice);
+      await refreshSystem();
+      setLastSyncResult((current) =>
+        current
+          ? {
+              ...current,
+              conflicts: current.conflicts.filter(
+                (c) => c.kind !== conflict.kind || c.id !== conflict.id,
+              ),
+            }
+          : current,
+      );
+      setSyncError(false);
+      setSyncMessage(message);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const toggleAutoSync = async () => {
     if (autoSyncEnabled) {
       setAutoSyncEnabled(false);
@@ -427,6 +452,42 @@ export default function SystemView() {
             </button>
           </span>
         </div>
+        {lastSyncResult && lastSyncResult.conflicts.length > 0 && (
+          <div data-sync-resolve-list className="mt-3 space-y-1.5">
+            {lastSyncResult.conflicts.map((conflict) => (
+              <div
+                key={`${conflict.kind}:${conflict.id}`}
+                data-sync-conflict-item
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2"
+              >
+                <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase text-amber-300">
+                  {conflict.kind}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">
+                  {conflict.preview}
+                </span>
+                <button
+                  type="button"
+                  data-resolve-choice="local"
+                  aria-label={`Keep local conflict ${conflict.id}`}
+                  onClick={() => void resolveConflictItem(conflict, "local")}
+                  className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
+                >
+                  Keep local
+                </button>
+                <button
+                  type="button"
+                  data-resolve-choice="remote"
+                  aria-label={`Keep remote conflict ${conflict.id}`}
+                  onClick={() => void resolveConflictItem(conflict, "remote")}
+                  className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-400 hover:bg-emerald-500/25"
+                >
+                  Keep remote
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input
             value={remoteUrl}
