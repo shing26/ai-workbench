@@ -325,6 +325,25 @@ CREATE TABLE IF NOT EXISTS vault_watch_targets (
 - Rust 运行层 `VaultWatchState.active` 改为 watcher 列表，启动时只替换同路径实例，停止支持单路径与全停；应用启动时遍历 enabled 目标逐个恢复。
 - 浏览器 fallback 用 `ai-workbench:vault-watch-targets:v1` 保存目标数组，并同步旧单行键保证兼容。
 
+## Sprint 45：同步审计与事件日志
+
+```sql
+CREATE TABLE IF NOT EXISTS sync_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    device_id TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at DESC);
+```
+
+- `merge_sync_snapshot` 成功后写入 `sync.merge`：detail 含 clips/logs 新增与更新数、冲突数，device_id 取快照来源。
+- `resolve_conflict` 写入 `sync.resolve`（kind + id + choice）；`resolve_conflicts` 事务提交后额外写入 `sync.resolve.batch`（数量 + choice）。
+- `clear_resolved_sync_conflicts` 写入 `sync.history.cleared`（清理数量）。
+- 新命令：`list_sync_audit(limit)` 按 created_at 倒序返回（limit clamp 1~200）；`clear_sync_audit` 清空全部审计。
+- 浏览器 fallback 用 `ai-workbench:sync-audit:v1` 保存最近 200 条，与 Rust 语义一致。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

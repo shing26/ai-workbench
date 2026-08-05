@@ -1456,6 +1456,30 @@ try {
   }
   results.syncHistoryPersisted = syncHistoryPersisted;
 
+  const syncAuditCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let items = [...document.querySelectorAll("[data-sync-audit-item]")];
+    for (let i = 0; i < 30 && items.length < 3; i++) {
+      await sleep(100);
+      items = [...document.querySelectorAll("[data-sync-audit-item]")];
+    }
+    const text = items.map((el) => el.textContent ?? "").join(" | ");
+    const mergeSeen = text.includes("sync.merge");
+    const resolveSeen = text.includes("sync.resolve");
+    const clearBtn = document.querySelector("[data-sync-audit-clear]");
+    if (!clearBtn) {
+      return { ok: false, reason: "no sync audit clear button", mergeSeen, resolveSeen, count: items.length };
+    }
+    clearBtn.click();
+    await sleep(300);
+    const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
+    return { ok: mergeSeen && resolveSeen && cleared, mergeSeen, resolveSeen, cleared, count: items.length };
+  })()`);
+  if (!syncAuditCheck.ok) {
+    throw new Error(`Sync audit assertion failed: ${JSON.stringify(syncAuditCheck)}`);
+  }
+  results.syncAudit = syncAuditCheck;
+
   const autoSyncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {

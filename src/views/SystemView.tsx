@@ -35,6 +35,7 @@ export default function SystemView() {
   const [syncConflicts, setSyncConflicts] = useState<db.SyncConflictRecord[]>([]);
   const [resolvedConflicts, setResolvedConflicts] = useState<db.SyncConflictRecord[]>([]);
   const [showResolved, setShowResolved] = useState(false);
+  const [syncAudit, setSyncAudit] = useState<db.SyncAuditEntry[]>([]);
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -51,6 +52,7 @@ export default function SystemView() {
       setLastSyncedAt(status.lastSyncedAt);
     });
     void db.listSyncConflicts("unresolved").then(setSyncConflicts);
+    void db.listSyncAudit(50).then(setSyncAudit);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -113,6 +115,7 @@ export default function SystemView() {
     const result = await db.importSyncSnapshot();
     await refreshSystem();
     await loadConflicts();
+    await loadAudit();
     setSyncError(false);
     setLastSyncedAt(result.syncedAt);
     setLastRemoteDevice(result.deviceId);
@@ -146,6 +149,7 @@ export default function SystemView() {
       const result = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
       await refreshSystem();
       await loadConflicts();
+      await loadAudit();
       setSyncError(false);
       setLastSyncedAt(result.syncedAt);
       setLastRemoteDevice(result.deviceId);
@@ -162,6 +166,7 @@ export default function SystemView() {
       const pulled = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
       await refreshSystem();
       await loadConflicts();
+      await loadAudit();
       const pushed = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
       setSyncError(false);
       setLastSyncedAt(pushed.syncedAt);
@@ -176,6 +181,10 @@ export default function SystemView() {
     setSyncConflicts(await db.listSyncConflicts("unresolved"));
   };
 
+  const loadAudit = async () => {
+    setSyncAudit(await db.listSyncAudit(50));
+  };
+
   const resolveConflictItem = async (
     conflict: db.SyncConflictItem,
     choice: "local" | "remote",
@@ -184,6 +193,7 @@ export default function SystemView() {
       const message = await db.resolveSyncConflict(conflict, choice);
       await refreshSystem();
       await loadConflicts();
+      await loadAudit();
       setSyncError(false);
       setSyncMessage(message);
     } catch (err) {
@@ -198,6 +208,7 @@ export default function SystemView() {
       const count = await db.resolveSyncConflicts(syncConflicts, choice);
       await refreshSystem();
       await loadConflicts();
+      await loadAudit();
       setSyncError(false);
       setSyncMessage(`Resolved ${count} conflict(s) with ${choice}`);
     } catch (err) {
@@ -218,8 +229,16 @@ export default function SystemView() {
   const clearResolvedHistory = async () => {
     const cleared = await db.clearResolvedSyncConflicts();
     setResolvedConflicts(await db.listSyncConflicts("resolved"));
+    await loadAudit();
     setSyncError(false);
     setSyncMessage(`Cleared ${cleared} resolved conflict(s)`);
+  };
+
+  const clearAudit = async () => {
+    const cleared = await db.clearSyncAudit();
+    setSyncAudit(await db.listSyncAudit(50));
+    setSyncError(false);
+    setSyncMessage(`Cleared ${cleared} sync audit event(s)`);
   };
 
   const toggleAutoSync = async () => {
@@ -591,6 +610,49 @@ export default function SystemView() {
             )}
           </div>
         )}
+        <div data-sync-audit-section className="mt-3 border-t border-white/5 pt-2">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Sync audit
+            </span>
+            <button
+              type="button"
+              aria-label="Clear sync audit log"
+              data-sync-audit-clear
+              onClick={() => void clearAudit()}
+              className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+            >
+              Clear
+            </button>
+          </div>
+          <div data-sync-audit-list className="max-h-40 space-y-1 overflow-y-auto">
+            {syncAudit.length === 0 && (
+              <div className="rounded-lg border border-white/5 px-2 py-1.5 text-[10px] text-slate-600">
+                No audit events
+              </div>
+            )}
+            {syncAudit.map((entry) => (
+              <div
+                key={entry.id}
+                data-sync-audit-item
+                className="flex items-start gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+              >
+                <span
+                  data-sync-audit-event
+                  className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300"
+                >
+                  {entry.event}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">
+                  {entry.detail}
+                </span>
+                <span className="shrink-0 text-[9px] text-slate-600">
+                  {formatTime(entry.createdAt)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input
             value={remoteUrl}
