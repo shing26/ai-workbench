@@ -540,6 +540,69 @@ try {
       `Quick prompt usage persistence assertion failed: ${JSON.stringify(results.quickPromptUsagePersist)}`,
     );
   }
+  results.aiDailyRecap = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-ai-daily-recap]");
+    if (!btn) return { ok: false, reason: "no recap button" };
+    btn.click();
+    let userText = "";
+    for (let i = 0; i < 20; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      userText = bubbles.find((t) => t.includes("请帮我生成今日复盘")) ?? "";
+      if (userText) break;
+      await sleep(80);
+    }
+    if (!userText) return { ok: false, reason: "recap user message missing" };
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      reply =
+        bubbles.find((t) => t.includes("Streaming fallback") && !t.includes("请帮我生成今日复盘")) ??
+        "";
+      if (reply) break;
+      await sleep(100);
+    }
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const newChatBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent?.trim() === "New chat",
+    );
+    newChatBtn?.click();
+    await sleep(200);
+    const ok =
+      userText.includes("Ship App Shell") &&
+      userText.includes("晨间阅读") &&
+      userText.includes("每日复盘") &&
+      userText.includes("Overall") &&
+      reply.length > 0 &&
+      idle &&
+      !!newChatBtn;
+    return {
+      ok,
+      hasFocus: userText.includes("Ship App Shell"),
+      hasHabit: userText.includes("晨间阅读"),
+      hasEvent: userText.includes("每日复盘"),
+      hasOverall: userText.includes("Overall"),
+      replySeen: !!reply,
+      idle,
+      freshStarted: !!newChatBtn,
+      userPreview: userText.slice(0, 90),
+      replyPreview: reply.slice(0, 60),
+    };
+  })()`);
+  if (!results.aiDailyRecap.ok) {
+    throw new Error(`AI daily recap assertion failed: ${JSON.stringify(results.aiDailyRecap)}`);
+  }
   const streamStarted = await evaluate(`(async () => {
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
     if (!input) return { ok: false, reason: "no chat input" };
@@ -3639,7 +3702,8 @@ try {
     const deletedGone = !document.body.innerText.includes("Sprint 12 renamed");
     const persistedMessages = (() => {
       const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1"));
-      return shape.chatMessages.filter((m) => m.content.includes("sprint RAG check") || m.content.includes("Streaming fallback")).length;
+      const remainingSessionIds = new Set((shape.sessions ?? []).map((s) => s.id));
+      return shape.chatMessages.filter((m) => !remainingSessionIds.has(m.sessionId)).length;
     })();
     return {
       ok: true,

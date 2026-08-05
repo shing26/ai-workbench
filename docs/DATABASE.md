@@ -546,3 +546,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 79：Quick Prompt 按使用频次排序
 
 无表结构变更。Quick Prompt 使用次数保存在前端 `ai-workbench:quick-prompt-usage:v1`，以 `prompt id -> count` 映射存储，不写入 SQLite；排序完全由前端运行时计算。
+
+## Sprint 80：AI 生成式今日复盘
+
+无表结构变更。复盘上下文由 AIStudioView 从 `tasks / habits / schedule_events` 运行时聚合，提示词只作为聊天消息写入既有 `chat_messages`，不新增持久化字段。
