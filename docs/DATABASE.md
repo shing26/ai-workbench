@@ -188,3 +188,9 @@ CREATE INDEX IF NOT EXISTS idx_agents_department ON agents(department_id, is_act
 ```
 
 命令：`list_departments` / `list_agents` / `create_department` / `create_agent`。
+
+## Sprint 24：Team 编排与 system_prompt
+
+- `agents.system_prompt` 由种子数据提供（每个部门 Agent 都有职责化 Prompt），并支持运行时更新。
+- 命令：`update_agent_system_prompt(id, system_prompt)`，更新后返回完整 Agent。
+- AI Studio Team 模式按部门并行派发最多 3 个 Agent，各自注入自己的 system_prompt；单 Agent 派发同样注入。浏览器 localStorage fallback 与 Tauri SQLite 行为一致。

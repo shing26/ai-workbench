@@ -285,18 +285,18 @@ function seedShape(): LocalShape {
       { id: qualityId, name: "质量与工程效率部", description: "测试、DoD 与自动化验收", color: "sakura", agentCount: 2, createdAt: now - 5000 },
     ],
     agents: [
-      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Designer", role: "设计系统与动效", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4900 },
-      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "Frontend Developer", role: "React/Tailwind 实现", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4800 },
-      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Finish-Gate Reviewer", role: "视觉验收", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4700 },
-      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "Product Manager", role: "范围冻结与验收标准", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4600 },
-      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "UX Architect", role: "交互与信息架构", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4500 },
-      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Backend Architect", role: "Tauri 命令与分层设计", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4400 },
-      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Data Engineer", role: "SQLite 表结构与迁移", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4300 },
-      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "AI Engineer", role: "模型路由与流式链路", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4200 },
-      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Prompt Engineer", role: "Prompt 版本与测试用例", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4100 },
-      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Multi-Agent Systems Architect", role: "部门与 Agent 编排", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4000 },
-      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Test Automation Engineer", role: "自动化验收与回归", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 3900 },
-      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Reality Checker", role: "证据驱动的发布门禁", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 3800 },
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Designer", role: "设计系统与动效", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 UI Designer，负责设计系统、动效与视觉验收。输出需遵循 Design Token，并服务于 5 大主视图。", isActive: true, createdAt: now - 4900 },
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "Frontend Developer", role: "React/Tailwind 实现", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Frontend Developer，负责 React/Tailwind 实现。输出需可运行、可验证，并保持布局稳定。", isActive: true, createdAt: now - 4800 },
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Finish-Gate Reviewer", role: "视觉验收", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 UI Finish-Gate Reviewer，负责视觉验收。输出必须给出可测量的验收项与风险。", isActive: true, createdAt: now - 4700 },
+      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "Product Manager", role: "范围冻结与验收标准", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Product Manager，负责范围冻结与验收标准。每个需求必须给出明确的 AC。", isActive: true, createdAt: now - 4600 },
+      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "UX Architect", role: "交互与信息架构", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 UX Architect，负责交互与信息架构。输出需考虑工作台高频路径与 5 大主视图。", isActive: true, createdAt: now - 4500 },
+      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Backend Architect", role: "Tauri 命令与分层设计", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Backend Architect，负责 Tauri 命令与分层设计。输出需保持模块边界清晰并考虑错误路径。", isActive: true, createdAt: now - 4400 },
+      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Data Engineer", role: "SQLite 表结构与迁移", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Data Engineer，负责 SQLite 表结构与迁移。输出需包含索引、外键与迁移脚本。", isActive: true, createdAt: now - 4300 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "AI Engineer", role: "模型路由与流式链路", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 AI Engineer，负责模型路由与流式链路。输出需兼容 Tauri 与浏览器 fallback。", isActive: true, createdAt: now - 4200 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Prompt Engineer", role: "Prompt 版本与测试用例", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Prompt Engineer，负责 Prompt 版本与测试用例。输出需给出可复现的用例。", isActive: true, createdAt: now - 4100 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Multi-Agent Systems Architect", role: "部门与 Agent 编排", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Multi-Agent Systems Architect，负责部门与 Agent 编排。输出需明确分工、并行度与汇总结论。", isActive: true, createdAt: now - 4000 },
+      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Test Automation Engineer", role: "自动化验收与回归", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Test Automation Engineer，负责自动化验收与回归。输出需覆盖 verify:ui 与 Rust 单测。", isActive: true, createdAt: now - 3900 },
+      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Reality Checker", role: "证据驱动的发布门禁", model: "openai", providerId: null, systemPrompt: "你是 AI Workbench 的 Reality Checker，负责证据驱动的发布门禁。输出必须引用实际文件与命令结果。", isActive: true, createdAt: now - 3800 },
     ],
     sessions: [
       { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
@@ -502,6 +502,18 @@ export async function createAgent(
   shape.agents.push(agent);
   writeLocal(shape);
   return agent;
+}
+
+export async function updateAgentSystemPrompt(id: string, systemPrompt: string): Promise<Agent> {
+  if (isTauri()) {
+    return invoke<Agent>("update_agent_system_prompt", { id, systemPrompt });
+  }
+  const shape = readLocal();
+  const agent = shape.agents.find((a) => a.id === id);
+  if (!agent) throw new Error("agent not found");
+  agent.systemPrompt = systemPrompt;
+  writeLocal(shape);
+  return { ...agent };
 }
 
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
