@@ -1602,6 +1602,84 @@ try {
   }
   results.syncHistory = syncHistoryCheck;
 
+  const structuredSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const historyToggle = document.querySelector("[data-sync-history-toggle]");
+    if (historyToggle && document.querySelector("[data-sync-resolved-list]")) {
+      historyToggle.click();
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const base = (shape.clipboard ?? []).find((c) => c.id === "sync-clip-remote-fallback")
+      ?? (shape.clipboard ?? [])[0];
+    if (!base) return { ok: false, reason: "no base clipboard item" };
+    const localContent = JSON.stringify({
+      title: "Workbench",
+      tags: ["work"],
+      meta: { count: 1 },
+      notes: ["a"],
+    });
+    const remoteContent = JSON.stringify({
+      title: "Workbench",
+      tags: ["work", "life"],
+      meta: { count: 2, done: true },
+      notes: ["a", "b"],
+    });
+    base.content = localContent;
+    base.updatedAt = Date.now();
+    base.timestamp = Date.now();
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    const snapshot = {
+      deviceId: "device-structured",
+      exportedAt: Date.now(),
+      clipboard: [
+        {
+          id: base.id,
+          content: remoteContent,
+          source: "remote",
+          timestamp: Date.now(),
+          updatedAt: Date.now() + 1,
+        },
+      ],
+      logs: [],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(snapshot));
+    const importBtn = document.querySelector('button[aria-label="Import sync snapshot"]');
+    if (!importBtn) return { ok: false, reason: "no import button" };
+    importBtn.click();
+    let conflict = null;
+    for (let i = 0; i < 30; i++) {
+      conflict = document.querySelector("[data-sync-conflict-item]");
+      if (conflict) break;
+      await sleep(100);
+    }
+    if (!conflict) return { ok: false, reason: "no structured conflict" };
+    const mergeBtn = conflict.querySelector("[data-resolve-structured]");
+    if (!mergeBtn) return { ok: false, reason: "no structured merge button" };
+    mergeBtn.click();
+    let merged = false;
+    let stored = "";
+    for (let i = 0; i < 30; i++) {
+      const current = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const item = (current.clipboard ?? []).find((c) => c.id === base.id);
+      stored = item?.content ?? "";
+      merged =
+        stored.includes('"life"') &&
+        stored.includes('"done": true') &&
+        stored.includes('"count": 2') &&
+        !document.querySelector("[data-sync-conflicts]");
+      if (merged) break;
+      await sleep(100);
+    }
+    return { ok: merged, stored };
+  })()`);
+  if (!structuredSyncCheck.ok) {
+    throw new Error(
+      `structured sync merge assertion failed: ${JSON.stringify(structuredSyncCheck)}`,
+    );
+  }
+  results.structuredSync = structuredSyncCheck;
+
   await send("Page.reload", { ignoreCache: true });
   await waitForApp();
   await clickDock("System");

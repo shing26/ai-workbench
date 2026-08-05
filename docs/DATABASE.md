@@ -400,3 +400,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 
 ## Sprint 54：可取消 vault 索引任务
 
 无表结构变更。取消状态仅保存在运行期 `VaultIndexState` 内存集合中，随任务终态清理，不落库。
+
+## Sprint 55：结构化字段级合并
+
+无表结构变更。`sync_conflicts.resolved_choice` 新增 `structured` 取值；合并逻辑为纯函数，不新增字段或迁移。

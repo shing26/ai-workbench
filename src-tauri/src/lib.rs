@@ -2862,6 +2862,24 @@ fn resolve_sync_conflicts_union(
 }
 
 #[tauri::command]
+fn resolve_sync_conflict_structured(
+    state: State<'_, db::Db>,
+    conflict: db::SyncConflictItem,
+) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::resolve_conflict_structured(&conn, &conflict).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resolve_sync_conflicts_structured(
+    state: State<'_, db::Db>,
+    conflicts: Vec<db::SyncConflictItem>,
+) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::resolve_conflicts_structured(&conn, &conflicts).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_sync_conflicts(
     state: State<'_, db::Db>,
     status: String,
@@ -3071,6 +3089,8 @@ pub fn run() {
             resolve_sync_conflicts,
             resolve_sync_conflict_union,
             resolve_sync_conflicts_union,
+            resolve_sync_conflict_structured,
+            resolve_sync_conflicts_structured,
             list_sync_conflicts,
             clear_resolved_sync_conflicts,
             list_sync_audit,

@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 55
+
+### What went well?
+
+- 同步冲突新增第三种策略 `structured`：JSON 对象按键递归合并、数组按 JSON 去重并集、标量冲突取更新时间较新一侧；Markdown frontmatter 按字段合并，逗号列表取并集。
+- Rust 与浏览器 fallback 共用同一合并语义，System 冲突卡片与批量区新增 `Merge fields`，审计新增 structured 事件。
+- 验证覆盖：`cargo test --lib` 62/62，fmt、clippy、build 全绿；两条 lane 的 `structuredSync` 均合并出 `life` / `done: true` / `count: 2`。
+
+### What went wrong?
+
+- frontmatter 的 `tags` 一侧为 `work`、另一侧为 `work, life` 时最初只取 local，改为任一侧含逗号即按列表并集后通过。
+- UI 验证在 resolved history 展开状态下找不到新冲突，先收起历史列表再导入结构化快照后稳定通过。
+
+### Action Items
+
+- 下一 Sprint 候选：自定义审计日期范围、watch 事件类型细分、索引任务队列、对象数组按 key 去重。
+- 后续扩展冲突策略时，保持 Rust 与 fallback 共用合并函数并补审计事件。
+
 ## Sprint 54
 
 ### What went well?
