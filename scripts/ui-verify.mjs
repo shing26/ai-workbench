@@ -5229,6 +5229,108 @@ try {
   }
   results.sessionSearchEnhanced = sessionSearchEnhanced;
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      ...(shape.sessions ?? []),
+      {
+        id: "pinyin-plan",
+        projectId: null,
+        title: "每日计划",
+        model: "openai",
+        pinned: false,
+        messageCount: 1,
+        createdAt: now,
+      },
+    ];
+    shape.chatMessages = [
+      ...(shape.chatMessages ?? []),
+      {
+        id: "pinyin-msg",
+        sessionId: "pinyin-plan",
+        role: "user",
+        content: "买牛奶和鸡蛋",
+        createdAt: now,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionPinyinSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const targetRow = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("每日计划"));
+    const matchType = () =>
+      targetRow()
+        ?.querySelector("[data-session-match-type]")
+        ?.getAttribute("data-session-match-type") ?? "";
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput || !targetRow()) return { ok: false, reason: "pinyin seed not rendered" };
+
+    setValue(searchInput, "mrjh");
+    const initialsTitle = await waitFor(() => matchType() === "pinyin-title");
+
+    setValue(searchInput, "meirijihua");
+    const fullTitle = await waitFor(() => matchType() === "pinyin-title");
+
+    setValue(searchInput, "mnhjd");
+    const messageHit = await waitFor(() => matchType() === "pinyin-message");
+    const jumpMessageId = targetRow()
+      ?.querySelector("button[aria-label='Open session']")
+      ?.getAttribute("data-session-message-id") ?? "";
+    targetRow()?.querySelector("button[aria-label='Open session']")?.click();
+    const jumpSeen = await waitFor(() =>
+      !!document.querySelector("[data-message-id='pinyin-msg'].message-jump-highlight"),
+    );
+
+    setValue(searchInput, "");
+    await sleep(300);
+    const restored = !!targetRow();
+    return {
+      ok: initialsTitle && fullTitle && messageHit && jumpSeen && restored,
+      initialsTitle,
+      fullTitle,
+      messageHit,
+      jumpMessageId,
+      jumpSeen,
+      restored,
+    };
+  })()`);
+  if (!sessionPinyinSearch.ok || sessionPinyinSearch.jumpMessageId !== 'pinyin-msg') {
+    throw new Error(
+      `AI Studio pinyin session search assertion failed: ${JSON.stringify(sessionPinyinSearch)}`,
+    );
+  }
+  results.sessionPinyinSearch = sessionPinyinSearch;
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = (shape.sessions ?? []).filter((s) => s.id !== "pinyin-plan");
+    shape.chatMessages = (shape.chatMessages ?? []).filter((m) => m.sessionId !== "pinyin-plan");
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
   const sessionManagement = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const setValue = (el, value) => {

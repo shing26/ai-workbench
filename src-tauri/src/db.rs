@@ -1,3 +1,4 @@
+use pinyin::ToPinyin;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -4238,17 +4239,26 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     rows.collect()
 }
 
-fn fuzzy_match_score(haystack: &str, query: &str) -> Option<i64> {
-    let h = haystack.to_lowercase();
-    let q = query.to_lowercase();
-    if h.is_empty() || q.is_empty() {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    Original,
+    FullPinyin,
+    InitialsPinyin,
+}
+
+fn substring_score(haystack: &str, query: &str) -> Option<i64> {
+    if haystack.is_empty() || query.is_empty() {
         return None;
     }
-    if let Some(index) = h.find(&q) {
-        return Some(120 - index as i64);
+    haystack.find(query).map(|index| 120 - index as i64)
+}
+
+fn subsequence_score(haystack: &str, query: &str) -> Option<i64> {
+    if haystack.is_empty() || query.is_empty() {
+        return None;
     }
-    let hb = h.as_bytes();
-    let qb = q.as_bytes();
+    let hb = haystack.as_bytes();
+    let qb = query.as_bytes();
     let mut qi = 0usize;
     let mut gaps = 0i64;
     let mut last: Option<usize> = None;
@@ -4265,6 +4275,61 @@ fn fuzzy_match_score(haystack: &str, query: &str) -> Option<i64> {
         }
     }
     None
+}
+
+fn pinyin_text(text: &str, first_letter: bool) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if let Some(p) = ch.to_pinyin() {
+            out.push_str(if first_letter {
+                p.first_letter()
+            } else {
+                p.plain()
+            });
+        } else if !ch.is_whitespace() {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    out
+}
+
+fn compact_query(query: &str) -> String {
+    query.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn text_match_score(text: &str, query: &str) -> Option<(i64, MatchMode)> {
+    let original_q = query.to_lowercase();
+    if let Some(score) = substring_score(&text.to_lowercase(), &original_q) {
+        return Some((score, MatchMode::Original));
+    }
+    if let Some(score) = subsequence_score(&text.to_lowercase(), &original_q) {
+        return Some((score, MatchMode::Original));
+    }
+
+    let compact_q = compact_query(&original_q);
+    let full = pinyin_text(text, false);
+    if let Some(score) = substring_score(&full, &compact_q) {
+        return Some((score - 5, MatchMode::FullPinyin));
+    }
+    if let Some(score) = subsequence_score(&full, &compact_q) {
+        return Some((score - 10, MatchMode::FullPinyin));
+    }
+
+    let initials = pinyin_text(text, true);
+    if let Some(score) = substring_score(&initials, &compact_q) {
+        return Some((score - 15, MatchMode::InitialsPinyin));
+    }
+    if let Some(score) = subsequence_score(&initials, &compact_q) {
+        return Some((score - 20, MatchMode::InitialsPinyin));
+    }
+    None
+}
+
+fn match_type(field: &str, mode: MatchMode) -> String {
+    match mode {
+        MatchMode::Original => field.to_string(),
+        MatchMode::FullPinyin | MatchMode::InitialsPinyin => format!("pinyin-{}", field),
+    }
 }
 
 fn session_snippet(content: &str) -> String {
@@ -4305,12 +4370,22 @@ pub fn search_sessions(
 
     let mut hits = Vec::new();
     for session in sessions {
-        let mut best: Option<(i64, &str, String, Option<String>)> = None;
-        if let Some(score) = fuzzy_match_score(&session.title, q) {
-            best = Some((score, "title", session.title.clone(), None));
+        let mut best: Option<(i64, String, String, Option<String>)> = None;
+        if let Some((score, mode)) = text_match_score(&session.title, q) {
+            best = Some((
+                score,
+                match_type("title", mode),
+                session.title.clone(),
+                None,
+            ));
         }
-        if let Some(score) = fuzzy_match_score(&session.model, q) {
-            let candidate = (score, "model", session.model.clone(), None);
+        if let Some((score, mode)) = text_match_score(&session.model, q) {
+            let candidate = (
+                score,
+                match_type("model", mode),
+                session.model.clone(),
+                None,
+            );
             if best
                 .as_ref()
                 .is_none_or(|(current, _, _, _)| score > *current)
@@ -4330,10 +4405,10 @@ pub fn search_sessions(
             })?;
             for row in rows {
                 let (message_id, content) = row?;
-                if let Some(score) = fuzzy_match_score(&content, q) {
+                if let Some((score, mode)) = text_match_score(&content, q) {
                     let candidate = (
                         score,
-                        "message",
+                        match_type("message", mode),
                         session_snippet(&content),
                         Some(message_id),
                     );
@@ -4350,7 +4425,7 @@ pub fn search_sessions(
             let pinned = session.pinned;
             hits.push(SessionSearchHit {
                 session,
-                match_type: match_type.to_string(),
+                match_type,
                 snippet,
                 score: score + if pinned { 10 } else { 0 },
                 message_id,
@@ -4961,6 +5036,38 @@ mod tests {
         assert_eq!(hits[0].session.id, planning.id);
         assert_eq!(hits[0].match_type, "title");
         assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn session_search_pinyin_full_and_initials_match_chinese() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let plan = create_session(&conn, "每日计划", "openai").unwrap();
+        let message = save_chat_message(&conn, &plan.id, "user", "买牛奶和鸡蛋", None).unwrap();
+
+        let by_initials = search_sessions(&conn, "mrjh", None, None, None, true).unwrap();
+        assert_eq!(by_initials.len(), 1);
+        assert_eq!(by_initials[0].session.id, plan.id);
+        assert_eq!(by_initials[0].match_type, "pinyin-title");
+
+        let by_full = search_sessions(&conn, "meirijihua", None, None, None, true).unwrap();
+        assert_eq!(by_full.len(), 1);
+        assert_eq!(by_full[0].session.id, plan.id);
+        assert_eq!(by_full[0].match_type, "pinyin-title");
+
+        let by_message = search_sessions(&conn, "mnhjd", None, None, None, true).unwrap();
+        assert_eq!(by_message.len(), 1);
+        assert_eq!(by_message[0].session.id, plan.id);
+        assert_eq!(by_message[0].match_type, "pinyin-message");
+        assert_eq!(
+            by_message[0].message_id.as_deref(),
+            Some(message.id.as_str())
+        );
+
+        let by_chinese = search_sessions(&conn, "计划", None, None, None, true).unwrap();
+        assert_eq!(by_chinese.len(), 1);
+        assert_eq!(by_chinese[0].match_type, "title");
     }
 
     #[test]

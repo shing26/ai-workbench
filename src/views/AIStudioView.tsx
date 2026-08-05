@@ -711,6 +711,8 @@ export default function AIStudioView() {
   };
 
   const sessionHitBy = new Map((sessionHits ?? []).map((hit) => [hit.session.id, hit]));
+  const isMessageHit = (hit?: db.SessionSearchHit) =>
+    hit?.matchType === 'message' || hit?.matchType === 'pinyin-message';
   const filteredSessions = sessions
     .filter((s) => {
       const q = sessionQuery.trim().toLowerCase();
@@ -1420,13 +1422,13 @@ export default function AIStudioView() {
                     onClick={() =>
                       void selectSession(
                         s.id,
-                        sessionHitBy.get(s.id)?.matchType === 'message'
+                        isMessageHit(sessionHitBy.get(s.id))
                           ? (sessionHitBy.get(s.id)?.messageId ?? null)
                           : null,
                       )
                     }
                     data-session-message-id={
-                      sessionHitBy.get(s.id)?.matchType === 'message'
+                      isMessageHit(sessionHitBy.get(s.id))
                         ? (sessionHitBy.get(s.id)?.messageId ?? '')
                         : ''
                     }
@@ -1445,7 +1447,7 @@ export default function AIStudioView() {
                         className="mt-0.5 block truncate text-[9px] text-cyan-300/80"
                       >
                         {sessionHitBy.get(s.id)?.snippet ?? ''}
-                        {sessionHitBy.get(s.id)?.matchType === 'message' ? '  →' : ''}
+                        {isMessageHit(sessionHitBy.get(s.id)) ? '  →' : ''}
                       </span>
                     ) : null}
                     <span
