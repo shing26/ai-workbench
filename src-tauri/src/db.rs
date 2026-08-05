@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS quick_prompts (
     category TEXT NOT NULL,
     text TEXT NOT NULL,
     custom INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
@@ -285,6 +286,8 @@ pub struct QuickPrompt {
     pub text: String,
     #[serde(default)]
     pub custom: bool,
+    #[serde(rename = "order", default)]
+    pub sort_order: i64,
     #[serde(default)]
     pub updated_at: i64,
     #[serde(default)]
@@ -825,6 +828,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_watch_event_stats(&conn)?;
     migrate_knowledge_vault_path(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
+    migrate_quick_prompt_order(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -892,6 +896,16 @@ fn migrate_vault_index_queue_priority(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';",
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_quick_prompt_order(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "quick_prompts", "sort_order")? {
+        conn.execute_batch(
+            "ALTER TABLE quick_prompts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        conn.execute_batch("UPDATE quick_prompts SET sort_order = rowid WHERE sort_order = 0;")?;
     }
     Ok(())
 }
@@ -1268,7 +1282,7 @@ pub fn create_thought(conn: &Connection, content: &str, tags: &str, kind: &str) 
 
 pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
     let mut stmt = conn.prepare(
-        "SELECT id, label, category, text, custom, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
+        "SELECT id, label, category, text, custom, sort_order, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(QuickPrompt {
@@ -1277,8 +1291,9 @@ pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
             category: row.get(2)?,
             text: row.get(3)?,
             custom: row.get::<_, i64>(4)? != 0,
-            updated_at: row.get(5)?,
-            created_at: row.get(6)?,
+            sort_order: row.get(5)?,
+            updated_at: row.get(6)?,
+            created_at: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -1286,19 +1301,85 @@ pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
 
 pub fn upsert_quick_prompt(conn: &Connection, prompt: &QuickPrompt) -> Result<()> {
     conn.execute(
-        "INSERT INTO quick_prompts (id, label, category, text, custom, updated_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(id) DO UPDATE SET label = ?2, category = ?3, text = ?4, custom = ?5, updated_at = ?6",
+        "INSERT INTO quick_prompts (id, label, category, text, custom, sort_order, updated_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET label = ?2, category = ?3, text = ?4, custom = ?5, sort_order = ?6, updated_at = ?7",
         params![
             prompt.id,
             prompt.label,
             prompt.category,
             prompt.text,
             prompt.custom as i64,
+            prompt.sort_order,
             prompt.updated_at,
             prompt.created_at,
         ],
     )?;
+    Ok(())
+}
+
+pub fn next_quick_prompt_order(conn: &Connection) -> Result<i64> {
+    let max: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(sort_order) FROM quick_prompts WHERE custom = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(max.unwrap_or(0) + 1)
+}
+
+pub fn update_custom_quick_prompt(
+    conn: &Connection,
+    id: &str,
+    label: &str,
+    category: &str,
+    text: &str,
+) -> Result<QuickPrompt, String> {
+    let existing = conn
+        .query_row(
+            "SELECT id, label, category, text, custom, sort_order, updated_at, created_at
+             FROM quick_prompts WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(QuickPrompt {
+                    id: row.get(0)?,
+                    label: row.get(1)?,
+                    category: row.get(2)?,
+                    text: row.get(3)?,
+                    custom: row.get::<_, i64>(4)? != 0,
+                    sort_order: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("quick prompt not found: {id}"))?;
+    if !existing.custom {
+        return Err(format!("quick prompt is not custom: {id}"));
+    }
+    let prompt = QuickPrompt {
+        label: label.to_string(),
+        category: category.to_string(),
+        text: text.to_string(),
+        updated_at: now_millis(),
+        ..existing
+    };
+    upsert_quick_prompt(conn, &prompt).map_err(|e| e.to_string())?;
+    Ok(prompt)
+}
+
+pub fn reorder_custom_quick_prompts(conn: &Connection, ids: &[String]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (index, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE quick_prompts SET sort_order = ?1, updated_at = ?2 WHERE id = ?3 AND custom = 1",
+            params![index as i64, now_millis(), id],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1922,7 +2003,7 @@ pub fn merge_sync_snapshot(
     for prompt in snapshot.quick_prompts {
         let local_prompt: Option<QuickPrompt> = conn
             .query_row(
-                "SELECT id, label, category, text, custom, updated_at, created_at FROM quick_prompts WHERE id = ?1",
+                "SELECT id, label, category, text, custom, sort_order, updated_at, created_at FROM quick_prompts WHERE id = ?1",
                 params![prompt.id],
                 |row| {
                     Ok(QuickPrompt {
@@ -1931,8 +2012,9 @@ pub fn merge_sync_snapshot(
                         category: row.get(2)?,
                         text: row.get(3)?,
                         custom: row.get::<_, i64>(4)? != 0,
-                        updated_at: row.get(5)?,
-                        created_at: row.get(6)?,
+                        sort_order: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        created_at: row.get(7)?,
                     })
                 },
             )
@@ -4362,6 +4444,7 @@ mod tests {
                 category: "work".to_string(),
                 text: "local text".to_string(),
                 custom: true,
+                sort_order: 0,
                 updated_at: 1000,
                 created_at: 500,
             },
@@ -4378,6 +4461,7 @@ mod tests {
                 category: "life".to_string(),
                 text: "remote text".to_string(),
                 custom: true,
+                sort_order: 1,
                 updated_at: 2000,
                 created_at: 500,
             }],
@@ -4397,6 +4481,60 @@ mod tests {
         assert_eq!(prompt.label, "Remote prompt");
         assert_eq!(prompt.category, "life");
         assert!(prompt.updated_at >= 2000);
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn quick_prompt_edit_and_reorder_persist() {
+        let dir = std::env::temp_dir().join(format!("aiwb-quick-edit-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        for (id, label, order) in [
+            ("custom-a", "Alpha", 0),
+            ("custom-b", "Beta", 1),
+            ("builtin-x", "Builtin", 2),
+        ] {
+            upsert_quick_prompt(
+                &conn,
+                &QuickPrompt {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                    category: "work".to_string(),
+                    text: format!("{label} text"),
+                    custom: id.starts_with("custom"),
+                    sort_order: order,
+                    updated_at: 1000,
+                    created_at: 500,
+                },
+            )
+            .unwrap();
+        }
+
+        let updated =
+            update_custom_quick_prompt(&conn, "custom-a", "Alpha edited", "life", "new text")
+                .unwrap();
+        assert_eq!(updated.label, "Alpha edited");
+        assert_eq!(updated.category, "life");
+        assert_eq!(updated.text, "new text");
+        assert!(updated.updated_at > 1000);
+        assert!(update_custom_quick_prompt(&conn, "builtin-x", "x", "work", "x").is_err());
+
+        reorder_custom_quick_prompts(&conn, &["custom-b".to_string(), "custom-a".to_string()])
+            .unwrap();
+        let prompts = list_quick_prompts(&conn).unwrap();
+        let alpha = prompts.iter().find(|p| p.id == "custom-a").unwrap();
+        let beta = prompts.iter().find(|p| p.id == "custom-b").unwrap();
+        assert_eq!(alpha.sort_order, 1);
+        assert_eq!(beta.sort_order, 0);
+        assert_eq!(
+            prompts
+                .iter()
+                .find(|p| p.id == "builtin-x")
+                .unwrap()
+                .sort_order,
+            2
+        );
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }

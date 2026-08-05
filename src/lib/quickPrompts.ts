@@ -4,6 +4,7 @@ export type QuickPrompt = {
   category: string;
   text: string;
   custom?: boolean;
+  order?: number;
   updatedAt?: number;
   createdAt?: number;
 };
@@ -88,7 +89,11 @@ export function loadQuickPromptsByUsage(): QuickPrompt[] {
   const usage = getQuickPromptUsage();
   return loadQuickPrompts()
     .map((prompt, index) => ({ prompt, index, count: usage[prompt.id] ?? 0 }))
-    .sort((a, b) => b.count - a.count || a.index - b.index)
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        (a.prompt.order ?? a.index) - (b.prompt.order ?? b.index),
+    )
     .map((entry) => entry.prompt);
 }
 
@@ -114,6 +119,11 @@ export function addCustomQuickPrompt(
     category,
     text,
     custom: true,
+    order:
+      listCustomQuickPrompts().reduce(
+        (max, existing) => Math.max(max, existing.order ?? 0),
+        0,
+      ) + 1,
     updatedAt: Date.now(),
     createdAt: Date.now(),
   };
@@ -122,6 +132,39 @@ export function addCustomQuickPrompt(
     JSON.stringify([...listCustomQuickPrompts(), prompt]),
   );
   return prompt;
+}
+
+export function updateCustomQuickPrompt(
+  id: string,
+  label: string,
+  category: string,
+  text: string,
+): CustomQuickPrompt {
+  const prompts = listCustomQuickPrompts();
+  const index = prompts.findIndex((prompt) => prompt.id === id);
+  if (index < 0) throw new Error(`custom quick prompt not found: ${id}`);
+  const updated: CustomQuickPrompt = {
+    ...prompts[index],
+    label,
+    category,
+    text,
+    updatedAt: Date.now(),
+  };
+  prompts[index] = updated;
+  localStorage.setItem(QUICK_PROMPT_LS_KEY, JSON.stringify(prompts));
+  return updated;
+}
+
+export function reorderCustomQuickPrompts(ids: string[]): number {
+  const prompts = listCustomQuickPrompts();
+  const byId = new Map(prompts.map((prompt) => [prompt.id, prompt]));
+  const next = ids
+    .map((id) => byId.get(id))
+    .filter((prompt): prompt is CustomQuickPrompt => !!prompt)
+    .map((prompt, index) => ({ ...prompt, order: index, updatedAt: Date.now() }));
+  const remaining = prompts.filter((prompt) => !ids.includes(prompt.id));
+  localStorage.setItem(QUICK_PROMPT_LS_KEY, JSON.stringify([...remaining, ...next]));
+  return next.length;
 }
 
 export function deleteCustomQuickPrompt(id: string): void {
