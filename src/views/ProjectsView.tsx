@@ -1,9 +1,10 @@
-import { Check, Copy, ExternalLink, FolderKanban, GitBranch, GitMerge, Plus, RefreshCw, Undo2 } from "lucide-react";
+import { Check, Copy, ExternalLink, FolderKanban, GitBranch, GitMerge, Orbit, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { detectLanguage, highlightLine, parseDiffLines, type DiffLineKind } from "../lib/diffHighlight";
 import { useWorkbenchStore } from "../stores/workbenchStore";
 import BentoCard from "../components/ui/BentoCard";
+import ProjectCarousel from "../components/ui/ProjectCarousel";
 import StatPill from "../components/ui/StatPill";
 import ModelBadge from "../components/ui/ModelBadge";
 import { resetTilt, tiltCard } from "../lib/tilt";
@@ -743,6 +744,15 @@ export default function ProjectsView() {
           </div>
         </BentoCard>
       )}
+
+      <BentoCard
+        title="Project carousel"
+        subtitle="Orbit / fan project explorer"
+        icon={Orbit}
+        colSpan={12}
+      >
+        <ProjectCarousel />
+      </BentoCard>
 
       {projects.map((p, i) => (
         <BentoCard

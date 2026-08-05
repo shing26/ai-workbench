@@ -1,6 +1,7 @@
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkbenchStore, type ViewId } from "../../stores/workbenchStore";
+import MaterialDrawer from "./MaterialDrawer";
 import ThemeSwitcher from "../ui/ThemeSwitcher";
 
 const TITLES: Record<ViewId, string> = {
@@ -54,6 +55,7 @@ export default function AppHeader() {
             {activeProvider.name}
           </span>
         )}
+        <MaterialDrawer />
         <ThemeSwitcher />
         <div className="relative">
           <button

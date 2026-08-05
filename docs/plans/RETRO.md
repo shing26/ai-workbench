@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 93
+
+### What went well?
+
+- Projects 新增 Orbit / Fan 双模式项目轮播：Orbit 用 3D 环形定位，Fan 用扇形堆叠，导航支持按钮、滚轮与方向键，卡片内容与选中态清晰。
+- Autoplay 做成显式开关而非默认装饰：rAF 推进、hover / focus 暂停，`prefers-reduced-motion` 下自动关闭，符合“禁止默认持续装饰动画”的约束。
+- Material Settings 抽屉实时调参：preset / opacity / blur 直接改写 CSS 变量与 `data-material-global`，localStorage 持久化，重载后恢复。
+- 顺手修了 Motion DoD 的隐患：Inspector 断言从裸 `aside` 改为 `aside.drawer-panel`，避免新增抽屉后误取元素。
+- `verify:ui` / `verify:preview` 新增 `projectCarousel` / `projectCarouselReduced` / `materialDrawer` lane，dev 与生产构建全部通过。
+
+### What went wrong?
+
+- 新增 `<aside>` 抽屉后，旧的 Inspector 布局断言 `document.querySelector('aside')` 会先命中 Material 抽屉，导致 layoutStable 偶发失败；按 `drawer-panel` 类精确定位后修复。
+- reduced-motion 下全局 `transition-duration: 0.01ms !important` 会覆盖局部 `transition: none`，断言按 `<=0.02s` 判断而不是等 `0s`，与既有 motion 断言口径一致。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Vector Embedding RAG、复杂 Webhook 触发器 / 消息队列式投递。
+- 轮播速度控制、拖拽排序、Material 逐卡独立配色继续留在 Backlog。
+- 保留三个新 lane，改动轮播 / 抽屉或全局 motion 规则时重跑 `verify:ui`。
+
 ## Sprint 92
 
 ### What went well?

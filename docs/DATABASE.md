@@ -649,3 +649,7 @@ ALTER TABLE webhook_rules ADD COLUMN retries INTEGER NOT NULL DEFAULT 1;
 ## Sprint 92：Sync E2E 加密
 
 无表结构变更。E2E 加密只作用于同步 payload：Rust 侧在内存中完成 PBKDF2 + AES-GCM，浏览器侧使用 `ai-workbench:sync-encrypted:v1` 保存加密 envelope，不新增 SQLite 表或字段，也不把 salt / nonce / 口令写入数据库。
+
+## Sprint 93：UI 动效残留补全
+
+无表结构变更。Project 轮播是前端视图状态（`orbit` / `fan` 模式、当前索引、autoplay 开关均不持久化）；Material 设置保存在前端 `ai-workbench:material-settings:v1`，只改 CSS 变量，不新增 SQLite 表或字段。
