@@ -522,3 +522,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 73：Git 活动看板 dirty 文件预览与提交趋势
 
 无表结构变更。`changed_paths` 与 `commit_trend` 均为运行时计算字段：前者来自 `git status --short` 输出，后者来自 `.git/logs/HEAD` 全部行的时间戳，不新增持久化字段。
+
+## Sprint 74：索引队列指数退避
+
+无表结构变更。`retry_delay_ms` 为运行时计算字段，由 `attempts` 按 500ms 基数、2 倍增长、4000ms 封顶推导；`vault_index_queue` 仍只持久化 `attempts / last_error`。

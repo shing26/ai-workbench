@@ -618,6 +618,7 @@ export default function KnowledgeView() {
                 data-vault-index-queue-active={indexQueueStatus.active.path}
                 data-vault-index-queue-active-priority={indexQueueStatus.active.priority}
                 data-vault-index-queue-active-attempts={indexQueueStatus.active.attempts}
+                data-vault-index-queue-active-retry-delay={indexQueueStatus.active.retryDelayMs}
                 className="flex max-w-[240px] items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] text-slate-400"
               >
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full accent-bg" />
@@ -625,7 +626,7 @@ export default function KnowledgeView() {
                 <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[8px] text-slate-500">
                   {indexQueueStatus.active.priority === 1 ? "high" : "normal"}
                   {indexQueueStatus.active.attempts > 0
-                    ? ` retry ${indexQueueStatus.active.attempts}`
+                    ? ` retry ${indexQueueStatus.active.attempts} · ${indexQueueStatus.active.retryDelayMs}ms`
                     : ""}
                 </span>
               </span>
@@ -644,10 +645,13 @@ export default function KnowledgeView() {
                 data-vault-index-queued-path={entry.path}
                 data-vault-index-queue-priority={entry.priority}
                 data-vault-index-queue-attempts={entry.attempts}
+                data-vault-index-queue-retry-delay={entry.retryDelayMs}
                 className="max-w-[180px] truncate rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-500"
               >
                 {entry.path}
-                {entry.attempts > 0 ? ` (retry ${entry.attempts})` : ""}
+                {entry.attempts > 0
+                  ? ` (retry ${entry.attempts} · ${entry.retryDelayMs}ms)`
+                  : ""}
               </span>
             ))}
           </div>
