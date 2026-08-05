@@ -1218,6 +1218,41 @@ try {
   }
   results.remoteSync = remoteSyncCheck;
 
+  const autoSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const toggle = document.querySelector('[data-auto-sync]');
+    if (!toggle) return { ok: false, reason: "no auto sync toggle" };
+    if (toggle.getAttribute("data-auto-sync") === "on") {
+      toggle.click();
+      await sleep(200);
+    }
+    document.querySelector('[data-auto-sync]')?.click();
+    let enabled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      enabled =
+        document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") === "on" &&
+        msg.includes("Auto sync enabled");
+      if (enabled) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-auto-sync]')?.click();
+    let disabled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      disabled =
+        document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") === "off" &&
+        msg.includes("Auto sync disabled");
+      if (disabled) break;
+      await sleep(100);
+    }
+    return { ok: enabled && disabled, enabled, disabled };
+  })()`);
+  if (!autoSyncCheck.ok) {
+    throw new Error(`auto sync assertion failed: ${JSON.stringify(autoSyncCheck)}`);
+  }
+  results.autoSync = autoSyncCheck;
+
   await setViewport(390, 844);
   await clickDock("AI Studio");
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
