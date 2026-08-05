@@ -292,3 +292,19 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolve
 - `resolve_conflict` 裁决后把 `resolved_choice` / `resolved_at` 写回对应未解决记录，保留历史。
 - 新命令：`list_sync_conflicts(status)` 支持 `unresolved` / `resolved` / `all`；`clear_resolved_sync_conflicts` 只清理已解决记录。
 - 浏览器 fallback 用 `ai-workbench:sync-conflicts:v1` 模拟同一行为。
+
+## Sprint 41：Vault watch 配置持久化
+
+```sql
+CREATE TABLE IF NOT EXISTS vault_watch_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    path TEXT NOT NULL DEFAULT '',
+    ignore_patterns TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- `set_vault_watch_config` 以单行 upsert 保存 path、ignore_patterns（换行分隔）、enabled 与 updated_at；`get_vault_watch_config` 在无记录时返回空配置。
+- `start_vault_watch_ex` 成功后写入 enabled=true；`stop_vault_watch` 保留 path/ignore 并写入 enabled=false。
+- Tauri 启动时读取配置，若 enabled 且路径存在则自动重启 watch；浏览器 fallback 用 `ai-workbench:vault-watch:v1` 保存同一配置。

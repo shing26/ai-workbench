@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 41
+
+### What went well?
+
+- Vault watch 配置闭环：`vault_watch_config` 单行表保存 path、ignore_patterns、enabled 与 updated_at，`start_vault_watch_ex` 成功即写入 enabled=true，停止时保留 path/ignore 并写入 enabled=false。
+- Tauri 启动时按配置自动重启 watch，Knowledge 视图挂载时恢复路径与 ignore 输入；浏览器 fallback 用 localStorage 模拟同一行为。
+- 验证覆盖：`cargo test --lib` 41/41，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增开启 watch → reload → 路径/ignore/状态恢复断言，两条 lane 全绿。
+
+### What went wrong?
+
+- `ignore_patterns` 被 watch 事件闭包 move 后无法再保存配置，改为先 clone 一份供配置写入，避免重复持有所有权。
+- UI 断言首次把 reload 逻辑放进页面 evaluate 导致无法调用 CDP 的 reload，拆成「准备 → reload → 检查」三段后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Vault 索引并发数可配置、批量仲裁与三方合并策略、多 vault 并行 watch。
+- 后续改动 Vault watch 时，保留配置恢复与 reload 持久化两条 UI 断言。
+
 ## Sprint 40
 
 ### What went well?
