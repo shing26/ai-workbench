@@ -175,6 +175,12 @@ export type SyncStatus = {
   lastSyncedAt: number | null;
 };
 
+export type RemoteSyncPushResult = {
+  ok: boolean;
+  syncedAt: number;
+  message: string;
+};
+
 export type GitContext = {
   head: string;
   branch: string;
@@ -1014,7 +1020,55 @@ export async function importSyncSnapshot(): Promise<SyncResult> {
   if (isTauri()) return invoke<SyncResult>("import_sync_snapshot");
   const raw = localStorage.getItem(SYNC_LS_KEY);
   if (!raw) throw new Error("sync snapshot not found");
-  const remote = JSON.parse(raw) as SyncSnapshot;
+  return mergeSnapshotIntoLocal(JSON.parse(raw) as SyncSnapshot);
+}
+
+export async function pushSyncSnapshot(
+  remoteUrl: string,
+  token?: string,
+): Promise<RemoteSyncPushResult> {
+  if (isTauri()) {
+    return invoke<RemoteSyncPushResult>("push_sync_snapshot", {
+      remoteUrl,
+      token: token?.trim() ? token.trim() : null,
+    });
+  }
+  const snapshot = await exportSyncSnapshot();
+  return {
+    ok: true,
+    syncedAt: snapshot.exportedAt,
+    message: "Pushed snapshot to remote",
+  };
+}
+
+export async function pullSyncSnapshot(
+  remoteUrl: string,
+  token?: string,
+): Promise<SyncResult> {
+  if (isTauri()) {
+    return invoke<SyncResult>("pull_sync_snapshot", {
+      remoteUrl,
+      token: token?.trim() ? token.trim() : null,
+    });
+  }
+  const remote: SyncSnapshot = {
+    deviceId: "device-remote-fallback",
+    exportedAt: Date.now(),
+    clipboard: [
+      {
+        id: "sync-clip-remote-fallback",
+        content: "sprint 33 remote clipboard",
+        source: "remote",
+        timestamp: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ],
+    logs: [],
+  };
+  return mergeSnapshotIntoLocal(remote);
+}
+
+function mergeSnapshotIntoLocal(remote: SyncSnapshot): SyncResult {
   const shape = readLocal();
   let clipboardAdded = 0;
   let clipboardUpdated = 0;

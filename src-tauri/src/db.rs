@@ -1214,13 +1214,17 @@ pub fn list_error_logs(conn: &Connection) -> Result<Vec<ErrorLog>> {
     rows.collect()
 }
 
-pub fn export_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncSnapshot, String> {
-    let snapshot = SyncSnapshot {
+pub fn build_sync_snapshot(conn: &Connection) -> Result<SyncSnapshot, String> {
+    Ok(SyncSnapshot {
         device_id: uid(),
         exported_at: now_millis(),
         clipboard: list_clipboard(conn).map_err(|e| e.to_string())?,
         logs: list_error_logs(conn).map_err(|e| e.to_string())?,
-    };
+    })
+}
+
+pub fn export_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncSnapshot, String> {
+    let snapshot = build_sync_snapshot(conn)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1232,6 +1236,13 @@ pub fn export_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncSnapsh
 pub fn import_sync_snapshot(conn: &Connection, path: &Path) -> Result<SyncResult, String> {
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let snapshot: SyncSnapshot = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    merge_sync_snapshot(conn, snapshot)
+}
+
+pub fn merge_sync_snapshot(
+    conn: &Connection,
+    snapshot: SyncSnapshot,
+) -> Result<SyncResult, String> {
     let mut clipboard_added = 0;
     let mut clipboard_updated = 0;
     for item in snapshot.clipboard {

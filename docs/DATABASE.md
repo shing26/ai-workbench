@@ -215,3 +215,17 @@ CREATE INDEX IF NOT EXISTS idx_agent_prompt_versions_agent ON agent_prompt_versi
 `knowledge_files` 不再只依赖手动全量扫描。`start_vault_watch(vault_path)` 先全量索引一次，再用 `notify` 递归监听目录；新增/修改 `.md` 自动 `upsert_knowledge_file`，删除自动清理，每次变更通过 `vault-watch-update` 事件推送最新状态。
 
 新增命令：`start_vault_watch` / `stop_vault_watch` / `get_vault_watch_status`。`stop_vault_watch` 停止监听线程但保留已索引文件，RAG 搜索继续可用。
+
+## Sprint 33：跨设备云端同步传输
+
+同步快照合并逻辑从本地文件导入导出中拆出为两个纯函数：
+
+- `build_sync_snapshot(conn)`：读取设备 id、导出时间、`clipboard_history` 与 `error_logs`，生成 `SyncSnapshot`。
+- `merge_sync_snapshot(conn, snapshot)`：按记录 id 判断新增或更新，`updated_at` 较新的一方胜出，返回 `SyncResult`。
+
+`export_sync_snapshot` / `import_sync_snapshot` 继续复用上述函数，行为不变。新增 Tauri 命令：
+
+- `push_sync_snapshot(remote_url, token?)`：构建快照后 PUT JSON 到远端，可选 `Authorization: Bearer <token>`。
+- `pull_sync_snapshot(remote_url, token?)`：GET 远端 JSON 后按同一合并规则写入本地 SQLite。
+
+远端同步不改变本地表结构，剪贴板与错误日志的冲突语义与 Sprint 19 一致：同 id 记录按 `updated_at` 新旧合并。

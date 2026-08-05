@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Users, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, Clipboard, CloudUpload, Download, HeartPulse, History, Pencil, Plus, Radio, RefreshCw, Terminal, Upload, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -27,6 +27,9 @@ export default function SystemView() {
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteToken, setRemoteToken] = useState("");
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentDeptId, setAgentDeptId] = useState("");
@@ -91,15 +94,53 @@ export default function SystemView() {
 
   const exportSync = async () => {
     const snapshot = await db.exportSyncSnapshot();
+    setSyncError(false);
     setSyncMessage(`Exported ${snapshot.clipboard.length} clips / ${snapshot.logs.length} logs`);
   };
 
   const importSync = async () => {
     const result = await db.importSyncSnapshot();
     await refreshSystem();
+    setSyncError(false);
     setLastSyncedAt(result.syncedAt);
     setLastRemoteDevice(result.deviceId);
     setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
+  };
+
+  const pushSync = async () => {
+    if (!remoteUrl.trim()) {
+      setSyncError(true);
+      setSyncMessage("Remote URL required");
+      return;
+    }
+    try {
+      const result = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
+      setSyncError(false);
+      setLastSyncedAt(result.syncedAt);
+      setSyncMessage(result.message);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const pullSync = async () => {
+    if (!remoteUrl.trim()) {
+      setSyncError(true);
+      setSyncMessage("Remote URL required");
+      return;
+    }
+    try {
+      const result = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
+      await refreshSystem();
+      setSyncError(false);
+      setLastSyncedAt(result.syncedAt);
+      setLastRemoteDevice(result.deviceId);
+      setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const check = async (id: string) => {
@@ -293,7 +334,11 @@ export default function SystemView() {
               : "not synced yet"}
           </span>
           {lastRemoteDevice && <span className="text-slate-400">from {lastRemoteDevice.slice(0, 8)}</span>}
-          {syncMessage && <span className="text-emerald-400">{syncMessage}</span>}
+          {syncMessage && (
+            <span data-sync-message className={syncError ? "text-rose-400" : "text-emerald-400"}>
+              {syncMessage}
+            </span>
+          )}
           <span className="ml-auto flex gap-1.5">
             <button
               type="button"
@@ -312,6 +357,37 @@ export default function SystemView() {
               <RefreshCw size={12} /> Import
             </button>
           </span>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            value={remoteUrl}
+            onChange={(e) => setRemoteUrl(e.target.value)}
+            placeholder="Remote URL"
+            className="h-9 min-w-56 flex-[2] rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={remoteToken}
+            onChange={(e) => setRemoteToken(e.target.value)}
+            type="password"
+            placeholder="Bearer token (optional)"
+            className="h-9 min-w-40 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <button
+            type="button"
+            aria-label="Push sync snapshot"
+            onClick={() => void pushSync()}
+            className="flex h-9 items-center gap-1 rounded-lg accent-bg-15 px-2.5 text-[11px] accent-text-strong accent-hover-bg-25"
+          >
+            <Upload size={12} /> Push
+          </button>
+          <button
+            type="button"
+            aria-label="Pull sync snapshot"
+            onClick={() => void pullSync()}
+            className="flex h-9 items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/25"
+          >
+            <Download size={12} /> Pull
+          </button>
         </div>
       </BentoCard>
 
