@@ -458,3 +458,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 模式条新增 `data-rag-confirm-mode` 开关；确认面板带 `data-rag-confirm-panel` / `data-rag-confirm-hit` / `data-rag-confirm-send` / `data-rag-confirm-cancel`，Send 按钮 0 选中禁用。
 - New chat 与会话切换清理待确认内容；普通发送、团队模式、复盘与 regenerate 路径不变。
 - `verify:ui` / `verify:preview` 新增 `ragConfirmSend` lane，覆盖勾选、取消、badge 计数与关闭确认后的直发路径。
+
+## Sprint 92：Sync E2E 加密
+
+- Rust 新增 `encrypt_sync_payload` / `decrypt_sync_payload`：ring 实现 PBKDF2-HMAC-SHA256 100k 次派生 256 位密钥，16 字节 salt，12 字节 nonce，AES-256-GCM，JSON envelope 为 `{v:1, alg:"AES-256-GCM", salt, iv, ciphertext}`。
+- 新增 Tauri 命令：`encrypt_sync_payload_command` / `decrypt_sync_payload_command` / `export_encrypted_sync_snapshot` / `import_encrypted_sync_snapshot`；`push_sync_snapshot` / `pull_sync_snapshot` 增加可选 `passphrase`，加密时走 `push_sync_payload_http` / `pull_sync_payload_http`。
+- `db.ts` 新增 `SyncEnvelope` / `encryptSyncPayload` / `decryptSyncPayload` / `exportEncryptedSyncSnapshot` / `importEncryptedSyncSnapshot`；浏览器 fallback 用 Web Crypto 镜像同一算法，localStorage key 为 `ai-workbench:sync-encrypted:v1`。
+- System Sync card 新增 `data-sync-e2e-toggle` / `data-sync-passphrase` / `data-sync-e2e-status`，export / import / push / pull / auto sync 全部支持口令加密；`syncErrorMessage` 兜底空 message 的 DOMException。
+- `verify:ui` / `verify:preview` 新增 `syncE2e` lane：导出加密快照、envelope 无明文、加密导入、错误口令失败、加密 push 成功提示。

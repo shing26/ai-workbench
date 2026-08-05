@@ -32,6 +32,14 @@ function resolveAuditRange(
   return {};
 }
 
+function syncErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  const name = err && typeof err === "object" && "name" in err ? String(err.name) : "";
+  const message = err instanceof Error ? err.message : "";
+  if (name) return message ? `${name}: ${message}` : `Operation failed (${name})`;
+  return message || String(err ?? "Unknown sync error");
+}
+
 export default function SystemView() {
   const providers = useWorkbenchStore((s) => s.providers);
   const addProvider = useWorkbenchStore((s) => s.addProvider);
@@ -65,6 +73,8 @@ export default function SystemView() {
   const [syncError, setSyncError] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteToken, setRemoteToken] = useState("");
+  const [syncEncryptEnabled, setSyncEncryptEnabled] = useState(false);
+  const [syncPassphrase, setSyncPassphrase] = useState("");
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
   const [autoSyncInterval, setAutoSyncInterval] = useState("60");
   const [syncConflicts, setSyncConflicts] = useState<db.SyncConflictRecord[]>([]);
@@ -156,20 +166,36 @@ export default function SystemView() {
   };
 
   const exportSync = async () => {
-    const snapshot = await db.exportSyncSnapshot();
     setSyncError(false);
-    setSyncMessage(`Exported ${snapshot.clipboard.length} clips / ${snapshot.logs.length} logs`);
+    if (syncEncryptEnabled && syncPassphrase.trim()) {
+      await db.exportEncryptedSyncSnapshot(syncPassphrase.trim());
+      setSyncMessage("Exported encrypted snapshot");
+    } else {
+      const snapshot = await db.exportSyncSnapshot();
+      setSyncMessage(`Exported ${snapshot.clipboard.length} clips / ${snapshot.logs.length} logs`);
+    }
   };
 
   const importSync = async () => {
-    const result = await db.importSyncSnapshot();
-    await refreshSystem();
-    await loadConflicts();
-    await loadAudit();
-    setSyncError(false);
-    setLastSyncedAt(result.syncedAt);
-    setLastRemoteDevice(result.deviceId);
-    setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
+    try {
+      const result = syncEncryptEnabled && syncPassphrase.trim()
+        ? await db.importEncryptedSyncSnapshot(syncPassphrase.trim())
+        : await db.importSyncSnapshot();
+      await refreshSystem();
+      await loadConflicts();
+      await loadAudit();
+      setSyncError(false);
+      setLastSyncedAt(result.syncedAt);
+      setLastRemoteDevice(result.deviceId);
+      setSyncMessage(
+        syncEncryptEnabled && syncPassphrase.trim()
+          ? `Merged encrypted +${result.clipboardAdded} clips +${result.logsAdded} logs`
+          : `Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`,
+      );
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(syncErrorMessage(err));
+    }
   };
 
   const pushSync = async () => {
@@ -179,13 +205,17 @@ export default function SystemView() {
       return;
     }
     try {
-      const result = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
+      const result = await db.pushSyncSnapshot(
+        remoteUrl.trim(),
+        remoteToken,
+        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+      );
       setSyncError(false);
       setLastSyncedAt(result.syncedAt);
       setSyncMessage(result.message);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -196,7 +226,11 @@ export default function SystemView() {
       return;
     }
     try {
-      const result = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
+      const result = await db.pullSyncSnapshot(
+        remoteUrl.trim(),
+        remoteToken,
+        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+      );
       await refreshSystem();
       await loadConflicts();
       await loadAudit();
@@ -206,24 +240,32 @@ export default function SystemView() {
       setSyncMessage(`Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
   const runAutoSync = async () => {
     if (!remoteUrl.trim()) return;
     try {
-      const pulled = await db.pullSyncSnapshot(remoteUrl.trim(), remoteToken);
+      const pulled = await db.pullSyncSnapshot(
+        remoteUrl.trim(),
+        remoteToken,
+        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+      );
       await refreshSystem();
       await loadConflicts();
       await loadAudit();
-      const pushed = await db.pushSyncSnapshot(remoteUrl.trim(), remoteToken);
+      const pushed = await db.pushSyncSnapshot(
+        remoteUrl.trim(),
+        remoteToken,
+        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+      );
       setSyncError(false);
       setLastSyncedAt(pushed.syncedAt);
       setLastRemoteDevice(pulled.deviceId);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -401,7 +443,7 @@ export default function SystemView() {
       setAuditExportMessage(message);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -418,7 +460,7 @@ export default function SystemView() {
       setSyncMessage(message);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -433,7 +475,7 @@ export default function SystemView() {
       setSyncMessage(`Resolved ${count} conflict(s) with ${choice}`);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -447,7 +489,7 @@ export default function SystemView() {
       setSyncMessage(message);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -462,7 +504,7 @@ export default function SystemView() {
       setSyncMessage(`Merged ${count} conflict(s) with union`);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -476,7 +518,7 @@ export default function SystemView() {
       setSyncMessage(message);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -491,7 +533,7 @@ export default function SystemView() {
       setSyncMessage(`Merged ${count} conflict(s) with fields`);
     } catch (err) {
       setSyncError(true);
-      setSyncMessage(err instanceof Error ? err.message : String(err));
+      setSyncMessage(syncErrorMessage(err));
     }
   };
 
@@ -840,6 +882,38 @@ export default function SystemView() {
       </BentoCard>
 
       <BentoCard title="Sync snapshot" subtitle="剪贴板与日志跨设备同步" icon={CloudUpload} colSpan={12}>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <label className="flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-400">
+            <input
+              type="checkbox"
+              data-sync-e2e-toggle
+              checked={syncEncryptEnabled}
+              onChange={(e) => setSyncEncryptEnabled(e.target.checked)}
+              className="h-3 w-3 accent-violet-400"
+            />
+            E2E encrypt
+          </label>
+          {syncEncryptEnabled && (
+            <input
+              type="password"
+              value={syncPassphrase}
+              onChange={(e) => setSyncPassphrase(e.target.value)}
+              placeholder="Passphrase"
+              data-sync-passphrase
+              className="h-7 w-52 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-violet-500/40 placeholder:text-slate-600"
+            />
+          )}
+          <span
+            data-sync-e2e-status
+            className={
+              syncEncryptEnabled && syncPassphrase.trim()
+                ? "rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300"
+                : "text-[9px] text-slate-600"
+            }
+          >
+            {syncEncryptEnabled && syncPassphrase.trim() ? "encrypted" : "plain"}
+          </span>
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
           <span className="rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5">
             device {deviceId.slice(0, 8)}

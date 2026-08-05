@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 92
+
+### What went well?
+
+- 同步快照升级为 AES-256-GCM 端到端加密：Rust 用 `ring`（PBKDF2 100k + AES-GCM），浏览器用 Web Crypto，两侧共享 `{v, alg, salt, iv, ciphertext}` envelope，导出文件可跨侧还原。
+- `push_sync_snapshot` / `pull_sync_snapshot` 增加可选 `passphrase`，导出 / 导入 / push / pull / auto sync 全链路统一支持加密；System Sync card 新增 E2E 开关、口令输入与状态徽标。
+- 新增 4 个 Tauri 命令与 3 条 Rust 单测；`verify:ui` / `verify:preview` 新增 `syncE2e` lane，覆盖导出、导入、错误口令拒绝与加密 push。
+- 发现并修复 Chromium DOMException `message` 为空导致错误被吞的问题：`syncErrorMessage` 兜底显示 `Operation failed (OperationError)`。
+
+### What went wrong?
+
+- 浏览器 AES-GCM 错误口令抛出的 DOMException `message` 为空字符串，初版 UI 把空字符串当作成功消息隐藏；补齐错误名兜底后修复。
+- `syncE2e` lane 结束后若保持 E2E 开关打开，后续结构化冲突 lane 会误走加密导入路径；lane 收尾改为清空口令并关闭开关。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、Vector Embedding RAG、跨文件命中选器。
+- 口令强度检查、导出前确认、多设备口令交换与密钥轮换继续留在 Backlog。
+- 保留 `syncE2e` 断言，改动加密协议或 Sync UI 时重跑 `verify:ui`。
+
 ## Sprint 91
 
 ### What went well?

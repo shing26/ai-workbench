@@ -1,5 +1,9 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use ring::pbkdf2;
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -2514,6 +2518,86 @@ fn webhook_signature(secret: &str, payload: &str) -> String {
         .collect::<String>()
 }
 
+const SYNC_PBKDF2_ITERATIONS: u32 = 100_000;
+const SYNC_SALT_LEN: usize = 16;
+const SYNC_NONCE_LEN: usize = 12;
+
+fn derive_sync_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+    let mut key = [0u8; 32];
+    let iterations =
+        std::num::NonZeroU32::new(SYNC_PBKDF2_ITERATIONS).expect("iterations must be non-zero");
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        salt,
+        passphrase.as_bytes(),
+        &mut key,
+    );
+    Ok(key)
+}
+
+fn encrypt_sync_payload(payload: &str, passphrase: &str) -> Result<String, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let rng = SystemRandom::new();
+    let mut salt = [0u8; SYNC_SALT_LEN];
+    let mut nonce_bytes = [0u8; SYNC_NONCE_LEN];
+    rng.fill(&mut salt)
+        .map_err(|e| format!("Random salt failed: {}", e))?;
+    rng.fill(&mut nonce_bytes)
+        .map_err(|e| format!("Random nonce failed: {}", e))?;
+    let key = derive_sync_key(passphrase, &salt)?;
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, &key).map_err(|e| format!("Key setup failed: {}", e))?;
+    let sealing_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut in_out = payload.as_bytes().to_vec();
+    sealing_key
+        .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    let envelope = serde_json::json!({
+        "v": 1,
+        "alg": "AES-256-GCM",
+        "salt": BASE64.encode(salt),
+        "iv": BASE64.encode(nonce_bytes),
+        "ciphertext": BASE64.encode(&in_out),
+    });
+    serde_json::to_string(&envelope).map_err(|e| format!("Envelope serialization failed: {}", e))
+}
+
+fn decrypt_sync_payload(envelope: &str, passphrase: &str) -> Result<String, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let parsed: Value =
+        serde_json::from_str(envelope).map_err(|_| "Invalid encrypted payload".to_string())?;
+    if parsed["v"] != 1 || parsed["alg"] != "AES-256-GCM" {
+        return Err("Unsupported encrypted payload".to_string());
+    }
+    let salt = BASE64
+        .decode(parsed["salt"].as_str().unwrap_or_default())
+        .map_err(|_| "Invalid salt".to_string())?;
+    let nonce_bytes: [u8; SYNC_NONCE_LEN] = BASE64
+        .decode(parsed["iv"].as_str().unwrap_or_default())
+        .map_err(|_| "Invalid iv".to_string())?
+        .try_into()
+        .map_err(|_| "Invalid iv length".to_string())?;
+    let mut ciphertext = BASE64
+        .decode(parsed["ciphertext"].as_str().unwrap_or_default())
+        .map_err(|_| "Invalid ciphertext".to_string())?;
+    let key = derive_sync_key(passphrase, &salt)?;
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, &key).map_err(|e| format!("Key setup failed: {}", e))?;
+    let opening_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let plaintext = opening_key
+        .open_in_place(nonce, Aad::empty(), &mut ciphertext)
+        .map_err(|_| "Decryption failed: wrong passphrase or corrupted payload".to_string())?;
+    String::from_utf8(plaintext.to_vec())
+        .map_err(|_| "Decrypted payload is not valid UTF-8".to_string())
+}
+
 #[tauri::command]
 fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Result<(), String> {
     state.mark(&run_id);
@@ -3803,13 +3887,16 @@ fn resolve_rebase_conflicts(
     Err(truncate_error(format!("{}{}", stdout, stderr).trim()))
 }
 
-fn push_sync_snapshot_http(
-    snapshot: &db::SyncSnapshot,
+fn push_sync_payload_http(
+    payload: &str,
     remote_url: &str,
     token: Option<&str>,
-) -> Result<RemoteSyncPushResult, String> {
+) -> Result<(), String> {
     let client = reqwest::blocking::Client::new();
-    let mut request = client.put(remote_url).json(snapshot);
+    let mut request = client
+        .put(remote_url)
+        .header("Content-Type", "application/json")
+        .body(payload.to_string());
     if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
         request = request.header("Authorization", format!("Bearer {}", token));
     }
@@ -3823,6 +3910,17 @@ fn push_sync_snapshot_http(
             resp.text().unwrap_or_default()
         ));
     }
+    Ok(())
+}
+
+fn push_sync_snapshot_http(
+    snapshot: &db::SyncSnapshot,
+    remote_url: &str,
+    token: Option<&str>,
+) -> Result<RemoteSyncPushResult, String> {
+    let payload = serde_json::to_string(snapshot)
+        .map_err(|e| format!("Snapshot serialization failed: {}", e))?;
+    push_sync_payload_http(&payload, remote_url, token)?;
     Ok(RemoteSyncPushResult {
         ok: true,
         synced_at: snapshot.exported_at,
@@ -3830,10 +3928,7 @@ fn push_sync_snapshot_http(
     })
 }
 
-fn pull_sync_snapshot_http(
-    remote_url: &str,
-    token: Option<&str>,
-) -> Result<db::SyncSnapshot, String> {
+fn pull_sync_payload_http(remote_url: &str, token: Option<&str>) -> Result<String, String> {
     let client = reqwest::blocking::Client::new();
     let mut request = client.get(remote_url);
     if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
@@ -3849,8 +3944,16 @@ fn pull_sync_snapshot_http(
             resp.text().unwrap_or_default()
         ));
     }
-    resp.json::<db::SyncSnapshot>()
-        .map_err(|e| format!("Invalid remote snapshot: {}", e))
+    resp.text()
+        .map_err(|e| format!("Failed to read remote snapshot: {}", e))
+}
+
+fn pull_sync_snapshot_http(
+    remote_url: &str,
+    token: Option<&str>,
+) -> Result<db::SyncSnapshot, String> {
+    let body = pull_sync_payload_http(remote_url, token)?;
+    serde_json::from_str(&body).map_err(|e| format!("Invalid remote snapshot: {}", e))
 }
 
 fn deliver_webhook_http(
@@ -4075,10 +4178,22 @@ fn push_sync_snapshot(
     state: State<'_, db::Db>,
     remote_url: String,
     token: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<RemoteSyncPushResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let snapshot = db::build_sync_snapshot(&conn).map_err(|e| e.to_string())?;
     drop(conn);
+    if let Some(secret) = passphrase.filter(|pass| !pass.trim().is_empty()) {
+        let payload = serde_json::to_string(&snapshot)
+            .map_err(|e| format!("Snapshot serialization failed: {}", e))?;
+        let envelope = encrypt_sync_payload(&payload, &secret)?;
+        push_sync_payload_http(&envelope, &remote_url, token.as_deref())?;
+        return Ok(RemoteSyncPushResult {
+            ok: true,
+            synced_at: snapshot.exported_at,
+            message: "Pushed encrypted snapshot to remote".to_string(),
+        });
+    }
     push_sync_snapshot_http(&snapshot, &remote_url, token.as_deref())
 }
 
@@ -4087,8 +4202,63 @@ fn pull_sync_snapshot(
     state: State<'_, db::Db>,
     remote_url: String,
     token: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<db::SyncResult, String> {
-    let snapshot = pull_sync_snapshot_http(&remote_url, token.as_deref())?;
+    let payload = if let Some(secret) = passphrase.filter(|pass| !pass.trim().is_empty()) {
+        let envelope = pull_sync_payload_http(&remote_url, token.as_deref())?;
+        decrypt_sync_payload(&envelope, &secret)?
+    } else {
+        let snapshot = pull_sync_snapshot_http(&remote_url, token.as_deref())?;
+        serde_json::to_string(&snapshot)
+            .map_err(|e| format!("Snapshot serialization failed: {}", e))?
+    };
+    let snapshot: db::SyncSnapshot =
+        serde_json::from_str(&payload).map_err(|e| format!("Invalid remote snapshot: {}", e))?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::merge_sync_snapshot(&conn, snapshot).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn encrypt_sync_payload_command(payload: String, passphrase: String) -> Result<String, String> {
+    encrypt_sync_payload(&payload, &passphrase)
+}
+
+#[tauri::command]
+fn decrypt_sync_payload_command(envelope: String, passphrase: String) -> Result<String, String> {
+    decrypt_sync_payload(&envelope, &passphrase)
+}
+
+#[tauri::command]
+fn export_encrypted_sync_snapshot(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    passphrase: String,
+) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snapshot = db::export_sync_snapshot(&conn, &dir.join("sync-snapshot.json"))
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    let payload = serde_json::to_string(&snapshot)
+        .map_err(|e| format!("Snapshot serialization failed: {}", e))?;
+    let envelope = encrypt_sync_payload(&payload, &passphrase)?;
+    fs::write(dir.join("sync-snapshot.enc.json"), &envelope)
+        .map_err(|e| format!("Failed to write encrypted snapshot: {}", e))?;
+    Ok(envelope)
+}
+
+#[tauri::command]
+fn import_encrypted_sync_snapshot(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    passphrase: String,
+) -> Result<db::SyncResult, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let envelope = fs::read_to_string(dir.join("sync-snapshot.enc.json"))
+        .map_err(|_| "Encrypted sync snapshot not found".to_string())?;
+    let payload = decrypt_sync_payload(&envelope, &passphrase)?;
+    let snapshot: db::SyncSnapshot =
+        serde_json::from_str(&payload).map_err(|e| format!("Invalid encrypted snapshot: {}", e))?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::merge_sync_snapshot(&conn, snapshot).map_err(|e| e.to_string())
 }
@@ -4414,6 +4584,10 @@ pub fn run() {
             get_error_log_summary,
             export_sync_snapshot,
             import_sync_snapshot,
+            encrypt_sync_payload_command,
+            decrypt_sync_payload_command,
+            export_encrypted_sync_snapshot,
+            import_encrypted_sync_snapshot,
             push_sync_snapshot,
             pull_sync_snapshot,
             resolve_sync_conflict,
@@ -5865,6 +6039,47 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.synced_at, 1234);
         assert!(server.join().unwrap(), "Authorization header missing");
+    }
+
+    #[test]
+    fn sync_encrypt_decrypt_roundtrip() {
+        let payload = r#"{"deviceId":"device-a","exportedAt":1234,"clipboard":[],"logs":[],"quickPrompts":[],"quickPromptUsage":[]}"#;
+        let envelope = encrypt_sync_payload(payload, "test-passphrase").unwrap();
+        assert!(envelope.contains("AES-256-GCM"));
+        assert!(!envelope.contains("device-a"));
+        let decrypted = decrypt_sync_payload(&envelope, "test-passphrase").unwrap();
+        assert_eq!(decrypted, payload);
+    }
+
+    #[test]
+    fn sync_decrypt_wrong_passphrase_fails() {
+        let envelope = encrypt_sync_payload("secret sync content", "right-pass").unwrap();
+        let err = decrypt_sync_payload(&envelope, "wrong-pass").unwrap_err();
+        assert!(err.contains("Decryption failed"), "{}", err);
+    }
+
+    #[test]
+    fn push_sync_payload_http_posts_encrypted_body() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let envelope =
+            encrypt_sync_payload(r#"{"deviceId":"device-e2e","exportedAt":99}"#, "test-pass")
+                .unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request_until(&mut stream, "AES-256-GCM");
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = stream.write_all(response.as_bytes());
+            (
+                request.contains("AES-256-GCM"),
+                request.contains("device-e2e"),
+            )
+        });
+        push_sync_payload_http(&envelope, &format!("http://{}", addr), None).unwrap();
+        let (has_alg, has_plaintext) = server.join().unwrap();
+        assert!(has_alg, "expected encrypted envelope body");
+        assert!(!has_plaintext, "plaintext leaked in request body");
     }
 
     #[test]
