@@ -119,6 +119,8 @@ Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周�
 
 Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
 
+Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`，磁盘文件缺失或索引后过期会在 Document status 面板显示徽标。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。
@@ -275,3 +277,8 @@ Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document stat
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
 - Knowledge Vault Index 卡片新增 Document status 区：数量徽标、vault 过滤下拉与文档列表，watch / 索引完成后自动刷新。
 - 浏览器 fallback 按 watch target 路径前缀推断文档归属 vault，与 Rust 目标级语义一致。
+
+## Sprint 64：文档存在性与过期检测
+
+- `list_knowledge_files` 每条记录计算 `exists`（`Path::exists`）与 `stale`（mtime 比 `indexed_at` 晚超过 1 秒）。
+- Document status 面板新增 ok / stale / missing 状态徽标与 missing / stale 计数；浏览器 fallback 返回 `exists: true, stale: false`。

@@ -357,6 +357,8 @@ export type KnowledgeFileRecord = {
   tags: string;
   vaultPath: string;
   indexedAt: number;
+  exists: boolean;
+  stale: boolean;
 };
 
 export type VaultWatchConfig = {
@@ -2237,6 +2239,8 @@ export async function listKnowledgeFiles(
       tags: file.tags,
       vaultPath: inferVault(file.path),
       indexedAt: file.indexedAt ?? 0,
+      exists: true,
+      stale: false,
     }));
 }
 
