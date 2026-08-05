@@ -1,4 +1,4 @@
-import { BookOpen, FolderOpen, Plus, RefreshCw, Search } from "lucide-react";
+import { BookOpen, FolderOpen, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import * as db from "../lib/db";
@@ -21,6 +21,7 @@ export default function KnowledgeView() {
   const [indexConcurrency, setIndexConcurrency] = useState("4");
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
+  const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
   const [lastIgnored, setLastIgnored] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -45,6 +46,7 @@ export default function KnowledgeView() {
 
   useEffect(() => {
     void db.getVaultWatchStatus().then(setWatchStatus);
+    void db.listVaultWatchTargets().then(setVaultTargets);
   }, []);
 
   useEffect(() => {
@@ -124,29 +126,53 @@ export default function KnowledgeView() {
     setLastIgnored(result.ignored);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
-    await db.setVaultWatchConfig({
+    await db.upsertVaultWatchTarget({
       path: vaultPath.trim(),
       ignorePatterns: parseIgnore(),
-      enabled: watchStatus?.watching ?? false,
+      enabled: watchStatus?.paths?.includes(vaultPath.trim()) ?? false,
       updatedAt: Date.now(),
     });
+    setVaultTargets(await db.listVaultWatchTargets());
+  };
+
+  const loadTargets = async () => {
+    setVaultTargets(await db.listVaultWatchTargets());
+    setWatchStatus(await db.getVaultWatchStatus());
   };
 
   const toggleWatch = async () => {
-    if (!vaultPath.trim() && !watchStatus?.watching) return;
-    const next = watchStatus?.watching
-      ? await db.stopVaultWatch()
+    const currentWatching =
+      watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
+    if (!vaultPath.trim() && !currentWatching) return;
+    const next = currentWatching
+      ? await db.stopVaultWatch(vaultPath.trim() || undefined)
       : await db.startVaultWatch(vaultPath.trim(), parseIgnore());
     setWatchStatus(next);
-    await db.setVaultWatchConfig({
-      path: next.path ?? vaultPath.trim(),
-      ignorePatterns: parseIgnore(),
-      enabled: next.watching,
-      updatedAt: Date.now(),
-    });
+    setVaultTargets(await db.listVaultWatchTargets());
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
+
+  const toggleTargetWatch = async (target: db.VaultWatchTarget) => {
+    const active = watchStatus?.paths?.includes(target.path) ?? target.enabled;
+    const next = active
+      ? await db.stopVaultWatch(target.path)
+      : await db.startVaultWatch(target.path, target.ignorePatterns);
+    setWatchStatus(next);
+    setVaultTargets(await db.listVaultWatchTargets());
+    setVaultStatus(await db.getKnowledgeIndexStatus());
+    setIndexStatus(await db.getRagIndexStatus());
+  };
+
+  const removeTarget = async (target: db.VaultWatchTarget) => {
+    await db.deleteVaultWatchTarget(target.path);
+    await loadTargets();
+    setVaultStatus(await db.getKnowledgeIndexStatus());
+    setIndexStatus(await db.getRagIndexStatus());
+  };
+
+  const currentWatching =
+    watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 p-4">
@@ -207,18 +233,25 @@ export default function KnowledgeView() {
           <button
             type="button"
             onClick={() => void toggleWatch()}
-            data-vault-watch={watchStatus?.watching ? "on" : "off"}
+            data-vault-watch={currentWatching ? "on" : "off"}
             className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
           >
-            <RefreshCw size={14} className={watchStatus?.watching ? "animate-spin" : ""} />
-            {watchStatus?.watching ? "Stop watch" : "Watch vault"}
+            <RefreshCw size={14} className={currentWatching ? "animate-spin" : ""} />
+            {currentWatching ? "Stop watch" : "Watch vault"}
           </button>
-          <span data-vault-watch-status={watchStatus?.watching ? "on" : "off"}>
+          <span data-vault-watch-status={currentWatching ? "on" : "off"}>
             <ModelBadge
               label="Watch"
               tone="green"
-              status={watchStatus?.watching ? "watching" : "off"}
-              pulse={watchStatus?.watching}
+              status={currentWatching ? "watching" : "off"}
+              pulse={currentWatching}
+            />
+          </span>
+          <span data-vault-watch-count={watchStatus?.paths?.length ?? 0}>
+            <ModelBadge
+              label="Active"
+              tone="green"
+              status={`${watchStatus?.paths?.length ?? 0} vault(s)`}
             />
           </span>
           <span data-vault-files={vaultStatus?.files ?? 0}>
@@ -258,6 +291,54 @@ export default function KnowledgeView() {
             Skipped {lastIgnored}
           </span>
         </div>
+        {vaultTargets.length > 0 && (
+          <div data-vault-target-list className="mt-3 space-y-1.5">
+            {vaultTargets.map((target) => {
+              const targetWatching =
+                watchStatus?.paths?.includes(target.path) ?? target.enabled;
+              return (
+                <div
+                  key={target.path}
+                  data-vault-target
+                  data-vault-target-path={target.path}
+                  data-vault-target-watch={targetWatching ? "on" : "off"}
+                  className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
+                    {target.path}
+                  </span>
+                  {target.ignorePatterns.length > 0 && (
+                    <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">
+                      {target.ignorePatterns.length} pattern(s)
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    data-vault-target-toggle
+                    aria-label={`Toggle watch ${target.path}`}
+                    onClick={() => void toggleTargetWatch(target)}
+                    className={`flex h-6 items-center rounded-md px-2 text-[9px] ${
+                      targetWatching
+                        ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
+                        : "bg-white/5 text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {targetWatching ? "Stop" : "Watch"}
+                  </button>
+                  <button
+                    type="button"
+                    data-vault-target-remove
+                    aria-label={`Remove vault ${target.path}`}
+                    onClick={() => void removeTarget(target)}
+                    className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </BentoCard>
 
       <div className="grid min-h-0 flex-1 grid-cols-12 gap-4">

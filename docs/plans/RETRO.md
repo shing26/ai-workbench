@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 44
+
+### What went well?
+
+- Vault watch 从单实例升级为多目标并行：`vault_watch_targets` 表按 path 主键保存 ignore 与启用状态，旧 `vault_watch_config` 单行在 `init_connection` 自动迁移，旧命令保留兼容。
+- `VaultWatchState.active` 改为 watcher 列表，启动只替换同路径实例、其他实例继续运行，`stop_vault_watch(path?)` 支持按路径停止与全停，`restore_vault_watch` 遍历 enabled 目标逐个恢复。
+- Knowledge Vault Index 新增目标列表：每行独立 Watch / Stop / Remove，Active badge 展示并行 watcher 数；单测覆盖双目录并行索引与目标 CRUD/迁移。
+- 验证覆盖：`cargo test --lib` 45/45，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增第二个 vault 开启、双目标同时 on、计数 2、全部停止断言，两条 lane 全绿。
+
+### What went wrong?
+
+- reduced-motion 断言偶发在 media query 重算前采样到 tilt 默认 matrix3d；改为轮询等待 `tiltTransform === "none"` 后稳定通过，顺带把 motion 失败信息完整输出便于定位。
+
+### Action Items
+
+- 下一 Sprint 候选：并发数随设备配置自动调优、批量仲裁加入同步审计/事件日志、目标级索引统计、三方合并策略。
+- 后续改动 watch 协议时，保留双 vault 并行 UI 断言与目标表迁移单测。
+
 ## Sprint 43
 
 ### What went well?

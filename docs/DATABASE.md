@@ -309,6 +309,22 @@ CREATE TABLE IF NOT EXISTS vault_watch_config (
 - `start_vault_watch_ex` 成功后写入 enabled=true；`stop_vault_watch` 保留 path/ignore 并写入 enabled=false。
 - Tauri 启动时读取配置，若 enabled 且路径存在则自动重启 watch；浏览器 fallback 用 `ai-workbench:vault-watch:v1` 保存同一配置。
 
+## Sprint 44：多 vault 并行 watch
+
+```sql
+CREATE TABLE IF NOT EXISTS vault_watch_targets (
+    path TEXT PRIMARY KEY,
+    ignore_patterns TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- `init_connection` 自动把旧 `vault_watch_config` 单行迁移为 `vault_watch_targets` 的第一个目标（`INSERT OR IGNORE`，重复运行安全），旧表与 `get/set_vault_watch_config` 保留兼容。
+- 新命令：`list_vault_watch_targets` 按 path 排序返回全部目标；`upsert_vault_watch_target` 按 path upsert；`set_vault_watch_target_enabled` 更新启用状态；`delete_vault_watch_target` 删除目标并返回是否删除。
+- Rust 运行层 `VaultWatchState.active` 改为 watcher 列表，启动时只替换同路径实例，停止支持单路径与全停；应用启动时遍历 enabled 目标逐个恢复。
+- 浏览器 fallback 用 `ai-workbench:vault-watch-targets:v1` 保存目标数组，并同步旧单行键保证兼容。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。

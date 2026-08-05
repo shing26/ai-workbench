@@ -276,7 +276,15 @@ export type KnowledgeIndexStatus = {
 export type VaultWatchStatus = {
   watching: boolean;
   path: string | null;
+  paths: string[];
   files: number;
+  updatedAt: number;
+};
+
+export type VaultWatchTarget = {
+  path: string;
+  ignorePatterns: string[];
+  enabled: boolean;
   updatedAt: number;
 };
 
@@ -295,6 +303,7 @@ export type IndexResult = {
 const LS_KEY = "ai-workbench:db:v1";
 const VAULT_LS_KEY = "ai-workbench:vault:v1";
 const VAULT_WATCH_LS_KEY = "ai-workbench:vault-watch:v1";
+const VAULT_WATCH_TARGETS_LS_KEY = "ai-workbench:vault-watch-targets:v1";
 
 type LocalShape = {
   tasks: Task[];
@@ -1392,6 +1401,40 @@ type VaultWatchRecord = {
   ignorePatterns: string[];
 };
 
+function readVaultWatchTargets(): VaultWatchTarget[] {
+  try {
+    const raw = localStorage.getItem(VAULT_WATCH_TARGETS_LS_KEY);
+    if (raw) return JSON.parse(raw) as VaultWatchTarget[];
+  } catch {
+    // fall through to legacy migration
+  }
+  const legacy = readVaultWatch();
+  if (legacy.path) {
+    return [
+      {
+        path: legacy.path,
+        ignorePatterns: legacy.ignorePatterns ?? [],
+        enabled: legacy.watching,
+        updatedAt: legacy.updatedAt,
+      },
+    ];
+  }
+  return [];
+}
+
+function writeVaultWatchTargets(targets: VaultWatchTarget[]): VaultWatchTarget[] {
+  localStorage.setItem(VAULT_WATCH_TARGETS_LS_KEY, JSON.stringify(targets));
+  const first = targets[0];
+  const record: VaultWatchRecord = {
+    watching: first?.enabled ?? false,
+    path: first?.path ?? null,
+    updatedAt: first?.updatedAt ?? Date.now(),
+    ignorePatterns: first?.ignorePatterns ?? [],
+  };
+  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  return targets;
+}
+
 function readVaultWatch(): VaultWatchRecord {
   try {
     const record = JSON.parse(localStorage.getItem(VAULT_WATCH_LS_KEY) ?? "null") as VaultWatchRecord | null;
@@ -1432,6 +1475,42 @@ export async function setVaultWatchConfig(config: VaultWatchConfig): Promise<Vau
     return invoke<VaultWatchConfig>("set_vault_watch_config", { config });
   }
   return writeVaultWatchConfig(config);
+}
+
+export async function listVaultWatchTargets(): Promise<VaultWatchTarget[]> {
+  if (isTauri()) return invoke<VaultWatchTarget[]>("list_vault_watch_targets");
+  return readVaultWatchTargets();
+}
+
+export async function upsertVaultWatchTarget(
+  target: VaultWatchTarget,
+): Promise<VaultWatchTarget> {
+  if (isTauri()) {
+    return invoke<VaultWatchTarget>("upsert_vault_watch_target", { target });
+  }
+  const targets = readVaultWatchTargets();
+  const index = targets.findIndex((item) => item.path === target.path);
+  const next: VaultWatchTarget = {
+    ...target,
+    updatedAt: target.updatedAt || Date.now(),
+  };
+  if (index >= 0) {
+    targets[index] = next;
+  } else {
+    targets.push(next);
+  }
+  writeVaultWatchTargets(targets);
+  return next;
+}
+
+export async function deleteVaultWatchTarget(vaultPath: string): Promise<boolean> {
+  if (isTauri()) {
+    return invoke<boolean>("delete_vault_watch_target", { vaultPath });
+  }
+  const targets = readVaultWatchTargets();
+  const next = targets.filter((target) => target.path !== vaultPath);
+  writeVaultWatchTargets(next);
+  return next.length !== targets.length;
 }
 
 export async function indexVault(
@@ -1486,33 +1565,42 @@ export async function startVaultWatch(
     });
   }
   localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
-  const record: VaultWatchRecord = {
-    watching: true,
+  await upsertVaultWatchTarget({
     path: vaultPath,
-    updatedAt: Date.now(),
     ignorePatterns,
-  };
-  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
-  return { ...record, files: filtered.length };
+    enabled: true,
+    updatedAt: Date.now(),
+  });
+  return getVaultWatchStatus();
 }
 
-export async function stopVaultWatch(): Promise<VaultWatchStatus> {
-  if (isTauri()) return invoke<VaultWatchStatus>("stop_vault_watch");
-  const current = readVaultWatch();
-  const record: VaultWatchRecord = {
-    watching: false,
-    path: current.path,
-    updatedAt: Date.now(),
-    ignorePatterns: current.ignorePatterns,
-  };
-  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
-  return { ...record, files: readVaultFiles().length };
+export async function stopVaultWatch(vaultPath?: string): Promise<VaultWatchStatus> {
+  if (isTauri()) {
+    return invoke<VaultWatchStatus>(
+      "stop_vault_watch",
+      vaultPath ? { vaultPath } : {},
+    );
+  }
+  const targets = readVaultWatchTargets().map((target) =>
+    !vaultPath || target.path === vaultPath
+      ? { ...target, enabled: false, updatedAt: Date.now() }
+      : target,
+  );
+  writeVaultWatchTargets(targets);
+  return getVaultWatchStatus();
 }
 
 export async function getVaultWatchStatus(): Promise<VaultWatchStatus> {
   if (isTauri()) return invoke<VaultWatchStatus>("get_vault_watch_status");
-  const record = readVaultWatch();
-  return { ...record, files: readVaultFiles().length };
+  const targets = readVaultWatchTargets();
+  const watchingTargets = targets.filter((target) => target.enabled);
+  return {
+    watching: watchingTargets.length > 0,
+    path: watchingTargets[0]?.path ?? null,
+    paths: watchingTargets.map((target) => target.path),
+    files: readVaultFiles().length,
+    updatedAt: Math.max(0, ...targets.map((target) => target.updatedAt)),
+  };
 }
 
 export async function listenVaultWatchUpdated(

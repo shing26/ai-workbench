@@ -708,14 +708,20 @@ try {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
   await delay(150);
-  results.motion.reducedMotion = await evaluate(`(() => {
+  results.motion.reducedMotion = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const material = document.querySelector('.material-card[data-material]');
     const tilt = document.querySelector('.tilt-card');
+    let tiltTransform = tilt ? getComputedStyle(tilt).transform : "";
+    for (let i = 0; i < 30 && tiltTransform !== "none"; i++) {
+      await sleep(100);
+      tiltTransform = tilt ? getComputedStyle(tilt).transform : "";
+    }
     return {
       viewAnimationDuration: getComputedStyle(document.querySelector('.view-enter')).animationDuration,
       dockTransitionDuration: getComputedStyle(document.querySelector('nav button')).transitionDuration,
       materialAnimationDuration: material ? getComputedStyle(material, '::before').animationDuration : "",
-      tiltTransform: tilt ? getComputedStyle(tilt).transform : "",
+      tiltTransform,
     };
   })()`);
   await send("Emulation.setEmulatedMedia", { features: [] });
@@ -735,7 +741,9 @@ try {
     reducedDock <= 0.02 &&
     reducedMaterial <= 0.02 &&
     reducedTilt === "none";
-  if (!results.motion.pass) throw new Error("UI motion DoD assertion failed");
+  if (!results.motion.pass) {
+    throw new Error(`UI motion DoD assertion failed: ${JSON.stringify(results.motion)}`);
+  }
 
   await clickDock("Actions");
   const created = await evaluate(`(async () => {
@@ -983,6 +991,54 @@ try {
     );
   }
   results.vaultWatchPersisted = vaultWatchPersisted;
+
+  const multiVaultWatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const pathInput = document.querySelector('input[placeholder="Vault path..."]');
+    if (!pathInput) return { ok: false, reason: "no vault path input" };
+    setter.call(pathInput, "D:/vault");
+    pathInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(400);
+    let rows = [...document.querySelectorAll("[data-vault-target]")];
+    const secondOn = rows.some(
+      (row) =>
+        row.getAttribute("data-vault-target-path") === "D:/vault" &&
+        row.getAttribute("data-vault-target-watch") === "on",
+    );
+    if (!secondOn) {
+      return {
+        ok: false,
+        reason: "second target not watching",
+        paths: rows.map((row) => row.getAttribute("data-vault-target-path")),
+      };
+    }
+    const firstRow = rows.find(
+      (row) => row.getAttribute("data-vault-target-path") === "C:/vault",
+    );
+    firstRow?.querySelector("[data-vault-target-toggle]")?.click();
+    await sleep(400);
+    rows = [...document.querySelectorAll("[data-vault-target]")];
+    const bothOn = rows.every((row) => row.getAttribute("data-vault-target-watch") === "on");
+    const count =
+      document.querySelector("[data-vault-watch-count]")?.getAttribute("data-vault-watch-count") ?? "";
+    for (const row of [...document.querySelectorAll("[data-vault-target-watch='on']")]) {
+      row.querySelector("[data-vault-target-toggle]")?.click();
+      await sleep(150);
+    }
+    await sleep(300);
+    const allOff = [...document.querySelectorAll("[data-vault-target]")].every(
+      (row) => row.getAttribute("data-vault-target-watch") === "off",
+    );
+    return { ok: bothOn && count === "2" && allOff, bothOn, count, allOff };
+  })()`);
+  if (!multiVaultWatch.ok) {
+    throw new Error(`Multi vault watch assertion failed: ${JSON.stringify(multiVaultWatch)}`);
+  }
+  results.multiVaultWatch = multiVaultWatch;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

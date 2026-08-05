@@ -167,6 +167,12 @@ CREATE TABLE IF NOT EXISTS vault_watch_config (
     enabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS vault_watch_targets (
+    path TEXT PRIMARY KEY,
+    ignore_patterns TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -390,6 +396,15 @@ pub struct VaultWatchConfig {
     pub updated_at: i64,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultWatchTarget {
+    pub path: String,
+    pub ignore_patterns: Vec<String>,
+    pub enabled: bool,
+    pub updated_at: i64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagSearchResult {
@@ -458,8 +473,19 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     migrate_updated_at(&conn)?;
     migrate_version_parent(&conn)?;
+    migrate_vault_watch_targets(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
+}
+
+fn migrate_vault_watch_targets(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO vault_watch_targets (path, ignore_patterns, enabled, updated_at)
+         SELECT path, ignore_patterns, enabled, updated_at
+         FROM vault_watch_config
+         WHERE id = 1 AND path <> '';",
+    )?;
+    Ok(())
 }
 
 fn migrate_updated_at(conn: &Connection) -> Result<()> {
@@ -1555,6 +1581,123 @@ pub fn set_vault_watch_config(
         params![path, joined, enabled as i64, now_millis()],
     )?;
     get_vault_watch_config(conn)
+}
+
+pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarget>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, ignore_patterns, enabled, updated_at
+         FROM vault_watch_targets ORDER BY path",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let raw: String = row.get(1)?;
+        let enabled: i64 = row.get(2)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            raw,
+            enabled,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut targets = Vec::new();
+    for row in rows {
+        let (path, raw, enabled, updated_at) = row?;
+        targets.push(VaultWatchTarget {
+            path,
+            ignore_patterns: raw
+                .lines()
+                .map(|line| line.to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+            enabled: enabled != 0,
+            updated_at,
+        });
+    }
+    Ok(targets)
+}
+
+fn get_vault_watch_target(conn: &Connection, path: &str) -> Result<Option<VaultWatchTarget>> {
+    let row = conn.query_row(
+        "SELECT path, ignore_patterns, enabled, updated_at
+         FROM vault_watch_targets WHERE path = ?1",
+        params![path],
+        |row| {
+            let raw: String = row.get(1)?;
+            let enabled: i64 = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                raw,
+                enabled,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    match row {
+        Ok((path, raw, enabled, updated_at)) => Ok(Some(VaultWatchTarget {
+            path,
+            ignore_patterns: raw
+                .lines()
+                .map(|line| line.to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+            enabled: enabled != 0,
+            updated_at,
+        })),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn upsert_vault_watch_target(
+    conn: &Connection,
+    path: &str,
+    ignore_patterns: &[String],
+    enabled: bool,
+) -> Result<VaultWatchTarget> {
+    let patterns: Vec<String> = ignore_patterns
+        .iter()
+        .filter(|pattern| !pattern.is_empty())
+        .cloned()
+        .collect();
+    let joined = patterns.join("\n");
+    let updated_at = now_millis();
+    conn.execute(
+        "INSERT INTO vault_watch_targets (path, ignore_patterns, enabled, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(path) DO UPDATE SET
+           ignore_patterns = excluded.ignore_patterns,
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at",
+        params![path, joined, enabled as i64, updated_at],
+    )?;
+    Ok(VaultWatchTarget {
+        path: path.to_string(),
+        ignore_patterns: patterns,
+        enabled,
+        updated_at,
+    })
+}
+
+pub fn set_vault_watch_target_enabled(
+    conn: &Connection,
+    path: &str,
+    enabled: bool,
+) -> Result<Option<VaultWatchTarget>> {
+    let changed = conn.execute(
+        "UPDATE vault_watch_targets SET enabled = ?2, updated_at = ?3 WHERE path = ?1",
+        params![path, enabled as i64, now_millis()],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    get_vault_watch_target(conn, path)
+}
+
+pub fn delete_vault_watch_target(conn: &Connection, path: &str) -> Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM vault_watch_targets WHERE path = ?1",
+        params![path],
+    )?;
+    Ok(deleted > 0)
 }
 
 enum MergeOutcome {
@@ -2670,6 +2813,42 @@ mod tests {
         let empty = get_vault_watch_config(&reopened).unwrap();
         assert!(!empty.enabled);
         drop(reopened);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_watch_targets_crud_and_legacy_migration() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-targets-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+
+        set_vault_watch_config(&conn, "C:/legacy", &["node_modules".to_string()], true).unwrap();
+        migrate_vault_watch_targets(&conn).unwrap();
+        let targets = list_vault_watch_targets(&conn).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].path, "C:/legacy");
+        assert_eq!(targets[0].ignore_patterns, vec!["node_modules"]);
+        assert!(targets[0].enabled);
+
+        upsert_vault_watch_target(&conn, "D:/work", &[], false).unwrap();
+        let targets = list_vault_watch_targets(&conn).unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[1].path, "D:/work");
+        assert!(!targets[1].enabled);
+
+        let enabled = set_vault_watch_target_enabled(&conn, "D:/work", true).unwrap();
+        assert_eq!(enabled.as_ref().map(|t| t.enabled), Some(true));
+        assert!(set_vault_watch_target_enabled(&conn, "missing:/path", true)
+            .unwrap()
+            .is_none());
+
+        assert!(delete_vault_watch_target(&conn, "C:/legacy").unwrap());
+        assert!(!delete_vault_watch_target(&conn, "C:/legacy").unwrap());
+        let remaining = list_vault_watch_targets(&conn).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "D:/work");
+
+        drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
