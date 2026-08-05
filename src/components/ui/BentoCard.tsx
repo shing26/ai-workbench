@@ -33,6 +33,7 @@ export default function BentoCard({
     "Sync snapshot": "cyan",
     "Clipboard history": "original",
     "Error logs": "rain",
+    "Agent directory": "original",
     "Thought Inbox": "original",
     "Vault Index": "rain",
   };

@@ -65,6 +65,28 @@ export type Provider = {
   isActive: boolean;
 };
 
+export type Department = {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  agentCount: number;
+  createdAt: number;
+};
+
+export type Agent = {
+  id: string;
+  departmentId: string;
+  departmentName: string;
+  name: string;
+  role: string;
+  model: string;
+  providerId: string | null;
+  systemPrompt: string;
+  isActive: boolean;
+  createdAt: number;
+};
+
 export type ProviderHealth = {
   ok: boolean;
   latencyMs: number;
@@ -185,6 +207,8 @@ type LocalShape = {
   projects: Project[];
   thoughts: Thought[];
   providers: Provider[];
+  departments: Department[];
+  agents: Agent[];
   sessions: Session[];
   chatMessages: ChatMessage[];
   messageVersions: MessageVersion[];
@@ -211,6 +235,8 @@ function emptyShape(): LocalShape {
     projects: [],
     thoughts: [],
     providers: [],
+    departments: [],
+    agents: [],
     sessions: [],
     chatMessages: [],
     messageVersions: [],
@@ -226,6 +252,11 @@ function emptyShape(): LocalShape {
 function seedShape(): LocalShape {
   const now = Date.now();
   const existing = readLocal();
+  const designId = makeId();
+  const productId = makeId();
+  const backendId = makeId();
+  const aiId = makeId();
+  const qualityId = makeId();
   return {
     tasks: [
       { id: makeId(), title: "Ship App Shell", status: "in_progress", isToday: true, dueDate: null, createdAt: now - 3000 },
@@ -245,6 +276,27 @@ function seedShape(): LocalShape {
       { id: makeId(), name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "OPENAI_API_KEY", isActive: true },
       { id: makeId(), name: "Ollama", baseUrl: "http://localhost:11434", apiKey: "", isActive: true },
       { id: makeId(), name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "OPENROUTER_API_KEY", isActive: false },
+    ],
+    departments: [
+      { id: designId, name: "设计部", description: "界面、交互与视觉动效", color: "iris", agentCount: 3, createdAt: now - 9000 },
+      { id: productId, name: "产品与体验部", description: "需求、用户路径与优先级", color: "ocean", agentCount: 2, createdAt: now - 8000 },
+      { id: backendId, name: "后端与系统部", description: "数据层、Tauri 命令与运维", color: "emerald", agentCount: 2, createdAt: now - 7000 },
+      { id: aiId, name: "AI 策略与引擎部", description: "模型路由、Prompt 与多 Agent 编排", color: "amber", agentCount: 3, createdAt: now - 6000 },
+      { id: qualityId, name: "质量与工程效率部", description: "测试、DoD 与自动化验收", color: "sakura", agentCount: 2, createdAt: now - 5000 },
+    ],
+    agents: [
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Designer", role: "设计系统与动效", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4900 },
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "Frontend Developer", role: "React/Tailwind 实现", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4800 },
+      { id: makeId(), departmentId: designId, departmentName: "设计部", name: "UI Finish-Gate Reviewer", role: "视觉验收", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4700 },
+      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "Product Manager", role: "范围冻结与验收标准", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4600 },
+      { id: makeId(), departmentId: productId, departmentName: "产品与体验部", name: "UX Architect", role: "交互与信息架构", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4500 },
+      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Backend Architect", role: "Tauri 命令与分层设计", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4400 },
+      { id: makeId(), departmentId: backendId, departmentName: "后端与系统部", name: "Data Engineer", role: "SQLite 表结构与迁移", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4300 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "AI Engineer", role: "模型路由与流式链路", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4200 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Prompt Engineer", role: "Prompt 版本与测试用例", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4100 },
+      { id: makeId(), departmentId: aiId, departmentName: "AI 策略与引擎部", name: "Multi-Agent Systems Architect", role: "部门与 Agent 编排", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 4000 },
+      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Test Automation Engineer", role: "自动化验收与回归", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 3900 },
+      { id: makeId(), departmentId: qualityId, departmentName: "质量与工程效率部", name: "Reality Checker", role: "证据驱动的发布门禁", model: "openai", providerId: null, systemPrompt: "", isActive: true, createdAt: now - 3800 },
     ],
     sessions: [
       { id: makeId(), projectId: null, title: "Workbench planning", model: "openai", createdAt: now - 60000 },
@@ -375,6 +427,81 @@ export async function setProviderActive(id: string, isActive: boolean): Promise<
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.isActive = isActive;
   writeLocal(shape);
+}
+
+export async function listDepartments(): Promise<Department[]> {
+  if (isTauri()) return invoke<Department[]>("list_departments");
+  const shape = readLocal();
+  const departments = shape.departments ?? [];
+  return departments.map((department) => ({
+    ...department,
+    agentCount:
+      shape.agents?.filter((a) => a.departmentId === department.id || a.departmentName === department.name).length ??
+      department.agentCount,
+  }));
+}
+
+export async function listAgents(): Promise<Agent[]> {
+  if (isTauri()) return invoke<Agent[]>("list_agents");
+  const shape = readLocal();
+  return shape.agents ?? [];
+}
+
+export async function createDepartment(
+  name: string,
+  description: string,
+  color: string,
+): Promise<Department> {
+  if (isTauri()) return invoke<Department>("create_department", { name, description, color });
+  const shape = readLocal();
+  const department: Department = {
+    id: makeId(),
+    name,
+    description,
+    color,
+    agentCount: 0,
+    createdAt: Date.now(),
+  };
+  shape.departments.push(department);
+  writeLocal(shape);
+  return department;
+}
+
+export async function createAgent(
+  departmentId: string,
+  name: string,
+  role: string,
+  model: string,
+  providerId: string | null,
+  systemPrompt: string,
+): Promise<Agent> {
+  if (isTauri()) {
+    return invoke<Agent>("create_agent", {
+      departmentId,
+      name,
+      role,
+      model,
+      providerId,
+      systemPrompt,
+    });
+  }
+  const shape = readLocal();
+  const department = shape.departments.find((d) => d.id === departmentId);
+  const agent: Agent = {
+    id: makeId(),
+    departmentId,
+    departmentName: department?.name ?? "",
+    name,
+    role,
+    model,
+    providerId,
+    systemPrompt,
+    isActive: true,
+    createdAt: Date.now(),
+  };
+  shape.agents.push(agent);
+  writeLocal(shape);
+  return agent;
 }
 
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {

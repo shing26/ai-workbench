@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 23
+
+### What went well?
+
+- 部门/Agent 数据模型闭环：`departments` / `agents` 两张表、5 部门 12+ Agent 种子、Tauri 命令与浏览器 localStorage fallback 同构；AI Studio 按部门分组选择 Agent 并按 Agent 的 provider 派发。
+- System Agent directory：可浏览部门与 Agent 列表并创建 Agent；Inspector 增加 Department / Agent / Role / Model 与 RAG 上下文追踪。
+- 验证覆盖：`cargo test --lib` 18/18，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 Agent 下拉、Agent Trace、Agent directory 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 的 Inspector 断言用 `Department`，页面 label 因 CSS `text-transform` 渲染为大写 `DEPARTMENT`，改为大小写不敏感后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、自动文件监听同步、多 Agent 并行编排与 system_prompt 编辑器、自动生成 Commit/PR 草稿。
+- 后续改动 Agent 派发或 Inspector 时，保留 Trace 与 directory 断言。
+
 ## Sprint 22
 
 ### What went well?
