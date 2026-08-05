@@ -2157,6 +2157,36 @@ pub fn resolve_conflicts(
     Ok(conflicts.len())
 }
 
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.iter()
+                    .map(|key| {
+                        let encoded =
+                            serde_json::to_string(key).unwrap_or_else(|_| format!("\"{}\"", key));
+                        let child = map.get(key.as_str()).unwrap_or(&Value::Null);
+                        format!("{}:{}", encoded, canonical_json(child))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        _ => value.to_string(),
+    }
+}
+
 fn merge_json_value(local: &Value, remote: &Value, prefer_local: bool) -> Value {
     match (local, remote) {
         (Value::Object(local_obj), Value::Object(remote_obj)) => {
@@ -2181,7 +2211,7 @@ fn merge_json_value(local: &Value, remote: &Value, prefer_local: bool) -> Value 
             let mut seen = std::collections::HashSet::new();
             let mut merged = Vec::new();
             for item in local_arr.iter().chain(remote_arr.iter()) {
-                if seen.insert(item.to_string()) {
+                if seen.insert(canonical_json(item)) {
                     merged.push(item.clone());
                 }
             }
@@ -3406,6 +3436,19 @@ mod tests {
         assert_eq!(value["tags"], serde_json::json!(["work", "life"]));
         assert_eq!(value["meta"]["count"], 2);
         assert_eq!(value["meta"]["done"], true);
+    }
+
+    #[test]
+    fn structured_merge_content_dedupes_object_arrays_by_key() {
+        let merged = structured_merge_content(
+            r#"{"items":[{"id":1,"label":"a"}]}"#,
+            r#"{"items":[{"label":"a","id":1},{"id":2,"label":"b"}]}"#,
+            true,
+        );
+        let value: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["items"].as_array().unwrap().len(), 2);
+        assert_eq!(value["items"][0]["id"], 1);
+        assert_eq!(value["items"][1]["id"], 2);
     }
 
     #[test]
