@@ -1072,6 +1072,29 @@ try {
   }
   results.multiVaultWatch = multiVaultWatch;
 
+  const vaultTargetStats = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const targets = ["C:/vault", "D:/vault"];
+    let counts = {};
+    for (let i = 0; i < 30; i++) {
+      counts = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-target-files]")?.getAttribute("data-vault-target-files") ?? 0,
+          ),
+        ]),
+      );
+      if (targets.every((path) => (counts[path] ?? 0) > 0)) break;
+      await sleep(200);
+    }
+    return { ok: targets.every((path) => (counts[path] ?? 0) > 0), counts };
+  })()`);
+  if (!vaultTargetStats.ok) {
+    throw new Error(`Vault target stats assertion failed: ${JSON.stringify(vaultTargetStats)}`);
+  }
+  results.vaultTargetStats = vaultTargetStats;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

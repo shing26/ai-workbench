@@ -772,7 +772,7 @@ fn index_vault_files(
     }
     let mut indexed = 0i64;
     for (path, title, tags, content) in files {
-        db::upsert_knowledge_file(conn, &path, &title, &tags, &content)
+        db::upsert_knowledge_file(conn, &path, &title, &tags, &content, vault_path)
             .map_err(|e| e.to_string())?;
         indexed += 1;
     }
@@ -782,7 +782,11 @@ fn index_vault_files(
     })
 }
 
-fn upsert_markdown_path(conn: &rusqlite::Connection, path: &Path) -> Result<(), String> {
+fn upsert_markdown_path(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    vault_path: &str,
+) -> Result<(), String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Read {} failed: {}", path.display(), e))?;
     let (frontmatter, body) = parse_frontmatter(&content);
@@ -796,16 +800,27 @@ fn upsert_markdown_path(conn: &rusqlite::Connection, path: &Path) -> Result<(), 
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    db::upsert_knowledge_file(conn, &path.to_string_lossy(), &title, &tags, &body)
-        .map_err(|e| e.to_string())
+    db::upsert_knowledge_file(
+        conn,
+        &path.to_string_lossy(),
+        &title,
+        &tags,
+        &body,
+        vault_path,
+    )
+    .map_err(|e| e.to_string())
 }
 
-fn sync_vault_path(conn: &rusqlite::Connection, path: &Path) -> Result<bool, String> {
+fn sync_vault_path(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    vault_path: &str,
+) -> Result<bool, String> {
     if path.extension().is_none_or(|ext| ext != "md") {
         return Ok(false);
     }
     if path.exists() {
-        upsert_markdown_path(conn, path)?;
+        upsert_markdown_path(conn, path, vault_path)?;
         Ok(true)
     } else {
         db::delete_knowledge_file(conn, &path.to_string_lossy()).map_err(|e| e.to_string())?;
@@ -820,6 +835,7 @@ fn sync_vault_event(
     ignore_patterns: &[String],
 ) -> bool {
     let mut changed = false;
+    let vault_str = vault_path.to_string_lossy().to_string();
     for path in paths {
         let rel = path
             .strip_prefix(vault_path)
@@ -828,7 +844,7 @@ fn sync_vault_event(
         if should_ignore_path(&rel, ignore_patterns) {
             continue;
         }
-        if let Ok(synced) = sync_vault_path(conn, path) {
+        if let Ok(synced) = sync_vault_path(conn, path, &vault_str) {
             changed |= synced;
         }
     }
@@ -1380,6 +1396,12 @@ fn get_knowledge_index_status(
 ) -> Result<db::KnowledgeIndexStatus, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::knowledge_index_status(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_vault_target_stats(state: State<'_, db::Db>) -> Result<Vec<db::VaultTargetStats>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::vault_target_stats(&conn).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Serialize)]
@@ -2815,6 +2837,7 @@ pub fn run() {
             index_vault_ex,
             get_knowledge_index_status,
             recommend_index_concurrency,
+            list_vault_target_stats,
             start_vault_watch,
             start_vault_watch_ex,
             stop_vault_watch,
@@ -3115,9 +3138,10 @@ mod tests {
         ));
         index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap(), &[], 4).unwrap();
         let db_for_event = conn.clone();
+        let vault_str = vault.to_string_lossy().to_string();
         let on_event = move |event: &Event| {
             for path in &event.paths {
-                let _ = sync_vault_path(&db_for_event.lock().unwrap(), path);
+                let _ = sync_vault_path(&db_for_event.lock().unwrap(), path, &vault_str);
             }
         };
         let handle = start_vault_watcher(vault.to_string_lossy().to_string(), on_event).unwrap();
@@ -3165,21 +3189,23 @@ mod tests {
         index_vault_files(&conn.lock().unwrap(), vault_b.to_str().unwrap(), &[], 4).unwrap();
 
         let db_a = conn.clone();
+        let vault_a_str = vault_a.to_string_lossy().to_string();
         let handle_a = start_vault_watcher(
             vault_a.to_string_lossy().to_string(),
             move |event: &Event| {
                 for path in &event.paths {
-                    let _ = sync_vault_path(&db_a.lock().unwrap(), path);
+                    let _ = sync_vault_path(&db_a.lock().unwrap(), path, &vault_a_str);
                 }
             },
         )
         .unwrap();
         let db_b = conn.clone();
+        let vault_b_str = vault_b.to_string_lossy().to_string();
         let handle_b = start_vault_watcher(
             vault_b.to_string_lossy().to_string(),
             move |event: &Event| {
                 for path in &event.paths {
-                    let _ = sync_vault_path(&db_b.lock().unwrap(), path);
+                    let _ = sync_vault_path(&db_b.lock().unwrap(), path, &vault_b_str);
                 }
             },
         )

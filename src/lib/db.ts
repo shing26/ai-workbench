@@ -296,6 +296,12 @@ export type VaultWatchTarget = {
   updatedAt: number;
 };
 
+export type VaultTargetStats = {
+  path: string;
+  files: number;
+  lastIndexedAt: number;
+};
+
 export type VaultWatchConfig = {
   path: string;
   ignorePatterns: string[];
@@ -1568,6 +1574,19 @@ export async function deleteVaultWatchTarget(vaultPath: string): Promise<boolean
   const next = targets.filter((target) => target.path !== vaultPath);
   writeVaultWatchTargets(next);
   return next.length !== targets.length;
+}
+
+export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
+  if (isTauri()) return invoke<VaultTargetStats[]>("list_vault_target_stats");
+  const targets = readVaultWatchTargets();
+  const files = readVaultFiles();
+  return targets.map((target) => ({
+    path: target.path,
+    files: files.filter(
+      (file) => file.path === target.path || file.path.startsWith(`${target.path}\\`),
+    ).length,
+    lastIndexedAt: 0,
+  }));
 }
 
 export async function indexVault(
