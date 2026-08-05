@@ -392,3 +392,7 @@ ALTER TABLE vault_watch_targets ADD COLUMN event_count INTEGER NOT NULL DEFAULT 
 - Tauri 命令 `resolve_sync_conflicts(conflicts, choice)` 透传冲突明细数组与选择，返回 `Result<usize, String>`。
 - 浏览器 fallback 逐条调用 `resolveSyncConflict`，写入 `ai-workbench:sync-conflicts:v1` 的 resolved_choice / resolved_at，与 Rust 语义一致。
 - 表结构与数据迁移不变；批量仲裁复用 Sprint 40 的持久化冲突记录与历史。
+
+## Sprint 53：vault 索引进度事件
+
+无表结构变更。索引进度通过 Tauri Event 推送，`start_vault_index` 返回 `runId` 供前端追踪，不新增持久化字段。

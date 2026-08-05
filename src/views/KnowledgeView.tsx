@@ -27,6 +27,7 @@ export default function KnowledgeView() {
   const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
+  const [indexProgress, setIndexProgress] = useState<db.IndexProgress | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -100,6 +101,31 @@ export default function KnowledgeView() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = () => {};
+    void db
+      .listenVaultIndexProgress((progress) => {
+        if (disposed) return;
+        setIndexProgress(progress);
+        if (progress.status === "done") {
+          setLastIgnored(progress.ignored);
+          setLastConcurrencyUsed(progress.concurrencyUsed);
+          void loadTargets();
+          void db.getKnowledgeIndexStatus().then(setVaultStatus);
+          void db.getRagIndexStatus().then(setIndexStatus);
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten();
+    };
+  }, []);
+
   const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
   const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
   const visibleThoughts = results ?? filtered;
@@ -130,11 +156,17 @@ export default function KnowledgeView() {
     const concurrency = useAutoConcurrency
       ? 0
       : Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
-    const result = await db.indexVault(vaultPath.trim(), parseIgnore(), concurrency);
-    setLastConcurrencyUsed(result.concurrencyUsed);
-    setLastIgnored(result.ignored);
-    setVaultStatus(await db.getKnowledgeIndexStatus());
-    setIndexStatus(await db.getRagIndexStatus());
+    const runId = await db.startVaultIndex(vaultPath.trim(), parseIgnore(), concurrency);
+    setIndexProgress({
+      runId,
+      path: vaultPath.trim(),
+      done: 0,
+      total: 0,
+      files: 0,
+      ignored: 0,
+      concurrencyUsed: 0,
+      status: "running",
+    });
     await db.upsertVaultWatchTarget({
       path: vaultPath.trim(),
       ignorePatterns: parseIgnore(),
@@ -143,7 +175,6 @@ export default function KnowledgeView() {
       lastEventAt: 0,
       eventCount: 0,
     });
-    await loadTargets();
   };
 
   const loadTargets = async () => {
@@ -325,6 +356,35 @@ export default function KnowledgeView() {
             {lastConcurrencyUsed > 0 ? `${lastConcurrencyUsed} workers` : "auto pending"}
           </span>
         </div>
+        {indexProgress &&
+          (() => {
+            const percent =
+              indexProgress.total > 0
+                ? Math.round((indexProgress.done / indexProgress.total) * 100)
+                : indexProgress.status === "done"
+                  ? 100
+                  : 0;
+            return (
+              <div data-index-progress={percent} className="mt-2 flex items-center gap-2">
+                <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full accent-bg"
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                <span
+                  data-index-progress-status
+                  className="shrink-0 text-[9px] text-slate-500"
+                >
+                  {indexProgress.status === "done"
+                    ? `Indexed ${indexProgress.files} files`
+                    : indexProgress.status === "running"
+                      ? `Indexing ${indexProgress.done}/${indexProgress.total}`
+                      : indexProgress.status}
+                </span>
+              </div>
+            );
+          })()}
         {vaultTargets.length > 0 && (
           <div data-vault-target-list className="mt-3 space-y-1.5">
             {vaultTargets.map((target) => {

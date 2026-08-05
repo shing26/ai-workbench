@@ -202,3 +202,9 @@ Sprint 52 扩展 `vault_watch_targets`：新增 `last_event_at` / `event_count` 
 
 - 开发模式：允许 Dev overlay 与调试面板。
 - 生产模式：禁止 Dev Issues 浮标与任何开发遮罩。
+
+## Sprint 53：vault 索引进度事件
+
+- `start_vault_index` 命令在后台线程异步索引并返回 `runId`，通过 `vault-index-progress` 事件推送 `{ runId, path, done, total, files, ignored, concurrencyUsed, status }`，完成或错误时发送终态。
+- `index_vault_files_inner` 每写入 5 个文件或全部写完时调用进度回调；`index_vault_files` 保持同步兼容包装。
+- Knowledge Vault Index 显示进度条与完成状态，完成后刷新文件数、RAG 状态与目标统计；浏览器 fallback 用 3 步模拟进度。
