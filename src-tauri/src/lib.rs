@@ -1022,8 +1022,8 @@ fn sync_vault_event(
     paths: &[std::path::PathBuf],
     vault_path: &Path,
     ignore_patterns: &[String],
-) -> bool {
-    let mut changed = false;
+) -> Vec<String> {
+    let mut changed_paths = Vec::new();
     let vault_str = vault_path.to_string_lossy().to_string();
     for path in paths {
         let rel = path
@@ -1034,10 +1034,12 @@ fn sync_vault_event(
             continue;
         }
         if let Ok(synced) = sync_vault_path(conn, path, &vault_str) {
-            changed |= synced;
+            if synced {
+                changed_paths.push(path.to_string_lossy().to_string());
+            }
         }
     }
-    changed
+    changed_paths
 }
 
 fn start_vault_watcher(
@@ -1864,14 +1866,13 @@ fn start_vault_watch_impl(
         let Ok(conn) = db_state.0.lock() else {
             return;
         };
-        let changed =
+        let vault_str = canonical_for_events.to_string_lossy().to_string();
+        let changed_paths =
             sync_vault_event(&conn, &event.paths, &canonical_for_events, &ignore_patterns);
-        if changed {
-            let _ = db::touch_vault_watch_event(
-                &conn,
-                canonical_for_events.to_string_lossy().as_ref(),
-                event_kind,
-            );
+        if !changed_paths.is_empty() {
+            for file_path in changed_paths {
+                let _ = db::touch_vault_watch_event(&conn, &vault_str, &file_path, event_kind);
+            }
             if let Ok(status) = vault_watch_status(&app_clone, &conn) {
                 let _ = app_clone.emit("vault-watch-update", status);
             }
@@ -1996,6 +1997,26 @@ fn delete_vault_watch_target(
     let status = vault_watch_status(&app, &conn)?;
     let _ = app.emit("vault-watch-update", status.clone());
     Ok(deleted)
+}
+
+#[tauri::command]
+fn list_vault_watch_events(
+    state: State<'_, db::Db>,
+    vault_path: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<db::VaultWatchEvent>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_vault_watch_events(&conn, vault_path.as_deref(), limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_vault_watch_events(
+    state: State<'_, db::Db>,
+    vault_path: Option<String>,
+) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::clear_vault_watch_events(&conn, vault_path.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3360,6 +3381,8 @@ pub fn run() {
             list_vault_watch_targets,
             upsert_vault_watch_target,
             delete_vault_watch_target,
+            list_vault_watch_events,
+            clear_vault_watch_events,
             get_vault_watch_status,
             get_vault_watch_config,
             set_vault_watch_config,
@@ -3879,8 +3902,16 @@ mod tests {
         let indexed_path = vault.join("notes").join("new.md");
         std::fs::write(&ignored_path, "# Dep\n\nignored").unwrap();
         std::fs::write(&indexed_path, "# New\n\nindexed").unwrap();
-        let changed = sync_vault_event(&conn, &[ignored_path, indexed_path], &vault, &patterns);
-        assert!(changed);
+        let changed_paths = sync_vault_event(
+            &conn,
+            &[ignored_path.clone(), indexed_path.clone()],
+            &vault,
+            &patterns,
+        );
+        assert_eq!(
+            changed_paths,
+            vec![indexed_path.to_string_lossy().to_string()]
+        );
         let status = db::knowledge_index_status(&conn).unwrap();
         assert_eq!(status.files, 2);
         let ignored_search = db::search_thoughts(&conn, "ignored", 5).unwrap();

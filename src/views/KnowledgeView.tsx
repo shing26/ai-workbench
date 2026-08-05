@@ -1,4 +1,4 @@
-import { BookOpen, FolderOpen, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import * as db from "../lib/db";
@@ -25,6 +25,8 @@ export default function KnowledgeView() {
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
   const [vaultTargets, setVaultTargets] = useState<db.VaultWatchTarget[]>([]);
   const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
+  const [watchEvents, setWatchEvents] = useState<db.VaultWatchEvent[]>([]);
+  const [expandedTimeline, setExpandedTimeline] = useState<string | null>(null);
   const [lastIgnored, setLastIgnored] = useState(0);
   const [lastConcurrencyUsed, setLastConcurrencyUsed] = useState(0);
   const [indexProgress, setIndexProgress] = useState<db.IndexProgress | null>(null);
@@ -55,7 +57,12 @@ export default function KnowledgeView() {
     void db.getVaultWatchStatus().then(setWatchStatus);
     void db.listVaultWatchTargets().then(setVaultTargets);
     void db.listVaultTargetStats().then(setTargetStats);
+    void loadWatchEvents();
   }, []);
+
+  const loadWatchEvents = async (vaultPath?: string) => {
+    setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -85,6 +92,7 @@ export default function KnowledgeView() {
       .listenVaultWatchUpdated((status) => {
         if (disposed) return;
         setWatchStatus(status);
+        void loadWatchEvents();
         void db.getKnowledgeIndexStatus().then((next) => {
           if (!disposed) setVaultStatus(next);
         });
@@ -218,6 +226,7 @@ export default function KnowledgeView() {
       : await db.startVaultWatch(vaultPath.trim(), parseIgnore());
     setWatchStatus(next);
     await loadTargets();
+    await loadWatchEvents();
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -229,6 +238,7 @@ export default function KnowledgeView() {
       : await db.startVaultWatch(target.path, target.ignorePatterns);
     setWatchStatus(next);
     await loadTargets();
+    await loadWatchEvents();
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -236,8 +246,15 @@ export default function KnowledgeView() {
   const removeTarget = async (target: db.VaultWatchTarget) => {
     await db.deleteVaultWatchTarget(target.path);
     await loadTargets();
+    await loadWatchEvents();
+    if (expandedTimeline === target.path) setExpandedTimeline(null);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
+  };
+
+  const clearTargetEvents = async (target: db.VaultWatchTarget) => {
+    await db.clearVaultWatchEvents(target.path);
+    await loadWatchEvents();
   };
 
   const currentWatching =
@@ -524,6 +541,27 @@ export default function KnowledgeView() {
                   </button>
                   <button
                     type="button"
+                    data-vault-target-timeline
+                    aria-label={`Timeline ${target.path}`}
+                    onClick={() => {
+                      if (expandedTimeline === target.path) {
+                        setExpandedTimeline(null);
+                      } else {
+                        setExpandedTimeline(target.path);
+                        void loadWatchEvents();
+                      }
+                    }}
+                    className={`flex h-6 items-center gap-1 rounded-md px-2 text-[9px] ${
+                      expandedTimeline === target.path
+                        ? "bg-sky-500/15 text-sky-300"
+                        : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                    }`}
+                  >
+                    <Clock size={11} />
+                    Timeline
+                  </button>
+                  <button
+                    type="button"
                     data-vault-target-remove
                     aria-label={`Remove vault ${target.path}`}
                     onClick={() => void removeTarget(target)}
@@ -531,6 +569,76 @@ export default function KnowledgeView() {
                   >
                     <Trash2 size={11} />
                   </button>
+                  {expandedTimeline === target.path && (
+                    <div
+                      data-vault-watch-timeline
+                      data-vault-watch-timeline-path={target.path}
+                      className="mt-1 w-full space-y-1 rounded-lg border border-white/5 bg-black/20 p-2"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] uppercase tracking-wide text-slate-600">
+                          Event timeline
+                        </span>
+                        <span
+                          data-vault-watch-events-count
+                          className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
+                        >
+                          {watchEvents.filter((event) => event.vaultPath === target.path).length}{" "}
+                          events
+                        </span>
+                        <button
+                          type="button"
+                          data-vault-watch-events-clear
+                          aria-label={`Clear watch timeline ${target.path}`}
+                          onClick={() => void clearTargetEvents(target)}
+                          className="ml-auto flex h-5 items-center rounded-md bg-rose-500/10 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/20"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      {watchEvents.filter((event) => event.vaultPath === target.path).length ===
+                        0 && (
+                        <div className="py-1 text-[9px] text-slate-600">
+                          No watch events yet
+                        </div>
+                      )}
+                      {watchEvents
+                        .filter((event) => event.vaultPath === target.path)
+                        .map((event) => (
+                          <div
+                            key={event.id}
+                            data-vault-watch-event
+                            data-vault-watch-event-kind={event.eventKind}
+                            data-vault-watch-event-path={event.filePath}
+                            className="flex items-start gap-1.5 rounded-md bg-white/[0.03] px-1.5 py-1"
+                          >
+                            <span
+                              className={`mt-0.5 shrink-0 text-[10px] font-medium ${
+                                event.eventKind === "created"
+                                  ? "text-emerald-400"
+                                  : event.eventKind === "modified"
+                                    ? "text-sky-400"
+                                    : "text-rose-400"
+                              }`}
+                            >
+                              {event.eventKind === "created"
+                                ? "+"
+                                : event.eventKind === "modified"
+                                  ? "~"
+                                  : "-"}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                              {event.filePath}
+                            </span>
+                            <span className="shrink-0 text-[8px] text-slate-600">
+                              {new Date(event.createdAt).toLocaleTimeString("zh-CN", {
+                                hour12: false,
+                              })}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
                 </div>
               );
             })}

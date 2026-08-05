@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 61
+
+### What went well?
+
+- watch 事件从累计计数升级为可追溯时间线：`vault_watch_events` 记录真实文件路径与 created / modified / removed 类型，`touch_vault_watch_event` 每次写回成功插入一条并裁剪到最新 500 条。
+- `sync_vault_event` 改为返回变更路径数组，watcher 按路径逐条埋点；Knowledge 每个目标新增 Timeline 展开区与 Clear 动作，fallback 与 Rust 语义一致。
+- 验证覆盖：`cargo test --lib` 68/68，fmt、clippy、build 全绿；两条 lane 的 `vaultWatchTimeline` 的 events / kinds / paths / countOk / cleared 全部命中。
+
+### What went wrong?
+
+- `sync_vault_event` 首版只返回 bool，无法按路径逐条记录时间线；改为返回 `Vec<String>` 后 watcher 才能落真实路径。
+- 时间线测试最初只覆盖单路径过滤，补上全量清空、非法 event_kind 与删除目标级联后覆盖才完整。
+
+### Action Items
+
+- 下一 Sprint 候选：索引任务队列持久化、错误日志趋势 / 聚合、RAG 文档状态面板、git 活动看板。
+- 后续扩展 watch 协议时，保持累计统计与时间线共用同一 `event_kind` 口径。
+
 ## Sprint 60
 
 ### What went well?

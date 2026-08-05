@@ -430,3 +430,22 @@ ALTER TABLE vault_watch_targets ADD COLUMN removed_events INTEGER NOT NULL DEFAU
 ## Sprint 60：审计按日/周聚合图表
 
 无表结构变更。`get_sync_audit_summary` 在内存中按 `created_at` 的 UTC 日（86400000ms 对齐）或周（周一 00:00）分组，统计 merge / resolve / other 三类；bucket 数 <= 62 时补齐缺失日期/周。浏览器 fallback 在 `ai-workbench:sync-audit:v1` 上执行同一聚合。
+
+## Sprint 61：watch 事件时间线
+
+```sql
+CREATE TABLE IF NOT EXISTS vault_watch_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_path TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
+    ON vault_watch_events(vault_path, created_at DESC);
+```
+
+- `touch_vault_watch_event(vault_path, file_path, event_kind)` 每次写回成功插入一条时间线，再按 `id DESC` 裁剪到最新 500 条；`event_kind` 仅接受 `created` / `modified` / `removed`。
+- `list_vault_watch_events(vault_path?, limit)` 按 `created_at DESC, id DESC` 返回；`clear_vault_watch_events(vault_path?)` 支持按 vault 或全量清空。
+- `delete_vault_watch_target` 删除目标时级联清理该 vault 的事件，避免孤儿记录。
+- 浏览器 fallback 用 `ai-workbench:vault-watch-events:v1` 保存同一时间线。
