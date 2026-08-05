@@ -4189,7 +4189,7 @@ export type MoaConsensus = {
 
 const localCancelledRuns = new Set<string>();
 
-function isOllamaProvider(name: string, baseUrl: string): boolean {
+export function isOllamaProvider(name: string, baseUrl: string): boolean {
   return name.toLowerCase().includes('ollama') || baseUrl.toLowerCase().includes('11434');
 }
 

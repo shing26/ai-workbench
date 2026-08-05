@@ -17,11 +17,20 @@ import {
   Terminal,
   Upload,
   Users,
+  Wallet,
   Webhook,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
+import {
+  formatTokens,
+  getBudgetStatus,
+  resetTokenBudget,
+  setTokenBudget,
+  type TokenBudgetConfig,
+  type TokenBudgetStatus,
+} from '../lib/tokenBudget';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import BentoCard from '../components/ui/BentoCard';
 import ModelBadge from '../components/ui/ModelBadge';
@@ -137,7 +146,40 @@ export default function SystemView() {
   const [promptDraft, setPromptDraft] = useState('');
   const [versionOpenAgentId, setVersionOpenAgentId] = useState<string | null>(null);
   const [promptVersions, setPromptVersions] = useState<db.AgentPromptVersion[]>([]);
+  const [budgetLimitDraft, setBudgetLimitDraft] = useState('');
+  const [budgetConfig, setBudgetConfig] = useState<TokenBudgetConfig>(() => getBudgetStatus());
+  const [budgetStatus, setBudgetStatusState] = useState<TokenBudgetStatus>(() => getBudgetStatus());
   const runAutoSyncRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    const status = getBudgetStatus();
+    setBudgetConfig(status);
+    setBudgetStatusState(status);
+    setBudgetLimitDraft(String(status.monthlyLimit));
+  }, []);
+
+  const saveBudgetLimit = () => {
+    const limit = Math.max(1, Math.floor(Number(budgetLimitDraft) || 0));
+    const next = setTokenBudget({ monthlyLimit: limit });
+    const status = getBudgetStatus(next);
+    setBudgetConfig(next);
+    setBudgetStatusState(status);
+    setBudgetLimitDraft(String(limit));
+  };
+
+  const toggleBudgetDegrade = () => {
+    const next = setTokenBudget({ autoDegrade: !budgetConfig.autoDegrade });
+    const status = getBudgetStatus(next);
+    setBudgetConfig(next);
+    setBudgetStatusState(status);
+  };
+
+  const resetBudgetMonth = () => {
+    const next = resetTokenBudget();
+    const status = getBudgetStatus(next);
+    setBudgetConfig(next);
+    setBudgetStatusState(status);
+  };
 
   useEffect(() => {
     void db.getSyncStatus().then((status) => {
@@ -2109,6 +2151,76 @@ export default function SystemView() {
       </BentoCard>
 
       <div className="grid gap-4 md:grid-cols-2">
+        <BentoCard title="Token budget" subtitle="跨流估算与月度上限" icon={Wallet} colSpan={6}>
+          <div className="space-y-3" data-token-budget-card>
+            <div className="flex items-center gap-2">
+              <input
+                data-token-budget-limit
+                type="number"
+                min="1"
+                value={budgetLimitDraft}
+                onChange={(e) => setBudgetLimitDraft(e.target.value)}
+                onBlur={saveBudgetLimit}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveBudgetLimit();
+                }}
+                className="h-8 w-28 rounded-xl border border-white/10 bg-[#18181C] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+              />
+              <button
+                type="button"
+                onClick={saveBudgetLimit}
+                className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-[10px] text-slate-400 hover:text-emerald-300"
+              >
+                Set limit
+              </button>
+              <button
+                type="button"
+                data-token-budget-reset
+                onClick={resetBudgetMonth}
+                className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-[10px] text-slate-400 hover:text-rose-300"
+              >
+                Reset month
+              </button>
+              <label className="ml-auto flex items-center gap-1.5 text-[10px] text-slate-400">
+                <input
+                  data-token-budget-auto-degrade
+                  type="checkbox"
+                  checked={budgetConfig.autoDegrade}
+                  onChange={toggleBudgetDegrade}
+                  className="accent-emerald-500"
+                />
+                Auto degrade
+              </label>
+            </div>
+            <div>
+              <div className="flex items-center justify-between text-[10px] text-slate-500">
+                <span data-token-budget-used>
+                  {formatTokens(budgetStatus.usedTokens)} /{' '}
+                  {formatTokens(budgetStatus.monthlyLimit)} tokens
+                </span>
+                <span>{Math.round(budgetStatus.pct)}%</span>
+              </div>
+              <div className="mt-1.5 h-1.5 rounded-full bg-white/5">
+                <div
+                  data-token-budget-bar
+                  className={`h-full rounded-full ${
+                    budgetStatus.over
+                      ? 'bg-rose-500'
+                      : budgetStatus.near
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${Math.max(budgetStatus.pct, 2)}%` }}
+                />
+              </div>
+              {budgetStatus.over && (
+                <p className="mt-1.5 text-[10px] text-rose-300">
+                  Over monthly token budget — AI Studio will degrade to local providers.
+                </p>
+              )}
+            </div>
+          </div>
+        </BentoCard>
         <BentoCard title="Clipboard history" subtitle="本地实时监听" icon={Clipboard} colSpan={6}>
           <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-500">
             <Radio size={11} className="text-emerald-400" />

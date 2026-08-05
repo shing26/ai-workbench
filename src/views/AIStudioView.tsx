@@ -47,6 +47,13 @@ import {
   summarizeSearchHits,
   type SessionSearchHistoryEntry,
 } from '../lib/searchHistory';
+import {
+  estimateTokens,
+  formatTokens,
+  getBudgetStatus,
+  recordTokenUsage,
+  type TokenBudgetStatus,
+} from '../lib/tokenBudget';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import ModelBadge from '../components/ui/ModelBadge';
@@ -156,6 +163,10 @@ export default function AIStudioView() {
   } | null>(null);
   const [fallbackChain, setFallbackChain] = useState<db.StreamFallback[]>([]);
   const fallbackChainRef = useRef<db.StreamFallback[]>([]);
+  const [budgetStatus, setBudgetStatus] = useState<TokenBudgetStatus | null>(null);
+  const budgetStatusRef = useRef<TokenBudgetStatus | null>(null);
+  const [budgetDegraded, setBudgetDegraded] = useState(false);
+  const budgetDegradedRef = useRef(false);
   const [departments, setDepartments] = useState<db.Department[]>([]);
   const [agents, setAgents] = useState<db.Agent[]>([]);
   const [agentId, setAgentId] = useState('');
@@ -359,6 +370,11 @@ export default function AIStudioView() {
           if (run.label) {
             teamResultsRef.current.set(chunk.id, run.content);
           }
+          if (!chunk.error && !chunk.cancelled && run.content) {
+            const nextBudget = recordTokenUsage(estimateTokens(run.content));
+            budgetStatusRef.current = getBudgetStatus(nextBudget);
+            setBudgetStatus(budgetStatusRef.current);
+          }
           runsRef.current.delete(chunk.id);
           if (!chunk.error && sessionIdRef.current && run.content) {
             void db
@@ -464,6 +480,12 @@ export default function AIStudioView() {
       disposed = true;
       unlisten();
     };
+  }, []);
+
+  useEffect(() => {
+    const status = getBudgetStatus();
+    budgetStatusRef.current = status;
+    setBudgetStatus(status);
   }, []);
 
   useEffect(() => {
@@ -780,16 +802,42 @@ export default function AIStudioView() {
     }
     fallbackChainRef.current = [];
     setFallbackChain([]);
+    const currentBudget = getBudgetStatus();
+    budgetStatusRef.current = currentBudget;
+    setBudgetStatus(currentBudget);
+    budgetDegradedRef.current = false;
+    setBudgetDegraded(false);
     const selectedAgent = agentId ? (agents.find((a) => a.id === agentId) ?? null) : null;
     let providerIds: string[];
     let routedName: string | null = null;
     let fallbackFrom: string | null = null;
+    if (currentBudget.over && !currentBudget.autoDegrade) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.content === '__stream__' ? { ...m, content: '请求失败: token budget exceeded' } : m,
+        ),
+      );
+      setBusy(false);
+      setStreamStatus('error');
+      setStreamError('token budget exceeded');
+      setRoutedProvider(null);
+      return;
+    }
+    const localProviders = activeProviders.filter((p) => db.isOllamaProvider(p.name, p.baseUrl));
+    const routeProviders =
+      currentBudget.over && currentBudget.autoDegrade && localProviders.length > 0
+        ? localProviders
+        : activeProviders;
+    if (routeProviders !== activeProviders) {
+      budgetDegradedRef.current = true;
+      setBudgetDegraded(true);
+    }
     if (moa) {
-      providerIds = activeProviders.slice(0, 3).map((p) => p.id);
+      providerIds = routeProviders.slice(0, 3).map((p) => p.id);
     } else if (autoRoute) {
-      const routed = await db.routeProvider(activeProviders.map((p) => p.id));
+      const routed = await db.routeProvider(routeProviders.map((p) => p.id));
       if (routed.provider) {
-        providerIds = activeProviders.map((p) => p.id);
+        providerIds = routeProviders.map((p) => p.id);
         routedName = routed.provider.name;
         fallbackFrom = routed.fallbackFrom;
       } else {
@@ -809,8 +857,8 @@ export default function AIStudioView() {
     } else {
       providerIds = selectedAgent?.providerId
         ? [selectedAgent.providerId]
-        : activeProviders.length > 0
-          ? activeProviders.map((p) => p.id)
+        : routeProviders.length > 0
+          ? routeProviders.map((p) => p.id)
           : [];
     }
     if (selectedAgent) setRoutedAgent(selectedAgent);
@@ -883,6 +931,14 @@ export default function AIStudioView() {
         value: fallbackChainRef.current
           .map((fallback) => `${fallback.from} → ${fallback.to}`)
           .join(', '),
+      });
+    }
+    if (budgetStatusRef.current) {
+      sections.push({
+        label: 'Budget',
+        value: `${budgetStatusRef.current.usedTokens}/${budgetStatusRef.current.monthlyLimit} tokens${
+          budgetDegradedRef.current ? ' · degraded' : ''
+        }`,
       });
     }
     if (hits.length > 0) {
@@ -1245,6 +1301,24 @@ export default function AIStudioView() {
               <span className="opacity-70">
                 {fallbackChain.map((f) => `${f.from} → ${f.to}`).join(', ')}
               </span>
+            </span>
+          )}
+          {budgetStatus && (
+            <span
+              data-token-budget-badge
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
+                budgetStatus.over
+                  ? 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+                  : budgetStatus.near
+                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+              }`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              tokens {formatTokens(budgetStatus.usedTokens)}/
+              {formatTokens(budgetStatus.monthlyLimit)}
+              {budgetDegraded && <span className="opacity-80">· degraded</span>}
+              {budgetStatus.over && <span className="opacity-80">· over</span>}
             </span>
           )}
         </div>

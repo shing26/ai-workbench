@@ -765,3 +765,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 109：多 Provider 自动降级
 
 无表结构变更。自动降级是运行时链路：`stream-fallback` 事件与 `[auto fallback: A → B]` 文本块不新增持久化字段，Provider 仍由 `providers` 表与 `ai-workbench:db:v1` 保存；浏览器 fallback 不新增 localStorage key。
+
+## Sprint 110：跨流 Token 预算
+
+无表结构变更。预算配置保存在前端 `ai-workbench:token-budget:v1`（含 `monthlyLimit / monthKey / usedTokens / autoDegrade`），不写入 SQLite；浏览器 fallback 与 Tauri 共用同一 localStorage 模型，月度 key 变化自动清零。
