@@ -863,6 +863,30 @@ try {
     throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
   }
   results.vaultIndex = vaultIndex;
+  const vaultIgnore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const ignoreInput = document.querySelector('input[placeholder="Ignore patterns (comma separated)"]');
+    if (!ignoreInput) return { ok: false, reason: "no ignore input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(ignoreInput, "Daily Notes");
+    ignoreInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let ignored = false;
+    for (let i = 0; i < 20; i++) {
+      const skipped = Number(document.querySelector('[data-vault-ignored]')?.getAttribute("data-vault-ignored") ?? 0);
+      const files = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+      ignored = skipped === 1 && files === 1;
+      if (ignored) break;
+      await sleep(100);
+    }
+    return { ok: ignored };
+  })()`);
+  if (!vaultIgnore.ok) {
+    throw new Error(`Vault ignore assertion failed: ${JSON.stringify(vaultIgnore)}`);
+  }
+  results.vaultIgnore = vaultIgnore;
   const vaultWatch = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const filesBefore = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);

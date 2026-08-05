@@ -264,6 +264,7 @@ export type VaultWatchStatus = {
 
 export type IndexResult = {
   files: number;
+  ignored: number;
 };
 
 const LS_KEY = "ai-workbench:db:v1";
@@ -1186,13 +1187,22 @@ function readVaultWatch(): VaultWatchRecord {
   }
 }
 
-export async function indexVault(vaultPath: string): Promise<IndexResult> {
-  if (isTauri()) return invoke<IndexResult>("index_vault", { vaultPath });
+export async function indexVault(
+  vaultPath: string,
+  ignorePatterns: string[] = [],
+): Promise<IndexResult> {
+  if (isTauri()) {
+    return invoke<IndexResult>("index_vault_ex", { vaultPath, ignorePatterns });
+  }
   const existing = readVaultFiles();
   const sample = sampleVaultFiles(vaultPath);
   const merged = existing.length > 0 ? existing : sample;
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(merged));
-  return { files: merged.length };
+  const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const filtered = merged.filter(
+    (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
+  );
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
+  return { files: filtered.length, ignored: merged.length - filtered.length };
 }
 
 export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {

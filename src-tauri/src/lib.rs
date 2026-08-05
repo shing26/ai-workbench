@@ -630,9 +630,63 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, Value>, String) 
     (map, content.to_string())
 }
 
-fn collect_markdown_files(
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    if pattern.is_empty() {
+        return text.is_empty();
+    }
+    if let Some(rest) = pattern.strip_prefix("**") {
+        for (idx, _) in text.char_indices() {
+            if wildcard_match(rest, &text[idx..]) {
+                return true;
+            }
+        }
+        return wildcard_match(rest, "");
+    }
+    if let Some(rest) = pattern.strip_prefix('*') {
+        for (idx, ch) in text.char_indices() {
+            if ch == '/' {
+                break;
+            }
+            if wildcard_match(rest, &text[idx..]) {
+                return true;
+            }
+        }
+        return wildcard_match(rest, "");
+    }
+    let pat_c = pattern.chars().next().unwrap();
+    let text_c = text.chars().next();
+    match text_c {
+        Some(text_c) if text_c == pat_c => {
+            wildcard_match(&pattern[pat_c.len_utf8()..], &text[text_c.len_utf8()..])
+        }
+        _ => false,
+    }
+}
+
+fn should_ignore_path(relative: &str, patterns: &[String]) -> bool {
+    let rel = relative.replace('\\', "/");
+    let rel = rel.trim_start_matches("./");
+    patterns.iter().any(|raw| {
+        let pattern = raw.trim().replace('\\', "/");
+        let pattern = pattern.trim_start_matches("./");
+        if pattern.is_empty() {
+            return false;
+        }
+        if pattern.contains('/') {
+            wildcard_match(pattern, rel)
+        } else {
+            rel.split('/')
+                .any(|segment| wildcard_match(pattern, segment))
+        }
+    })
+}
+
+fn collect_markdown_paths(
     dir: &Path,
-    out: &mut Vec<(String, String, String, String)>,
+    patterns: &[String],
+    out: &mut Vec<std::path::PathBuf>,
+    ignored: &mut i64,
+    relative: &str,
     depth: usize,
 ) -> Result<(), String> {
     if depth > 10 {
@@ -642,45 +696,88 @@ fn collect_markdown_files(
     for entry in entries {
         let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
         let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = if relative.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", relative, name)
+        };
+        if should_ignore_path(&rel, patterns) {
+            *ignored += 1;
+            continue;
+        }
         if path.is_dir() {
-            collect_markdown_files(&path, out, depth + 1)?;
+            collect_markdown_paths(&path, patterns, out, ignored, &rel, depth + 1)?;
         } else if path.extension().is_some_and(|e| e == "md") {
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            let (frontmatter, body) = parse_frontmatter(&content);
-            let path_str = path.to_string_lossy().to_string();
-            let title = frontmatter
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Untitled")
-                .to_string();
-            let tags = frontmatter
-                .get("tags")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            out.push((path_str, title, tags, body));
+            out.push(path);
         }
     }
     Ok(())
 }
 
+fn read_markdown_file(path: std::path::PathBuf) -> (String, String, String, String) {
+    let content = fs::read_to_string(&path).unwrap_or_default();
+    let (frontmatter, body) = parse_frontmatter(&content);
+    let title = frontmatter
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let tags = frontmatter
+        .get("tags")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    (path.to_string_lossy().to_string(), title, tags, body)
+}
+
 fn index_vault_files(
     conn: &rusqlite::Connection,
     vault_path: &str,
+    ignore_patterns: &[String],
 ) -> Result<db::IndexResult, String> {
     let dir = Path::new(vault_path);
     if !dir.is_dir() {
         return Err("Vault path not a directory".into());
     }
+    let mut paths = Vec::new();
+    let mut ignored = 0i64;
+    collect_markdown_paths(dir, ignore_patterns, &mut paths, &mut ignored, "", 0)?;
     let mut files = Vec::new();
-    collect_markdown_files(dir, &mut files, 0)?;
+    if !paths.is_empty() {
+        let workers = 4.min(paths.len());
+        let chunk_size = paths.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in paths.chunks(chunk_size) {
+                let chunk = chunk.to_vec();
+                handles.push(scope.spawn(move || {
+                    chunk
+                        .into_iter()
+                        .map(read_markdown_file)
+                        .collect::<Vec<_>>()
+                }));
+            }
+            for handle in handles {
+                files.extend(
+                    handle
+                        .join()
+                        .map_err(|_| "Vault scan worker failed".to_string())?,
+                );
+            }
+            Ok::<(), String>(())
+        })?;
+    }
     let mut indexed = 0i64;
     for (path, title, tags, content) in files {
         db::upsert_knowledge_file(conn, &path, &title, &tags, &content)
             .map_err(|e| e.to_string())?;
         indexed += 1;
     }
-    Ok(db::IndexResult { files: indexed })
+    Ok(db::IndexResult {
+        files: indexed,
+        ignored,
+    })
 }
 
 fn upsert_markdown_path(conn: &rusqlite::Connection, path: &Path) -> Result<(), String> {
@@ -1238,7 +1335,17 @@ fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, 
 #[tauri::command]
 fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    index_vault_files(&conn, &vault_path)
+    index_vault_files(&conn, &vault_path, &[])
+}
+
+#[tauri::command]
+fn index_vault_ex(
+    state: State<'_, db::Db>,
+    vault_path: String,
+    ignore_patterns: Vec<String>,
+) -> Result<db::IndexResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    index_vault_files(&conn, &vault_path, &ignore_patterns)
 }
 
 #[tauri::command]
@@ -1271,7 +1378,7 @@ fn start_vault_watch(
     }
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        index_vault_files(&conn, &canonical_str)?;
+        index_vault_files(&conn, &canonical_str, &[])?;
     }
     let app_clone = app.clone();
     let on_event = move |event: &Event| {
@@ -2452,6 +2559,7 @@ pub fn run() {
             search_thoughts,
             get_rag_index_status,
             index_vault,
+            index_vault_ex,
             get_knowledge_index_status,
             start_vault_watch,
             stop_vault_watch,
@@ -2658,13 +2766,41 @@ mod tests {
         )
         .unwrap();
         let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let result = index_vault_files(&conn, vault.to_str().unwrap()).unwrap();
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &[]).unwrap();
         assert_eq!(result.files, 2);
+        assert_eq!(result.ignored, 0);
         let status = db::knowledge_index_status(&conn).unwrap();
         assert_eq!(status.files, 2);
         let results = db::search_thoughts(&conn, "obsidian vault", 5).unwrap();
         assert!(results.iter().any(|r| r.content.contains("Obsidian")));
         assert!(results.iter().any(|r| r.kind == "doc"));
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn vault_index_ex_parallel_respects_ignore_patterns() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-vault-ignore-test-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(vault.join("node_modules")).unwrap();
+        std::fs::create_dir_all(vault.join("archive")).unwrap();
+        std::fs::create_dir_all(vault.join("notes")).unwrap();
+        std::fs::write(vault.join("keep.md"), "# Keep\n\nindexed").unwrap();
+        std::fs::write(vault.join("node_modules").join("pkg.md"), "# Dep\n\nskip").unwrap();
+        std::fs::write(vault.join("archive").join("old.md"), "# Old\n\nskip").unwrap();
+        std::fs::write(vault.join("notes").join("deep.md"), "# Deep\n\nindexed").unwrap();
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let patterns = vec!["node_modules".to_string(), "archive/**".to_string()];
+        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns).unwrap();
+        assert_eq!(result.files, 2);
+        assert_eq!(result.ignored, 2);
+        let status = db::knowledge_index_status(&conn).unwrap();
+        assert_eq!(status.files, 2);
+        let search = db::search_thoughts(&conn, "keep deep", 5).unwrap();
+        assert!(search.iter().any(|r| r.content.contains("Keep")));
+        assert!(search.iter().any(|r| r.content.contains("Deep")));
+        assert!(!search.iter().any(|r| r.content.contains("skip")));
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
     }
@@ -2690,7 +2826,7 @@ mod tests {
         let conn = std::sync::Arc::new(std::sync::Mutex::new(
             db::init_connection(&temp.join("workbench.db")).unwrap(),
         ));
-        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap()).unwrap();
+        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap(), &[]).unwrap();
         let db_for_event = conn.clone();
         let on_event = move |event: &Event| {
             for path in &event.paths {

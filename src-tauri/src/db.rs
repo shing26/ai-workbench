@@ -359,6 +359,7 @@ pub struct KnowledgeIndexStatus {
 #[serde(rename_all = "camelCase")]
 pub struct IndexResult {
     pub files: i64,
+    pub ignored: i64,
 }
 
 fn now_millis() -> i64 {
