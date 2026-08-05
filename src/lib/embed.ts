@@ -32,7 +32,7 @@ function extractFeatures(text: string): string[] {
   }
   for (let width = 1; width <= 4; width += 1) {
     for (let i = 0; i + width <= chars.length; i += 1) {
-      features.add(chars.slice(i, i + width).join(""));
+      features.add(chars.slice(i, i + width).join(''));
     }
   }
   return [...features];

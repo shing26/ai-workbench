@@ -535,3 +535,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 浏览器 fallback 用 `Promise.allSettled` 并行真实 SSE / NDJSON 流；`streamProviderLive` 新增 `final` / `manageCancel` 选项，多路共享 runId 取消标记，最终 `done.cancelled` 反映取消状态。
 - `verify:ui` / `verify:preview` 新增 `moaParallel` lane：3 个本地 SSE mock 断言 `maxActive >= 3` 并覆盖三个标题与回复。
 - 验证脚本稳定性：`reloadAndWait` 改为 `Page.navigate` + URL marker 轮询，避免旧页面上下文误判就绪导致的 `Runtime.evaluate` 超时。
+
+## Sprint 102：ESLint/Prettier 与 husky/lint-staged 质量门禁
+
+- 新增 `eslint.config.js`：ESLint 10 flat config + `@eslint/js` + `typescript-eslint` + `eslint-plugin-react-hooks` + `eslint-plugin-react-refresh`；保留 `exhaustive-deps`，关闭 v7 激进规则，`npm run lint` 0 errors / 0 warnings。
+- 新增 `.prettierrc.json` / `.prettierignore`：`printWidth: 100`、`singleQuote`、`trailingComma: all`，排除 dist / node_modules / src-tauri 生成物 / docs 与生成 schema；`npx prettier --check .` 全绿。
+- `package.json` 新增 `lint` / `format` / `format:check` / `prepare` scripts 与 `lint-staged` 配置；`.husky/pre-commit` 调用 `npx lint-staged`，staged TS/TSX 自动 `eslint --fix` + `prettier --write`。
+- KnowledgeView 加载函数改为 `useCallback` 并补齐 listener / interval 依赖；SystemView 自动同步定时器用 ref 持有最新 `runAutoSync`，`checkAll` 用 `useCallback`；ProjectsView git context effect 补 `projects` 依赖。

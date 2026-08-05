@@ -1,7 +1,7 @@
-import { create } from "zustand";
-import * as db from "../lib/db";
+import { create } from 'zustand';
+import * as db from '../lib/db';
 
-export type ViewId = "ai-studio" | "projects" | "knowledge" | "actions" | "system";
+export type ViewId = 'ai-studio' | 'projects' | 'knowledge' | 'actions' | 'system';
 export type InspectorSection = { label: string; value: string };
 export type InspectorState = { title: string; sections: InspectorSection[] };
 
@@ -28,18 +28,23 @@ type WorkbenchState = {
   addProvider: (name: string, baseUrl: string, apiKey: string, model?: string) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
   setProviderModel: (id: string, model: string) => Promise<void>;
-  addHabit: (name: string, weekGoal: number, color: db.Habit["color"]) => Promise<void>;
+  addHabit: (name: string, weekGoal: number, color: db.Habit['color']) => Promise<void>;
   toggleHabit: (id: string) => Promise<void>;
   addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
   toggleEventDone: (id: string) => Promise<void>;
   refreshSystem: () => Promise<void>;
-  reportError: (source: string, message: string, stack: string | null, severity: string) => Promise<void>;
+  reportError: (
+    source: string,
+    message: string,
+    stack: string | null,
+    severity: string,
+  ) => Promise<void>;
   openInspector: (title: string, sections: InspectorSection[]) => void;
   closeInspector: () => void;
 };
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
-  activeView: "ai-studio",
+  activeView: 'ai-studio',
   setActiveView: (activeView) => set({ activeView }),
   loaded: false,
   tasks: [],
@@ -55,7 +60,17 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
-    const [tasks, projects, thoughts, providers, sessions, habits, scheduleEvents, clipboard, logs] = await Promise.all([
+    const [
+      tasks,
+      projects,
+      thoughts,
+      providers,
+      sessions,
+      habits,
+      scheduleEvents,
+      clipboard,
+      logs,
+    ] = await Promise.all([
       db.listTasks(),
       db.listProjects(),
       db.listThoughts(),
@@ -66,7 +81,18 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       db.listClipboard(),
       db.listErrorLogs(),
     ]);
-    set({ tasks, projects, thoughts, providers, sessions, habits, scheduleEvents, clipboard, logs, loaded: true });
+    set({
+      tasks,
+      projects,
+      thoughts,
+      providers,
+      sessions,
+      habits,
+      scheduleEvents,
+      clipboard,
+      logs,
+      loaded: true,
+    });
   },
   addTask: async (title, isToday) => {
     await db.createTask(title, isToday);
@@ -88,7 +114,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.createThought(content, tags, type);
     set({ thoughts: await db.listThoughts() });
   },
-  addProvider: async (name, baseUrl, apiKey, model = "") => {
+  addProvider: async (name, baseUrl, apiKey, model = '') => {
     await db.createProvider(name, baseUrl, apiKey, model);
     set({ providers: await db.listProviders() });
   },

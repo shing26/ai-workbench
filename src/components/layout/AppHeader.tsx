@@ -1,15 +1,15 @@
-import { Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useWorkbenchStore, type ViewId } from "../../stores/workbenchStore";
-import MaterialDrawer from "./MaterialDrawer";
-import ThemeSwitcher from "../ui/ThemeSwitcher";
+import { Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
+import MaterialDrawer from './MaterialDrawer';
+import ThemeSwitcher from '../ui/ThemeSwitcher';
 
 const TITLES: Record<ViewId, string> = {
-  "ai-studio": "AI Studio",
-  projects: "Projects",
-  knowledge: "Knowledge & Inbox",
-  actions: "Actions & Schedule",
-  system: "System & Automation",
+  'ai-studio': 'AI Studio',
+  projects: 'Projects',
+  knowledge: 'Knowledge & Inbox',
+  actions: 'Actions & Schedule',
+  system: 'System & Automation',
 };
 
 export default function AppHeader() {
@@ -17,25 +17,28 @@ export default function AppHeader() {
   const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const providers = useWorkbenchStore((s) => s.providers);
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const activeProvider = providers.find((p) => p.isActive);
 
   const items = useMemo(
-    () => (Object.keys(TITLES) as ViewId[]).filter((id) => TITLES[id].toLowerCase().includes(query.toLowerCase())),
+    () =>
+      (Object.keys(TITLES) as ViewId[]).filter((id) =>
+        TITLES[id].toLowerCase().includes(query.toLowerCase()),
+      ),
     [query],
   );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setOpen((v) => !v);
       }
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === 'Escape') setOpen(false);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   useEffect(() => {
@@ -66,7 +69,9 @@ export default function AppHeader() {
           >
             <Search size={14} />
             <span className="hidden md:inline">Search</span>
-            <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">Ctrl K</kbd>
+            <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">
+              Ctrl K
+            </kbd>
           </button>
           {open && (
             <div className="search-pop absolute right-0 top-11 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[#18181C] shadow-xl">
@@ -75,17 +80,19 @@ export default function AppHeader() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && items[0]) {
+                  if (e.key === 'Enter' && items[0]) {
                     setActiveView(items[0]);
                     setOpen(false);
-                    setQuery("");
+                    setQuery('');
                   }
                 }}
                 placeholder="Jump to view..."
                 className="h-11 w-full border-b border-white/10 bg-transparent px-3 text-sm text-slate-200 outline-none placeholder:text-slate-600"
               />
               <div className="p-1.5">
-                {items.length === 0 && <div className="px-3 py-6 text-center text-xs text-slate-600">No results</div>}
+                {items.length === 0 && (
+                  <div className="px-3 py-6 text-center text-xs text-slate-600">No results</div>
+                )}
                 {items.map((id) => (
                   <button
                     key={id}
@@ -93,7 +100,7 @@ export default function AppHeader() {
                     onClick={() => {
                       setActiveView(id);
                       setOpen(false);
-                      setQuery("");
+                      setQuery('');
                     }}
                     className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs text-slate-300 hover:bg-white/[0.06]"
                   >

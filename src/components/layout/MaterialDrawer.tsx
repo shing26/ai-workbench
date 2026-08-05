@@ -1,8 +1,8 @@
-import { SlidersHorizontal, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { SlidersHorizontal, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
-const MATERIAL_KEY = "ai-workbench:material-settings:v1";
-const MATERIAL_PRESETS = ["cyan", "original", "rain", "chrome"] as const;
+const MATERIAL_KEY = 'ai-workbench:material-settings:v1';
+const MATERIAL_PRESETS = ['cyan', 'original', 'rain', 'chrome'] as const;
 
 type MaterialSettings = {
   preset: (typeof MATERIAL_PRESETS)[number];
@@ -11,7 +11,7 @@ type MaterialSettings = {
 };
 
 const DEFAULT_SETTINGS: MaterialSettings = {
-  preset: "cyan",
+  preset: 'cyan',
   opacity: 0.3,
   blur: 18,
 };
@@ -21,17 +21,17 @@ function loadSettings(): MaterialSettings {
     const raw = localStorage.getItem(MATERIAL_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<MaterialSettings>;
-    const preset = MATERIAL_PRESETS.includes(parsed.preset as MaterialSettings["preset"])
-      ? (parsed.preset as MaterialSettings["preset"])
+    const preset = MATERIAL_PRESETS.includes(parsed.preset as MaterialSettings['preset'])
+      ? (parsed.preset as MaterialSettings['preset'])
       : DEFAULT_SETTINGS.preset;
     return {
       preset,
       opacity:
-        typeof parsed.opacity === "number"
+        typeof parsed.opacity === 'number'
           ? Math.min(0.7, Math.max(0.1, parsed.opacity))
           : DEFAULT_SETTINGS.opacity,
       blur:
-        typeof parsed.blur === "number"
+        typeof parsed.blur === 'number'
           ? Math.min(40, Math.max(8, parsed.blur))
           : DEFAULT_SETTINGS.blur,
     };
@@ -42,14 +42,8 @@ function loadSettings(): MaterialSettings {
 
 function applySettings(settings: MaterialSettings) {
   document.documentElement.dataset.materialGlobal = settings.preset;
-  document.documentElement.style.setProperty(
-    "--material-opacity-base",
-    String(settings.opacity),
-  );
-  document.documentElement.style.setProperty(
-    "--material-blur-base",
-    `${settings.blur}px`,
-  );
+  document.documentElement.style.setProperty('--material-opacity-base', String(settings.opacity));
+  document.documentElement.style.setProperty('--material-blur-base', `${settings.blur}px`);
 }
 
 export default function MaterialDrawer() {
@@ -77,13 +71,13 @@ export default function MaterialDrawer() {
     if (!open) return;
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === 'Escape') {
         setOpen(false);
         triggerRef.current?.focus();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
   const toggle = () => {
@@ -108,7 +102,7 @@ export default function MaterialDrawer() {
       </button>
       <div
         data-material-overlay
-        className={`material-overlay ${open ? "open" : ""}`}
+        className={`material-overlay ${open ? 'open' : ''}`}
         aria-hidden={!open}
         onClick={() => {
           setOpen(false);
@@ -122,7 +116,7 @@ export default function MaterialDrawer() {
         aria-modal="true"
         aria-label="Material settings"
         aria-hidden={!open}
-        className={`material-drawer ${open ? "open" : ""}`}
+        className={`material-drawer ${open ? 'open' : ''}`}
       >
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] px-4">
           <div>
@@ -158,7 +152,7 @@ export default function MaterialDrawer() {
               onChange={(event) =>
                 setSettings((prev) => ({
                   ...prev,
-                  preset: event.target.value as MaterialSettings["preset"],
+                  preset: event.target.value as MaterialSettings['preset'],
                 }))
               }
               className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"

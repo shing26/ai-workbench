@@ -1,12 +1,12 @@
-import type { PointerEventHandler, ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { PointerEventHandler, ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
 
 type Props = {
   title: string;
   subtitle?: string;
   icon?: LucideIcon;
   colSpan?: number;
-  material?: "cyan" | "original" | "rain" | "chrome";
+  material?: 'cyan' | 'original' | 'rain' | 'chrome';
   className?: string;
   children?: ReactNode;
   onPointerMove?: PointerEventHandler<HTMLElement>;
@@ -19,23 +19,23 @@ export default function BentoCard({
   icon: Icon,
   colSpan = 12,
   material,
-  className = "",
+  className = '',
   children,
   onPointerMove,
   onPointerLeave,
 }: Props) {
-  const MATERIAL_BY_TITLE: Record<string, NonNullable<Props["material"]>> = {
-    "Today Focus": "rain",
-    Habits: "original",
-    "Fast list": "chrome",
-    "Schedule Timeline": "cyan",
-    Providers: "chrome",
-    "Sync snapshot": "cyan",
-    "Clipboard history": "original",
-    "Error logs": "rain",
-    "Agent directory": "original",
-    "Thought Inbox": "original",
-    "Vault Index": "rain",
+  const MATERIAL_BY_TITLE: Record<string, NonNullable<Props['material']>> = {
+    'Today Focus': 'rain',
+    Habits: 'original',
+    'Fast list': 'chrome',
+    'Schedule Timeline': 'cyan',
+    Providers: 'chrome',
+    'Sync snapshot': 'cyan',
+    'Clipboard history': 'original',
+    'Error logs': 'rain',
+    'Agent directory': 'original',
+    'Thought Inbox': 'original',
+    'Vault Index': 'rain',
   };
   const resolvedMaterial = material ?? MATERIAL_BY_TITLE[title] ?? null;
 
@@ -44,7 +44,7 @@ export default function BentoCard({
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
       data-material={resolvedMaterial}
-      className={`bento-card material-card ${resolvedMaterial ? `material-${resolvedMaterial}` : ""} flex min-w-0 flex-col rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${className}`}
+      className={`bento-card material-card ${resolvedMaterial ? `material-${resolvedMaterial}` : ''} flex min-w-0 flex-col rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${className}`}
       style={{ gridColumn: `span ${colSpan} / span ${colSpan}` }}
     >
       <header className="mb-3 flex items-start justify-between gap-2">

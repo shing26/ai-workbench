@@ -1,27 +1,27 @@
-import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import * as db from "../lib/db";
-import { useWorkbenchStore } from "../stores/workbenchStore";
-import BentoCard from "../components/ui/BentoCard";
-import ModelBadge from "../components/ui/ModelBadge";
+import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import * as db from '../lib/db';
+import { useWorkbenchStore } from '../stores/workbenchStore';
+import BentoCard from '../components/ui/BentoCard';
+import ModelBadge from '../components/ui/ModelBadge';
 
 export default function KnowledgeView() {
   const thoughts = useWorkbenchStore((s) => s.thoughts);
   const addThought = useWorkbenchStore((s) => s.addThought);
-  const [content, setContent] = useState("");
-  const [tags, setTags] = useState("#work");
-  const [filter, setFilter] = useState("all");
+  const [content, setContent] = useState('');
+  const [tags, setTags] = useState('#work');
+  const [filter, setFilter] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState('');
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
   const [crossFileFilter, setCrossFileFilter] = useState<string[] | null>(null);
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
-  const [vaultPath, setVaultPath] = useState("");
-  const [ignorePatterns, setIgnorePatterns] = useState("");
-  const [indexConcurrency, setIndexConcurrency] = useState("4");
+  const [vaultPath, setVaultPath] = useState('');
+  const [ignorePatterns, setIgnorePatterns] = useState('');
+  const [indexConcurrency, setIndexConcurrency] = useState('4');
   const [useAutoConcurrency, setUseAutoConcurrency] = useState(false);
-  const [indexPriority, setIndexPriority] = useState("0");
+  const [indexPriority, setIndexPriority] = useState('0');
   const [recommendedConcurrency, setRecommendedConcurrency] = useState(4);
   const [vaultStatus, setVaultStatus] = useState<db.KnowledgeIndexStatus | null>(null);
   const [watchStatus, setWatchStatus] = useState<db.VaultWatchStatus | null>(null);
@@ -29,10 +29,10 @@ export default function KnowledgeView() {
   const [targetStats, setTargetStats] = useState<db.VaultTargetStats[]>([]);
   const [watchEvents, setWatchEvents] = useState<db.VaultWatchEvent[]>([]);
   const [knowledgeDocs, setKnowledgeDocs] = useState<db.KnowledgeFileRecord[]>([]);
-  const [docVaultFilter, setDocVaultFilter] = useState("all");
+  const [docVaultFilter, setDocVaultFilter] = useState('all');
   const [cleanResult, setCleanResult] = useState<db.KnowledgeCleanupResult | null>(null);
   const [docAutoConfig, setDocAutoConfig] = useState<db.DocHealthAutoConfig | null>(null);
-  const [docAutoInterval, setDocAutoInterval] = useState("60");
+  const [docAutoInterval, setDocAutoInterval] = useState('60');
   const [docAutoRunning, setDocAutoRunning] = useState(false);
   const [docHealthHistory, setDocHealthHistory] = useState<db.DocHealthRunRecord[]>([]);
   const [docHealthAlertDismissedAt, setDocHealthAlertDismissedAt] = useState(0);
@@ -43,15 +43,29 @@ export default function KnowledgeView() {
   const [indexQueueStatus, setIndexQueueStatus] = useState<db.VaultIndexQueueStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const loadWatchEvents = useCallback(async (vaultPath?: string) => {
+    setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
+  }, []);
+
+  const loadDocs = useCallback(async (vaultPath?: string) => {
+    setKnowledgeDocs(await db.listKnowledgeFiles(vaultPath, 100));
+  }, []);
+
+  const loadTargets = useCallback(async () => {
+    setVaultTargets(await db.listVaultWatchTargets());
+    setWatchStatus(await db.getVaultWatchStatus());
+    setTargetStats(await db.listVaultTargetStats());
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         inputRef.current?.focus();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   useEffect(() => {
@@ -69,7 +83,7 @@ export default function KnowledgeView() {
     void db.listVaultTargetStats().then(setTargetStats);
     void loadDocs();
     void loadWatchEvents();
-  }, []);
+  }, [loadDocs, loadWatchEvents]);
 
   useEffect(() => {
     let disposed = false;
@@ -89,14 +103,6 @@ export default function KnowledgeView() {
     };
   }, []);
 
-  const loadWatchEvents = async (vaultPath?: string) => {
-    setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
-  };
-
-  const loadDocs = async (vaultPath?: string) => {
-    setKnowledgeDocs(await db.listKnowledgeFiles(vaultPath, 100));
-  };
-
   useEffect(() => {
     let disposed = false;
     void (async () => {
@@ -104,7 +110,7 @@ export default function KnowledgeView() {
       if (disposed) return;
       if (config.path) setVaultPath(config.path);
       if (config.ignorePatterns.length > 0) {
-        setIgnorePatterns(config.ignorePatterns.join(", "));
+        setIgnorePatterns(config.ignorePatterns.join(', '));
       }
       if (config.enabled && config.path) {
         const status = await db.getVaultWatchStatus();
@@ -126,7 +132,7 @@ export default function KnowledgeView() {
         if (disposed) return;
         setWatchStatus(status);
         void loadWatchEvents();
-        void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+        void loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
         void db.getKnowledgeIndexStatus().then((next) => {
           if (!disposed) setVaultStatus(next);
         });
@@ -142,7 +148,7 @@ export default function KnowledgeView() {
       disposed = true;
       unlisten();
     };
-  }, []);
+  }, [docVaultFilter, loadDocs, loadWatchEvents]);
 
   useEffect(() => {
     let disposed = false;
@@ -151,11 +157,11 @@ export default function KnowledgeView() {
       .listenVaultIndexProgress((progress) => {
         if (disposed) return;
         setIndexProgress(progress);
-        if (progress.status === "done") {
+        if (progress.status === 'done') {
           setLastIgnored(progress.ignored);
           setLastConcurrencyUsed(progress.concurrencyUsed);
           void loadTargets();
-          void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+          void loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
           void db.getKnowledgeIndexStatus().then(setVaultStatus);
           void db.getRagIndexStatus().then(setIndexStatus);
         }
@@ -168,7 +174,7 @@ export default function KnowledgeView() {
       disposed = true;
       unlisten();
     };
-  }, []);
+  }, [docVaultFilter, loadDocs, loadTargets]);
 
   useEffect(() => {
     let disposed = false;
@@ -191,28 +197,37 @@ export default function KnowledgeView() {
     };
   }, []);
 
-  const allTags = Array.from(new Set(thoughts.flatMap((t) => t.tags.split(",").map((x) => x.trim()).filter(Boolean))));
-  const filtered = filter === "all" ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
+  const allTags = Array.from(
+    new Set(
+      thoughts.flatMap((t) =>
+        t.tags
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean),
+      ),
+    ),
+  );
+  const filtered = filter === 'all' ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
   const docFiles = results
-    ? Array.from(new Set(results.filter((r) => r.type === "doc").map((r) => r.id)))
+    ? Array.from(new Set(results.filter((r) => r.type === 'doc').map((r) => r.id)))
     : [];
   const docFileCounts = results
     ? results.reduce<Record<string, number>>((acc, r) => {
-        if (r.type === "doc") acc[r.id] = (acc[r.id] ?? 0) + 1;
+        if (r.type === 'doc') acc[r.id] = (acc[r.id] ?? 0) + 1;
         return acc;
       }, {})
     : {};
   const filteredResults =
     results && crossFileFilter && crossFileFilter.length < docFiles.length
-      ? results.filter((r) => r.type !== "doc" || crossFileFilter.includes(r.id))
+      ? results.filter((r) => r.type !== 'doc' || crossFileFilter.includes(r.id))
       : results;
   const visibleThoughts = filteredResults ?? filtered;
   const selected = visibleThoughts.find((t) => t.id === selectedId) ?? visibleThoughts[0] ?? null;
 
   const add = async () => {
     if (!content.trim()) return;
-    await addThought(content.trim(), tags, "inbox");
-    setContent("");
+    await addThought(content.trim(), tags, 'inbox');
+    setContent('');
   };
 
   const runSearch = async () => {
@@ -227,15 +242,13 @@ export default function KnowledgeView() {
   const toggleCrossFile = (path: string) => {
     setCrossFileFilter((prev) => {
       const current = prev ?? docFiles;
-      return current.includes(path)
-        ? current.filter((file) => file !== path)
-        : [...current, path];
+      return current.includes(path) ? current.filter((file) => file !== path) : [...current, path];
     });
   };
 
   const parseIgnore = () =>
     ignorePatterns
-      .split(",")
+      .split(',')
       .map((p) => p.trim())
       .filter(Boolean);
 
@@ -244,13 +257,8 @@ export default function KnowledgeView() {
     const concurrency = useAutoConcurrency
       ? 0
       : Math.max(1, Math.min(16, Number(indexConcurrency) || 4));
-    const priority = indexPriority === "1" ? 1 : 0;
-    const runId = await db.startVaultIndex(
-      vaultPath.trim(),
-      parseIgnore(),
-      concurrency,
-      priority,
-    );
+    const priority = indexPriority === '1' ? 1 : 0;
+    const runId = await db.startVaultIndex(vaultPath.trim(), parseIgnore(), concurrency, priority);
     setIndexProgress({
       runId,
       path: vaultPath.trim(),
@@ -259,7 +267,7 @@ export default function KnowledgeView() {
       files: 0,
       ignored: 0,
       concurrencyUsed: 0,
-      status: "running",
+      status: 'running',
     });
     void db.getVaultIndexQueueStatus().then(setIndexQueueStatus);
     await db.upsertVaultWatchTarget({
@@ -275,21 +283,15 @@ export default function KnowledgeView() {
     });
   };
 
-  const loadTargets = async () => {
-    setVaultTargets(await db.listVaultWatchTargets());
-    setWatchStatus(await db.getVaultWatchStatus());
-    setTargetStats(await db.listVaultTargetStats());
-  };
-
   const changeDocVaultFilter = (vaultPath: string) => {
     setDocVaultFilter(vaultPath);
-    void loadDocs(vaultPath === "all" ? undefined : vaultPath);
+    void loadDocs(vaultPath === 'all' ? undefined : vaultPath);
   };
 
   const cleanDocs = async () => {
     const ranAt = Date.now();
     const result = await db.cleanupKnowledgeFiles(
-      docVaultFilter === "all" ? undefined : docVaultFilter,
+      docVaultFilter === 'all' ? undefined : docVaultFilter,
     );
     setCleanResult(result);
     setDocHealthHistory(
@@ -298,48 +300,51 @@ export default function KnowledgeView() {
         removed: result.removed,
         reindexed: result.reindexed,
         failed: result.failed,
-        triggeredBy: "manual",
+        triggeredBy: 'manual',
         alert: result.removed + result.reindexed + result.failed > 0,
       }),
     );
-    void loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+    void loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
     void loadTargets();
     void db.getKnowledgeIndexStatus().then(setVaultStatus);
     void db.getRagIndexStatus().then(setIndexStatus);
   };
 
-  const runDocHealthAutoInspect = async (config: db.DocHealthAutoConfig) => {
-    setDocAutoRunning(true);
-    try {
-      const ranAt = Date.now();
-      const result = await db.cleanupKnowledgeFiles(
-        docVaultFilter === "all" ? undefined : docVaultFilter,
-      );
-      const next: db.DocHealthAutoConfig = {
-        ...config,
-        lastRunAt: ranAt,
-        lastResult: result,
-      };
-      setDocAutoConfig(next);
-      await db.setDocHealthAutoConfig(next);
-      setDocHealthHistory(
-        await db.appendDocHealthRun({
-          ranAt,
-          removed: result.removed,
-          reindexed: result.reindexed,
-          failed: result.failed,
-          triggeredBy: "auto",
-          alert: result.removed + result.reindexed + result.failed > 0,
-        }),
-      );
-      await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
-      await loadTargets();
-      setVaultStatus(await db.getKnowledgeIndexStatus());
-      setIndexStatus(await db.getRagIndexStatus());
-    } finally {
-      setDocAutoRunning(false);
-    }
-  };
+  const runDocHealthAutoInspect = useCallback(
+    async (config: db.DocHealthAutoConfig) => {
+      setDocAutoRunning(true);
+      try {
+        const ranAt = Date.now();
+        const result = await db.cleanupKnowledgeFiles(
+          docVaultFilter === 'all' ? undefined : docVaultFilter,
+        );
+        const next: db.DocHealthAutoConfig = {
+          ...config,
+          lastRunAt: ranAt,
+          lastResult: result,
+        };
+        setDocAutoConfig(next);
+        await db.setDocHealthAutoConfig(next);
+        setDocHealthHistory(
+          await db.appendDocHealthRun({
+            ranAt,
+            removed: result.removed,
+            reindexed: result.reindexed,
+            failed: result.failed,
+            triggeredBy: 'auto',
+            alert: result.removed + result.reindexed + result.failed > 0,
+          }),
+        );
+        await loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
+        await loadTargets();
+        setVaultStatus(await db.getKnowledgeIndexStatus());
+        setIndexStatus(await db.getRagIndexStatus());
+      } finally {
+        setDocAutoRunning(false);
+      }
+    },
+    [docVaultFilter, loadDocs, loadTargets],
+  );
 
   const dismissDocHealthAlert = async () => {
     if (!docHealthAlert) return;
@@ -386,7 +391,7 @@ export default function KnowledgeView() {
       });
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [docAutoConfig?.enabled, docAutoConfig?.intervalMs, docVaultFilter]);
+  }, [docAutoConfig?.enabled, docAutoConfig?.intervalMs, runDocHealthAutoInspect]);
 
   const toggleWatch = async () => {
     const currentWatching =
@@ -398,7 +403,7 @@ export default function KnowledgeView() {
     setWatchStatus(next);
     await loadTargets();
     await loadWatchEvents();
-    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+    await loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -411,7 +416,7 @@ export default function KnowledgeView() {
     setWatchStatus(next);
     await loadTargets();
     await loadWatchEvents();
-    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+    await loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
   };
@@ -420,7 +425,7 @@ export default function KnowledgeView() {
     await db.deleteVaultWatchTarget(target.path);
     await loadTargets();
     await loadWatchEvents();
-    await loadDocs(docVaultFilter === "all" ? undefined : docVaultFilter);
+    await loadDocs(docVaultFilter === 'all' ? undefined : docVaultFilter);
     if (expandedTimeline === target.path) setExpandedTimeline(null);
     setVaultStatus(await db.getKnowledgeIndexStatus());
     setIndexStatus(await db.getRagIndexStatus());
@@ -435,11 +440,9 @@ export default function KnowledgeView() {
     watchStatus?.paths?.includes(vaultPath.trim()) ?? watchStatus?.watching ?? false;
   const missingDocCount = knowledgeDocs.filter((doc) => !doc.exists).length;
   const staleDocCount = knowledgeDocs.filter((doc) => doc.exists && doc.stale).length;
-  const latestAutoRun = docHealthHistory.find((record) => record.triggeredBy === "auto");
+  const latestAutoRun = docHealthHistory.find((record) => record.triggeredBy === 'auto');
   const docHealthAlert =
-    latestAutoRun &&
-    latestAutoRun.alert &&
-    latestAutoRun.ranAt > docHealthAlertDismissedAt
+    latestAutoRun && latestAutoRun.alert && latestAutoRun.ranAt > docHealthAlertDismissedAt
       ? latestAutoRun
       : null;
 
@@ -452,7 +455,7 @@ export default function KnowledgeView() {
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void add();
               }
@@ -477,13 +480,18 @@ export default function KnowledgeView() {
         </div>
       </BentoCard>
 
-      <BentoCard title="Vault Index" subtitle="Obsidian / Markdown 文件夹纳入 RAG" icon={FolderOpen} colSpan={12}>
+      <BentoCard
+        title="Vault Index"
+        subtitle="Obsidian / Markdown 文件夹纳入 RAG"
+        icon={FolderOpen}
+        colSpan={12}
+      >
         <div className="flex items-end gap-2">
           <input
             value={vaultPath}
             onChange={(e) => setVaultPath(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              if (e.key === 'Enter') {
                 e.preventDefault();
                 void runIndex();
               }
@@ -511,17 +519,17 @@ export default function KnowledgeView() {
           <button
             type="button"
             onClick={() => void toggleWatch()}
-            data-vault-watch={currentWatching ? "on" : "off"}
+            data-vault-watch={currentWatching ? 'on' : 'off'}
             className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
           >
-            <RefreshCw size={14} className={currentWatching ? "animate-spin" : ""} />
-            {currentWatching ? "Stop watch" : "Watch vault"}
+            <RefreshCw size={14} className={currentWatching ? 'animate-spin' : ''} />
+            {currentWatching ? 'Stop watch' : 'Watch vault'}
           </button>
-          <span data-vault-watch-status={currentWatching ? "on" : "off"}>
+          <span data-vault-watch-status={currentWatching ? 'on' : 'off'}>
             <ModelBadge
               label="Watch"
               tone="green"
-              status={currentWatching ? "watching" : "off"}
+              status={currentWatching ? 'watching' : 'off'}
               pulse={currentWatching}
             />
           </span>
@@ -536,7 +544,7 @@ export default function KnowledgeView() {
             <ModelBadge
               label="Vault"
               tone="blue"
-              status={vaultStatus ? `${vaultStatus.files} files` : "pending"}
+              status={vaultStatus ? `${vaultStatus.files} files` : 'pending'}
             />
           </span>
         </div>
@@ -549,7 +557,9 @@ export default function KnowledgeView() {
             max={16}
             disabled={useAutoConcurrency}
             aria-label="Index concurrency"
-            data-index-concurrency={useAutoConcurrency ? String(recommendedConcurrency) : indexConcurrency}
+            data-index-concurrency={
+              useAutoConcurrency ? String(recommendedConcurrency) : indexConcurrency
+            }
             placeholder="Threads"
             className="h-8 w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600 disabled:opacity-50"
           />
@@ -557,13 +567,13 @@ export default function KnowledgeView() {
             type="button"
             aria-label="Auto index concurrency"
             aria-pressed={useAutoConcurrency}
-            data-index-concurrency-auto={useAutoConcurrency ? "on" : "off"}
+            data-index-concurrency-auto={useAutoConcurrency ? 'on' : 'off'}
             data-recommended-concurrency={recommendedConcurrency}
             onClick={() => setUseAutoConcurrency((value) => !value)}
             className={`flex h-8 items-center rounded-lg px-2 text-[10px] ${
               useAutoConcurrency
-                ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
-                : "bg-white/5 text-slate-300 hover:bg-white/10"
+                ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                : 'bg-white/5 text-slate-300 hover:bg-white/10'
             }`}
           >
             Auto
@@ -578,8 +588,8 @@ export default function KnowledgeView() {
             data-vault-ignored={lastIgnored}
             className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] ${
               lastIgnored > 0
-                ? "border-amber-500/25 bg-amber-500/10 text-amber-300"
-                : "border-white/10 bg-white/[0.04] text-slate-500"
+                ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                : 'border-white/10 bg-white/[0.04] text-slate-500'
             }`}
           >
             Skipped {lastIgnored}
@@ -588,7 +598,7 @@ export default function KnowledgeView() {
             data-index-result-workers={lastConcurrencyUsed}
             className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-400"
           >
-            {lastConcurrencyUsed > 0 ? `${lastConcurrencyUsed} workers` : "auto pending"}
+            {lastConcurrencyUsed > 0 ? `${lastConcurrencyUsed} workers` : 'auto pending'}
           </span>
         </div>
         {indexProgress &&
@@ -596,32 +606,26 @@ export default function KnowledgeView() {
             const percent =
               indexProgress.total > 0
                 ? Math.round((indexProgress.done / indexProgress.total) * 100)
-                : indexProgress.status === "done"
+                : indexProgress.status === 'done'
                   ? 100
                   : 0;
             return (
               <div data-index-progress={percent} className="mt-2 flex items-center gap-2">
                 <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className="h-full accent-bg"
-                    style={{ width: `${percent}%` }}
-                  />
+                  <div className="h-full accent-bg" style={{ width: `${percent}%` }} />
                 </div>
-                <span
-                  data-index-progress-status
-                  className="shrink-0 text-[9px] text-slate-500"
-                >
-                  {indexProgress.status === "done"
+                <span data-index-progress-status className="shrink-0 text-[9px] text-slate-500">
+                  {indexProgress.status === 'done'
                     ? `Indexed ${indexProgress.files} files`
-                    : indexProgress.status === "running"
+                    : indexProgress.status === 'running'
                       ? `Indexing ${indexProgress.done}/${indexProgress.total}`
-                      : indexProgress.status === "queued"
-                        ? "Queued behind active index"
-                        : indexProgress.status === "cancelled"
-                          ? "Cancelled"
+                      : indexProgress.status === 'queued'
+                        ? 'Queued behind active index'
+                        : indexProgress.status === 'cancelled'
+                          ? 'Cancelled'
                           : indexProgress.status}
                 </span>
-                {(indexProgress.status === "running" || indexProgress.status === "queued") && (
+                {(indexProgress.status === 'running' || indexProgress.status === 'queued') && (
                   <button
                     type="button"
                     data-index-cancel
@@ -648,10 +652,10 @@ export default function KnowledgeView() {
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full accent-bg" />
                 <span className="truncate">{indexQueueStatus.active.path}</span>
                 <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[8px] text-slate-500">
-                  {indexQueueStatus.active.priority === 1 ? "high" : "normal"}
+                  {indexQueueStatus.active.priority === 1 ? 'high' : 'normal'}
                   {indexQueueStatus.active.attempts > 0
                     ? ` retry ${indexQueueStatus.active.attempts} · ${indexQueueStatus.active.retryDelayMs}ms`
-                    : ""}
+                    : ''}
                 </span>
               </span>
             )}
@@ -673,9 +677,7 @@ export default function KnowledgeView() {
                 className="max-w-[180px] truncate rounded-md bg-white/[0.04] px-2 py-1 text-[9px] text-slate-500"
               >
                 {entry.path}
-                {entry.attempts > 0
-                  ? ` (retry ${entry.attempts} · ${entry.retryDelayMs}ms)`
-                  : ""}
+                {entry.attempts > 0 ? ` (retry ${entry.attempts} · ${entry.retryDelayMs}ms)` : ''}
               </span>
             ))}
           </div>
@@ -683,8 +685,7 @@ export default function KnowledgeView() {
         {vaultTargets.length > 0 && (
           <div data-vault-target-list className="mt-3 space-y-1.5">
             {vaultTargets.map((target) => {
-              const targetWatching =
-                watchStatus?.paths?.includes(target.path) ?? target.enabled;
+              const targetWatching = watchStatus?.paths?.includes(target.path) ?? target.enabled;
               const targetStat = targetStats.find((stat) => stat.path === target.path);
               const targetFileCount = targetStat?.files ?? 0;
               return (
@@ -692,7 +693,7 @@ export default function KnowledgeView() {
                   key={target.path}
                   data-vault-target
                   data-vault-target-path={target.path}
-                  data-vault-target-watch={targetWatching ? "on" : "off"}
+                  data-vault-target-watch={targetWatching ? 'on' : 'off'}
                   className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
                 >
                   <span className="min-w-0 flex-1 truncate text-[10px] text-slate-300">
@@ -740,11 +741,11 @@ export default function KnowledgeView() {
                     onClick={() => void toggleTargetWatch(target)}
                     className={`flex h-6 items-center rounded-md px-2 text-[9px] ${
                       targetWatching
-                        ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
-                        : "bg-white/5 text-slate-300 hover:bg-white/10"
+                        ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
+                        : 'bg-white/5 text-slate-300 hover:bg-white/10'
                     }`}
                   >
-                    {targetWatching ? "Stop" : "Watch"}
+                    {targetWatching ? 'Stop' : 'Watch'}
                   </button>
                   <button
                     type="button"
@@ -760,8 +761,8 @@ export default function KnowledgeView() {
                     }}
                     className={`flex h-6 items-center gap-1 rounded-md px-2 text-[9px] ${
                       expandedTimeline === target.path
-                        ? "bg-sky-500/15 text-sky-300"
-                        : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                        ? 'bg-sky-500/15 text-sky-300'
+                        : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'
                     }`}
                   >
                     <Clock size={11} />
@@ -790,7 +791,7 @@ export default function KnowledgeView() {
                           data-vault-watch-events-count
                           className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
                         >
-                          {watchEvents.filter((event) => event.vaultPath === target.path).length}{" "}
+                          {watchEvents.filter((event) => event.vaultPath === target.path).length}{' '}
                           events
                         </span>
                         <button
@@ -805,9 +806,7 @@ export default function KnowledgeView() {
                       </div>
                       {watchEvents.filter((event) => event.vaultPath === target.path).length ===
                         0 && (
-                        <div className="py-1 text-[9px] text-slate-600">
-                          No watch events yet
-                        </div>
+                        <div className="py-1 text-[9px] text-slate-600">No watch events yet</div>
                       )}
                       {watchEvents
                         .filter((event) => event.vaultPath === target.path)
@@ -821,24 +820,24 @@ export default function KnowledgeView() {
                           >
                             <span
                               className={`mt-0.5 shrink-0 text-[10px] font-medium ${
-                                event.eventKind === "created"
-                                  ? "text-emerald-400"
-                                  : event.eventKind === "modified"
-                                    ? "text-sky-400"
-                                    : "text-rose-400"
+                                event.eventKind === 'created'
+                                  ? 'text-emerald-400'
+                                  : event.eventKind === 'modified'
+                                    ? 'text-sky-400'
+                                    : 'text-rose-400'
                               }`}
                             >
-                              {event.eventKind === "created"
-                                ? "+"
-                                : event.eventKind === "modified"
-                                  ? "~"
-                                  : "-"}
+                              {event.eventKind === 'created'
+                                ? '+'
+                                : event.eventKind === 'modified'
+                                  ? '~'
+                                  : '-'}
                             </span>
                             <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
                               {event.filePath}
                             </span>
                             <span className="shrink-0 text-[8px] text-slate-600">
-                              {new Date(event.createdAt).toLocaleTimeString("zh-CN", {
+                              {new Date(event.createdAt).toLocaleTimeString('zh-CN', {
                                 hour12: false,
                               })}
                             </span>
@@ -856,9 +855,7 @@ export default function KnowledgeView() {
           className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-3"
         >
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-medium text-slate-300">
-              Document status
-            </span>
+            <span className="text-[10px] font-medium text-slate-300">Document status</span>
             <span
               data-knowledge-docs-count
               className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
@@ -881,16 +878,16 @@ export default function KnowledgeView() {
               <button
                 type="button"
                 aria-label="Toggle auto doc health inspect"
-                data-doc-health-auto={docAutoConfig?.enabled ? "on" : "off"}
+                data-doc-health-auto={docAutoConfig?.enabled ? 'on' : 'off'}
                 onClick={() => void toggleDocAuto()}
                 className={`flex h-6 items-center gap-1 rounded-md border px-2 text-[9px] ${
                   docAutoConfig?.enabled
-                    ? "border-emerald-500/25 bg-emerald-500/15 text-emerald-300"
-                    : "border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]"
+                    ? 'border-emerald-500/25 bg-emerald-500/15 text-emerald-300'
+                    : 'border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]'
                 }`}
               >
-                <Clock size={11} className={docAutoRunning ? "animate-spin" : ""} />
-                Auto {docAutoConfig?.enabled ? "on" : "off"}
+                <Clock size={11} className={docAutoRunning ? 'animate-spin' : ''} />
+                Auto {docAutoConfig?.enabled ? 'on' : 'off'}
               </button>
               <select
                 data-doc-health-auto-interval
@@ -940,7 +937,7 @@ export default function KnowledgeView() {
                   data-doc-health-last-run={docAutoConfig.lastRunAt}
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500"
                 >
-                  {new Date(docAutoConfig.lastRunAt).toLocaleTimeString("zh-CN", {
+                  {new Date(docAutoConfig.lastRunAt).toLocaleTimeString('zh-CN', {
                     hour12: false,
                   })}
                 </span>
@@ -950,7 +947,7 @@ export default function KnowledgeView() {
                   data-doc-health-result={`removed ${docAutoConfig.lastResult.removed} reindexed ${docAutoConfig.lastResult.reindexed}`}
                   className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300"
                 >
-                  removed {docAutoConfig.lastResult.removed} reindexed{" "}
+                  removed {docAutoConfig.lastResult.removed} reindexed{' '}
                   {docAutoConfig.lastResult.reindexed}
                 </span>
               )}
@@ -962,8 +959,8 @@ export default function KnowledgeView() {
               className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 text-[9px] text-amber-200"
             >
               <span>
-                Auto inspect removed {docHealthAlert.removed}, reindexed{" "}
-                {docHealthAlert.reindexed}, failed {docHealthAlert.failed}
+                Auto inspect removed {docHealthAlert.removed}, reindexed {docHealthAlert.reindexed},
+                failed {docHealthAlert.failed}
               </span>
               <button
                 type="button"
@@ -988,7 +985,7 @@ export default function KnowledgeView() {
                   data-doc-health-triggered={record.triggeredBy}
                   className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[8px] text-slate-500"
                 >
-                  {new Date(record.ranAt).toLocaleTimeString("zh-CN", { hour12: false })}
+                  {new Date(record.ranAt).toLocaleTimeString('zh-CN', { hour12: false })}
                   <span className="ml-1">{record.triggeredBy}</span>
                 </span>
               ))}
@@ -996,9 +993,7 @@ export default function KnowledgeView() {
           )}
           <div className="max-h-44 space-y-1 overflow-y-auto">
             {knowledgeDocs.length === 0 && (
-              <div className="py-3 text-center text-[9px] text-slate-600">
-                No indexed documents
-              </div>
+              <div className="py-3 text-center text-[9px] text-slate-600">No indexed documents</div>
             )}
             {knowledgeDocs.map((doc) => (
               <div
@@ -1013,23 +1008,19 @@ export default function KnowledgeView() {
                   <span className="block truncate text-[10px] text-slate-300">
                     {doc.title || doc.path}
                   </span>
-                  <span className="block truncate text-[8px] text-slate-600">
-                    {doc.path}
-                  </span>
+                  <span className="block truncate text-[8px] text-slate-600">{doc.path}</span>
                 </span>
                 <span
-                  data-knowledge-doc-status={
-                    !doc.exists ? "missing" : doc.stale ? "stale" : "ok"
-                  }
+                  data-knowledge-doc-status={!doc.exists ? 'missing' : doc.stale ? 'stale' : 'ok'}
                   className={`shrink-0 rounded px-1.5 py-0.5 text-[8px] ${
                     !doc.exists
-                      ? "bg-rose-500/10 text-rose-300"
+                      ? 'bg-rose-500/10 text-rose-300'
                       : doc.stale
-                        ? "bg-amber-500/10 text-amber-300"
-                        : "bg-emerald-500/10 text-emerald-300"
+                        ? 'bg-amber-500/10 text-amber-300'
+                        : 'bg-emerald-500/10 text-emerald-300'
                   }`}
                 >
-                  {!doc.exists ? "missing" : doc.stale ? "stale" : "ok"}
+                  {!doc.exists ? 'missing' : doc.stale ? 'stale' : 'ok'}
                 </span>
                 {doc.vaultPath && (
                   <span className="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[8px] text-sky-300">
@@ -1037,9 +1028,7 @@ export default function KnowledgeView() {
                   </span>
                 )}
                 <span className="shrink-0 text-[8px] text-slate-600">
-                  {doc.indexedAt > 0
-                    ? new Date(doc.indexedAt).toLocaleDateString("zh-CN")
-                    : "n/a"}
+                  {doc.indexedAt > 0 ? new Date(doc.indexedAt).toLocaleDateString('zh-CN') : 'n/a'}
                 </span>
               </div>
             ))}
@@ -1051,9 +1040,11 @@ export default function KnowledgeView() {
         <div className="col-span-2 flex min-h-0 flex-col gap-2 overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-3 shadow-xl">
           <button
             type="button"
-            onClick={() => setFilter("all")}
+            onClick={() => setFilter('all')}
             className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${
-              filter === "all" ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"
+              filter === 'all'
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : 'text-slate-400 hover:bg-white/[0.06]'
             }`}
           >
             All
@@ -1064,7 +1055,9 @@ export default function KnowledgeView() {
               type="button"
               onClick={() => setFilter(t)}
               className={`rounded-lg px-2 py-1.5 text-left text-[11px] ${
-                filter === t ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-white/[0.06]"
+                filter === t
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'text-slate-400 hover:bg-white/[0.06]'
               }`}
             >
               {t}
@@ -1079,7 +1072,7 @@ export default function KnowledgeView() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  if (e.key === 'Enter') {
                     e.preventDefault();
                     void runSearch();
                   }
@@ -1091,7 +1084,7 @@ export default function KnowledgeView() {
                 <button
                   type="button"
                   onClick={() => {
-                    setQuery("");
+                    setQuery('');
                     setResults(null);
                   }}
                   className="text-[10px] text-slate-500 hover:text-slate-300"
@@ -1125,8 +1118,8 @@ export default function KnowledgeView() {
                     onClick={() => toggleCrossFile(file)}
                     className={`rounded-md border px-1.5 py-0.5 text-[9px] transition-colors ${
                       active
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                        : "border-white/10 bg-white/[0.03] text-slate-500 hover:text-slate-300"
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                        : 'border-white/10 bg-white/[0.03] text-slate-500 hover:text-slate-300'
                     }`}
                   >
                     {file.split(/[\\/]/).pop() ?? file} · {docFileCounts[file] ?? 0}
@@ -1146,35 +1139,37 @@ export default function KnowledgeView() {
               type="button"
               data-rag-result
               data-rag-vector-score={
-                "vectorScore" in t && typeof t.vectorScore === "number"
+                'vectorScore' in t && typeof t.vectorScore === 'number'
                   ? t.vectorScore.toFixed(2)
-                  : ""
+                  : ''
               }
-              data-rag-file={t.type === "doc" ? t.id : ""}
+              data-rag-file={t.type === 'doc' ? t.id : ''}
               onClick={() => setSelectedId(t.id)}
               className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
                 selected?.id === t.id
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
-                  : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                  : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]'
               }`}
             >
-              <span className="block truncate">{t.content.split("\n")[0]}</span>
-              {"score" in t && typeof t.score === "number" && (
+              <span className="block truncate">{t.content.split('\n')[0]}</span>
+              {'score' in t && typeof t.score === 'number' && (
                 <span className="mt-0.5 block text-[10px] text-slate-500">
                   score {t.score.toFixed(2)}
-                  {typeof t.vectorScore === "number" && (
+                  {typeof t.vectorScore === 'number' && (
                     <span className="ml-2 text-slate-600">vector {t.vectorScore.toFixed(2)}</span>
                   )}
                 </span>
               )}
             </button>
           ))}
-          {visibleThoughts.length === 0 && <div className="py-10 text-center text-xs text-slate-600">No thoughts</div>}
+          {visibleThoughts.length === 0 && (
+            <div className="py-10 text-center text-xs text-slate-600">No thoughts</div>
+          )}
         </div>
         <div
-          key={selected?.id ?? "empty"}
+          key={selected?.id ?? 'empty'}
           className={`col-span-5 flex min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl ${
-            selected ? "detail-enter" : ""
+            selected ? 'detail-enter' : ''
           }`}
         >
           {selected ? (
@@ -1194,13 +1189,13 @@ export default function KnowledgeView() {
             <ModelBadge
               label="RAG index"
               tone="blue"
-              status={indexStatus?.indexed ? `${indexStatus.documents} docs` : "pending"}
+              status={indexStatus?.indexed ? `${indexStatus.documents} docs` : 'pending'}
             />
             <span
-              data-vector-status={indexStatus?.vectorIndexed ? "on" : "off"}
+              data-vector-status={indexStatus?.vectorIndexed ? 'on' : 'off'}
               className="mt-1.5 inline-block rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-slate-500"
             >
-              vector {indexStatus?.vectorIndexed ? "on" : "off"}
+              vector {indexStatus?.vectorIndexed ? 'on' : 'off'}
             </span>
           </div>
         </div>

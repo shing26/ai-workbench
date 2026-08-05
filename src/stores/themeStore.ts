@@ -1,19 +1,26 @@
-import { create } from "zustand";
-import { applyTheme, readAccent, readTheme, resolveTheme, type AccentName, type ThemePreference } from "../lib/theme";
+import { create } from 'zustand';
+import {
+  applyTheme,
+  readAccent,
+  readTheme,
+  resolveTheme,
+  type AccentName,
+  type ThemePreference,
+} from '../lib/theme';
 
 type ThemeState = {
   theme: ThemePreference;
   accent: AccentName;
-  resolved: "dark" | "light";
+  resolved: 'dark' | 'light';
   init: () => void;
   setTheme: (theme: ThemePreference) => void;
   setAccent: (accent: AccentName) => void;
 };
 
 export const useThemeStore = create<ThemeState>((set, get) => ({
-  theme: "dark",
-  accent: "emerald",
-  resolved: "dark",
+  theme: 'dark',
+  accent: 'emerald',
+  resolved: 'dark',
   init: () => {
     const theme = readTheme();
     const accent = readAccent();

@@ -1,40 +1,56 @@
-import { Check, Copy, ExternalLink, FolderKanban, GitBranch, GitMerge, Orbit, Plus, RefreshCw, Undo2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import * as db from "../lib/db";
-import { detectLanguage, highlightLine, parseDiffLines, type DiffLineKind } from "../lib/diffHighlight";
-import { useWorkbenchStore } from "../stores/workbenchStore";
-import BentoCard from "../components/ui/BentoCard";
-import ProjectCarousel from "../components/ui/ProjectCarousel";
-import StatPill from "../components/ui/StatPill";
-import ModelBadge from "../components/ui/ModelBadge";
-import { resetTilt, tiltCard } from "../lib/tilt";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  FolderKanban,
+  GitBranch,
+  GitMerge,
+  Orbit,
+  Plus,
+  RefreshCw,
+  Undo2,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import * as db from '../lib/db';
+import {
+  detectLanguage,
+  highlightLine,
+  parseDiffLines,
+  type DiffLineKind,
+} from '../lib/diffHighlight';
+import { useWorkbenchStore } from '../stores/workbenchStore';
+import BentoCard from '../components/ui/BentoCard';
+import ProjectCarousel from '../components/ui/ProjectCarousel';
+import StatPill from '../components/ui/StatPill';
+import ModelBadge from '../components/ui/ModelBadge';
+import { resetTilt, tiltCard } from '../lib/tilt';
 
-const PROJECT_MATERIALS = ["cyan", "original", "rain", "chrome"] as const;
+const PROJECT_MATERIALS = ['cyan', 'original', 'rain', 'chrome'] as const;
 const GIT_RANGES = [
-  { value: "all", label: "All time", ms: 0 },
-  { value: "24h", label: "24 hours", ms: 86_400_000 },
-  { value: "7d", label: "7 days", ms: 7 * 86_400_000 },
-  { value: "30d", label: "30 days", ms: 30 * 86_400_000 },
+  { value: 'all', label: 'All time', ms: 0 },
+  { value: '24h', label: '24 hours', ms: 86_400_000 },
+  { value: '7d', label: '7 days', ms: 7 * 86_400_000 },
+  { value: '30d', label: '30 days', ms: 30 * 86_400_000 },
 ];
 const GIT_CHANGE_GROUPS = [
-  { key: "staged", label: "Staged" },
-  { key: "unstaged", label: "Unstaged" },
-  { key: "untracked", label: "Untracked" },
-  { key: "both", label: "Both" },
+  { key: 'staged', label: 'Staged' },
+  { key: 'unstaged', label: 'Unstaged' },
+  { key: 'untracked', label: 'Untracked' },
+  { key: 'both', label: 'Both' },
 ] as const;
 
 function diffLineClass(kind: DiffLineKind): string {
   switch (kind) {
-    case "file":
-      return "text-slate-500";
-    case "hunk":
-      return "text-cyan-300/90";
-    case "add":
-      return "bg-emerald-500/10 text-emerald-300/90";
-    case "del":
-      return "bg-rose-500/10 text-rose-300/90";
+    case 'file':
+      return 'text-slate-500';
+    case 'hunk':
+      return 'text-cyan-300/90';
+    case 'add':
+      return 'bg-emerald-500/10 text-emerald-300/90';
+    case 'del':
+      return 'bg-rose-500/10 text-rose-300/90';
     default:
-      return "text-slate-400";
+      return 'text-slate-400';
   }
 }
 
@@ -49,7 +65,7 @@ function FileVersionPane({
   content: string;
   language: string;
 }) {
-  const lines = content ? content.split("\n") : [];
+  const lines = content ? content.split('\n') : [];
   return (
     <div className="min-w-0 rounded-lg border border-white/10 bg-black/30">
       <div className="border-b border-white/10 px-2 py-1 text-[8px] uppercase tracking-normal text-slate-500">
@@ -83,8 +99,8 @@ export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const addProject = useWorkbenchStore((s) => s.addProject);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
-  const [name, setName] = useState("");
-  const [path, setPath] = useState("");
+  const [name, setName] = useState('');
+  const [path, setPath] = useState('');
   const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
   const [drafts, setDrafts] = useState<Record<string, db.CommitPrDraft>>({});
   const [commitResults, setCommitResults] = useState<Record<string, db.GitCommitResult>>({});
@@ -93,10 +109,12 @@ export default function ProjectsView() {
   const [prErrors, setPrErrors] = useState<Record<string, string>>({});
   const [rebaseResults, setRebaseResults] = useState<Record<string, db.GitRebaseResult>>({});
   const [rebaseErrors, setRebaseErrors] = useState<Record<string, string>>({});
-  const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>({});
+  const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>(
+    {},
+  );
   const [gitActivity, setGitActivity] = useState<db.GitActivityBoard | null>(null);
-  const [gitRange, setGitRange] = useState("all");
-  const [gitCommitter, setGitCommitter] = useState("");
+  const [gitRange, setGitRange] = useState('all');
+  const [gitCommitter, setGitCommitter] = useState('');
   const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
   const [gitDiffs, setGitDiffs] = useState<Record<string, db.GitFileDiff>>({});
   const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
@@ -110,7 +128,7 @@ export default function ProjectsView() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, string[]>>({});
   const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
-  const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
+  const projectKey = projects.map((p) => `${p.id}:${p.path}`).join('|');
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
     : 1;
@@ -153,11 +171,7 @@ export default function ProjectsView() {
     }
   };
 
-  const loadBatchPreview = async (
-    projectId: string,
-    projectPath: string,
-    files: string[],
-  ) => {
+  const loadBatchPreview = async (projectId: string, projectPath: string, files: string[]) => {
     if (batchLoading) return;
     if (batchDiff?.projectId === projectId) {
       setBatchDiff(null);
@@ -168,21 +182,19 @@ export default function ProjectsView() {
     for (const file of files) {
       try {
         const diff = await db.getGitFileDiff(projectPath, file);
-        parts.push(`# ${file}${diff.status ? ` (${diff.status})` : ""}\n${diff.diff}`);
+        parts.push(`# ${file}${diff.status ? ` (${diff.status})` : ''}\n${diff.diff}`);
       } catch {
         parts.push(`# ${file}\n(error reading diff)`);
       }
     }
-    setBatchDiff({ projectId, content: parts.join("\n\n") });
+    setBatchDiff({ projectId, content: parts.join('\n\n') });
     setBatchLoading(false);
   };
 
   const toggleSelectFile = (projectId: string, file: string) => {
     setSelectedFiles((prev) => {
       const current = prev[projectId] ?? [];
-      const next = current.includes(file)
-        ? current.filter((f) => f !== file)
-        : [...current, file];
+      const next = current.includes(file) ? current.filter((f) => f !== file) : [...current, file];
       return { ...prev, [projectId]: next };
     });
   };
@@ -234,11 +246,9 @@ export default function ProjectsView() {
     let disposed = false;
     const range = GIT_RANGES.find((r) => r.value === gitRange);
     const sinceMs = range && range.ms > 0 ? Date.now() - range.ms : undefined;
-    void db
-      .getGitActivity({ sinceMs, committer: gitCommitter || undefined })
-      .then((board) => {
-        if (!disposed) setGitActivity(board);
-      });
+    void db.getGitActivity({ sinceMs, committer: gitCommitter || undefined }).then((board) => {
+      if (!disposed) setGitActivity(board);
+    });
     return () => {
       disposed = true;
     };
@@ -249,33 +259,33 @@ export default function ProjectsView() {
     void Promise.all(
       projects
         .filter((p) => p.path)
-        .map(async (p) => [p.id, await db.getProjectGitContext(p.path ?? "")] as const),
+        .map(async (p) => [p.id, await db.getProjectGitContext(p.path ?? '')] as const),
     ).then((entries) => {
       if (!disposed) setGitCtx(Object.fromEntries(entries));
     });
     return () => {
       disposed = true;
     };
-  }, [projectKey]);
+  }, [projectKey, projects]);
 
   const create = async () => {
     if (!name.trim()) return;
     await addProject(name.trim(), path.trim());
-    setName("");
-    setPath("");
+    setName('');
+    setPath('');
   };
 
   const aiCoding = async (project: db.Project) => {
-    const ctx = await db.getProjectGitContext(project.path ?? "");
-    openInspector("AI Coding", [
-      { label: "Project", value: project.name },
-      { label: "HEAD", value: ctx.head },
-      { label: "Modified files", value: ctx.changes.join("\n") || "none" },
+    const ctx = await db.getProjectGitContext(project.path ?? '');
+    openInspector('AI Coding', [
+      { label: 'Project', value: project.name },
+      { label: 'HEAD', value: ctx.head },
+      { label: 'Modified files', value: ctx.changes.join('\n') || 'none' },
     ]);
   };
 
   const generateDraft = async (project: db.Project) => {
-    const draft = await db.generateCommitPrDraft(project.path ?? "", project.name);
+    const draft = await db.generateCommitPrDraft(project.path ?? '', project.name);
     setDrafts((prev) => ({ ...prev, [project.id]: draft }));
   };
 
@@ -283,14 +293,14 @@ export default function ProjectsView() {
     const draft = drafts[project.id];
     if (!draft) return;
     try {
-      const result = await db.applyCommit(project.path ?? "", draft.commitMessage);
+      const result = await db.applyCommit(project.path ?? '', draft.commitMessage);
       setCommitResults((prev) => ({ ...prev, [project.id]: result }));
       setCommitErrors((prev) => {
         const next = { ...prev };
         delete next[project.id];
         return next;
       });
-      const ctx = await db.getProjectGitContext(project.path ?? "");
+      const ctx = await db.getProjectGitContext(project.path ?? '');
       setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
     } catch (error) {
       setCommitErrors((prev) => ({
@@ -304,7 +314,7 @@ export default function ProjectsView() {
     const draft = drafts[project.id];
     if (!draft) return;
     try {
-      const result = await db.createRemotePr(project.path ?? "", draft.prTitle, draft.prBody);
+      const result = await db.createRemotePr(project.path ?? '', draft.prTitle, draft.prBody);
       setPrResults((prev) => ({ ...prev, [project.id]: result }));
       setPrErrors((prev) => {
         const next = { ...prev };
@@ -321,14 +331,14 @@ export default function ProjectsView() {
 
   const rebaseProject = async (project: db.Project) => {
     try {
-      const result = await db.rebaseBranch(project.path ?? "", "main");
+      const result = await db.rebaseBranch(project.path ?? '', 'main');
       setRebaseResults((prev) => ({ ...prev, [project.id]: result }));
       setRebaseErrors((prev) => {
         const next = { ...prev };
         delete next[project.id];
         return next;
       });
-      const ctx = await db.getProjectGitContext(project.path ?? "");
+      const ctx = await db.getProjectGitContext(project.path ?? '');
       setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
     } catch (error) {
       setRebaseErrors((prev) => ({
@@ -340,7 +350,7 @@ export default function ProjectsView() {
 
   const abortProjectRebase = async (project: db.Project) => {
     try {
-      await db.abortRebase(project.path ?? "");
+      await db.abortRebase(project.path ?? '');
       setRebaseResults((prev) => {
         const next = { ...prev };
         delete next[project.id];
@@ -351,7 +361,7 @@ export default function ProjectsView() {
         delete next[project.id];
         return next;
       });
-      const ctx = await db.getProjectGitContext(project.path ?? "");
+      const ctx = await db.getProjectGitContext(project.path ?? '');
       setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
     } catch (error) {
       setRebaseErrors((prev) => ({
@@ -363,7 +373,7 @@ export default function ProjectsView() {
 
   const resolveConflicts = async (project: db.Project, strategy: string) => {
     try {
-      const result = await db.resolveRebaseConflicts(project.path ?? "", strategy);
+      const result = await db.resolveRebaseConflicts(project.path ?? '', strategy);
       setResolveResults((prev) => ({ ...prev, [project.id]: result }));
       setRebaseResults((prev) => {
         const next = { ...prev };
@@ -375,7 +385,7 @@ export default function ProjectsView() {
         delete next[project.id];
         return next;
       });
-      const ctx = await db.getProjectGitContext(project.path ?? "");
+      const ctx = await db.getProjectGitContext(project.path ?? '');
       setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
     } catch (error) {
       setRebaseErrors((prev) => ({
@@ -391,8 +401,8 @@ export default function ProjectsView() {
         ? item.changeGroups
         : item.changedPaths.map((path) => ({
             path,
-            status: "",
-            group: "unstaged" as const,
+            status: '',
+            group: 'unstaged' as const,
           }));
     return GIT_CHANGE_GROUPS.flatMap((meta) => {
       const files = groups.filter((entry) => entry.group === meta.key);
@@ -431,18 +441,16 @@ export default function ProjectsView() {
                   className="shrink-0 rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
                 >
                   {loadingDiffs[`${item.projectId}:${entry.path}`]
-                    ? "Loading"
+                    ? 'Loading'
                     : gitDiffs[`${item.projectId}:${entry.path}`]
-                      ? "Hide diff"
-                      : "Diff"}
+                      ? 'Hide diff'
+                      : 'Diff'}
                 </button>
               </div>
               {gitDiffs[`${item.projectId}:${entry.path}`] && (
                 <div
                   data-git-diff-content={entry.path}
-                  data-git-diff-status={
-                    gitDiffs[`${item.projectId}:${entry.path}`].status
-                  }
+                  data-git-diff-status={gitDiffs[`${item.projectId}:${entry.path}`].status}
                   className="rounded-lg border border-white/10 bg-black/30"
                 >
                   <div className="flex items-center gap-2 border-b border-white/10 px-2 py-1">
@@ -452,21 +460,15 @@ export default function ProjectsView() {
                     <button
                       type="button"
                       data-git-side-by-side-toggle={entry.path}
-                      onClick={() =>
-                        toggleSideBySide(item.projectId, item.path, entry.path)
-                      }
+                      onClick={() => toggleSideBySide(item.projectId, item.path, entry.path)}
                       className="ml-auto rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
                     >
-                      {sideBySide[`${item.projectId}:${entry.path}`]
-                        ? "Inline"
-                        : "Side by side"}
+                      {sideBySide[`${item.projectId}:${entry.path}`] ? 'Inline' : 'Side by side'}
                     </button>
                   </div>
                   {sideBySide[`${item.projectId}:${entry.path}`] ? (
                     loadingVersions[`${item.projectId}:${entry.path}`] ? (
-                      <div className="px-2 py-1 text-[9px] text-slate-500">
-                        Loading versions...
-                      </div>
+                      <div className="px-2 py-1 text-[9px] text-slate-500">Loading versions...</div>
                     ) : fileVersions[`${item.projectId}:${entry.path}`] ? (
                       <div
                         data-git-side-by-side={entry.path}
@@ -475,17 +477,13 @@ export default function ProjectsView() {
                         <FileVersionPane
                           title="HEAD"
                           dataKey="old"
-                          content={
-                            fileVersions[`${item.projectId}:${entry.path}`].oldContent
-                          }
+                          content={fileVersions[`${item.projectId}:${entry.path}`].oldContent}
                           language={detectLanguage(entry.path)}
                         />
                         <FileVersionPane
                           title="Working tree"
                           dataKey="new"
-                          content={
-                            fileVersions[`${item.projectId}:${entry.path}`].newContent
-                          }
+                          content={fileVersions[`${item.projectId}:${entry.path}`].newContent}
                           language={detectLanguage(entry.path)}
                         />
                       </div>
@@ -495,18 +493,18 @@ export default function ProjectsView() {
                       data-git-diff-lines={entry.path}
                       className="max-h-40 overflow-auto px-2 py-1.5"
                     >
-                      {parseDiffLines(
-                        gitDiffs[`${item.projectId}:${entry.path}`].diff,
-                      ).map((line, index) => (
-                        <div
-                          key={index}
-                          data-git-diff-line={entry.path}
-                          data-git-diff-line-type={line.kind}
-                          className={`whitespace-pre-wrap rounded px-1 text-[9px] leading-relaxed ${diffLineClass(line.kind)}`}
-                        >
-                          {highlightLine(line.text, detectLanguage(entry.path))}
-                        </div>
-                      ))}
+                      {parseDiffLines(gitDiffs[`${item.projectId}:${entry.path}`].diff).map(
+                        (line, index) => (
+                          <div
+                            key={index}
+                            data-git-diff-line={entry.path}
+                            data-git-diff-line-type={line.kind}
+                            className={`whitespace-pre-wrap rounded px-1 text-[9px] leading-relaxed ${diffLineClass(line.kind)}`}
+                          >
+                            {highlightLine(line.text, detectLanguage(entry.path))}
+                          </div>
+                        ),
+                      )}
                     </div>
                   )}
                 </div>
@@ -586,15 +584,11 @@ export default function ProjectsView() {
               className="flex flex-wrap items-center gap-2"
             >
               <StatPill label="Projects" value={String(gitActivity.totalProjects)} />
-              <StatPill
-                label="Commits"
-                value={String(gitActivity.totalCommits)}
-                tone="blue"
-              />
+              <StatPill label="Commits" value={String(gitActivity.totalCommits)} tone="blue" />
               <StatPill
                 label="Dirty"
                 value={String(gitActivity.dirtyProjects)}
-                tone={gitActivity.dirtyProjects > 0 ? "neutral" : "green"}
+                tone={gitActivity.dirtyProjects > 0 ? 'neutral' : 'green'}
               />
             </div>
             <div
@@ -613,7 +607,7 @@ export default function ProjectsView() {
                     }}
                   />
                   <span className="truncate text-[8px] text-slate-600">
-                    {new Date(bucket.dayMs).toLocaleDateString("en", { weekday: "short" })}
+                    {new Date(bucket.dayMs).toLocaleDateString('en', { weekday: 'short' })}
                   </span>
                 </div>
               ))}
@@ -631,24 +625,20 @@ export default function ProjectsView() {
                 className="rounded-lg bg-white/[0.03]"
               >
                 <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                  <span className="text-[10px] font-medium text-slate-300">
-                    {item.projectName}
-                  </span>
+                  <span className="text-[10px] font-medium text-slate-300">{item.projectName}</span>
                   <ModelBadge label={item.branch} tone="blue" />
                   <span className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400">
-                    {item.committer || "unknown"}
+                    {item.committer || 'unknown'}
                   </span>
-                  <span className="text-[9px] text-slate-500">
-                    {item.commitCount} commits
-                  </span>
+                  <span className="text-[9px] text-slate-500">{item.commitCount} commits</span>
                   <span
                     className={`rounded px-1.5 py-0.5 text-[8px] ${
                       item.dirty
-                        ? "bg-amber-500/10 text-amber-300"
-                        : "bg-emerald-500/10 text-emerald-300"
+                        ? 'bg-amber-500/10 text-amber-300'
+                        : 'bg-emerald-500/10 text-emerald-300'
                     }`}
                   >
-                    {item.dirty ? "dirty" : "clean"}
+                    {item.dirty ? 'dirty' : 'clean'}
                   </span>
                   {item.dirty && (
                     <button
@@ -661,7 +651,7 @@ export default function ProjectsView() {
                       }
                       className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
                     >
-                      {expandedPreview === item.projectId ? "Hide" : "Preview"}
+                      {expandedPreview === item.projectId ? 'Hide' : 'Preview'}
                     </button>
                   )}
                   <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
@@ -683,10 +673,10 @@ export default function ProjectsView() {
                         className="self-start rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
                       >
                         {batchLoading
-                          ? "Loading"
+                          ? 'Loading'
                           : batchDiff?.projectId === item.projectId
-                            ? "Hide batch"
-                            : "Preview all"}
+                            ? 'Hide batch'
+                            : 'Preview all'}
                       </button>
                       {batchDiff?.projectId === item.projectId && (
                         <pre
@@ -711,15 +701,15 @@ export default function ProjectsView() {
                             data-git-commit-selected-result={item.projectId}
                             className={`min-w-0 truncate rounded px-1.5 py-0.5 text-[9px] ${
                               commitErrors[item.projectId]
-                                ? "bg-rose-500/10 text-rose-300"
-                                : "bg-emerald-500/10 text-emerald-300"
+                                ? 'bg-rose-500/10 text-rose-300'
+                                : 'bg-emerald-500/10 text-emerald-300'
                             }`}
                           >
                             {commitErrors[item.projectId]
                               ? commitErrors[item.projectId]
                               : commitResults[item.projectId]?.committed
                                 ? `Committed ${commitResults[item.projectId]?.hash} on ${commitResults[item.projectId]?.branch}`
-                                : "Nothing to commit"}
+                                : 'Nothing to commit'}
                           </span>
                         )}
                         {lintGate[item.projectId] && (
@@ -728,10 +718,10 @@ export default function ProjectsView() {
                             data-git-lint-gate-issues={lintGate[item.projectId].issues.length}
                             className="min-w-0 truncate rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-300"
                           >
-                            Lint gate blocked:{" "}
+                            Lint gate blocked:{' '}
                             {lintGate[item.projectId].issues
                               .map((issue) => `${issue.file}:${issue.line} ${issue.message}`)
-                              .join("; ")}
+                              .join('; ')}
                           </span>
                         )}
                       </div>
@@ -770,12 +760,14 @@ export default function ProjectsView() {
             <StatPill label="Revenue" value={`$${p.revenue.toFixed(2)}`} tone="green" />
             <StatPill label="Status" value={p.status} />
           </div>
-          <p className="mb-3 truncate text-[11px] text-slate-500">{p.path || "No local path"}</p>
+          <p className="mb-3 truncate text-[11px] text-slate-500">{p.path || 'No local path'}</p>
           {gitCtx[p.id] && (
             <div className="project-git-graph mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5">
               <div className="flex flex-wrap items-center gap-1.5">
                 <ModelBadge label={gitCtx[p.id].branch} tone="blue" />
-                <span className="text-[10px] text-slate-500">{gitCtx[p.id].commitCount} commits</span>
+                <span className="text-[10px] text-slate-500">
+                  {gitCtx[p.id].commitCount} commits
+                </span>
                 <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-500">
                   <GitBranch size={9} /> {gitCtx[p.id].head}
                 </span>
@@ -786,11 +778,16 @@ export default function ProjectsView() {
                   <span className="h-px w-3 bg-white/15" />
                   <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/20" />
                 </div>
-                <span className="truncate text-[10px] text-slate-400">{gitCtx[p.id].latestCommit}</span>
+                <span className="truncate text-[10px] text-slate-400">
+                  {gitCtx[p.id].latestCommit}
+                </span>
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {gitCtx[p.id].changes.slice(0, 3).map((file) => (
-                  <span key={file} className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
+                  <span
+                    key={file}
+                    className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500"
+                  >
                     {file}
                   </span>
                 ))}
@@ -810,12 +807,12 @@ export default function ProjectsView() {
                     data-rebase-result
                     className={`rounded-md border px-1.5 py-0.5 text-[9px] ${
                       rebaseResults[p.id].conflict
-                        ? "border-amber-500/25 bg-amber-500/10 text-amber-300"
-                        : "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                        ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                        : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
                     }`}
                   >
                     {rebaseResults[p.id].conflict
-                      ? `Conflicts: ${rebaseResults[p.id].files.join(", ") || "unknown files"}`
+                      ? `Conflicts: ${rebaseResults[p.id].files.join(', ') || 'unknown files'}`
                       : `Rebased ${rebaseResults[p.id].branch} onto ${rebaseResults[p.id].base} (${rebaseResults[p.id].head})`}
                   </span>
                 )}
@@ -825,7 +822,7 @@ export default function ProjectsView() {
                       type="button"
                       aria-label="Resolve conflicts with ours"
                       data-resolve-conflicts="ours"
-                      onClick={() => void resolveConflicts(p, "ours")}
+                      onClick={() => void resolveConflicts(p, 'ours')}
                       className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
                     >
                       <GitBranch size={9} /> Take feature
@@ -834,7 +831,7 @@ export default function ProjectsView() {
                       type="button"
                       aria-label="Resolve conflicts with theirs"
                       data-resolve-conflicts="theirs"
-                      onClick={() => void resolveConflicts(p, "theirs")}
+                      onClick={() => void resolveConflicts(p, 'theirs')}
                       className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
                     >
                       <RefreshCw size={9} /> Take main
@@ -843,7 +840,7 @@ export default function ProjectsView() {
                       type="button"
                       aria-label="Resolve conflicts with union"
                       data-resolve-conflicts="union"
-                      onClick={() => void resolveConflicts(p, "union")}
+                      onClick={() => void resolveConflicts(p, 'union')}
                       className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
                     >
                       <GitMerge size={9} /> Union merge
@@ -864,15 +861,18 @@ export default function ProjectsView() {
                     data-resolve-result
                     className={`rounded-md border px-1.5 py-0.5 text-[9px] ${
                       resolveResults[p.id].rebased
-                        ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
-                        : "border-amber-500/25 bg-amber-500/10 text-amber-300"
+                        ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                        : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                     }`}
                   >
                     {resolveResults[p.id].message}
                   </span>
                 )}
                 {rebaseErrors[p.id] && (
-                  <span data-rebase-error className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-0.5 text-[9px] text-rose-300/90">
+                  <span
+                    data-rebase-error
+                    className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-0.5 text-[9px] text-rose-300/90"
+                  >
                     {rebaseErrors[p.id]}
                   </span>
                 )}
@@ -942,7 +942,10 @@ export default function ProjectsView() {
                 </div>
               )}
               {commitErrors[p.id] && (
-                <div data-commit-error className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90">
+                <div
+                  data-commit-error
+                  className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90"
+                >
                   {commitErrors[p.id]}
                 </div>
               )}
@@ -961,7 +964,10 @@ export default function ProjectsView() {
                 </div>
               )}
               {prErrors[p.id] && (
-                <div data-pr-error className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90">
+                <div
+                  data-pr-error
+                  className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90"
+                >
                   {prErrors[p.id]}
                 </div>
               )}

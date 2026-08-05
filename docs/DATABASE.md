@@ -729,3 +729,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 101：真实 MOA 并行
 
 无表结构变更。MOA 并行是运行时行为：同一个 `runId` 下对前 3 个启用 Provider 并发流式请求，数据仍由 `chat_messages` 落库，不新增表或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` / `chatMessages`，不新增 localStorage key。
+
+## Sprint 102：ESLint/Prettier 与 husky/lint-staged
+
+无表结构变更。本 Sprint 只新增前端工程配置（`eslint.config.js` / `.prettierrc.json` / `.husky/pre-commit`）与开发依赖，不涉及 SQLite 表、索引或字段；浏览器 fallback 不新增 localStorage key。

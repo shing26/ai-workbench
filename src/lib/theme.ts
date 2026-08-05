@@ -1,24 +1,24 @@
-export type ThemePreference = "dark" | "light" | "system";
-export type AccentName = "emerald" | "ocean" | "iris" | "amber" | "sakura";
+export type ThemePreference = 'dark' | 'light' | 'system';
+export type AccentName = 'emerald' | 'ocean' | 'iris' | 'amber' | 'sakura';
 
-export const THEME_KEY = "ai-workbench:theme";
-export const ACCENT_KEY = "ai-workbench:accent";
-export const THEMES: ThemePreference[] = ["dark", "light", "system"];
-export const ACCENTS: AccentName[] = ["emerald", "ocean", "iris", "amber", "sakura"];
+export const THEME_KEY = 'ai-workbench:theme';
+export const ACCENT_KEY = 'ai-workbench:accent';
+export const THEMES: ThemePreference[] = ['dark', 'light', 'system'];
+export const ACCENTS: AccentName[] = ['emerald', 'ocean', 'iris', 'amber', 'sakura'];
 
 export function readTheme(): ThemePreference {
   const value = localStorage.getItem(THEME_KEY) as ThemePreference | null;
-  return value && THEMES.includes(value) ? value : "dark";
+  return value && THEMES.includes(value) ? value : 'dark';
 }
 
 export function readAccent(): AccentName {
   const value = localStorage.getItem(ACCENT_KEY) as AccentName | null;
-  return value && ACCENTS.includes(value) ? value : "emerald";
+  return value && ACCENTS.includes(value) ? value : 'emerald';
 }
 
-export function resolveTheme(preference: ThemePreference): "dark" | "light" {
-  if (preference !== "system") return preference;
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+export function resolveTheme(preference: ThemePreference): 'dark' | 'light' {
+  if (preference !== 'system') return preference;
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
 export function applyTheme(theme: ThemePreference, accent: AccentName): void {
@@ -37,8 +37,8 @@ export function applyTheme(theme: ThemePreference, accent: AccentName): void {
 }
 
 export function watchSystemTheme(onChange: () => void): () => void {
-  const query = window.matchMedia("(prefers-color-scheme: light)");
+  const query = window.matchMedia('(prefers-color-scheme: light)');
   const handler = () => onChange();
-  query.addEventListener("change", handler);
-  return () => query.removeEventListener("change", handler);
+  query.addEventListener('change', handler);
+  return () => query.removeEventListener('change', handler);
 }

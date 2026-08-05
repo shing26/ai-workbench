@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { create } from 'zustand';
 
 interface SettingsState {
   vaultPath: string;
@@ -7,7 +7,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  vaultPath: "",
+  vaultPath: '',
   setVaultPath: (path) => set({ vaultPath: path }),
   isConfigured: () => get().vaultPath.trim().length > 0,
 }));
