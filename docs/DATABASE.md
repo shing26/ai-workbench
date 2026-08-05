@@ -487,3 +487,12 @@ CREATE TABLE IF NOT EXISTS vault_index_queue (
 ## Sprint 67：Git 活动看板
 
 无表结构变更。`get_git_activity` 复用 `projects` 表既有列，Git 状态来自磁盘 `.git/HEAD` 与 `logs/HEAD` 的运行时解析；`last_commit_at` / `dirty` / `changed_files` 均为运行时计算字段，不落库。
+
+## Sprint 68：错误日志来源 / 设备组合筛选
+
+```sql
+ALTER TABLE error_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT '';
+```
+
+- `migrate_error_log_device` 按列存在性幂等补列，旧库升级不丢记录；`report_frontend_error` 与 `merge_error_log` 写入 / 更新 device_id。
+- `error_log_summary` 在内存中按 `device_id` 组合过滤，不新增额外表；浏览器 fallback 在 `ai-workbench:db:v1` 的 logs 上执行同一过滤。

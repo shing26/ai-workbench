@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 68
+
+### What went well?
+
+- Error logs 从“只看严重度”升级为“来源 + 设备组合筛选”：`error_logs` 新增 `device_id` 列并幂等迁移，`report_frontend_error` / `merge_error_log` 携带设备归属，跨设备同步后仍能区分日志来源。
+- `error_log_summary` 新增 `device_id?` 过滤，与 source / severity 组合生效；System Error logs 卡片新增来源下拉与设备下拉，趋势图、总数徽标与明细列表共用同一过滤条件。
+- 验证覆盖：`cargo test --lib` 75/75，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `errorLogSourceDevice` 均断言 frontend 过滤、current 设备、空组合与 remote 组合。
+
+### What went wrong?
+
+- UI 验证首版把 `tauri + current` 误判为 2 条，实际应为 0 条；修正断言为“当前设备下 tauri 为空组合，切到 remote 后为 2 条”后稳定通过。
+- 来源 / 设备下拉选项来自当前 `logs` 列表（最近 30 条），过滤本身不受影响，但选项集与明细窗口一致。
+
+### Action Items
+
+- 下一 Sprint 候选：文档健康修复的自动定时巡检、git 看板按时间范围过滤与提交人维度。
+- 索引队列优先级与失败重试策略继续保留在 Backlog。
+
 ## Sprint 67
 
 ### What went well?

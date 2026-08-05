@@ -152,6 +152,7 @@ export type ErrorLog = {
   severity: string;
   timestamp: number;
   updatedAt: number;
+  deviceId: string;
 };
 
 export type SyncSnapshot = {
@@ -552,7 +553,16 @@ function seedShape(): LocalShape {
       { id: makeId(), content: "bg-[#18181C] border-white/10 rounded-2xl", source: "editor", timestamp: now - 4000, updatedAt: now - 4000 },
     ],
     logs: [
-      { id: makeId(), source: "tauri", message: "DB initialized", stack: null, severity: "info", timestamp: now - 7000, updatedAt: now - 7000 },
+      {
+        id: makeId(),
+        source: "tauri",
+        message: "DB initialized",
+        stack: null,
+        severity: "info",
+        timestamp: now - 7000,
+        updatedAt: now - 7000,
+        deviceId: existing.syncDeviceId || "device-local",
+      },
     ],
     syncDeviceId: existing.syncDeviceId || makeId(),
     lastSyncedAt: existing.lastSyncedAt ?? 0,
@@ -1137,8 +1147,10 @@ export async function reportFrontendError(input: {
   stack: string | null;
   severity: string;
 }): Promise<void> {
+  const status = await getSyncStatus();
+  const deviceId = status.deviceId;
   if (isTauri()) {
-    await invoke("report_frontend_error", input);
+    await invoke("report_frontend_error", { ...input, deviceId });
     return;
   }
   const shape = readLocal();
@@ -1150,6 +1162,7 @@ export async function reportFrontendError(input: {
     severity: input.severity,
     timestamp: Date.now(),
     updatedAt: Date.now(),
+    deviceId,
   };
   shape.logs.unshift(log);
   writeLocal(shape);
@@ -1865,10 +1878,12 @@ function summarizeErrorLogs(
   granularity: "day" | "week",
   source?: string,
   severity?: string,
+  deviceId?: string,
 ): ErrorLogSummary {
   const filtered = logs
     .filter((log) => !source || log.source === source)
-    .filter((log) => !severity || log.severity === severity);
+    .filter((log) => !severity || log.severity === severity)
+    .filter((log) => !deviceId || log.deviceId === deviceId);
   const grouped = new Map<number, { error: number; warning: number; info: number }>();
   let total = 0;
   for (const log of filtered) {
@@ -1922,15 +1937,17 @@ export async function getErrorLogSummary(
   granularity: "day" | "week",
   source?: string,
   severity?: string,
+  deviceId?: string,
 ): Promise<ErrorLogSummary> {
   if (isTauri()) {
     return invoke<ErrorLogSummary>("get_error_log_summary", {
       granularity,
       source: source ?? null,
       severity: severity ?? null,
+      deviceId: deviceId ?? null,
     });
   }
-  return summarizeErrorLogs(readLocal().logs, granularity, source, severity);
+  return summarizeErrorLogs(readLocal().logs, granularity, source, severity, deviceId);
 }
 
 export async function exportSyncAudit(

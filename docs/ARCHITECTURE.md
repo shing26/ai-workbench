@@ -301,3 +301,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `GitContext` 新增 `last_commit_at`：从 `logs/HEAD` 末行的第 5 列解析 epoch 秒并乘以 1000，latest commit 消息去掉 `commit:` 前缀。
 - 新增 `get_git_activity` 命令：遍历 projects 调用 `get_project_git_context`，按 `last_commit_at DESC` 排序，汇总 `totalProjects / totalCommits / dirtyProjects / items`；`dirty` 由 changes 非空判定，`changedFiles` 为 changes 数量。
 - Projects 顶部新增 Git activity 卡片：总数徽标 + 每项目 branch / commits / dirty 状态与最新提交；浏览器 fallback 基于 localStorage projects 镜像同一聚合语义。
+
+## Sprint 68：错误日志来源 / 设备组合筛选
+
+- `error_logs` 新增 `device_id`（默认空串），`migrate_error_log_device` 幂等补列；`ErrorLog` / `report_frontend_error` / `list_error_logs` / `merge_error_log` 全程携带设备归属，同步快照合并后仍可区分日志来源设备。
+- `get_error_log_summary` 新增 `device_id?`，与 source / severity 组合过滤；System Error logs 卡片新增来源下拉与设备下拉，趋势图、总数徽标与明细列表共用同一过滤条件。
+- 前端 `reportFrontendError` 自动读取当前 sync device id 并随命令写入；浏览器 fallback 在 localStorage 上镜像同一过滤语义。

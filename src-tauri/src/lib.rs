@@ -1510,10 +1510,17 @@ fn get_error_log_summary(
     granularity: String,
     source: Option<String>,
     severity: Option<String>,
+    device_id: Option<String>,
 ) -> Result<db::ErrorLogSummary, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::error_log_summary(&conn, &granularity, source.as_deref(), severity.as_deref())
-        .map_err(|e| e.to_string())
+    db::error_log_summary(
+        &conn,
+        &granularity,
+        source.as_deref(),
+        severity.as_deref(),
+        device_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1545,10 +1552,18 @@ fn report_frontend_error(
     message: String,
     stack: Option<String>,
     severity: String,
+    device_id: String,
 ) -> Result<db::ErrorLog, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::report_frontend_error(&conn, &source, &message, stack.as_deref(), &severity)
-        .map_err(|e| e.to_string())
+    db::report_frontend_error(
+        &conn,
+        &source,
+        &message,
+        stack.as_deref(),
+        &severity,
+        &device_id,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
