@@ -513,3 +513,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增同构 `renderWebhookPayload`；`triggerWebhookEvent` 接受可选 context，Tauri 透传、浏览器 fallback 渲染后写入投递队列。
 - SystemView 事件触发器行新增 Context JSON 输入与 Preview payload；投递队列行新增 `data-webhook-delivery-payload` 展示最终 payload。
 - `verify:ui` / `verify:preview` 新增 `webhookPayloadTemplate` lane；Rust 单测覆盖变量渲染、缺失字段与无变量模板。
+
+## Sprint 99：系统事件总线接入 Webhook 触发器
+
+- `db.ts` 新增 `emitWorkbenchEvent(event, context?)` 统一事件入口，内部复用 `triggerWebhookEvent`；投递写入后派发 `workbench:webhook-deliveries-updated` CustomEvent，浏览器 fallback 与 Tauri 前端共用同一刷新信号。
+- 已接入系统事件：`clipboard.captured`（`captureClipboard` + Tauri `clipboard-updated` 监听）、`error.reported`（`reportFrontendError`）、`sync.completed`（import / importEncrypted / push / pull）、`knowledge.indexed`（`indexVault`）。
+- SystemView 监听 `workbench:webhook-deliveries-updated` 后立即重载投递队列，原 5 秒轮询保留为兜底；事件入队不再依赖最长 5 秒的 UI 刷新延迟。
+- `verify:ui` / `verify:preview` 新增 `webhookSystemEvents` lane：先种子两条 enabled 规则，再通过真实 Pull 与真实 `ErrorEvent` 分别触发 `sync.completed` / `error.reported`，校验 DOM 中的最终 payload。
