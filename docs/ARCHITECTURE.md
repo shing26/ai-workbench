@@ -591,3 +591,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Rust `stream_ai_message` 新增 `auto_fallback`：非 MOA 分支按 `provider_ids` 顺序逐个尝试，失败时 emit `stream-fallback` 事件并追加 `[auto fallback: A → B]` 文本块；`auto_fallback_marker` 提供统一标记格式。
 - `src/lib/db.ts` 新增 `StreamFallback` / `listenStreamFallbacks` / `emitLocalStreamFallback`，浏览器 fallback 与 Tauri 使用同一事件模型；`sendAiMessageStream` 在 `autoFallback` 下按传入顺序降级，全部失败才返回最终错误。
 - AI Studio Single / Auto 模式传入全部 active Provider，头部新增 `data-ai-fallback-chain` 徽标，Inspector 新增 `Fallback chain` 区块；`verify:ui` / `verify:preview` 新增 `autoFallback` lane，用 500 + SSE 双 mock 断言回退链。
+
+## Sprint 110：跨流 Token 预算与成本控制
+
+- 新增 `src/lib/tokenBudget.ts`：`estimateTokens` 按 `len/4` 估算，`loadTokenBudget` / `recordTokenUsage` / `resetTokenBudget` / `getBudgetStatus` 持久化到 `ai-workbench:token-budget:v1`，月度 key 变化自动清零。
+- System 新增 Token budget 卡片：月度上限输入、已用/进度条、Auto degrade 开关与 Reset month，`data-token-budget-card` 系列锚点齐全。
+- AI Studio 头部 `data-token-budget-badge` 展示用量与 degrade / over 状态；流 done 时按回复文本记录估算 Token；超预算且开启 Auto degrade 时只路由本地 Ollama Provider，关闭时拦截并回显 `token budget exceeded`；Inspector 新增 `Budget` 区块。
+- `verify:ui` / `verify:preview` 新增 `tokenBudget` lane：覆盖本地降级回复、徽标、配置切换、超限拦截、重置与恢复云 Provider 五步。

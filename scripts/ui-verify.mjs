@@ -6681,6 +6681,221 @@ try {
   }
   results.webhookSystemEvents = webhookSystemEvents;
 
+  let budgetServer = null;
+  try {
+    budgetServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const route = req.url ?? '';
+      const reply = route.includes('local') ? 'local budget answer' : 'cloud budget answer';
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      if (route.includes('local')) {
+        res.write(`{"message":{"content":"${reply} "},"done":false}\n\n`);
+        res.write('{"message":{"content":""},"done":true}\n\n');
+      } else {
+        res.write(`data: {"choices":[{"delta":{"content":"${reply} "}}]}\n\n`);
+        res.write('data: [DONE]\n\n');
+      }
+      res.end();
+    });
+    await new Promise((resolve) => budgetServer.listen(0, '127.0.0.1', resolve));
+    const budgetPort = budgetServer.address().port;
+    await evaluate(`(() => {
+      const now = new Date();
+      const monthKey = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      localStorage.setItem(
+        "ai-workbench:token-budget:v1",
+        JSON.stringify({ monthlyLimit: 1000, monthKey, usedTokens: 1000, autoDegrade: true }),
+      );
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "budget-cloud",
+          name: "Cloud API",
+          baseUrl: "http://127.0.0.1:${budgetPort}/v1/cloud",
+          apiKey: "test-key",
+          model: "cloud-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "budget-local",
+          name: "Local Ollama",
+          baseUrl: "http://127.0.0.1:${budgetPort}/v1/local",
+          apiKey: "test-key",
+          model: "local-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+
+    const budgetDegrade = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const singleBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "Single");
+      singleBtn?.click();
+      await sleep(150);
+      const agentSelect = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (agentSelect) {
+        const agentSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        agentSetter.call(agentSelect, "");
+        agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await sleep(150);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget degrade check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let localReply = false;
+      let degradedBadge = false;
+      for (let i = 0; i < 50; i += 1) {
+        const body = document.body.innerText;
+        const badge = document.querySelector("[data-token-budget-badge]")?.textContent ?? "";
+        localReply = localReply || body.includes("local budget answer");
+        degradedBadge =
+          degradedBadge || (badge.includes("degraded") && badge.includes("tokens"));
+        if (localReply && degradedBadge) break;
+        await sleep(100);
+      }
+      const used = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      ).usedTokens;
+      return {
+        ok: localReply && degradedBadge && used > 1000,
+        localReply,
+        degradedBadge,
+        used,
+        badge: document.querySelector("[data-token-budget-badge]")?.textContent ?? "",
+      };
+    })()`);
+    if (!budgetDegrade.ok) {
+      throw new Error(`Token budget degrade assertion failed: ${JSON.stringify(budgetDegrade)}`);
+    }
+
+    await clickDock('System');
+    const budgetConfigUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector("[data-token-budget-card]");
+      if (!card) return { ok: false, reason: "budget card missing" };
+      const toggle = document.querySelector("[data-token-budget-auto-degrade]");
+      if (!toggle) return { ok: false, reason: "budget toggle missing" };
+      toggle.click();
+      await sleep(200);
+      const stored = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      );
+      return {
+        ok: stored.autoDegrade === false,
+        cardSeen: true,
+        usedText: document.querySelector("[data-token-budget-used]")?.textContent ?? "",
+        autoDegrade: stored.autoDegrade,
+      };
+    })()`);
+    if (!budgetConfigUi.ok) {
+      throw new Error(`Token budget config assertion failed: ${JSON.stringify(budgetConfigUi)}`);
+    }
+
+    await clickDock('AI Studio');
+    const budgetBlocked = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget block check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let blocked = false;
+      for (let i = 0; i < 40; i += 1) {
+        blocked = document.body.innerText.includes("token budget exceeded");
+        if (blocked) break;
+        await sleep(100);
+      }
+      const used = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      ).usedTokens;
+      return { ok: blocked, blocked, used };
+    })()`);
+    if (!budgetBlocked.ok) {
+      throw new Error(`Token budget block assertion failed: ${JSON.stringify(budgetBlocked)}`);
+    }
+
+    await clickDock('System');
+    const budgetReset = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const reset = document.querySelector("[data-token-budget-reset]");
+      if (!reset) return { ok: false, reason: "budget reset missing" };
+      reset.click();
+      await sleep(250);
+      const stored = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      );
+      return { ok: stored.usedTokens === 0, usedTokens: stored.usedTokens };
+    })()`);
+    if (!budgetReset.ok) {
+      throw new Error(`Token budget reset assertion failed: ${JSON.stringify(budgetReset)}`);
+    }
+
+    await clickDock('AI Studio');
+    const budgetRecover = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget reset check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let cloudReply = false;
+      for (let i = 0; i < 50; i += 1) {
+        cloudReply = document.body.innerText.includes("cloud budget answer");
+        if (cloudReply) break;
+        await sleep(100);
+      }
+      const badge = document.querySelector("[data-token-budget-badge]")?.textContent ?? "";
+      return {
+        ok: cloudReply && !badge.includes("degraded"),
+        cloudReply,
+        badge,
+      };
+    })()`);
+    if (!budgetRecover.ok) {
+      throw new Error(`Token budget recovery assertion failed: ${JSON.stringify(budgetRecover)}`);
+    }
+
+    results.tokenBudget = {
+      degrade: budgetDegrade,
+      config: budgetConfigUi,
+      blocked: budgetBlocked,
+      reset: budgetReset,
+      recover: budgetRecover,
+    };
+  } finally {
+    if (budgetServer) budgetServer.close();
+  }
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {

@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 110
+
+### What went well?
+
+- 跨流 Token 预算落地：`src/lib/tokenBudget.ts` 用 `len/4` 估算，localStorage key `ai-workbench:token-budget:v1` 持久化，月度 key 变化自动清零；System Token budget 卡片可配置上限、Auto degrade 与 Reset month。
+- AI Studio 头部 `data-token-budget-badge` 展示用量与 degrade / over 状态，流完成时自动记录估算 Token；超预算且开启降级时只路由本地 Ollama，关闭时拦截并回显 `token budget exceeded`；Inspector 新增 `Budget` 区块。
+- `verify:ui` / `verify:preview` 的 `tokenBudget` lane 覆盖本地降级回复、徽标、配置切换、超限拦截、重置与恢复云 Provider 五步，双端全绿。
+- `npm run build`、lint、prettier、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 预算降级 lane 首次失败：本地 Provider 的 mock 返回 OpenAI SSE 格式，但 name 含 Ollama 走了 NDJSON 解析；改为 Ollama NDJSON 响应后稳定。
+- preview 出现两轮 CDP `Runtime.evaluate` 偶发超时，加临时 lane 日志定位后重跑即过，属环境抖动而非功能回归；临时日志已移除。
+
+### Action Items
+
+- 下一 Sprint 候选：MOA 链式路由、错误日志趋势优化、审计跨时间轴图、AI 复盘结果一键保存更多入口、真实 Provider 端到端流式联调。
+- 保留 `tokenBudget` lane，修改预算估算、降级路由或 System 配置 UI 时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 109
 
 ### What went well?
