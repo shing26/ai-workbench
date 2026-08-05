@@ -757,3 +757,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 107：拼音/中文分词模糊搜索
 
 无表结构变更。拼音匹配在运行时由 `search_sessions` 对原文生成全拼 / 首字母紧凑串后评分，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`，不新增 localStorage key。
+
+## Sprint 108：搜索历史与跨会话聚合统计
+
+无表结构变更。搜索历史保存在前端 `ai-workbench:session-search-history:v1`（每条含 `query / at / hits`），聚合统计由 `summarizeSearchHits` 在运行时对当前命中结果计算，不写入 SQLite；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` / `chatMessages`。

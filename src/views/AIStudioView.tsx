@@ -40,6 +40,13 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import * as db from '../lib/db';
 import { buildDailyRecapPrompt } from '../lib/dailyRecap';
+import {
+  clearSearchHistory,
+  loadSearchHistory,
+  recordSearchHistory,
+  summarizeSearchHits,
+  type SessionSearchHistoryEntry,
+} from '../lib/searchHistory';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import ModelBadge from '../components/ui/ModelBadge';
@@ -176,6 +183,9 @@ export default function AIStudioView() {
   const [sessionFullText, setSessionFullText] = useState(true);
   const [sessionHits, setSessionHits] = useState<db.SessionSearchHit[] | null>(null);
   const [sessionSearchBusy, setSessionSearchBusy] = useState(false);
+  const [sessionHistory, setSessionHistory] = useState<SessionSearchHistoryEntry[]>(() =>
+    loadSearchHistory(),
+  );
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -460,7 +470,9 @@ export default function AIStudioView() {
           limit: 50,
         })
         .then((hits) => {
-          if (!cancelled) setSessionHits(hits);
+          if (cancelled) return;
+          setSessionHits(hits);
+          if (q.length >= 2) setSessionHistory(recordSearchHistory(q, hits.length));
         })
         .finally(() => {
           if (!cancelled) setSessionSearchBusy(false);
@@ -713,6 +725,7 @@ export default function AIStudioView() {
   const sessionHitBy = new Map((sessionHits ?? []).map((hit) => [hit.session.id, hit]));
   const isMessageHit = (hit?: db.SessionSearchHit) =>
     hit?.matchType === 'message' || hit?.matchType === 'pinyin-message';
+  const searchStats = sessionHits ? summarizeSearchHits(sessionHits) : null;
   const filteredSessions = sessions
     .filter((s) => {
       const q = sessionQuery.trim().toLowerCase();
@@ -1359,6 +1372,44 @@ export default function AIStudioView() {
               <span className="text-[8px] text-slate-500">Msg</span>
             </label>
           </div>
+          {sessionHistory.length > 0 && (
+            <div className="flex h-7 shrink-0 items-center gap-1 overflow-hidden">
+              <History size={10} className="shrink-0 text-slate-600" />
+              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+                {sessionHistory.slice(0, 4).map((entry) => (
+                  <button
+                    key={entry.query}
+                    type="button"
+                    data-session-history-query={entry.query}
+                    onClick={() => setSessionQuery(entry.query)}
+                    className="shrink-0 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-slate-400 hover:border-emerald-500/30 hover:text-emerald-300"
+                  >
+                    {entry.query}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                aria-label="Clear session search history"
+                data-session-history-clear
+                onClick={() => setSessionHistory(clearSearchHistory())}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-slate-600 hover:text-rose-400"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          )}
+          {searchStats ? (
+            <div
+              data-session-search-stats
+              className="shrink-0 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1 text-[9px] leading-4 text-cyan-300/90"
+            >
+              {searchStats.totalHits} hits · {searchStats.sessions} sessions ·{' '}
+              {searchStats.titleHits} title · {searchStats.modelHits} model ·{' '}
+              {searchStats.messageHits} message · {searchStats.pinyinHits} pinyin · avg{' '}
+              {searchStats.avgScore}
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
             {visibleSessions.map((s) =>
               renamingId === s.id ? (

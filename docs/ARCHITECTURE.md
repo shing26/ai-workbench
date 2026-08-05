@@ -579,3 +579,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `search_sessions` 的匹配从单层原文模糊升级为原文 → 全拼 → 首字母三层：Rust 引入 `pinyin` crate，`db.ts` 引入 `pinyin-pro`，两侧同构；命中类型扩展为 `pinyin-title` / `pinyin-model` / `pinyin-message`。
 - 拼音匹配使用紧凑小写形式（去空白），原文优先、全拼次之、首字母兜底；AI Studio 拼音消息命中仍携带 `messageId` 并可跳转高亮。
 - `verify:ui` / `verify:preview` 新增 `sessionPinyinSearch` lane，覆盖 `mrjh` / `meirijihua` 标题命中与 `mnhjd` 消息命中跳转；Rust 120 条单测通过。
+
+## Sprint 108：搜索历史与跨会话聚合统计
+
+- 新增 `src/lib/searchHistory.ts`：`loadSearchHistory` / `recordSearchHistory` / `clearSearchHistory` / `summarizeSearchHits`，查询去重、最多保留 8 条，localStorage key 为 `ai-workbench:session-search-history:v1`。
+- AI Studio 会话搜索完成后自动记录历史，Recent 标签可点击回填查询，清空按钮同时清理 DOM 与 localStorage；搜索栏下方 `data-session-search-stats` 展示总命中、会话数、title/model/message、拼音命中与平均分。
+- `verify:ui` / `verify:preview` 新增 `sessionSearchHistoryStats` lane：覆盖 `question` 命中多会话消息、历史可见、点击回填与清空生效；`sessionManagement` 的 `emptyState` 改为 waitFor 轮询，消除偶发异步时序。
