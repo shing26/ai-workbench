@@ -2028,6 +2028,91 @@ try {
   }
   results.docHealthAutoPersist = docHealthAutoPersist;
 
+  const docHealthHistory = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let alert = null;
+    let runs = [];
+    for (let i = 0; i < 30; i++) {
+      alert = document.querySelector("[data-doc-health-alert]");
+      runs = [...document.querySelectorAll("[data-doc-health-run]")];
+      if (alert && runs.length > 0) break;
+      await sleep(100);
+    }
+    const alertText = alert?.textContent ?? "";
+    const latest = runs[0];
+    const latestRemoved = Number(latest?.getAttribute("data-doc-health-removed") ?? -1);
+    const latestReindexed = Number(latest?.getAttribute("data-doc-health-reindexed") ?? -1);
+    const latestTriggered = latest?.getAttribute("data-doc-health-triggered") ?? "";
+    const latestTime = Number(latest?.getAttribute("data-doc-health-run-time") ?? 0);
+    const okBeforeDismiss =
+      !!alert &&
+      alertText.includes("removed 1") &&
+      alertText.includes("reindexed 1") &&
+      latestRemoved === 1 &&
+      latestReindexed === 1 &&
+      latestTriggered === "auto";
+    const dismissBtn = document.querySelector("[data-doc-health-dismiss]");
+    if (!okBeforeDismiss || !dismissBtn) {
+      return {
+        ok: okBeforeDismiss,
+        alertText,
+        latestRemoved,
+        latestReindexed,
+        latestTriggered,
+        runs: runs.length,
+      };
+    }
+    dismissBtn.click();
+    let dismissed = false;
+    for (let i = 0; i < 20; i++) {
+      if (!document.querySelector("[data-doc-health-alert]")) {
+        dismissed = true;
+        break;
+      }
+      await sleep(50);
+    }
+    const storedDismissed = Number(
+      localStorage.getItem("ai-workbench:doc-health-alert-dismissed:v1") ?? 0,
+    );
+    return {
+      ok: okBeforeDismiss && dismissed && storedDismissed === latestTime,
+      alertText,
+      latestRemoved,
+      latestReindexed,
+      latestTriggered,
+      runs: runs.length,
+      dismissed,
+      storedDismissed,
+      latestTime,
+    };
+  })()`);
+  if (!docHealthHistory.ok) {
+    throw new Error(`Doc health run history assertion failed: ${JSON.stringify(docHealthHistory)}`);
+  }
+  results.docHealthHistory = docHealthHistory;
+
+  await send("Page.reload", { ignoreCache: true });
+  await waitForApp();
+  await clickDock("Knowledge");
+  const docHealthDismissPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let alertGone = false;
+    for (let i = 0; i < 20; i++) {
+      if (!document.querySelector("[data-doc-health-alert]")) {
+        alertGone = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return { ok: alertGone, alertGone };
+  })()`);
+  if (!docHealthDismissPersist.ok) {
+    throw new Error(
+      `Doc health dismiss persistence assertion failed: ${JSON.stringify(docHealthDismissPersist)}`,
+    );
+  }
+  results.docHealthDismissPersist = docHealthDismissPersist;
+
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }

@@ -325,3 +325,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `vault_index_queue` 新增 `priority / attempts / last_error`，`migrate_vault_index_queue_priority` 幂等补列；`list_vault_index_queue` 按 `priority DESC, created_at ASC` 返回。
 - 内存队列按 `priority DESC` 插队、同优先级保持 FIFO；`start_vault_index` 新增 `priority` 参数，worker 失败后若 `attempts < 3` 保留优先级重新入队并记录 `last_error`，否则删除记录；重试间隔 800ms 防热循环。
 - Knowledge Vault Index 新增 Normal / High 优先级选择，队列行展示优先级与重试次数，进度区展示最终错误；浏览器 fallback 镜像同一插队与最多 3 次重试语义。
+
+## Sprint 72：自动巡检运行历史与通知提醒
+
+- `db.ts` 新增 `DocHealthRunRecord` 与 `getDocHealthRunHistory` / `appendDocHealthRun`，历史持久化到 `ai-workbench:doc-health-history:v1`，最多保留 50 条；新增 `getDocHealthAlertDismissedAt` / `setDocHealthAlertDismissedAt`，Dismiss 时间写入 `ai-workbench:doc-health-alert-dismissed:v1`。
+- `runDocHealthAutoInspect` 与手动 Clean 均追加 `{ ranAt, removed, reindexed, failed, triggeredBy }` 运行记录；最近一次自动巡检发现问题时，Knowledge Document status 展示提醒横幅，Dismiss 后持久化，刷新不重现。
+- Document status 新增最近 5 次运行历史；`verify:ui` / `verify:preview` 新增 `docHealthHistory` / `docHealthDismissPersist` lane，断言 removed=1 / reindexed=1 / triggeredBy=auto 与 Dismiss 持久化。

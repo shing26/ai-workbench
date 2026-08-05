@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 72
+
+### What went well?
+
+- 文档健康自动巡检补齐“历史可回溯、结果有提醒”：`db.ts` 新增 `DocHealthRunRecord` 与运行历史读写，历史持久化到 `ai-workbench:doc-health-history:v1`，最多 50 条；Dismiss 时间持久化到 `ai-workbench:doc-health-alert-dismissed:v1`。
+- 自动巡检与手动 Clean 都写入 `ranAt / removed / reindexed / failed / triggeredBy`；Knowledge Document status 展示最近 5 次运行历史，最近一次自动巡检发现问题时显示提醒横幅，Dismiss 后刷新不重现。
+- 验证覆盖：`cargo test --lib` 80/80，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `docHealthHistory` 断言 removed=1 / reindexed=1 / triggeredBy=auto，`docHealthDismissPersist` 断言刷新后提醒不重现。
+
+### What went wrong?
+
+- 提醒语义收窄为“仅最近一次自动巡检发现问题”触发，手动 Clean 只写历史不弹横幅，避免手动操作稀释自动巡检的提醒价值。
+- 历史与提醒分属两个 localStorage key，避免运行历史截断时误删 Dismiss 状态。
+
+### Action Items
+
+- 下一 Sprint 候选：Git 活动看板 dirty 文件预览与提交趋势、索引队列按 attempts 指数退避、真实 Provider 端到端流式联调，或继续围绕 5 大主视图补充日常高频能力。
+
 ## Sprint 71
 
 ### What went well?
