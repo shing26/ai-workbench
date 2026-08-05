@@ -28,6 +28,7 @@ type WorkbenchState = {
   addProvider: (name: string, baseUrl: string, apiKey: string, model?: string) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
   setProviderModel: (id: string, model: string) => Promise<void>;
+  setProviderPriority: (id: string, priority: number) => Promise<void>;
   addHabit: (name: string, weekGoal: number, color: db.Habit['color']) => Promise<void>;
   toggleHabit: (id: string) => Promise<void>;
   addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
@@ -124,6 +125,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
   setProviderModel: async (id, model) => {
     await db.updateProviderModel(id, model);
+    set({ providers: await db.listProviders() });
+  },
+  setProviderPriority: async (id, priority) => {
+    await db.setProviderPriority(id, priority);
     set({ providers: await db.listProviders() });
   },
   addHabit: async (name, weekGoal, color) => {

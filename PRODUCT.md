@@ -28,7 +28,9 @@ The only AI desktop workbench built for the "万物为我所用" philosophy: the
 
 ## Capabilities and Constraints
 
-**Six modules:**
+**Six modules (vision; current scope is five main views):**
+
+Monetization Workbench and Connection Layer are deferred per user request: they stay as product vision only and are not part of the current development endpoint.
 - Chat Hub: multi-model routing (Cloud API / Codex / Ollama / Auto), thread management, budget tracking
 - Vibe Coding Factory: idea capture → clarify → implement → run → accept, with Codex CLI backend
 - Knowledge Hub: bidirectional Obsidian vault integration, three-column browse with tag/project filtering, AI tag inference

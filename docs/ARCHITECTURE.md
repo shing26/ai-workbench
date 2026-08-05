@@ -491,6 +491,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 浏览器 `sendAiMessageStream` 新增真实流式：配置 model 的 http(s) Provider 用 `fetch` 消费 OpenAI-compatible SSE 或 Ollama NDJSON，支持取消与错误回显；未配置 model 保持模拟流。
 - `verify:ui` / `verify:preview` 新增 `providerLiveStream` lane；Rust 单测覆盖 model 迁移 / 持久化与请求体模型名。
 
+## Sprint 106：Provider 优先级与路由排序
+
+- `providers` 新增 `priority INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建列，旧库 `migrate_provider_priority` 幂等补列；新增 `set_provider_priority` Tauri 命令，System Provider 卡片提供上下优先级按钮。
+- `list_providers` / `get_provider` 统一按 `priority DESC, rowid ASC` 返回；Rust `stream_ai_message` / `send_ai_message` 与浏览器 fallback 均按优先级排序后再取前 3 / 路由目标。
+- `db.ts` 的 `routeProvider` 在同优先级下继续按健康检查延迟升序兜底；SystemView 新增 `data-provider-priority` / `data-provider-priority-up` / `data-provider-priority-down` 验证锚点。
+- `verify:ui` / `verify:preview` 新增 `providerPriority` lane，断言卡片按 3/2/1 排序且增减优先级持久化到 localStorage；Rust 单测覆盖迁移补列、持久化与负数钳制。
+
 ## Sprint 96：Webhook 事件触发器与投递队列
 
 - `webhook_rules` 新增 `trigger_event TEXT DEFAULT ''`：新库 SCHEMA 建列，旧库 `migrate_webhook_trigger_event` 幂等补列；`list_event_webhook_rules` 按事件匹配 enabled 规则，`list_due_webhook_rules` 只选 `trigger_event = ''` 的定时规则。

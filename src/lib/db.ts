@@ -95,6 +95,7 @@ export type Provider = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  priority?: number;
   isActive: boolean;
 };
 
@@ -1151,7 +1152,10 @@ export async function createThought(
 }
 
 export async function listProviders(): Promise<Provider[]> {
-  return isTauri() ? invoke<Provider[]>('list_providers') : readLocal().providers;
+  if (isTauri()) return invoke<Provider[]>('list_providers');
+  return (readLocal().providers ?? [])
+    .map((p) => ({ ...p, priority: p.priority ?? 0 }))
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 }
 
 export async function createProvider(
@@ -1162,7 +1166,15 @@ export async function createProvider(
 ): Promise<Provider> {
   if (isTauri()) return invoke<Provider>('create_provider', { name, baseUrl, apiKey, model });
   const shape = readLocal();
-  const provider: Provider = { id: makeId(), name, baseUrl, apiKey, model, isActive: false };
+  const provider: Provider = {
+    id: makeId(),
+    name,
+    baseUrl,
+    apiKey,
+    model,
+    priority: 0,
+    isActive: false,
+  };
   shape.providers.unshift(provider);
   writeLocal(shape);
   return provider;
@@ -1176,6 +1188,17 @@ export async function setProviderActive(id: string, isActive: boolean): Promise<
   const shape = readLocal();
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.isActive = isActive;
+  writeLocal(shape);
+}
+
+export async function setProviderPriority(id: string, priority: number): Promise<void> {
+  if (isTauri()) {
+    await invoke('set_provider_priority', { id, priority });
+    return;
+  }
+  const shape = readLocal();
+  const provider = shape.providers.find((p) => p.id === id);
+  if (provider) provider.priority = Math.max(0, Math.round(priority));
   writeLocal(shape);
 }
 
@@ -1439,14 +1462,24 @@ export type RouteResult = {
 
 export async function routeProvider(providerIds: string[]): Promise<RouteResult> {
   const ids = [...new Set(providerIds)];
-  const providers = (await listProviders()).filter((p) => ids.includes(p.id));
+  const providers = (await listProviders())
+    .filter((p) => ids.includes(p.id))
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
   const candidates = await Promise.all(
     providers.map(async (p) => {
       const health = await checkProviderHealth(p.id);
       return { id: p.id, name: p.name, ok: health.ok, latencyMs: health.latencyMs };
     }),
   );
-  const healthy = providers.filter((p) => candidates.find((c) => c.id === p.id)?.ok);
+  const healthy = providers
+    .filter((p) => candidates.find((c) => c.id === p.id)?.ok)
+    .sort((a, b) => {
+      const priorityDelta = (b.priority ?? 0) - (a.priority ?? 0);
+      if (priorityDelta) return priorityDelta;
+      const latencyA = candidates.find((c) => c.id === a.id)?.latencyMs ?? 0;
+      const latencyB = candidates.find((c) => c.id === b.id)?.latencyMs ?? 0;
+      return latencyA - latencyB;
+    });
   if (healthy.length === 0) {
     return { provider: null, health: null, candidates, fallbackFrom: null };
   }
@@ -4266,7 +4299,9 @@ export async function sendAiMessageStream(args: {
 
   const shape = readLocal();
   const candidates = shape.providers.filter((p) => p.isActive || args.providerIds.includes(p.id));
-  const providers = candidates.slice(0, args.moa ? 3 : 1);
+  const providers = candidates
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+    .slice(0, args.moa ? 3 : 1);
   const realProviders = providers.filter(canRealStream);
   if (args.moa && realProviders.length > 0) {
     const outputs = new Map<string, string>();

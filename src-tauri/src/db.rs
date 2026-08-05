@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url TEXT NOT NULL,
     api_key TEXT,
     model TEXT DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS departments (
@@ -386,6 +387,7 @@ pub struct Provider {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    pub priority: i64,
     pub is_active: bool,
 }
 
@@ -1095,6 +1097,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_knowledge_vault_path(&conn)?;
     migrate_knowledge_embedding(&conn)?;
     migrate_provider_model(&conn)?;
+    migrate_provider_priority(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
@@ -1168,6 +1171,19 @@ fn migrate_provider_model(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE providers ADD COLUMN model TEXT DEFAULT '';")?;
     }
     conn.execute("UPDATE providers SET model = '' WHERE model IS NULL", [])?;
+    Ok(())
+}
+
+fn migrate_provider_priority(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "providers", "priority")? {
+        conn.execute_batch(
+            "ALTER TABLE providers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    conn.execute(
+        "UPDATE providers SET priority = 0 WHERE priority IS NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1752,7 +1768,8 @@ pub fn record_quick_prompt_usage(conn: &Connection, id: &str) -> Result<i64> {
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, is_active FROM providers ORDER BY created_at DESC",
+        "SELECT id, name, base_url, api_key, model, priority, is_active
+         FROM providers ORDER BY priority DESC, rowid ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Provider {
@@ -1761,7 +1778,8 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
             base_url: row.get(2)?,
             api_key: row.get(3)?,
             model: row.get(4)?,
-            is_active: row.get::<_, i64>(5)? != 0,
+            priority: row.get(5)?,
+            is_active: row.get::<_, i64>(6)? != 0,
         })
     })?;
     rows.collect()
@@ -1769,7 +1787,8 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
 
 pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, is_active FROM providers WHERE id = ?1",
+        "SELECT id, name, base_url, api_key, model, priority, is_active
+         FROM providers WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(Provider {
@@ -1778,7 +1797,8 @@ pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
             base_url: row.get(2)?,
             api_key: row.get(3)?,
             model: row.get(4)?,
-            is_active: row.get::<_, i64>(5)? != 0,
+            priority: row.get(5)?,
+            is_active: row.get::<_, i64>(6)? != 0,
         })
     })?;
     rows.next().transpose()
@@ -1802,6 +1822,7 @@ pub fn create_provider(
         base_url: base_url.to_string(),
         api_key: api_key.to_string(),
         model: model.to_string(),
+        priority: 0,
         is_active: false,
     })
 }
@@ -1810,6 +1831,14 @@ pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Resu
     conn.execute(
         "UPDATE providers SET is_active = ?1 WHERE id = ?2",
         params![is_active as i64, id],
+    )?;
+    Ok(())
+}
+
+pub fn set_provider_priority(conn: &Connection, id: &str, priority: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET priority = ?1 WHERE id = ?2",
+        params![priority.max(0), id],
     )?;
     Ok(())
 }
@@ -6675,6 +6704,7 @@ mod tests {
         )
         .unwrap();
         migrate_provider_model(&conn).unwrap();
+        migrate_provider_priority(&conn).unwrap();
         assert!(column_exists(&conn, "providers", "model").unwrap());
         let provider =
             create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
@@ -6682,6 +6712,35 @@ mod tests {
         update_provider_model(&conn, &provider.id, "qwen3:8b").unwrap();
         let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
         assert_eq!(updated.model, "qwen3:8b");
+    }
+
+    #[test]
+    fn provider_priority_migration_adds_column_and_persists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                model TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1
+            );",
+        )
+        .unwrap();
+        migrate_provider_priority(&conn).unwrap();
+        assert!(column_exists(&conn, "providers", "priority").unwrap());
+        let provider =
+            create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
+        assert_eq!(provider.priority, 0);
+        set_provider_priority(&conn, &provider.id, 5).unwrap();
+        let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
+        assert_eq!(updated.priority, 5);
+        set_provider_priority(&conn, &provider.id, -2).unwrap();
+        assert_eq!(
+            get_provider(&conn, &provider.id).unwrap().unwrap().priority,
+            0
+        );
     }
 
     #[test]

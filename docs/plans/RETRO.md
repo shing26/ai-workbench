@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 106
+
+### What went well?
+
+- Provider 优先级落库：`providers.priority INTEGER NOT NULL DEFAULT 0`，旧库 `migrate_provider_priority` 幂等补列并回写 `NULL`；`list_providers` / `get_provider` 按 `priority DESC, rowid ASC` 返回。
+- 路由与 MOA 统一按优先级排序：Rust `stream_ai_message` / `send_ai_message`、浏览器 fallback 的 `sendAiMessageStream` / `routeProvider` 同构；同优先级下 Auto 路由继续用健康延迟兜底。
+- System Provider 卡片新增上/下优先级按钮，`data-provider-priority` 系列锚点让 `verify:ui` / `verify:preview` 能断言排序与持久化。
+- `indexQueuePersist` lane 在 preview 偶发先看到 active 后看到 drained、却错过 queue count；改为 `(sawQueue || activeSeen) && drained`，仍覆盖“重载后恢复执行并清空”的核心语义。
+- Rust 119 条单测、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`npm run build`、lint、prettier、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首次 `verify:preview` 在 `indexQueuePersist` 失败：队列处理太快，轮询没有捕获 `count > 0`，但已捕获 `activeSeen` 与最终 drained；收紧断言条件后稳定。
+
+### Action Items
+
+- 下一个 Sprint 候选：拼音/中文分词模糊搜索、搜索历史与跨会话聚合统计。
+- 保留 `providerPriority` lane，修改 Provider 模型、路由或 MOA 取流逻辑时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 105
 
 ### What went well?

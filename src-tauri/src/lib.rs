@@ -1437,6 +1437,16 @@ fn set_provider_active(
 }
 
 #[tauri::command]
+fn set_provider_priority(
+    state: State<'_, db::Db>,
+    id: String,
+    priority: i64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_provider_priority(&conn, &id, priority).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn update_provider_model(
     state: State<'_, db::Db>,
     id: String,
@@ -2992,7 +3002,7 @@ async fn stream_ai_message(
     run_id: String,
 ) -> Result<(), String> {
     let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
-    let selected: Vec<db::Provider> = {
+    let mut selected: Vec<db::Provider> = {
         let state = app.state::<db::Db>();
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         let mut selected = Vec::new();
@@ -3003,6 +3013,7 @@ async fn stream_ai_message(
         }
         selected
     };
+    selected.sort_by_key(|provider| std::cmp::Reverse(provider.priority));
     if selected.is_empty() {
         return Err("No providers configured".to_string());
     }
@@ -5032,6 +5043,7 @@ async fn send_ai_message(
         }
         selected
     };
+    selected.sort_by_key(|provider| std::cmp::Reverse(provider.priority));
 
     if selected.is_empty() {
         return Err("No providers configured".to_string());
@@ -5118,6 +5130,7 @@ pub fn run() {
             list_providers,
             create_provider,
             set_provider_active,
+            set_provider_priority,
             update_provider_model,
             list_provider_models,
             list_departments,
@@ -5699,6 +5712,7 @@ mod tests {
             base_url: "http://localhost:11434".to_string(),
             api_key: String::new(),
             model: String::new(),
+            priority: 0,
             is_active: true,
         };
         heartbeat.record(

@@ -66,11 +66,19 @@ CREATE TABLE IF NOT EXISTS providers (
     name TEXT NOT NULL,
     base_url TEXT NOT NULL,
     api_key TEXT,
+    model TEXT DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER DEFAULT 1
 );
 ```
 
 `api_key` 仅保存 OS Keyring 引用名，不保存明文密钥。
+
+## Sprint 106：Provider 优先级
+
+`providers` 新增 `priority INTEGER NOT NULL DEFAULT 0`：新库建表语句已直接包含该列，旧库由 `migrate_provider_priority` 幂等补列并把 `NULL` 回写为 0，已加入 `init_connection` 迁移链。
+
+`list_providers` / `get_provider` / `create_provider` 均读写 `priority`；新增 `set_provider_priority` Tauri 命令，`priority` 最小值钳制为 0。Provider 排序统一为 `priority DESC, rowid ASC`，MOA 取前 3 个启用 Provider、Auto 路由与浏览器 fallback 也按优先级排序。
 
 ## 6. habits
 

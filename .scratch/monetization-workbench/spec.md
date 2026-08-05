@@ -1,6 +1,8 @@
 ﻿# Monetization Workbench Spec
 
-**Status:** ready-for-agent
+**Status:** deferred
+
+> Deferred per user request. Not part of the current development endpoint; revisit and flip back to `ready-for-agent` only when this module is picked up again.
 
 ## Problem Statement
 
