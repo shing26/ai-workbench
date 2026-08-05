@@ -956,6 +956,23 @@ try {
   }
   results.autoScaleIndex = autoScaleIndex;
 
+  const indexProgressCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let status = "";
+    let bar = 0;
+    for (let i = 0; i < 30; i++) {
+      status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      bar = Number(document.querySelector("[data-index-progress]")?.getAttribute("data-index-progress") ?? 0);
+      if (status.includes("Indexed") && bar === 100) break;
+      await sleep(100);
+    }
+    return { ok: status.includes("Indexed") && bar === 100, status, bar };
+  })()`);
+  if (!indexProgressCheck.ok) {
+    throw new Error(`Index progress assertion failed: ${JSON.stringify(indexProgressCheck)}`);
+  }
+  results.indexProgress = indexProgressCheck;
+
   const vaultIgnore = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const ignoreInput = document.querySelector('input[placeholder="Ignore patterns (comma separated)"]');

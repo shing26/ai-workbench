@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 53
+
+### What went well?
+
+- 全量索引从同步阻塞改为后台线程 + Event 推送：`start_vault_index` 返回 `runId`，`vault-index-progress` 每 5 个文件或写完时上报，Knowledge 视图实时展示进度条。
+- 完成事件统一刷新 vault 状态、RAG 状态与目标统计，修复异步化后 `data-vault-files` 未及时更新的问题。
+- 验证覆盖：`cargo test --lib` 55/55，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言进度条 100 且状态含 `Indexed`，两条 lane 全绿。
+
+### What went wrong?
+
+- `start_vault_index` 闭包中 `run_id` / `run_path` 的 move 语义导致编译错误，改为先计算终态字段再构造 `IndexProgress`。
+- `runIndex` 异步化后漏掉 `getKnowledgeIndexStatus` 刷新，preview 首次运行 vault ignore 断言失败，补上完成事件刷新后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：可取消索引任务与取消队列、结构化字段级合并、自定义审计日期范围、watch 事件类型细分。
+- 后续扩展索引进度时，保留完成事件统一刷新状态与 fallback 模拟语义。
+
 ## Sprint 52
 
 ### What went well?

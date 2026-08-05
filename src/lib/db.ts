@@ -319,6 +319,17 @@ export type IndexResult = {
   concurrencyUsed: number;
 };
 
+export type IndexProgress = {
+  runId: string;
+  path: string;
+  done: number;
+  total: number;
+  files: number;
+  ignored: number;
+  concurrencyUsed: number;
+  status: string;
+};
+
 export type RecommendedConcurrency = {
   recommended: number;
   cores: number;
@@ -1739,6 +1750,52 @@ export async function indexVault(
     files: filtered.length,
     ignored: merged.length - filtered.length,
     concurrencyUsed,
+  };
+}
+
+const vaultIndexProgressHandlers: ((progress: IndexProgress) => void)[] = [];
+
+export async function startVaultIndex(
+  vaultPath: string,
+  ignorePatterns: string[] = [],
+  concurrency = 4,
+): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>("start_vault_index", { vaultPath, ignorePatterns, concurrency });
+  }
+  const runId = makeId();
+  const result = await indexVault(vaultPath, ignorePatterns, concurrency);
+  let step = 0;
+  const tick = () => {
+    step += 1;
+    const progress: IndexProgress = {
+      runId,
+      path: vaultPath,
+      done: Math.min(result.files, Math.ceil((result.files * step) / 3)),
+      total: result.files,
+      files: result.files,
+      ignored: result.ignored,
+      concurrencyUsed: result.concurrencyUsed,
+      status: step >= 3 ? "done" : "running",
+    };
+    for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
+    if (step < 3) setTimeout(tick, 60);
+  };
+  setTimeout(tick, 30);
+  return runId;
+}
+
+export async function listenVaultIndexProgress(
+  handler: (progress: IndexProgress) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<IndexProgress>("vault-index-progress", (event) => handler(event.payload));
+  }
+  vaultIndexProgressHandlers.push(handler);
+  return () => {
+    const index = vaultIndexProgressHandlers.indexOf(handler);
+    if (index >= 0) vaultIndexProgressHandlers.splice(index, 1);
   };
 }
 

@@ -738,6 +738,16 @@ fn index_vault_files(
     ignore_patterns: &[String],
     concurrency: usize,
 ) -> Result<db::IndexResult, String> {
+    index_vault_files_inner(conn, vault_path, ignore_patterns, concurrency, None)
+}
+
+fn index_vault_files_inner(
+    conn: &rusqlite::Connection,
+    vault_path: &str,
+    ignore_patterns: &[String],
+    concurrency: usize,
+    mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+) -> Result<db::IndexResult, String> {
     let dir = Path::new(vault_path);
     if !dir.is_dir() {
         return Err("Vault path not a directory".into());
@@ -780,10 +790,16 @@ fn index_vault_files(
         })?;
     };
     let mut indexed = 0i64;
-    for (path, title, tags, content) in files {
-        db::upsert_knowledge_file(conn, &path, &title, &tags, &content, vault_path)
+    let file_count = files.len();
+    for (path, title, tags, content) in files.iter() {
+        db::upsert_knowledge_file(conn, path, title, tags, content, vault_path)
             .map_err(|e| e.to_string())?;
         indexed += 1;
+        if let Some(callback) = on_progress.as_deref_mut() {
+            if indexed % 5 == 0 || indexed == file_count as i64 {
+                callback(indexed as usize, file_count);
+            }
+        }
     }
     Ok(db::IndexResult {
         files: indexed,
@@ -1421,6 +1437,86 @@ fn index_vault_ex(
 ) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     index_vault_files(&conn, &vault_path, &ignore_patterns, concurrency)
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexProgress {
+    run_id: String,
+    path: String,
+    done: usize,
+    total: usize,
+    files: i64,
+    ignored: i64,
+    concurrency_used: i64,
+    status: String,
+}
+
+#[tauri::command]
+fn start_vault_index(
+    app: tauri::AppHandle,
+    vault_path: String,
+    ignore_patterns: Vec<String>,
+    concurrency: usize,
+) -> Result<String, String> {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let app_clone = app.clone();
+    let run_path = vault_path.clone();
+    let thread_run_id = run_id.clone();
+    thread::Builder::new()
+        .name("vault-index".to_string())
+        .spawn(move || {
+            let Some(db_state) = app_clone.try_state::<db::Db>() else {
+                return;
+            };
+            let Ok(conn) = db_state.0.lock() else {
+                return;
+            };
+            let mut emit_progress = |done: usize, total: usize| {
+                let payload = IndexProgress {
+                    run_id: thread_run_id.clone(),
+                    path: run_path.clone(),
+                    done,
+                    total,
+                    files: 0,
+                    ignored: 0,
+                    concurrency_used: 0,
+                    status: "running".to_string(),
+                };
+                let _ = app_clone.emit("vault-index-progress", payload);
+            };
+            let result = index_vault_files_inner(
+                &conn,
+                &run_path,
+                &ignore_patterns,
+                concurrency,
+                Some(&mut emit_progress),
+            );
+            let (status, done, total, files, ignored, concurrency_used) = match result {
+                Ok(index_result) => (
+                    "done".to_string(),
+                    index_result.files as usize,
+                    index_result.files as usize,
+                    index_result.files,
+                    index_result.ignored,
+                    index_result.concurrency_used,
+                ),
+                Err(error) => (format!("error: {}", error), 0, 0, 0, 0, 0),
+            };
+            let payload = IndexProgress {
+                run_id: thread_run_id,
+                path: run_path,
+                done,
+                total,
+                files,
+                ignored,
+                concurrency_used,
+                status,
+            };
+            let _ = app_clone.emit("vault-index-progress", payload);
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(run_id)
 }
 
 #[tauri::command]
@@ -2920,6 +3016,7 @@ pub fn run() {
             get_rag_index_status,
             index_vault,
             index_vault_ex,
+            start_vault_index,
             get_knowledge_index_status,
             recommend_index_concurrency,
             list_vault_target_stats,
@@ -3202,6 +3299,32 @@ mod tests {
         assert_eq!(plan_index_concurrency(300, 0, 8), 8);
         assert_eq!(plan_index_concurrency(300, 8, 8), 4);
         assert_eq!(plan_index_concurrency(300, 8, 2), 2);
+    }
+
+    #[test]
+    fn index_progress_callback_reports_steps() {
+        let temp =
+            std::env::temp_dir().join(format!("aiwb-vault-progress-{}", uuid::Uuid::new_v4()));
+        let vault = temp.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        for name in ["a.md", "b.md", "c.md"] {
+            std::fs::write(vault.join(name), format!("# {}\n\n{}", name, name)).unwrap();
+        }
+        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
+        let mut calls = Vec::new();
+        let result = index_vault_files_inner(
+            &conn,
+            vault.to_str().unwrap(),
+            &[],
+            4,
+            Some(&mut |done, total| calls.push((done, total))),
+        )
+        .unwrap();
+        assert_eq!(result.files, 3);
+        assert!(!calls.is_empty());
+        assert_eq!(calls.last(), Some(&(3usize, 3usize)));
+        drop(conn);
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
