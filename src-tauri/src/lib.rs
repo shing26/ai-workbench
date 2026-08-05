@@ -1790,6 +1790,18 @@ struct GitRebaseResult {
     head: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConflictResolutionResult {
+    resolved: bool,
+    strategy: String,
+    files: Vec<String>,
+    rebased: bool,
+    branch: String,
+    head: String,
+    message: String,
+}
+
 fn commit_type_for(changes: &[String], branch: &str) -> &'static str {
     let has_docs = changes
         .iter()
@@ -2087,6 +2099,136 @@ fn abort_rebase(path: String) -> Result<String, String> {
     Ok(format!("Rebase aborted on {}", git_branch(&path)))
 }
 
+fn git_show_bytes(path: &str, spec: &str) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .args(["show", spec])
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("git show failed: {}", e))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn resolve_file_with_union(path: &str, file: &str) -> Result<(), String> {
+    let temp = std::env::temp_dir().join(format!("aiwb-union-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).map_err(|e| format!("union temp dir failed: {}", e))?;
+    let base_file = temp.join("base.txt");
+    let ours_file = temp.join("ours.txt");
+    let theirs_file = temp.join("theirs.txt");
+    let base = git_show_bytes(path, &format!(":1:{}", file)).unwrap_or_default();
+    let ours = git_show_bytes(path, &format!(":2:{}", file))?;
+    let theirs = git_show_bytes(path, &format!(":3:{}", file))?;
+    std::fs::write(&base_file, base).map_err(|e| e.to_string())?;
+    std::fs::write(&ours_file, ours).map_err(|e| e.to_string())?;
+    std::fs::write(&theirs_file, theirs).map_err(|e| e.to_string())?;
+    let output = Command::new("git")
+        .args([
+            "merge-file",
+            "-p",
+            "--union",
+            ours_file.to_str().unwrap_or_default(),
+            base_file.to_str().unwrap_or_default(),
+            theirs_file.to_str().unwrap_or_default(),
+        ])
+        .output()
+        .map_err(|e| format!("git merge-file failed: {}", e))?;
+    let merge_detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        std::fs::remove_dir_all(&temp).map_err(|e| e.to_string())?;
+        return Err(if merge_detail.is_empty() {
+            format!("union merge failed for {}", file)
+        } else {
+            merge_detail
+        });
+    }
+    let merged = output.stdout;
+    std::fs::remove_dir_all(&temp).map_err(|e| e.to_string())?;
+    let target = Path::new(path).join(file);
+    std::fs::write(&target, merged).map_err(|e| format!("write resolved file failed: {}", e))?;
+    run_git(path, &["add", "--", file])?;
+    Ok(())
+}
+
+fn write_stage_to_file(path: &str, stage: &str, file: &str) -> Result<(), String> {
+    let content = git_show_bytes(path, &format!(":{}:{}", stage, file))?;
+    let target = Path::new(path).join(file);
+    std::fs::write(&target, content).map_err(|e| format!("write resolved file failed: {}", e))?;
+    run_git(path, &["add", "--", file])?;
+    Ok(())
+}
+
+#[tauri::command]
+fn resolve_rebase_conflicts(
+    path: String,
+    strategy: String,
+) -> Result<ConflictResolutionResult, String> {
+    let files = git_conflict_files(&path);
+    if files.is_empty() {
+        return Err("No rebase conflicts to resolve".into());
+    }
+    match strategy.as_str() {
+        "ours" | "theirs" => {
+            for file in &files {
+                if strategy == "ours" {
+                    write_stage_to_file(&path, "3", file)?;
+                } else {
+                    write_stage_to_file(&path, "2", file)?;
+                }
+            }
+        }
+        "union" => {
+            for file in &files {
+                resolve_file_with_union(&path, file)?;
+            }
+        }
+        _ => {
+            return Err(format!("Unsupported conflict strategy: {}", strategy));
+        }
+    }
+    run_git(&path, &["add", "-A"])?;
+    let branch = git_branch(&path);
+    let output = Command::new("git")
+        .args(["rebase", "--continue"])
+        .current_dir(&path)
+        .env("GIT_EDITOR", "true")
+        .output()
+        .map_err(|e| format!("git rebase --continue failed: {}", e))?;
+    let head = short_head(&path);
+    if output.status.success() {
+        return Ok(ConflictResolutionResult {
+            resolved: true,
+            strategy: strategy.clone(),
+            files: files.clone(),
+            rebased: true,
+            branch,
+            head,
+            message: format!(
+                "Resolved {} conflicted file(s) with {} and continued rebase",
+                files.len(),
+                strategy.as_str()
+            ),
+        });
+    }
+    let remaining = git_conflict_files(&path);
+    if !remaining.is_empty() {
+        return Ok(ConflictResolutionResult {
+            resolved: true,
+            strategy,
+            files: remaining,
+            rebased: false,
+            branch,
+            head,
+            message: "Conflicts resolved, rebase still in progress".to_string(),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(truncate_error(format!("{}{}", stdout, stderr).trim()))
+}
+
 fn push_sync_snapshot_http(
     snapshot: &db::SyncSnapshot,
     remote_url: &str,
@@ -2320,6 +2462,7 @@ pub fn run() {
             create_remote_pr,
             rebase_branch,
             abort_rebase,
+            resolve_rebase_conflicts,
             build_team_summary,
             send_ai_message,
             stream_ai_message,
@@ -2711,6 +2854,87 @@ mod tests {
         let aborted = abort_rebase(path.clone()).unwrap();
         assert!(aborted.contains("Rebase aborted"));
         assert_eq!(git_branch(&path), "feature");
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn resolve_rebase_conflicts_takes_theirs_and_continues() {
+        let temp = std::env::temp_dir().join(format!(
+            "aiwb-rebase-resolve-theirs-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("shared.txt"), "base\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        run_git(&path, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(temp.join("shared.txt"), "feature\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "feature edit"]).unwrap();
+        run_git(&path, &["checkout", "main"]).unwrap();
+        std::fs::write(temp.join("shared.txt"), "main changed\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "main edit"]).unwrap();
+        run_git(&path, &["checkout", "feature"]).unwrap();
+
+        let conflicted = rebase_branch(path.clone(), "main".to_string()).unwrap();
+        assert!(conflicted.conflict);
+        let err = resolve_rebase_conflicts(path.clone(), "sideways".to_string()).unwrap_err();
+        assert!(err.contains("Unsupported conflict strategy"), "{}", err);
+        let result = resolve_rebase_conflicts(path.clone(), "theirs".to_string()).unwrap();
+        assert!(result.resolved);
+        assert!(result.rebased, "{}", result.message);
+        assert_eq!(result.strategy, "theirs");
+        assert!(result.files.iter().any(|file| file.ends_with("shared.txt")));
+        assert_eq!(
+            std::fs::read_to_string(temp.join("shared.txt")).unwrap(),
+            "main changed\n"
+        );
+        let log = run_git(&path, &["log", "--oneline"]).unwrap();
+        assert!(log.contains("main edit"));
+        assert!(
+            run_git(&path, &["rebase", "--abort"]).is_err(),
+            "rebase should be finished"
+        );
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn resolve_rebase_conflicts_union_merges_both_sides() {
+        let temp = std::env::temp_dir().join(format!(
+            "aiwb-rebase-resolve-union-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("notes.txt"), "# Title\n\nbase line\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        run_git(&path, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(
+            temp.join("notes.txt"),
+            "# Title\n\nbase line\nfeature line\n",
+        )
+        .unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "feature edit"]).unwrap();
+        run_git(&path, &["checkout", "main"]).unwrap();
+        std::fs::write(temp.join("notes.txt"), "# Title\n\nbase line\nmain line\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "main edit"]).unwrap();
+        run_git(&path, &["checkout", "feature"]).unwrap();
+
+        let conflicted = rebase_branch(path.clone(), "main".to_string()).unwrap();
+        assert!(conflicted.conflict);
+        let result = resolve_rebase_conflicts(path.clone(), "union".to_string()).unwrap();
+        assert!(result.resolved);
+        assert!(result.rebased, "{}", result.message);
+        let content = std::fs::read_to_string(temp.join("notes.txt")).unwrap();
+        assert!(content.contains("feature line"), "{}", content);
+        assert!(content.contains("main line"), "{}", content);
+        assert!(!content.contains("<<<<<<<"), "{}", content);
+        assert!(!content.contains(">>>>>>>"), "{}", content);
         std::fs::remove_dir_all(&temp).unwrap();
     }
 

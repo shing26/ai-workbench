@@ -579,6 +579,39 @@ try {
   if (!results.rebaseApply.ok) {
     throw new Error(`Git rebase assertion failed: ${JSON.stringify(results.rebaseApply)}`);
   }
+  results.rebaseResolve = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const buttons = document.querySelectorAll('[data-rebase-branch]');
+    if (buttons.length < 2) {
+      return { ok: false, reason: "second rebase button missing", count: buttons.length };
+    }
+    const card = buttons[1].closest(".project-git-graph");
+    buttons[1].click();
+    let conflicted = false;
+    for (let i = 0; i < 20; i++) {
+      const text = card?.querySelector('[data-rebase-result]')?.textContent ?? "";
+      conflicted = text.includes("Conflicts") && text.includes("docs/conflict.md");
+      if (conflicted) break;
+      await sleep(100);
+    }
+    if (!conflicted) {
+      return { ok: false, reason: "conflict result missing", text: document.body.innerText.slice(0, 300) };
+    }
+    const unionBtn = card?.querySelector('[data-resolve-conflicts="union"]');
+    if (!unionBtn) return { ok: false, reason: "union resolve button missing" };
+    unionBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 20; i++) {
+      const text = card?.querySelector('[data-resolve-result]')?.textContent ?? "";
+      resolved = text.includes("Resolved") && text.includes("continued rebase");
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: conflicted && resolved, conflicted, resolved };
+  })()`);
+  if (!results.rebaseResolve.ok) {
+    throw new Error(`rebase conflict resolution assertion failed: ${JSON.stringify(results.rebaseResolve)}`);
+  }
   results.commitPrDraft = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = [...document.querySelectorAll("main button")].find(
