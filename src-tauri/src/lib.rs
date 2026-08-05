@@ -2632,6 +2632,40 @@ fn reflog_timestamp_ms(line: &str) -> i64 {
         .saturating_mul(1000)
 }
 
+fn reflog_timestamps_ms(path: &str) -> Vec<i64> {
+    let reflog_path = Path::new(path).join(".git").join("logs").join("HEAD");
+    let Ok(content) = fs::read_to_string(&reflog_path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(reflog_timestamp_ms)
+        .filter(|timestamp| *timestamp > 0)
+        .collect()
+}
+
+fn git_change_paths(changes: &[String]) -> Vec<String> {
+    changes
+        .iter()
+        .filter_map(|line| {
+            let raw = line.trim_end();
+            let has_status_prefix = raw.len() >= 3 && raw.as_bytes()[2] == b' ';
+            let path = if has_status_prefix {
+                raw.get(3..)?.trim()
+            } else {
+                raw.trim()
+            };
+            let path = path.split(" -> ").last().unwrap_or(path).trim();
+            if path.is_empty() {
+                None
+            } else {
+                Some(path.to_string())
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_project_git_context(path: String) -> Result<GitContext, String> {
     let mut head = String::from("unknown");
@@ -2735,7 +2769,22 @@ struct GitActivityItem {
     committer: String,
     last_commit_at: i64,
     changed_files: usize,
+    changed_paths: Vec<String>,
     dirty: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitBucket {
+    day_ms: i64,
+    count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitTrend {
+    granularity: String,
+    buckets: Vec<GitCommitBucket>,
 }
 
 #[derive(Serialize)]
@@ -2746,6 +2795,25 @@ struct GitActivityBoard {
     dirty_projects: usize,
     committers: Vec<String>,
     items: Vec<GitActivityItem>,
+    commit_trend: GitCommitTrend,
+}
+
+fn build_commit_trend(timestamps: Vec<i64>) -> GitCommitTrend {
+    let mut counts = std::collections::BTreeMap::<i64, usize>::new();
+    for timestamp in timestamps {
+        let day = (timestamp / 86_400_000).saturating_mul(86_400_000);
+        *counts.entry(day).or_insert(0) += 1;
+    }
+    let buckets = counts
+        .into_iter()
+        .rev()
+        .take(7)
+        .map(|(day_ms, count)| GitCommitBucket { day_ms, count })
+        .collect();
+    GitCommitTrend {
+        granularity: "day".to_string(),
+        buckets,
+    }
 }
 
 fn build_git_activity(
@@ -2759,6 +2827,7 @@ fn build_git_activity(
     let mut seen_committers = std::collections::HashSet::new();
     let mut total_commits = 0usize;
     let mut dirty_projects = 0usize;
+    let mut trend_timestamps = Vec::new();
     let committer_filter = committer
         .map(|filter| filter.trim().to_string())
         .filter(|filter| !filter.is_empty());
@@ -2787,6 +2856,7 @@ fn build_git_activity(
                 continue;
             }
         }
+        trend_timestamps.extend(reflog_timestamps_ms(&path));
         let changed_files = ctx.changes.len();
         let dirty = changed_files > 0;
         if dirty {
@@ -2803,6 +2873,7 @@ fn build_git_activity(
             committer: ctx.committer,
             last_commit_at: ctx.last_commit_at,
             changed_files,
+            changed_paths: git_change_paths(&ctx.changes),
             dirty,
         });
     }
@@ -2814,6 +2885,7 @@ fn build_git_activity(
         dirty_projects,
         committers,
         items,
+        commit_trend: build_commit_trend(trend_timestamps),
     }
 }
 
@@ -3828,6 +3900,25 @@ mod tests {
     }
 
     #[test]
+    fn git_change_paths_strips_status_prefixes() {
+        let changes = vec![
+            " M src/lib/db.ts".to_string(),
+            "?? docs/plan.md".to_string(),
+            "R  src/a.ts -> src/b.ts".to_string(),
+            "A  README.md".to_string(),
+        ];
+        assert_eq!(
+            git_change_paths(&changes),
+            vec![
+                "src/lib/db.ts".to_string(),
+                "docs/plan.md".to_string(),
+                "src/b.ts".to_string(),
+                "README.md".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn git_activity_aggregates_and_sorts_projects() {
         let first = std::env::temp_dir().join(format!("aiwb-git-board-a-{}", uuid::Uuid::new_v4()));
         let second =
@@ -3890,9 +3981,17 @@ mod tests {
         assert_eq!(board.items[0].committer, "Bob");
         assert!(board.items[0].dirty);
         assert_eq!(board.items[0].changed_files, 1);
+        assert_eq!(board.items[0].changed_paths, vec!["notes.md".to_string()]);
         assert_eq!(board.items[1].project_name, "Alpha");
         assert_eq!(board.items[1].committer, "Alice");
         assert!(!board.items[1].dirty);
+        assert_eq!(board.commit_trend.granularity, "day");
+        assert_eq!(board.commit_trend.buckets.len(), 1);
+        assert_eq!(board.commit_trend.buckets[0].count, 2);
+        assert_eq!(
+            board.commit_trend.buckets[0].day_ms,
+            1_720_000_000_000 / 86_400_000 * 86_400_000
+        );
 
         std::fs::remove_dir_all(&first).unwrap();
         std::fs::remove_dir_all(&second).unwrap();

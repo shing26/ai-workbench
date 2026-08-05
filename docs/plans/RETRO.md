@@ -1,5 +1,22 @@
 # Sprint Retrospective
 
+## Sprint 73
+
+### What went well?
+
+- Git activity 从“只看统计数字”升级为“能看清改动、能感知节奏”：`git_change_paths` 剥离 `git status --short` 的 XY 前缀并处理 rename 箭头，dirty 行可 Preview 展开 / 收起实际文件列表。
+- `build_commit_trend` 聚合 reflog 全部时间戳为 UTC 日粒度 `commit_trend`，Git activity 卡片新增最近 7 日趋势条；TS fallback 与 Rust 共用同一预览与聚合语义。
+- 验证覆盖：`cargo test --lib` 81/81，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 的 `gitDirtyPreview` / `gitCommitTrend` 均为 true。
+
+### What went wrong?
+
+- 首次解析 `git status --short` 时先 `trim` 再取第 3 个字符，导致 `" M file"` 丢失首字符；改为 `trim_end` + 检测第 3 字节为空格后剥离前缀，兼容无状态前缀的 fallback 文件名。
+- 趋势桶固定为“有提交的最近 7 个 UTC 日”，过滤后计数随范围 / 提交人变化，验证 lane 只断言 All 模式下的完整桶。
+
+### Action Items
+
+- 下一 Sprint 候选：Git dirty 逐文件 diff 预览、索引队列按 attempts 指数退避、真实 Provider 端到端流式联调。
+
 ## Sprint 72
 
 ### What went well?

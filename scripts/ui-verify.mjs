@@ -662,6 +662,68 @@ try {
   if (!results.gitActivityFilters.ok) {
     throw new Error(`Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`);
   }
+  results.gitDirtyPreview = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (dirty) {
+        const button = dirty.querySelector("[data-git-activity-preview]");
+        if (button) {
+          const projectId = button.getAttribute("data-git-activity-preview");
+          button.click();
+          for (let j = 0; j < 20; j++) {
+            const panel = document.querySelector(
+              '[data-git-activity-preview-files="' + projectId + '"]',
+            );
+            if (panel && panel.textContent.includes("ProjectsView.tsx")) {
+              const filesText = panel.textContent;
+              button.click();
+              for (let k = 0; k < 20; k++) {
+                if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+                  return {
+                    ok: true,
+                    projectId,
+                    filesText,
+                    collapsed: true,
+                  };
+                }
+                await sleep(100);
+              }
+              return { ok: false, reason: "preview did not collapse", filesText };
+            }
+            await sleep(100);
+          }
+          return { ok: false, reason: "preview files missing", projectId };
+        }
+      }
+      await sleep(100);
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitDirtyPreview.ok) {
+    throw new Error(`Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`);
+  }
+  results.gitCommitTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const bars = [...document.querySelectorAll("[data-git-trend-bar]")];
+      if (bars.length >= 7) {
+        const counts = bars.map((bar) => Number(bar.getAttribute("data-git-trend-bar-count") ?? 0));
+        const days = bars.map((bar) => Number(bar.getAttribute("data-git-trend-bar-day") ?? 0));
+        const max = Math.max(...counts);
+        const total = counts.reduce((sum, count) => sum + count, 0);
+        const ok = max > 0 && total > 0 && days.every((day) => day > 0);
+        return { ok, bars: bars.length, max, total, days };
+      }
+      await sleep(100);
+    }
+    return { ok: false, bars: 0 };
+  })()`);
+  if (!results.gitCommitTrend.ok) {
+    throw new Error(`Git commit trend assertion failed: ${JSON.stringify(results.gitCommitTrend)}`);
+  }
   results.rebaseApply = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = document.querySelector('[data-rebase-branch]');

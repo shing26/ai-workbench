@@ -258,7 +258,18 @@ export type GitActivityItem = {
   committer: string;
   lastCommitAt: number;
   changedFiles: number;
+  changedPaths: string[];
   dirty: boolean;
+};
+
+export type GitCommitBucket = {
+  dayMs: number;
+  count: number;
+};
+
+export type GitCommitTrend = {
+  granularity: "day";
+  buckets: GitCommitBucket[];
 };
 
 export type GitActivityBoard = {
@@ -267,6 +278,7 @@ export type GitActivityBoard = {
   dirtyProjects: number;
   committers: string[];
   items: GitActivityItem[];
+  commitTrend: GitCommitTrend;
 };
 
 export type CommitPrDraft = {
@@ -3038,12 +3050,20 @@ export async function getGitActivity(options?: {
   }
   const projects = readLocal().projects.filter((project) => project.path);
   const now = Date.now();
-  const samples: Array<[string, number, string, number, string]> = [
-    ["develop", 21, "d676ced feat(sprint-20): message version graph with parent lineage", 2, "Alice"],
-    ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0, "Bob"],
+  const samples: Array<[string, number, string, number, string, string[], number[]]> = [
+    [
+      "develop",
+      21,
+      "d676ced feat(sprint-20): message version graph with parent lineage",
+      2,
+      "Alice",
+      ["docs/plans/sprint-21-project-git-graph.md", "src/views/ProjectsView.tsx"],
+      [6, 5, 3, 4, 2, 1, 2],
+    ],
+    ["main", 9, "9f0ab12 docs(plans): sprint 5 retro", 0, "Bob", [], [2, 1, 1, 0, 0, 0, 0]],
   ];
   const items = projects.map((project, index) => {
-    const [branch, commitCount, latestCommit, changedFiles, committer] =
+    const [branch, commitCount, latestCommit, changedFiles, committer, changedPaths] =
       samples[index % samples.length];
     const hoursAgo = index % samples.length === 1 ? 26 : index + 1;
     return {
@@ -3055,6 +3075,7 @@ export async function getGitActivity(options?: {
       latestCommit,
       lastCommitAt: now - hoursAgo * 3_600_000,
       changedFiles,
+      changedPaths,
       dirty: changedFiles > 0,
       committer,
     };
@@ -3073,12 +3094,28 @@ export async function getGitActivity(options?: {
         (!committerFilter || item.committer.toLowerCase() === committerFilter),
     )
     .sort((a, b) => b.lastCommitAt - a.lastCommitAt);
+  const dayMs = (offset: number) => {
+    const day = new Date();
+    day.setUTCHours(0, 0, 0, 0);
+    return day.getTime() - offset * 86_400_000;
+  };
+  const trendCounts = Array.from({ length: 7 }, (_, i) =>
+    filtered.reduce(
+      (sum, item) =>
+        sum + (samples[Math.max(0, items.indexOf(item)) % samples.length][6]?.[i] ?? 0),
+      0,
+    ),
+  );
   return {
     totalProjects: filtered.length,
     totalCommits: filtered.reduce((sum, item) => sum + item.commitCount, 0),
     dirtyProjects: filtered.filter((item) => item.dirty).length,
     committers,
     items: filtered,
+    commitTrend: {
+      granularity: "day",
+      buckets: trendCounts.map((count, i) => ({ dayMs: dayMs(i), count })),
+    },
   };
 }
 

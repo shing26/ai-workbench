@@ -331,3 +331,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `DocHealthRunRecord` 与 `getDocHealthRunHistory` / `appendDocHealthRun`，历史持久化到 `ai-workbench:doc-health-history:v1`，最多保留 50 条；新增 `getDocHealthAlertDismissedAt` / `setDocHealthAlertDismissedAt`，Dismiss 时间写入 `ai-workbench:doc-health-alert-dismissed:v1`。
 - `runDocHealthAutoInspect` 与手动 Clean 均追加 `{ ranAt, removed, reindexed, failed, triggeredBy }` 运行记录；最近一次自动巡检发现问题时，Knowledge Document status 展示提醒横幅，Dismiss 后持久化，刷新不重现。
 - Document status 新增最近 5 次运行历史；`verify:ui` / `verify:preview` 新增 `docHealthHistory` / `docHealthDismissPersist` lane，断言 removed=1 / reindexed=1 / triggeredBy=auto 与 Dismiss 持久化。
+
+## Sprint 73：Git 活动看板 dirty 文件预览与提交趋势
+
+- `git_change_paths` 剥离 `git status --short` 的 XY 状态前缀并处理 rename 箭头，`GitActivityItem` 新增 `changed_paths`；Projects 的 dirty 行支持 Preview 展开 / 收起实际文件列表。
+- `build_commit_trend` 聚合 reflog 全部时间戳为 UTC 日粒度 `commit_trend`，最多保留最近 7 个有提交的日桶；Git activity 卡片新增 7 日趋势条。
+- TS fallback 镜像同一预览与趋势语义；`verify:ui` / `verify:preview` 新增 `gitDirtyPreview` / `gitCommitTrend` lane。
