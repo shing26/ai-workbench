@@ -4,8 +4,10 @@ import * as db from "../lib/db";
 import {
   addCustomQuickPrompt,
   deleteCustomQuickPrompt,
+  getQuickPromptUsage,
   listCustomQuickPrompts,
-  loadQuickPrompts,
+  loadQuickPromptsByUsage,
+  recordQuickPromptUsage,
   type CustomQuickPrompt,
   type QuickPrompt,
 } from "../lib/quickPrompts";
@@ -50,7 +52,10 @@ export default function AIStudioView() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const [prompts, setPrompts] = useState<QuickPrompt[]>(() => loadQuickPrompts());
+  const [prompts, setPrompts] = useState<QuickPrompt[]>(() => loadQuickPromptsByUsage());
+  const [usageCounts, setUsageCounts] = useState<Record<string, number>>(() =>
+    getQuickPromptUsage(),
+  );
   const [customPrompts, setCustomPrompts] = useState<CustomQuickPrompt[]>(() =>
     listCustomQuickPrompts(),
   );
@@ -75,7 +80,8 @@ export default function AIStudioView() {
   const selectedDepartment = departments.find((d) => d.id === teamDeptId) ?? null;
 
   const refreshQuickPrompts = () => {
-    setPrompts(loadQuickPrompts());
+    setPrompts(loadQuickPromptsByUsage());
+    setUsageCounts(getQuickPromptUsage());
     setCustomPrompts(listCustomQuickPrompts());
   };
 
@@ -1180,7 +1186,11 @@ export default function AIStudioView() {
               data-quick-prompt={prompt.id}
               data-quick-prompt-label={prompt.label}
               data-quick-prompt-category={prompt.category}
+              data-quick-prompt-usage={usageCounts[prompt.id] ?? 0}
               onClick={() => {
+                recordQuickPromptUsage(prompt.id);
+                setUsageCounts(getQuickPromptUsage());
+                setPrompts(loadQuickPromptsByUsage());
                 setInput(prompt.text);
                 composerRef.current?.focus();
               }}
@@ -1188,6 +1198,11 @@ export default function AIStudioView() {
             >
               <Sparkles size={10} className="shrink-0" />
               {prompt.label}
+              {(usageCounts[prompt.id] ?? 0) > 0 && (
+                <span className="rounded bg-white/10 px-1 text-[8px] leading-3 text-slate-500">
+                  {usageCounts[prompt.id]}
+                </span>
+              )}
             </button>
           ))}
           <button

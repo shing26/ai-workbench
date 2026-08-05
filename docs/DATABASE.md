@@ -542,3 +542,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 78：Git dirty 逐文件 diff 预览
 
 无表结构变更。`get_git_file_diff` 复用 `projects` 表的 path 字段，diff 内容来自工作区磁盘与 Git 索引的运行时读取，不新增持久化字段；浏览器 fallback 由 `db.ts` 直接生成 mock diff，同样不落库。
+
+## Sprint 79：Quick Prompt 按使用频次排序
+
+无表结构变更。Quick Prompt 使用次数保存在前端 `ai-workbench:quick-prompt-usage:v1`，以 `prompt id -> count` 映射存储，不写入 SQLite；排序完全由前端运行时计算。
