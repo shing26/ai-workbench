@@ -518,3 +518,7 @@ ALTER TABLE vault_index_queue ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 ## Sprint 72：自动巡检运行历史与通知提醒
 
 无表结构变更。运行历史与提醒 Dismiss 状态保存在前端 `ai-workbench:doc-health-history:v1`（最多 50 条）与 `ai-workbench:doc-health-alert-dismissed:v1`；巡检仍复用 `cleanup_knowledge_files` 命令。
+
+## Sprint 73：Git 活动看板 dirty 文件预览与提交趋势
+
+无表结构变更。`changed_paths` 与 `commit_trend` 均为运行时计算字段：前者来自 `git status --short` 输出，后者来自 `.git/logs/HEAD` 全部行的时间戳，不新增持久化字段。

@@ -33,7 +33,11 @@ export default function ProjectsView() {
   const [gitActivity, setGitActivity] = useState<db.GitActivityBoard | null>(null);
   const [gitRange, setGitRange] = useState("all");
   const [gitCommitter, setGitCommitter] = useState("");
+  const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join("|");
+  const commitTrendMax = gitActivity
+    ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
+    : 1;
 
   useEffect(() => {
     let disposed = false;
@@ -269,6 +273,27 @@ export default function ProjectsView() {
                 tone={gitActivity.dirtyProjects > 0 ? "neutral" : "green"}
               />
             </div>
+            <div
+              data-git-activity-trend
+              className="grid grid-cols-7 items-end gap-1.5 rounded-lg bg-white/[0.02] p-2"
+            >
+              {gitActivity.commitTrend.buckets.map((bucket) => (
+                <div key={bucket.dayMs} className="flex min-w-0 flex-col items-center gap-1">
+                  <span
+                    data-git-trend-bar
+                    data-git-trend-bar-count={bucket.count}
+                    data-git-trend-bar-day={bucket.dayMs}
+                    className="block w-full rounded-sm bg-blue-500/30"
+                    style={{
+                      height: `${Math.max(3, Math.round((bucket.count / commitTrendMax) * 28))}px`,
+                    }}
+                  />
+                  <span className="truncate text-[8px] text-slate-600">
+                    {new Date(bucket.dayMs).toLocaleDateString("en", { weekday: "short" })}
+                  </span>
+                </div>
+              ))}
+            </div>
             {gitActivity.items.map((item) => (
               <div
                 key={item.projectId}
@@ -279,30 +304,61 @@ export default function ProjectsView() {
                 data-git-activity-latest={item.latestCommit}
                 data-git-activity-committer={item.committer}
                 data-git-activity-dirty={item.dirty}
-                className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+                className="rounded-lg bg-white/[0.03]"
               >
-                <span className="text-[10px] font-medium text-slate-300">
-                  {item.projectName}
-                </span>
-                <ModelBadge label={item.branch} tone="blue" />
-                <span className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400">
-                  {item.committer || "unknown"}
-                </span>
-                <span className="text-[9px] text-slate-500">
-                  {item.commitCount} commits
-                </span>
-                <span
-                  className={`rounded px-1.5 py-0.5 text-[8px] ${
-                    item.dirty
-                      ? "bg-amber-500/10 text-amber-300"
-                      : "bg-emerald-500/10 text-emerald-300"
-                  }`}
-                >
-                  {item.dirty ? "dirty" : "clean"}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
-                  {item.latestCommit}
-                </span>
+                <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                  <span className="text-[10px] font-medium text-slate-300">
+                    {item.projectName}
+                  </span>
+                  <ModelBadge label={item.branch} tone="blue" />
+                  <span className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400">
+                    {item.committer || "unknown"}
+                  </span>
+                  <span className="text-[9px] text-slate-500">
+                    {item.commitCount} commits
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[8px] ${
+                      item.dirty
+                        ? "bg-amber-500/10 text-amber-300"
+                        : "bg-emerald-500/10 text-emerald-300"
+                    }`}
+                  >
+                    {item.dirty ? "dirty" : "clean"}
+                  </span>
+                  {item.dirty && (
+                    <button
+                      type="button"
+                      data-git-activity-preview={item.projectId}
+                      onClick={() =>
+                        setExpandedPreview(
+                          expandedPreview === item.projectId ? null : item.projectId,
+                        )
+                      }
+                      className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
+                    >
+                      {expandedPreview === item.projectId ? "Hide" : "Preview"}
+                    </button>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                    {item.latestCommit}
+                  </span>
+                </div>
+                {expandedPreview === item.projectId && item.changedPaths.length > 0 && (
+                  <div
+                    data-git-activity-preview-files={item.projectId}
+                    className="mx-2 mb-2 flex flex-wrap gap-1 rounded-lg bg-black/20 p-2"
+                  >
+                    {item.changedPaths.map((file) => (
+                      <span
+                        key={file}
+                        className="max-w-full truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500"
+                      >
+                        {file}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
