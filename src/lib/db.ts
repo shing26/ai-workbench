@@ -1232,3 +1232,15 @@ export async function generateCommitPrDraft(path: string, projectName: string): 
     .join("\n")}\n\n## DoD\n\n- [ ] Code compiles and tests pass.\n- [ ] UI follows design tokens and stays stable.\n- [ ] Database changes include migrations if needed.\n- [ ] PR description matches the actual diff.\n`;
   return { branch: ctx.branch, commitMessage, prTitle, prBody, changes };
 }
+
+export async function buildTeamSummary(contents: string[]): Promise<string> {
+  if (isTauri()) return invoke<string>("build_team_summary", { contents });
+  const lines = contents.map((content) => {
+    const line = content
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith("**") && !l.startsWith("-") && !l.startsWith("["));
+    return (line || "No output").slice(0, 120);
+  });
+  return lines.length ? lines.join("\n") : "No agent output collected.";
+}

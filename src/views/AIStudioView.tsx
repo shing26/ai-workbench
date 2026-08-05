@@ -27,6 +27,7 @@ export default function AIStudioView() {
   const [teamDeptId, setTeamDeptId] = useState("");
   const teamRunIdsRef = useRef<string[]>([]);
   const teamPendingRef = useRef(0);
+  const teamResultsRef = useRef(new Map<string, string>());
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -89,6 +90,9 @@ export default function AIStudioView() {
           }
           return next;
         });
+        if (run.label) {
+          teamResultsRef.current.set(chunk.id, run.content);
+        }
         runsRef.current.delete(chunk.id);
         if (!chunk.error && sessionIdRef.current && run.content) {
           void db.saveChatMessage(sessionIdRef.current, "assistant", run.content).then((saved) => {
@@ -484,6 +488,8 @@ export default function AIStudioView() {
       });
     });
     await Promise.all(agentRuns.map((promise) => promise.catch(() => {})));
+    const teamOutputs = teamRunIdsRef.current.map((id) => teamResultsRef.current.get(id) ?? "");
+    const summaryText = await db.buildTeamSummary(teamOutputs);
     const sections: InspectorSection[] = [
       { label: "Department", value: selectedDepartment?.name ?? "" },
       { label: "Agents", value: selectedAgents.map((a) => a.name).join(", ") },
@@ -491,6 +497,14 @@ export default function AIStudioView() {
       { label: "Model", value: selectedAgents.map((a) => a.model).join(", ") },
       { label: "Status", value: "parallel streaming" },
     ];
+    if (summaryText.trim()) {
+      const summaryContent = `Team Summary\n${summaryText}`;
+      setMessages((prev) => [...prev, { role: "assistant", content: summaryContent }]);
+      if (session) {
+        await db.saveChatMessage(session.id, "assistant", summaryContent);
+      }
+      sections.push({ label: "Summary", value: summaryText.replace(/\s+/g, " ").slice(0, 140) });
+    }
     if (hits.length > 0) {
       sections.push({ label: "RAG context", value: `${hits.length} local thought(s) injected` });
       hits.slice(0, 5).forEach((hit, index) => {
@@ -500,7 +514,10 @@ export default function AIStudioView() {
         });
       });
     }
-    openInspector(hits.length > 0 ? "Team Trace + RAG" : "Team Trace", sections);
+    const traceTitle = ["Team Trace", summaryText.trim() ? "Summary" : "", hits.length > 0 ? "RAG" : ""]
+      .filter(Boolean)
+      .join(" + ");
+    openInspector(traceTitle, sections);
   };
 
   const send = async () => {
@@ -880,7 +897,9 @@ export default function AIStudioView() {
                 className={`message-in max-w-[78%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed ${
                   m.role === "user"
                     ? "bg-emerald-500/15 text-emerald-100"
-                    : "border border-white/10 bg-white/[0.04] text-slate-300"
+                    : m.content.startsWith("Team Summary")
+                      ? "team-summary border border-violet-500/25 bg-violet-500/[0.08] text-violet-100"
+                      : "border border-white/10 bg-white/[0.04] text-slate-300"
                 }`}
               >
                 {m.content === "__stream__" ? "" : m.content}

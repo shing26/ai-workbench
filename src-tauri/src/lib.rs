@@ -1528,6 +1528,31 @@ fn generate_commit_pr_draft(path: String, project_name: String) -> Result<Commit
     })
 }
 
+fn build_team_summary_text(contents: Vec<String>) -> String {
+    let mut lines = Vec::new();
+    for content in contents {
+        let line = content
+            .lines()
+            .map(str::trim)
+            .find(|l| {
+                !l.is_empty() && !l.starts_with("**") && !l.starts_with('-') && !l.starts_with('[')
+            })
+            .unwrap_or("No output");
+        let truncated: String = line.chars().take(120).collect();
+        lines.push(truncated);
+    }
+    if lines.is_empty() {
+        "No agent output collected.".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+#[tauri::command]
+fn build_team_summary(contents: Vec<String>) -> Result<String, String> {
+    Ok(build_team_summary_text(contents))
+}
+
 #[tauri::command]
 async fn send_ai_message(
     state: State<'_, db::Db>,
@@ -1651,6 +1676,7 @@ pub fn run() {
             get_knowledge_index_status,
             get_project_git_context,
             generate_commit_pr_draft,
+            build_team_summary,
             send_ai_message,
             stream_ai_message,
             cancel_ai_stream,
@@ -1745,6 +1771,19 @@ mod tests {
         assert_eq!(draft.branch, "feature/sprint-25");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn team_summary_extracts_agent_output_lines() {
+        let summary = build_team_summary_text(vec![
+            "**UI Designer**\n\nStreaming fallback: first agent output.\n- bullet".to_string(),
+            "**Frontend Developer**\n\nStreaming fallback: second agent output.".to_string(),
+        ]);
+        assert_eq!(
+            summary,
+            "Streaming fallback: first agent output.\nStreaming fallback: second agent output."
+        );
+        assert!(build_team_summary_text(Vec::new()).contains("No agent output"));
     }
 
     #[test]
