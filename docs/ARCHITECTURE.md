@@ -442,3 +442,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增 `GitFileVersions` 与 `getGitFileVersions`；浏览器 fallback 从 `getGitFileDiff` mock 反解 old / new，保证 UI 验证不依赖真实 Git 仓库。
 - ProjectsView diff 面板改为行式渲染（`data-git-diff-line` / `data-git-diff-line-type`），新增 `data-git-side-by-side-toggle` 与 HEAD / Working tree 双栏（`data-git-file-version=old|new`）。
 - `verify:ui` / `verify:preview` 新增 `gitInlineDiffSideBySide` lane，断言行类型集合、高亮 span、双栏行号与往返切换。
+
+## Sprint 90：Webhook 签名与自动重试
+
+- `webhook_signature` 基于 sha2 实现 HMAC-SHA256（密钥块 + inner/outer pad），输出 `sha256=<hex>`；`deliver_webhook_http` 增加 secret / retries，非 2xx 或网络错误按 `50ms << attempt` 指数退避，结果新增 `attempts` / `signed`。
+- `webhook_rules` 新增 `secret` / `retries` 列（新库走 SCHEMA，旧库走 `migrate_webhook_secret_retries`）；`WebhookRuleInput` 收敛 db 层参数。
+- `deliver_webhook` 命令接受 secret / retries；`create_webhook_rule` 命令收敛为 `WebhookRuleRequest` 结构体，调度器与 `run_webhook_rule` 共用投递函数。
+- `db.ts` 为 `deliverWebhook` / `createWebhookRule` 增加 secret / retries，返回 `attempts` / `signed`；浏览器 fallback 确定性模拟 `retries + 1` 次。
+- SystemView Webhook 卡片新增 `data-webhook-secret` / `data-webhook-retries` / `data-webhook-attempts` / `data-webhook-signed` / `data-webhook-rule-retries` / `data-webhook-rule-secret`。
+- `verify:ui` / `verify:preview` 新增 `webhookSignRetry` lane；Rust 单测覆盖 HMAC 已知答案、签名头、重试链路与迁移。

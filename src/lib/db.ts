@@ -384,6 +384,8 @@ export type WebhookDeliveryResult = {
   ok: boolean;
   status: number;
   durationMs: number;
+  attempts: number;
+  signed: boolean;
   message: string;
 };
 
@@ -394,6 +396,8 @@ export type WebhookRule = {
   payload: string;
   method: string;
   token: string;
+  secret: string;
+  retries: number;
   intervalSeconds: number;
   enabled: boolean;
   lastRunAt: number;
@@ -3597,6 +3601,8 @@ export async function deliverWebhook(
   payload: string,
   method?: string,
   token?: string,
+  secret?: string,
+  retries = 1,
 ): Promise<WebhookDeliveryResult> {
   if (isTauri()) {
     return invoke<WebhookDeliveryResult>("deliver_webhook", {
@@ -3604,13 +3610,17 @@ export async function deliverWebhook(
       payload: payload.trim() ? payload.trim() : "{}",
       method: method?.trim() ? method.trim().toUpperCase() : null,
       token: token?.trim() ? token.trim() : null,
+      secret: secret?.trim() ? secret.trim() : null,
+      retries,
     });
   }
   return {
     ok: true,
     status: 200,
     durationMs: 12,
-    message: "HTTP 200 delivered",
+    attempts: Math.max(1, retries + 1),
+    signed: !!secret?.trim(),
+    message: `HTTP 200 delivered (${Math.max(1, retries + 1)} attempt(s))`,
   };
 }
 
@@ -3639,15 +3649,21 @@ export async function createWebhookRule(
   method?: string,
   token?: string,
   intervalSeconds = 60,
+  secret?: string,
+  retries = 1,
 ): Promise<WebhookRule> {
   if (isTauri()) {
     return invoke<WebhookRule>("create_webhook_rule", {
-      name,
-      url,
-      payload,
-      method: method?.trim() ? method.trim().toUpperCase() : null,
-      token: token?.trim() ? token.trim() : null,
-      intervalSeconds: Math.max(5, intervalSeconds),
+      request: {
+        name,
+        url,
+        payload,
+        method: method?.trim() ? method.trim().toUpperCase() : null,
+        token: token?.trim() ? token.trim() : null,
+        secret: secret?.trim() ? secret.trim() : null,
+        retries,
+        intervalSeconds: Math.max(5, intervalSeconds),
+      },
     });
   }
   const now = Date.now();
@@ -3658,6 +3674,8 @@ export async function createWebhookRule(
     payload: payload.trim() ? payload.trim() : "{}",
     method: method?.trim().toUpperCase() || "POST",
     token: token?.trim() || "",
+    secret: secret?.trim() || "",
+    retries: Math.max(0, retries),
     intervalSeconds: Math.max(5, intervalSeconds),
     enabled: true,
     lastRunAt: 0,
@@ -3704,6 +3722,8 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
     ok: true,
     status: 200,
     durationMs: 12,
+    attempts: Math.max(1, rule.retries + 1),
+    signed: !!rule.secret,
     message: "HTTP 200 delivered",
   };
   rule.lastRunAt = Date.now();
