@@ -1365,6 +1365,11 @@ pub fn upsert_knowledge_file(
     Ok(())
 }
 
+pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute("DELETE FROM knowledge_files WHERE path = ?1", params![path])?;
+    Ok(())
+}
+
 pub fn knowledge_index_status(conn: &Connection) -> Result<KnowledgeIndexStatus> {
     let files: i64 =
         conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;

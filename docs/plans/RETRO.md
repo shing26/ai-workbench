@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 28
+
+### What went well?
+
+- Vault 自动监听闭环：`notify` 递归监听 + 增量 upsert/delete，Knowledge 从“手动全量扫描”升级为“改文件即入 RAG”。
+- `stop_vault_watch` 保留已索引文件，停听不停用；`get_vault_watch_status` 让前端可恢复 watch 状态。
+- 验证覆盖：`cargo test --lib` 23/23，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 watch 开关、状态 badge 与文件数 2 → 3 断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 首轮 watcher 单测失败，原因是 watcher 实例未移入线程，事件源被提前 drop；改为在线程内持有 `_keepalive` 后通过。
+- 首轮测试未先做初始全量索引，导致“新增后文件数应为 2”的预期与真实基线不符；补 `index_vault_files` 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、自动执行 commit / 创建远端 PR。
+- 后续改动 Vault 索引或监听命令时，保留新增/删除增量同步单测与 watch UI 断言。
+
 ## Sprint 27
 
 ### What went well?

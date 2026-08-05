@@ -209,3 +209,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_prompt_versions_agent ON agent_prompt_versi
 ```
 
 更新 `agents.system_prompt` 时自动保存旧 Prompt 为版本；恢复版本前也会把当前 Prompt 再留档。命令：`list_agent_prompt_versions` / `restore_agent_prompt`。
+
+## Sprint 28：Vault 自动文件监听同步
+
+`knowledge_files` 不再只依赖手动全量扫描。`start_vault_watch(vault_path)` 先全量索引一次，再用 `notify` 递归监听目录；新增/修改 `.md` 自动 `upsert_knowledge_file`，删除自动清理，每次变更通过 `vault-watch-update` 事件推送最新状态。
+
+新增命令：`start_vault_watch` / `stop_vault_watch` / `get_vault_watch_status`。`stop_vault_watch` 停止监听线程但保留已索引文件，RAG 搜索继续可用。

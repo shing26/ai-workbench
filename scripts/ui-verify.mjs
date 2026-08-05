@@ -750,6 +750,36 @@ try {
     throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
   }
   results.vaultIndex = vaultIndex;
+  const vaultWatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const filesBefore = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+    const watchBtn = document.querySelector('[data-vault-watch]');
+    if (!watchBtn) return { ok: false, reason: "no vault watch button" };
+    watchBtn.click();
+    await sleep(350);
+    const statusOn =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "on";
+    const watchingText = document.body.innerText.includes("watching");
+    const stopText = document.querySelector('[data-vault-watch]')?.textContent.includes("Stop watch") ?? false;
+    const filesAfter = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(250);
+    const statusOff =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "off";
+    return {
+      ok: statusOn && watchingText && stopText && statusOff && filesAfter > filesBefore,
+      statusOn,
+      watchingText,
+      stopText,
+      statusOff,
+      filesBefore,
+      filesAfter,
+    };
+  })()`);
+  if (!vaultWatch.ok) {
+    throw new Error(`Vault watch assertion failed: ${JSON.stringify(vaultWatch)}`);
+  }
+  results.vaultWatch = vaultWatch;
   if (!selectedMarkdownThought) {
     throw new Error("markdown thought button missing");
   }
