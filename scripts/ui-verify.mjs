@@ -841,6 +841,11 @@ try {
     setter.call(input, "C:/vault");
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 80));
+    const concurrencyInput = document.querySelector('input[aria-label="Index concurrency"]');
+    if (!concurrencyInput) return { ok: false, reason: "no concurrency input" };
+    setter.call(concurrencyInput, "2");
+    concurrencyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
     const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
     if (!indexBtn) return { ok: false, reason: "no index button" };
     indexBtn.click();
@@ -857,9 +862,19 @@ try {
     await new Promise((r) => setTimeout(r, 400));
     const fileResultVisible =
       document.body.innerText.includes("Obsidian Roadmap") || document.body.innerText.includes("Obsidian");
-    return { ok: true, filesVisible, fileResultVisible };
+    return {
+      ok: true,
+      filesVisible,
+      fileResultVisible,
+      concurrencyVisible: concurrencyInput.getAttribute("data-index-concurrency") === "2",
+    };
   })()`);
-  if (!vaultIndex.ok || !vaultIndex.filesVisible || !vaultIndex.fileResultVisible) {
+  if (
+    !vaultIndex.ok ||
+    !vaultIndex.filesVisible ||
+    !vaultIndex.fileResultVisible ||
+    !vaultIndex.concurrencyVisible
+  ) {
     throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
   }
   results.vaultIndex = vaultIndex;
