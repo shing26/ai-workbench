@@ -519,6 +519,39 @@ try {
     throw new Error(`project git graph assertion failed: ${JSON.stringify(gitGraph)}`);
   }
   results.gitGraph = gitGraph;
+  results.commitPrDraft = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = [...document.querySelectorAll("main button")].find(
+      (b) => b.getAttribute("aria-label") === "Generate commit PR draft",
+    );
+    if (!btn) return { ok: false, reason: "no draft button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector(".commit-pr-draft")) break;
+      await sleep(100);
+    }
+    const panel = document.querySelector(".commit-pr-draft");
+    if (!panel) return { ok: false, reason: "no draft panel" };
+    const text = panel.innerText;
+    return {
+      ok: true,
+      conventional: text
+        .split("\\n")
+        .some((line) => /^(feat|fix|docs|test|chore)\\([^)]+\\): /.test(line.trim())),
+      hasDoD: text.includes("DoD") && text.includes("- [ ]"),
+      hasChanges: text.includes("Changes") && text.includes("- docs/plans"),
+      hasSummary: text.includes("AI Workbench"),
+    };
+  })()`);
+  if (
+    !results.commitPrDraft.ok ||
+    !results.commitPrDraft.conventional ||
+    !results.commitPrDraft.hasDoD ||
+    !results.commitPrDraft.hasChanges ||
+    !results.commitPrDraft.hasSummary
+  ) {
+    throw new Error(`Commit PR draft assertion failed: ${JSON.stringify(results.commitPrDraft)}`);
+  }
   const widthBefore = await evaluate(`document.querySelector('main').getBoundingClientRect().width`);
   const inspectorOpened = await evaluate(`(() => {
     const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");

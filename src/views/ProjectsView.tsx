@@ -1,4 +1,4 @@
-import { FolderKanban, GitBranch, Plus } from "lucide-react";
+import { Copy, FolderKanban, GitBranch, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as db from "../lib/db";
 import { useWorkbenchStore } from "../stores/workbenchStore";
@@ -16,6 +16,7 @@ export default function ProjectsView() {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
+  const [drafts, setDrafts] = useState<Record<string, db.CommitPrDraft>>({});
 
   useEffect(() => {
     let disposed = false;
@@ -45,6 +46,11 @@ export default function ProjectsView() {
       { label: "HEAD", value: ctx.head },
       { label: "Modified files", value: ctx.changes.join("\n") || "none" },
     ]);
+  };
+
+  const generateDraft = async (project: db.Project) => {
+    const draft = await db.generateCommitPrDraft(project.path ?? "", project.name);
+    setDrafts((prev) => ({ ...prev, [project.id]: draft }));
   };
 
   return (
@@ -116,13 +122,57 @@ export default function ProjectsView() {
               </div>
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => void aiCoding(p)}
-            className="flex h-8 items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/20"
-          >
-            AI Coding
-          </button>
+          {drafts[p.id] && (
+            <div className="commit-pr-draft mb-3 rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-2.5">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-medium text-violet-300">Commit / PR draft</span>
+                <span className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
+                  {drafts[p.id].branch}
+                </span>
+              </div>
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-2 text-[10px] leading-relaxed text-emerald-300/90">
+                {drafts[p.id].commitMessage}
+              </pre>
+              <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-2 text-[10px] leading-relaxed text-slate-400">
+                {drafts[p.id].prBody}
+              </pre>
+              <div className="mt-1.5 flex gap-1.5">
+                <button
+                  type="button"
+                  aria-label="Copy commit message"
+                  onClick={() => void navigator.clipboard?.writeText(drafts[p.id].commitMessage)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-violet-500/15 px-1.5 text-[9px] text-violet-300 hover:bg-violet-500/25"
+                >
+                  <Copy size={9} /> Copy commit
+                </button>
+                <button
+                  type="button"
+                  aria-label="Copy PR body"
+                  onClick={() => void navigator.clipboard?.writeText(drafts[p.id].prBody)}
+                  className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-400 hover:text-slate-200"
+                >
+                  <Copy size={9} /> Copy PR
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void aiCoding(p)}
+              className="flex h-8 items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/20"
+            >
+              AI Coding
+            </button>
+            <button
+              type="button"
+              aria-label="Generate commit PR draft"
+              onClick={() => void generateDraft(p)}
+              className="flex h-8 items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 text-[11px] text-violet-300 hover:bg-violet-500/20"
+            >
+              Commit/PR draft
+            </button>
+          </div>
         </BentoCard>
       ))}
     </div>
