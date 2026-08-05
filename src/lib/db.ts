@@ -1296,6 +1296,19 @@ export async function resolveSyncConflict(
   return `Resolved ${conflict.kind} conflict ${conflict.id} with ${choice}`;
 }
 
+export async function resolveSyncConflicts(
+  conflicts: SyncConflictItem[],
+  choice: "local" | "remote",
+): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>("resolve_sync_conflicts", { conflicts, choice });
+  }
+  for (const conflict of conflicts) {
+    await resolveSyncConflict(conflict, choice);
+  }
+  return conflicts.length;
+}
+
 export async function listSyncConflicts(
   status: "unresolved" | "resolved" | "all" = "unresolved",
 ): Promise<SyncConflictRecord[]> {

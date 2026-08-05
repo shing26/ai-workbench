@@ -308,3 +308,11 @@ CREATE TABLE IF NOT EXISTS vault_watch_config (
 - `set_vault_watch_config` 以单行 upsert 保存 path、ignore_patterns（换行分隔）、enabled 与 updated_at；`get_vault_watch_config` 在无记录时返回空配置。
 - `start_vault_watch_ex` 成功后写入 enabled=true；`stop_vault_watch` 保留 path/ignore 并写入 enabled=false。
 - Tauri 启动时读取配置，若 enabled 且路径存在则自动重启 watch；浏览器 fallback 用 `ai-workbench:vault-watch:v1` 保存同一配置。
+
+## Sprint 43：同步冲突批量仲裁
+
+新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。
+
+- Tauri 命令 `resolve_sync_conflicts(conflicts, choice)` 透传冲突明细数组与选择，返回 `Result<usize, String>`。
+- 浏览器 fallback 逐条调用 `resolveSyncConflict`，写入 `ai-workbench:sync-conflicts:v1` 的 resolved_choice / resolved_at，与 Rust 语义一致。
+- 表结构与数据迁移不变；批量仲裁复用 Sprint 40 的持久化冲突记录与历史。

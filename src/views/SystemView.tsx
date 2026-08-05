@@ -192,6 +192,20 @@ export default function SystemView() {
     }
   };
 
+  const resolveAllConflicts = async (choice: "local" | "remote") => {
+    if (syncConflicts.length === 0) return;
+    try {
+      const count = await db.resolveSyncConflicts(syncConflicts, choice);
+      await refreshSystem();
+      await loadConflicts();
+      setSyncError(false);
+      setSyncMessage(`Resolved ${count} conflict(s) with ${choice}`);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const toggleResolvedHistory = async () => {
     if (showResolved) {
       setShowResolved(false);
@@ -468,6 +482,26 @@ export default function SystemView() {
         </div>
         {syncConflicts.length > 0 && !showResolved && (
           <div data-sync-resolve-list className="mt-3 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                data-batch-resolve="local"
+                aria-label="Resolve all conflicts keeping local"
+                onClick={() => void resolveAllConflicts("local")}
+                className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-2 text-[9px] accent-text-strong accent-hover-bg-25"
+              >
+                Keep all local
+              </button>
+              <button
+                type="button"
+                data-batch-resolve="remote"
+                aria-label="Resolve all conflicts keeping remote"
+                onClick={() => void resolveAllConflicts("remote")}
+                className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-400 hover:bg-emerald-500/25"
+              >
+                Keep all remote
+              </button>
+            </div>
             {syncConflicts.map((conflict) => (
               <div
                 key={`${conflict.kind}:${conflict.id}`}

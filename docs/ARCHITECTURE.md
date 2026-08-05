@@ -93,6 +93,8 @@ Sprint 41 新增命令：`get_vault_watch_config` / `set_vault_watch_config`；V
 
 Sprint 42 扩展 `index_vault_ex`：新增 `concurrency` 参数（1~16 自动 clamp），Vault Index 卡片提供并发数输入，默认 4 保持兼容。
 
+Sprint 43 新增命令：`resolve_sync_conflicts`；`resolve_conflicts` 用单事务批量执行逐条仲裁，System Sync card 提供 Keep all local / Keep all remote 一键裁决。
+
 ## Knowledge RAG
 
 - Rust 后台对 `thoughts` 建立本地 BM25 索引：按词项切分、统计 IDF 与文档长度归一化，不依赖外部 Embedding 模型。

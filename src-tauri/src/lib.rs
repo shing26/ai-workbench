@@ -2511,6 +2511,16 @@ fn resolve_sync_conflict(
 }
 
 #[tauri::command]
+fn resolve_sync_conflicts(
+    state: State<'_, db::Db>,
+    conflicts: Vec<db::SyncConflictItem>,
+    choice: String,
+) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::resolve_conflicts(&conn, &conflicts, &choice).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_sync_conflicts(
     state: State<'_, db::Db>,
     status: String,
@@ -2672,6 +2682,7 @@ pub fn run() {
             push_sync_snapshot,
             pull_sync_snapshot,
             resolve_sync_conflict,
+            resolve_sync_conflicts,
             list_sync_conflicts,
             clear_resolved_sync_conflicts,
             report_frontend_error,
