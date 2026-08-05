@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 50
+
+### What went well?
+
+- 冲突处理补上第三种策略 union：按行并集去重、local 优先，`resolved_choice = 'union'` 完整落库并写回 clipboard/log。
+- 单个 Merge 与批量 Merge all 双入口，审计新增 `sync.resolve.union` / `sync.resolve.union.batch`，导出筛选同步扩展。
+- 验证覆盖：`cargo test --lib` 53/53，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 断言批量 union、历史与审计，两条 lane 全绿。
+
+### What went wrong?
+
+- union 单测最初未先 `persist_conflict`，导致 resolved 记录为空；补齐持久化后通过。
+- UI 验证若先消耗唯一冲突会让后续 Keep remote 断言无对象，改为在第二次 pull 后先 Merge all、再 pull 新冲突验证批量 remote。
+
+### Action Items
+
+- 下一 Sprint 候选：watch 目标级事件隔离、审计时间/设备组合筛选、索引进度与取消队列、结构化文档字段级合并。
+- 后续扩展冲突策略时，保留 union 审计事件与历史筛选。
+
 ## Sprint 49
 
 ### What went well?

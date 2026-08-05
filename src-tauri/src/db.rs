@@ -1999,6 +1999,79 @@ pub fn resolve_conflicts(
     Ok(conflicts.len())
 }
 
+fn union_merge_content(local: &str, remote: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut lines = Vec::new();
+    for line in local.split('\n') {
+        if !local.is_empty() && seen.insert(line.to_string()) {
+            lines.push(line.to_string());
+        }
+    }
+    for line in remote.split('\n') {
+        if !remote.is_empty() && seen.insert(line.to_string()) {
+            lines.push(line.to_string());
+        }
+    }
+    lines.join("\n")
+}
+
+pub fn resolve_conflict_union(
+    conn: &Connection,
+    conflict: &SyncConflictItem,
+) -> Result<String, String> {
+    let content = union_merge_content(&conflict.local_content, &conflict.remote_content);
+    let now = now_millis();
+    match conflict.kind.as_str() {
+        "clipboard" => {
+            conn.execute(
+                "UPDATE clipboard_history SET content = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "log" => {
+            conn.execute(
+                "UPDATE error_logs SET message = ?1, updated_at = ?2 WHERE id = ?3",
+                params![content, now, conflict.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        _ => return Err(format!("Unsupported conflict kind: {}", conflict.kind)),
+    }
+    conn.execute(
+        "UPDATE sync_conflicts
+         SET resolved_choice = 'union', resolved_at = ?1
+         WHERE id = ?2 AND kind = ?3 AND resolved_choice IS NULL",
+        params![now, conflict.id, conflict.kind],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve.union",
+        &format!("{} {} -> union", conflict.kind, conflict.id),
+        "",
+    );
+    Ok(content)
+}
+
+pub fn resolve_conflicts_union(
+    conn: &Connection,
+    conflicts: &[SyncConflictItem],
+) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for conflict in conflicts {
+        resolve_conflict_union(&tx, conflict)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.resolve.union.batch",
+        &format!("batch merged {} conflict(s)", conflicts.len()),
+        "",
+    );
+    Ok(conflicts.len())
+}
+
 fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !(c.is_alphanumeric() || c.is_ascii_digit()))
@@ -2906,6 +2979,94 @@ mod tests {
         assert_eq!(logs[0].message, "local log");
         assert!(list_sync_conflicts(&conn, "unresolved").unwrap().is_empty());
         assert_eq!(list_sync_conflicts(&conn, "resolved").unwrap().len(), 2);
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn union_merge_content_keeps_order_and_dedupes() {
+        assert_eq!(union_merge_content("a\nb\nc", "b\nc\nd"), "a\nb\nc\nd");
+        assert_eq!(union_merge_content("", "x"), "x");
+        assert_eq!(union_merge_content("x", ""), "x");
+    }
+
+    #[test]
+    fn resolve_conflict_union_merges_both_sides() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-union-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip = capture_clipboard(&conn, "alpha\nbeta\ngamma", "test").unwrap();
+        let conflict = SyncConflictItem {
+            id: clip.id.clone(),
+            kind: "clipboard".to_string(),
+            local_updated_at: 1,
+            remote_updated_at: 2,
+            resolved_to: "union".to_string(),
+            preview: "conflict".to_string(),
+            local_content: "alpha\nbeta".to_string(),
+            remote_content: "beta\ngamma\ndelta".to_string(),
+        };
+        persist_conflict(&conn, &conflict).unwrap();
+
+        let merged = resolve_conflict_union(&conn, &conflict).unwrap();
+        assert_eq!(merged, "alpha\nbeta\ngamma\ndelta");
+        let clips = list_clipboard(&conn).unwrap();
+        assert_eq!(clips[0].content, merged);
+        let records = list_sync_conflicts(&conn, "resolved").unwrap();
+        assert_eq!(records[0].resolved_choice.as_deref(), Some("union"));
+        let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union")).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert!(audit[0].detail.contains("-> union"));
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_conflicts_union_batch_resolves_all() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-sync-union-batch-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_connection(&dir.join("workbench.db")).unwrap();
+        let clip_a = capture_clipboard(&conn, "a1\na2", "test").unwrap();
+        let clip_b = capture_clipboard(&conn, "b1\nb2", "test").unwrap();
+        let conflicts = vec![
+            SyncConflictItem {
+                id: clip_a.id.clone(),
+                kind: "clipboard".to_string(),
+                local_updated_at: 1,
+                remote_updated_at: 2,
+                resolved_to: "union".to_string(),
+                preview: "conflict a".to_string(),
+                local_content: "a1".to_string(),
+                remote_content: "a2".to_string(),
+            },
+            SyncConflictItem {
+                id: clip_b.id.clone(),
+                kind: "clipboard".to_string(),
+                local_updated_at: 1,
+                remote_updated_at: 2,
+                resolved_to: "union".to_string(),
+                preview: "conflict b".to_string(),
+                local_content: "b1".to_string(),
+                remote_content: "b2".to_string(),
+            },
+        ];
+        for conflict in &conflicts {
+            persist_conflict(&conn, conflict).unwrap();
+        }
+
+        let resolved = resolve_conflicts_union(&conn, &conflicts).unwrap();
+        assert_eq!(resolved, 2);
+        assert!(list_sync_conflicts(&conn, "unresolved").unwrap().is_empty());
+        let records = list_sync_conflicts(&conn, "resolved").unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|r| r.resolved_choice.as_deref() == Some("union")));
+        let audit = list_sync_audit(&conn, 10, Some("sync.resolve.union.batch")).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert!(audit[0].detail.contains("batch merged 2"));
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

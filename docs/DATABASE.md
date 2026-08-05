@@ -367,6 +367,10 @@ ALTER TABLE knowledge_files ADD COLUMN vault_path TEXT NOT NULL DEFAULT '';
 
 无表结构变更。`index_vault_ex` 的 `concurrency = 0` 表示 Auto：`index_vault_files` 扫描后按 `plan_index_concurrency`（≤32 文件用 1，≤256 或大文件 ≥8 用 4 上限，其余按核数）选择实际工作线程；`IndexResult` 新增 `concurrency_used` 返回实际值。
 
+## Sprint 50：同步冲突三方合并
+
+无表结构变更。`sync_conflicts.resolved_choice` 新增 `union` 取值：`resolve_conflict_union` 按行并集写回 clipboard/log 并标记 union；`resolve_conflicts_union` 单事务批量执行；审计新增 `sync.resolve.union` 与 `sync.resolve.union.batch`。
+
 ## Sprint 43：同步冲突批量仲裁
 
 新增 `resolve_conflicts(conn, conflicts, choice)`：用 `unchecked_transaction` 在单事务内批量调用 `resolve_conflict`，任一冲突裁决失败则事务回滚，成功后返回解决数量。由于 `Connection` 只持有不可变引用，事务改用 `unchecked_transaction` 实现。
