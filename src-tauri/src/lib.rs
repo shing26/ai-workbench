@@ -1666,6 +1666,17 @@ struct RemotePrResult {
     branch: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitRebaseResult {
+    rebased: bool,
+    conflict: bool,
+    files: Vec<String>,
+    base: String,
+    branch: String,
+    head: String,
+}
+
 fn commit_type_for(changes: &[String], branch: &str) -> &'static str {
     let has_docs = changes
         .iter()
@@ -1898,6 +1909,71 @@ fn create_remote_pr(path: String, title: String, body: String) -> Result<RemoteP
     }
 }
 
+fn short_head(path: &str) -> String {
+    run_git(path, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|head| head.chars().take(8).collect())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn git_conflict_files(path: &str) -> Vec<String> {
+    run_git(path, &["diff", "--name-only", "--diff-filter=U"])
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .take(12)
+        .collect()
+}
+
+#[tauri::command]
+fn rebase_branch(path: String, base_branch: String) -> Result<GitRebaseResult, String> {
+    let branch = git_branch(&path);
+    if branch == "unknown" {
+        return Err("Not a git repository".into());
+    }
+    if branch == base_branch {
+        return Err("Already on base branch".into());
+    }
+    run_git(&path, &["rev-parse", "--verify", &base_branch])?;
+    let output = Command::new("git")
+        .args(["rebase", &base_branch])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("git rebase failed: {}", e))?;
+    let head = short_head(&path);
+    if output.status.success() {
+        return Ok(GitRebaseResult {
+            rebased: true,
+            conflict: false,
+            files: Vec::new(),
+            base: base_branch,
+            branch,
+            head,
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = format!("{}{}", stdout, stderr);
+    if detail.contains("CONFLICT") || detail.contains("conflict") {
+        return Ok(GitRebaseResult {
+            rebased: false,
+            conflict: true,
+            files: git_conflict_files(&path),
+            base: base_branch,
+            branch,
+            head,
+        });
+    }
+    Err(truncate_error(detail.trim()))
+}
+
+#[tauri::command]
+fn abort_rebase(path: String) -> Result<String, String> {
+    run_git(&path, &["rebase", "--abort"])?;
+    Ok(format!("Rebase aborted on {}", git_branch(&path)))
+}
+
 fn build_team_summary_text(contents: Vec<String>) -> String {
     let mut lines = Vec::new();
     for content in contents {
@@ -2054,6 +2130,8 @@ pub fn run() {
             generate_commit_pr_draft,
             apply_commit,
             create_remote_pr,
+            rebase_branch,
+            abort_rebase,
             build_team_summary,
             send_ai_message,
             stream_ai_message,
@@ -2317,7 +2395,7 @@ mod tests {
 
     fn init_test_git_repo(dir: &Path) -> String {
         let path = dir.to_string_lossy().to_string();
-        assert!(run_git(&path, &["init"]).is_ok());
+        assert!(run_git(&path, &["init", "-b", "main"]).is_ok());
         assert!(run_git(&path, &["config", "user.email", "aiwb@test.local"]).is_ok());
         assert!(run_git(&path, &["config", "user.name", "AI Workbench Test"]).is_ok());
         path
@@ -2381,5 +2459,69 @@ mod tests {
         assert!(args.contains(&"feat(test): pr".to_string()));
         assert!(args.contains(&"body text".to_string()));
         assert!(args.contains(&"feature/sprint-29".to_string()));
+    }
+
+    #[test]
+    fn rebase_branch_cleanly_rebases_feature_onto_main() {
+        let temp = std::env::temp_dir().join(format!("aiwb-rebase-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("main.txt"), "main\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        run_git(&path, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(temp.join("feature.txt"), "feature\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "feature work"]).unwrap();
+        run_git(&path, &["checkout", "main"]).unwrap();
+        std::fs::write(temp.join("base.txt"), "base\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "base work"]).unwrap();
+        run_git(&path, &["checkout", "feature"]).unwrap();
+
+        let result = rebase_branch(path.clone(), "main".to_string()).unwrap();
+        assert!(result.rebased);
+        assert!(!result.conflict);
+        assert_eq!(result.base, "main");
+        assert_eq!(result.branch, "feature");
+        let log = run_git(&path, &["log", "--oneline"]).unwrap();
+        assert!(log.contains("base work"));
+        assert!(log.contains("feature work"));
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn rebase_branch_reports_conflicts_and_aborts() {
+        let temp = std::env::temp_dir().join(format!(
+            "aiwb-rebase-conflict-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let path = init_test_git_repo(&temp);
+        std::fs::write(temp.join("shared.txt"), "main\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "init"]).unwrap();
+        run_git(&path, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(temp.join("shared.txt"), "feature\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "feature edit"]).unwrap();
+        run_git(&path, &["checkout", "main"]).unwrap();
+        std::fs::write(temp.join("shared.txt"), "main changed\n").unwrap();
+        run_git(&path, &["add", "-A"]).unwrap();
+        run_git(&path, &["commit", "-m", "main edit"]).unwrap();
+        run_git(&path, &["checkout", "feature"]).unwrap();
+
+        let result = rebase_branch(path.clone(), "main".to_string()).unwrap();
+        assert!(!result.rebased);
+        assert!(result.conflict);
+        assert!(
+            result.files.iter().any(|file| file.ends_with("shared.txt")),
+            "conflict files: {:?}",
+            result.files
+        );
+        let aborted = abort_rebase(path.clone()).unwrap();
+        assert!(aborted.contains("Rebase aborted"));
+        assert_eq!(git_branch(&path), "feature");
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 }

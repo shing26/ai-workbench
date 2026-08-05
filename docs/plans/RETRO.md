@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 31
+
+### What went well?
+
+- Rebase 闭环：`rebase_branch` 一键同步主分支，冲突时用 `diff --name-only --diff-filter=U` 精确列出冲突文件，`abort_rebase` 一键清理。
+- Projects Git 图谱内置 Rebase onto main 与 Abort rebase，成功/冲突/错误三种状态都有结果回显。
+- 验证覆盖：`cargo test --lib` 29/29，fmt、clippy、build 全绿；`verify:ui` / `verify:preview` 新增 rebase 结果断言，两条 lane 全绿。
+
+### What went wrong?
+
+- 冲突检测初版用 `git status --short` 手工剥前缀，改为 `git diff --name-only --diff-filter=U` 后更精确，不再被普通修改行干扰。
+- `git init` 默认分支名在不同版本不确定，测试统一改用 `git init -b main`，避免断言 base 分支名时依赖环境。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调、冲突自动解决 / 三方合并策略。
+- 后续改动 Git 工作流时，保留干净 rebase、冲突检测与 abort 三条单测。
+
 ## Sprint 30
 
 ### What went well?
