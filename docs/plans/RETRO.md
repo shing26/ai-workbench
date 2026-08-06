@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 147
+
+### What went well?
+
+- Projects 轮播新增拖拽排序与速度滑杆：`projects` 新增 `sort_order`，旧库 `migrate_project_sort_order` 按 created_at 倒序回填；`reorder_projects` Tauri 命令按传入 id 顺序写回，浏览器 fallback 同步重排 `ai-workbench:db:v1`。
+- 卡片指针拖拽支持跨卡换位：拖动超过约一张卡片宽度即交换，拖拽期间暂停自动播放并抑制点击跳转，结束后持久化；速度滑杆 1~10 持久化到 `ai-workbench:carousel-speed:v1`，reload 后恢复。
+- `verify:ui` / `verify:preview` 新增 `carouselReorder` lane：覆盖拖拽换位、顺序持久化、速度持久化与 reload 恢复，并在 lane 末尾把项目顺序与速度还原，避免影响后续 Git 验证线。
+- Rust 单测增至 176 条，新增排序迁移 / reorder / create 续排测试；八门质量门全绿。
+
+### What went wrong?
+
+- 首轮 `carouselReorder` lane 把 `reloadAndWait` 写进了浏览器上下文，`evaluate` 直接报 `reloadAndWait is not defined`；改为在 Node 侧分两段执行后通过。
+- lane 持久化拖拽结果后没有还原顺序，后续 Git rebase lane 拿到冲突分支导致断言失败；在 lane 末尾把卡片拖回原位、恢复速度后全链路恢复稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects / Material 逐卡独立配色记忆。
+- 保留 `carouselReorder` lane，修改轮播排序、拖动阈值、速度算法或持久化 key 时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 146
 
 ### What went well?

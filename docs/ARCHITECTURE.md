@@ -869,3 +869,10 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - System 新增 Token budget 卡片：月度上限输入、已用/进度条、Auto degrade 开关与 Reset month，`data-token-budget-card` 系列锚点齐全。
 - AI Studio 头部 `data-token-budget-badge` 展示用量与 degrade / over 状态；流 done 时按回复文本记录估算 Token；超预算且开启 Auto degrade 时只路由本地 Ollama Provider，关闭时拦截并回显 `token budget exceeded`；Inspector 新增 `Budget` 区块。
 - `verify:ui` / `verify:preview` 新增 `tokenBudget` lane：覆盖本地降级回复、徽标、配置切换、超限拦截、重置与恢复云 Provider 五步。
+
+## Sprint 147：Projects 轮播拖拽排序与速度滑杆
+
+- `projects.sort_order` 成为轮播排列的事实来源：新库 SCHEMA 直接建列，旧库 `migrate_project_sort_order` 按 `created_at` 倒序回填；`list_projects` 按 `sort_order ASC, created_at DESC` 返回，`create_project` 追加到末尾。
+- 新增 Tauri 命令 `reorder_projects(ids)`，单次调用按传入 id 顺序写回 0..n-1；`db.ts` 浏览器 fallback 对 `ai-workbench:db:v1` 的 `projects` 数组做同构重排，不新增 localStorage key。
+- ProjectCarousel 拖拽使用 pointer 事件：拖动超过约一张卡片宽度即换位，拖拽期间暂停 autoplay 并抑制 click 跳转；`moveDrag` 在提交后重置 committed 并更新基准点，支持同一手势内连续换位。
+- 速度滑杆 1~10 以 `0.00055 * speed` 推进 autoplay，持久化到 `ai-workbench:carousel-speed:v1`，reload 后恢复；`verify:ui` 新增 `carouselReorder` lane，并保证 lane 结束还原 fixture 状态。

@@ -6,7 +6,6 @@
 
 ## 候选池（待开发）
 
-- [ ] Projects：轮播拖拽排序与速度滑杆。
 - [ ] Projects / Material：逐卡独立配色记忆。
 - [ ] AI Studio：每条流独立取消与单路重试。
 - [ ] System：Provider 批量导入导出与 API Key 加密落库；流式请求超时配置与自动重试。
@@ -19,6 +18,7 @@
 
 ## 已完成（从候选池移除）
 
+- Projects：轮播拖拽排序与速度滑杆（Sprint 147）。
 - Knowledge：语义聚类 / 文档去重（Sprint 146）。
 - Knowledge：真实 Embedding 模型、向量增量后台重建与分片索引（Sprint 145）。
 - 事件总线：持久化 event log、事件 schema 校验与跨设备事件转发（Sprint 144）。

@@ -1,8 +1,18 @@
-import { ChevronLeft, ChevronRight, Layers, Orbit, Pause, Play } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Gauge,
+  GripVertical,
+  Layers,
+  Orbit,
+  Pause,
+  Play,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useWorkbenchStore } from '../../stores/workbenchStore';
 
 const CAROUSEL_MATERIALS = ['cyan', 'original', 'rain', 'chrome'] as const;
+const CAROUSEL_SPEED_KEY = 'ai-workbench:carousel-speed:v1';
 
 function relativePosition(index: number, position: number, count: number): number {
   if (count === 0) return 0;
@@ -13,15 +23,36 @@ function relativePosition(index: number, position: number, count: number): numbe
 
 export default function ProjectCarousel() {
   const projects = useWorkbenchStore((s) => s.projects);
+  const reorderProjects = useWorkbenchStore((s) => s.reorderProjects);
+  const setProjects = useWorkbenchStore((s) => s.setProjects);
   const [mode, setMode] = useState<'orbit' | 'fan'>('orbit');
   const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(() => {
+    try {
+      const raw = localStorage.getItem(CAROUSEL_SPEED_KEY);
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed >= 1 && parsed <= 10 ? parsed : 4;
+    } catch {
+      return 4;
+    }
+  });
   const [index, setIndex] = useState(0);
+  const [dragId, setDragId] = useState<string | null>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const projectsRef = useRef(projects);
   const positionRef = useRef(0);
   const indexRef = useRef(0);
   const modeRef = useRef<'orbit' | 'fan'>('orbit');
   const pausedRef = useRef(false);
+  const speedRef = useRef(speed);
+  const dragRef = useRef<{
+    id: string;
+    pointerX: number;
+    cardWidth: number;
+    committed: boolean;
+  } | null>(null);
+  const dragSuppressClickRef = useRef(false);
   const reducedRef = useRef(
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
@@ -83,6 +114,17 @@ export default function ProjectCarousel() {
     applyPositionsRef.current();
   }, [mode, projects]);
 
+  projectsRef.current = projects;
+
+  useEffect(() => {
+    speedRef.current = speed;
+    try {
+      localStorage.setItem(CAROUSEL_SPEED_KEY, String(speed));
+    } catch {
+      // storage unavailable
+    }
+  }, [speed]);
+
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const update = () => {
@@ -101,7 +143,7 @@ export default function ProjectCarousel() {
       const elapsed = Math.min(32, now - last);
       last = now;
       if (!pausedRef.current) {
-        positionRef.current += elapsed * 0.0022;
+        positionRef.current += elapsed * 0.00055 * speedRef.current;
         const count = projects.length;
         if (count > 0) {
           const rounded = Math.round(positionRef.current);
@@ -137,6 +179,56 @@ export default function ProjectCarousel() {
     setMode(nextMode);
     positionRef.current = indexRef.current;
     applyPositionsRef.current();
+  };
+
+  const startDrag = (id: string, pointerX: number) => {
+    const card = cardRefs.current.find((element, i) => element && projects[i]?.id === id);
+    if (!card) return;
+    dragRef.current = {
+      id,
+      pointerX,
+      cardWidth: Math.max(120, card.getBoundingClientRect().width),
+      committed: false,
+    };
+    setDragId(id);
+    pausedRef.current = true;
+  };
+
+  const moveDrag = (pointerX: number) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const from = projectsRef.current.findIndex((project) => project.id === drag.id);
+    if (from < 0) return;
+    const delta = pointerX - drag.pointerX;
+    const shift = Math.round(delta / drag.cardWidth);
+    if (shift === 0 || drag.committed) return;
+    const to = Math.max(0, Math.min(projectsRef.current.length - 1, from + shift));
+    if (to === from) return;
+    const next = [...projectsRef.current];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    drag.committed = true;
+    drag.pointerX = pointerX;
+    setProjects(next);
+    const targetIndex = to;
+    positionRef.current = targetIndex;
+    indexRef.current = targetIndex;
+    setIndex(targetIndex);
+    requestAnimationFrame(() => {
+      dragRef.current = dragRef.current ? { ...dragRef.current, committed: false } : null;
+      applyPositionsRef.current();
+    });
+  };
+
+  const endDrag = () => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    setDragId(null);
+    pausedRef.current = false;
+    if (!drag) return;
+    dragSuppressClickRef.current = true;
+    void reorderProjects(projectsRef.current.map((project) => project.id));
+    requestAnimationFrame(applyPositionsRef.current);
   };
 
   const selected = projects[index] ?? null;
@@ -178,6 +270,23 @@ export default function ProjectCarousel() {
           {playing ? <Pause size={10} /> : <Play size={10} />}
           {playing ? 'Pause' : 'Play'}
         </button>
+        <label className="flex h-6 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400">
+          <Gauge size={10} className="text-slate-500" />
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={1}
+            value={speed}
+            onChange={(event) => setSpeed(Number(event.target.value))}
+            aria-label="Carousel speed"
+            data-carousel-speed
+            className="h-1 w-20 accent-emerald-500"
+          />
+          <span data-carousel-speed-value className="min-w-5 text-center font-mono text-slate-500">
+            {speed}
+          </span>
+        </label>
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -208,6 +317,8 @@ export default function ProjectCarousel() {
         ref={sceneRef}
         data-carousel-scene
         data-carousel-scene-mode={mode}
+        data-carousel-dragging={String(dragId !== null)}
+        data-carousel-order={projects.map((project) => project.name).join(',')}
         tabIndex={0}
         aria-roledescription="project carousel"
         onWheel={(event) => {
@@ -230,6 +341,15 @@ export default function ProjectCarousel() {
         onBlurCapture={() => {
           pausedRef.current = false;
         }}
+        onPointerMove={(event) => {
+          if (dragRef.current) moveDrag(event.clientX);
+        }}
+        onPointerUp={() => {
+          if (dragRef.current) endDrag();
+        }}
+        onPointerCancel={() => {
+          if (dragRef.current) endDrag();
+        }}
         className="project-carousel-scene h-[190px] w-full rounded-xl border border-white/5 bg-white/[0.015] outline-none"
       >
         {projects.map((project, i) => (
@@ -244,6 +364,10 @@ export default function ProjectCarousel() {
             data-carousel-project={project.name}
             data-carousel-material={CAROUSEL_MATERIALS[i % CAROUSEL_MATERIALS.length]}
             onClick={() => {
+              if (dragSuppressClickRef.current) {
+                dragSuppressClickRef.current = false;
+                return;
+              }
               positionRef.current = i;
               indexRef.current = i;
               setIndex(i);
@@ -251,6 +375,17 @@ export default function ProjectCarousel() {
             }}
             className="project-carousel-card"
           >
+            <span
+              data-carousel-drag-handle
+              aria-hidden="true"
+              className="absolute left-1 top-1 z-20 flex h-5 w-5 items-center justify-center rounded-md bg-white/[0.06] text-slate-500"
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                startDrag(project.id, event.clientX);
+              }}
+            >
+              <GripVertical size={10} />
+            </span>
             <span className="relative z-10 flex h-full flex-col items-start justify-end p-2 text-left">
               <span className="w-full truncate text-[10px] font-semibold text-slate-100">
                 {project.name}
