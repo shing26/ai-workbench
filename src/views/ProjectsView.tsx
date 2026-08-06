@@ -99,6 +99,7 @@ function FileVersionPane({
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const addProject = useWorkbenchStore((s) => s.addProject);
+  const updateProject = useWorkbenchStore((s) => s.updateProject);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -131,6 +132,10 @@ export default function ProjectsView() {
   const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
   const [exportOpen, setExportOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  const [projectEdits, setProjectEdits] = useState<
+    Record<string, { status: string; revenue: string }>
+  >({});
+  const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join('|');
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -357,6 +362,23 @@ ${trend}
     await addProject(name.trim(), path.trim());
     setName('');
     setPath('');
+  };
+
+  const saveProjectEdit = async (project: db.Project) => {
+    const draft = projectEdits[project.id];
+    if (!draft) return;
+    const revenue = Number(draft.revenue);
+    await updateProject(
+      project.id,
+      draft.status,
+      Number.isFinite(revenue) ? Math.max(0, revenue) : 0,
+    );
+    setProjectEditResults((prev) => ({ ...prev, [project.id]: 'Saved' }));
+    setProjectEdits((prev) => {
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
   };
 
   const aiCoding = async (project: db.Project) => {
@@ -902,6 +924,70 @@ ${trend}
           <div className="mb-3 grid grid-cols-2 gap-2">
             <StatPill label="Revenue" value={`$${p.revenue.toFixed(2)}`} tone="green" />
             <StatPill label="Status" value={p.status} />
+          </div>
+          <div
+            data-project-edit={p.id}
+            className="mb-3 rounded-xl border border-white/10 bg-white/[0.02] p-2"
+          >
+            <div className="mb-1.5 text-[9px] uppercase tracking-normal text-slate-500">
+              Project settings
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <select
+                data-project-status={p.id}
+                value={projectEdits[p.id]?.status ?? p.status}
+                onChange={(e) =>
+                  setProjectEdits((prev) => ({
+                    ...prev,
+                    [p.id]: {
+                      status: e.target.value,
+                      revenue: prev[p.id]?.revenue ?? String(p.revenue),
+                    },
+                  }))
+                }
+                className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+              >
+                <option value="active">active</option>
+                <option value="paused">paused</option>
+              </select>
+              <div className="flex h-7 items-center rounded-lg border border-white/10 bg-white/[0.03] px-2">
+                <span className="text-[9px] text-slate-500">$</span>
+                <input
+                  data-project-revenue={p.id}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={projectEdits[p.id]?.revenue ?? String(p.revenue)}
+                  onChange={(e) =>
+                    setProjectEdits((prev) => ({
+                      ...prev,
+                      [p.id]: {
+                        status: prev[p.id]?.status ?? p.status,
+                        revenue: e.target.value,
+                      },
+                    }))
+                  }
+                  className="w-20 bg-transparent px-1 text-[10px] text-slate-200 outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                data-project-save={p.id}
+                onClick={() => void saveProjectEdit(p)}
+                disabled={!projectEdits[p.id]}
+                className="flex h-7 items-center gap-1 rounded-lg bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check size={11} /> Save
+              </button>
+              {projectEditResults[p.id] && (
+                <span
+                  data-project-edit-result={p.id}
+                  className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                >
+                  {projectEditResults[p.id]}
+                </span>
+              )}
+            </div>
           </div>
           <p className="mb-3 truncate text-[11px] text-slate-500">{p.path || 'No local path'}</p>
           {gitCtx[p.id] && (

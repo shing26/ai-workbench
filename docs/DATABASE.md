@@ -498,6 +498,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。`habits.current_streak` 列与 `habit_logs` 表自早期 Sprint 已存在；本 Sprint 将 `current_streak` 改为运行时按连续日期计算，`recent_logs` 是查询派生字段、不落库，`toggle_habit` 仍只写 `habit_logs`。浏览器 fallback 在既有 `ai-workbench:db:v1` 内新增 `habitLogs` 数组（`id / habitId / date / checkedAt`），不新增 localStorage key。
 
+## Sprint 120：Projects 项目状态与收益编辑
+
+无表结构变更。复用 `projects` 既有 `status` / `revenue` 列：新增 `update_project` 命令仅接受 active / paused 状态并对负收益钳制为 0；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` 数组，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
