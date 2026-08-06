@@ -786,6 +786,10 @@ fn append_moa_chain_context(
     serde_json::to_string(&messages).map_err(|e| e.to_string())
 }
 
+fn moa_lane_run_id(run_id: &str, kind: &str, index: usize) -> String {
+    format!("{}-{}{}", run_id, kind, index)
+}
+
 #[tauri::command]
 fn fetch_url(url: String) -> Result<String, String> {
     let client = reqwest::blocking::Client::new();
@@ -3641,12 +3645,15 @@ async fn stream_ai_message(
 
     let done: Result<(), String> = if moa && moa_chain {
         let providers: Vec<db::Provider> = selected.into_iter().take(3).collect();
+        let total_steps = providers.len();
         let mut previous_name: Option<String> = None;
         let mut previous_output = String::new();
-        for provider in providers {
+        let mut completed_steps = 0;
+        for (index, provider) in providers.into_iter().enumerate() {
             if is_stream_cancelled(&app, &run_id) {
                 break;
             }
+            let sub_run_id = moa_lane_run_id(&run_id, "s", index);
             let step_messages_json = match &previous_name {
                 Some(name) => append_moa_chain_context(&messages_json, name, &previous_output)?,
                 None => messages_json.clone(),
@@ -3654,7 +3661,7 @@ async fn stream_ai_message(
             let _ = app.emit(
                 "stream-chunk",
                 StreamChunk {
-                    id: run_id.clone(),
+                    id: sub_run_id.clone(),
                     delta: format!("\n\n## {}\n\n", provider.name),
                     done: false,
                     error: None,
@@ -3662,7 +3669,7 @@ async fn stream_ai_message(
                 },
             );
             let app_step = app.clone();
-            let run_id_step = run_id.clone();
+            let run_id_step = sub_run_id.clone();
             let provider_step = provider.clone();
             let streamed: Result<String, String> =
                 tauri::async_runtime::spawn_blocking(move || {
@@ -3670,66 +3677,124 @@ async fn stream_ai_message(
                 })
                 .await
                 .map_err(|e| e.to_string())?;
+            let sub_cancelled = is_stream_cancelled(&app, &sub_run_id);
+            clear_stream_cancel(&app, &sub_run_id);
             match streamed {
                 Ok(text) => {
+                    let _ = app.emit(
+                        "stream-chunk",
+                        StreamChunk {
+                            id: sub_run_id.clone(),
+                            delta: String::new(),
+                            done: true,
+                            error: None,
+                            cancelled: sub_cancelled,
+                        },
+                    );
+                    completed_steps += 1;
+                    if sub_cancelled {
+                        break;
+                    }
                     previous_output = text;
                     previous_name = Some(provider.name);
                 }
                 Err(err) => {
-                    if !is_stream_cancelled(&app, &run_id) {
-                        let _ = app.emit(
-                            "stream-chunk",
-                            StreamChunk {
-                                id: run_id.clone(),
-                                delta: format!("\n[{} error: {}]\n", provider.name, err),
-                                done: false,
-                                error: None,
-                                cancelled: false,
+                    let _ = app.emit(
+                        "stream-chunk",
+                        StreamChunk {
+                            id: sub_run_id,
+                            delta: String::new(),
+                            done: true,
+                            error: if sub_cancelled {
+                                None
+                            } else {
+                                Some(err.clone())
                             },
-                        );
+                            cancelled: sub_cancelled,
+                        },
+                    );
+                    completed_steps += 1;
+                    if sub_cancelled {
+                        break;
                     }
                     previous_output = String::new();
                     previous_name = Some(provider.name);
                 }
             }
         }
+        for remaining in completed_steps..total_steps {
+            let remaining_run_id = moa_lane_run_id(&run_id, "s", remaining);
+            clear_stream_cancel(&app, &remaining_run_id);
+            let _ = app.emit(
+                "stream-chunk",
+                StreamChunk {
+                    id: remaining_run_id,
+                    delta: String::new(),
+                    done: true,
+                    error: None,
+                    cancelled: true,
+                },
+            );
+        }
         Ok(())
     } else if moa {
-        let mut tasks: Vec<tauri::async_runtime::JoinHandle<Result<String, String>>> = Vec::new();
-        for provider in selected.into_iter().take(3) {
+        let mut tasks: Vec<tauri::async_runtime::JoinHandle<Result<Option<String>, String>>> =
+            Vec::new();
+        for (index, provider) in selected.into_iter().take(3).enumerate() {
             let app = app.clone();
-            let run_id = run_id.clone();
+            let sub_run_id = moa_lane_run_id(&run_id, "p", index);
             let messages_json = messages_json.clone();
             tasks.push(tauri::async_runtime::spawn_blocking(move || {
-                if is_stream_cancelled(&app, &run_id) {
-                    return Ok(String::new());
+                if is_stream_cancelled(&app, &sub_run_id) {
+                    return Ok(None);
                 }
                 let _ = app.emit(
                     "stream-chunk",
                     StreamChunk {
-                        id: run_id.clone(),
+                        id: sub_run_id.clone(),
                         delta: format!("\n\n## {}\n\n", provider.name),
                         done: false,
                         error: None,
                         cancelled: false,
                     },
                 );
-                match stream_provider(&app, &run_id, &provider, &messages_json) {
-                    Ok(text) => Ok(text),
-                    Err(err) => {
-                        if !is_stream_cancelled(&app, &run_id) {
-                            let _ = app.emit(
-                                "stream-chunk",
-                                StreamChunk {
-                                    id: run_id.clone(),
-                                    delta: format!("\n[{} error: {}]\n", provider.name, err),
-                                    done: false,
-                                    error: None,
-                                    cancelled: false,
-                                },
-                            );
+                let streamed = stream_provider(&app, &sub_run_id, &provider, &messages_json);
+                let sub_cancelled = is_stream_cancelled(&app, &sub_run_id);
+                clear_stream_cancel(&app, &sub_run_id);
+                match streamed {
+                    Ok(text) => {
+                        let _ = app.emit(
+                            "stream-chunk",
+                            StreamChunk {
+                                id: sub_run_id.clone(),
+                                delta: String::new(),
+                                done: true,
+                                error: None,
+                                cancelled: sub_cancelled,
+                            },
+                        );
+                        if sub_cancelled {
+                            Ok(None)
+                        } else {
+                            Ok(Some(text))
                         }
-                        Ok(String::new())
+                    }
+                    Err(err) => {
+                        let _ = app.emit(
+                            "stream-chunk",
+                            StreamChunk {
+                                id: sub_run_id,
+                                delta: String::new(),
+                                done: true,
+                                error: if sub_cancelled {
+                                    None
+                                } else {
+                                    Some(err.clone())
+                                },
+                                cancelled: sub_cancelled,
+                            },
+                        );
+                        Ok(None)
                     }
                 }
             }));
@@ -3737,16 +3802,41 @@ async fn stream_ai_message(
         let mut outputs = Vec::new();
         for task in tasks {
             let task_result = task.await.map_err(|e| e.to_string())?;
-            outputs.push(task_result?);
+            if let Some(text) = task_result? {
+                outputs.push(text);
+            }
         }
-        if !is_stream_cancelled(&app, &run_id) && outputs.iter().any(|text| !text.is_empty()) {
+        let parent_cancelled = is_stream_cancelled(&app, &run_id);
+        let consensus_run_id = format!("{}-c", run_id);
+        if parent_cancelled {
+            let _ = app.emit(
+                "stream-chunk",
+                StreamChunk {
+                    id: consensus_run_id,
+                    delta: String::new(),
+                    done: true,
+                    error: None,
+                    cancelled: true,
+                },
+            );
+        } else {
             let consensus = build_moa_consensus_text(outputs);
             let _ = app.emit(
                 "stream-chunk",
                 StreamChunk {
-                    id: run_id.clone(),
+                    id: consensus_run_id.clone(),
                     delta: format!("\n\n## MOA Consensus\n\n{}", consensus),
                     done: false,
+                    error: None,
+                    cancelled: false,
+                },
+            );
+            let _ = app.emit(
+                "stream-chunk",
+                StreamChunk {
+                    id: consensus_run_id,
+                    delta: String::new(),
+                    done: true,
                     error: None,
                     cancelled: false,
                 },
@@ -6569,6 +6659,14 @@ mod tests {
             auto_fallback_marker("Alpha", "Beta"),
             "\n[auto fallback: Alpha → Beta]\n"
         );
+    }
+
+    #[test]
+    fn moa_lane_run_id_keeps_provider_and_consensus_runs_distinct() {
+        assert_eq!(moa_lane_run_id("ai-7", "p", 0), "ai-7-p0");
+        assert_eq!(moa_lane_run_id("ai-7", "p", 2), "ai-7-p2");
+        assert_eq!(moa_lane_run_id("ai-7", "s", 1), "ai-7-s1");
+        assert_eq!(format!("{}-c", "ai-7"), "ai-7-c");
     }
 
     #[test]

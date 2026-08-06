@@ -5587,6 +5587,7 @@ export type MoaConsensus = {
 };
 
 const localCancelledRuns = new Set<string>();
+const localStreamControllers = new Map<string, AbortController>();
 
 export function isOllamaProvider(name: string, baseUrl: string): boolean {
   return name.toLowerCase().includes('ollama') || baseUrl.toLowerCase().includes('11434');
@@ -5680,6 +5681,7 @@ async function streamProviderLive(
       opts.onChunk?.(delta);
     }
   };
+  localStreamControllers.set(args.runId, controller);
   try {
     for (;;) {
       if (localCancelledRuns.has(args.runId)) {
@@ -5698,6 +5700,7 @@ async function streamProviderLive(
   } catch (err) {
     if (localCancelledRuns.has(args.runId)) {
       if (manageCancel) localCancelledRuns.delete(args.runId);
+      localStreamControllers.delete(args.runId);
       if (final) {
         emitLocalStreamChunk({
           id: args.runId,
@@ -5709,10 +5712,12 @@ async function streamProviderLive(
       }
       return collected;
     }
+    localStreamControllers.delete(args.runId);
     throw err;
   }
   const wasCancelled = localCancelledRuns.has(args.runId);
   if (manageCancel) localCancelledRuns.delete(args.runId);
+  localStreamControllers.delete(args.runId);
   if (wasCancelled) {
     if (final) {
       emitLocalStreamChunk({
@@ -5801,16 +5806,21 @@ export async function sendAiMessageStream(args: {
     ? candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 3)
     : args.autoFallback && byPassedOrder.length > 0
       ? byPassedOrder
-      : candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 1);
+      : args.providerIds.length === 1
+        ? candidates.filter((p) => p.id === args.providerIds[0])
+        : candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 1);
   const realProviders = providers.filter(canRealStream);
   if (args.moa && realProviders.length > 0) {
     if (args.moaChain) {
       let previousName: string | null = null;
       let previousOutput = '';
-      for (const provider of realProviders) {
+      let completedSteps = 0;
+      for (let index = 0; index < realProviders.length; index += 1) {
         if (localCancelledRuns.has(args.runId)) break;
+        const provider = realProviders[index];
+        const subRunId = `${args.runId}-s${index}`;
         emitLocalStreamChunk({
-          id: args.runId,
+          id: subRunId,
           delta: `\n\n## ${provider.name}\n\n`,
           done: false,
           error: null,
@@ -5823,23 +5833,47 @@ export async function sendAiMessageStream(args: {
         try {
           previousOutput = await streamProviderLive(
             provider,
-            { ...args, providerIds: [provider.id], messages: stepMessages },
+            { ...args, runId: subRunId, providerIds: [provider.id], messages: stepMessages },
             { final: false, manageCancel: false },
           );
+          const subCancelled = localCancelledRuns.has(subRunId);
+          localCancelledRuns.delete(subRunId);
+          emitLocalStreamChunk({
+            id: subRunId,
+            delta: '',
+            done: true,
+            error: null,
+            cancelled: subCancelled,
+          });
+          completedSteps += 1;
+          if (subCancelled) break;
           previousName = provider.name;
         } catch (err) {
+          const subCancelled = localCancelledRuns.has(subRunId);
+          localCancelledRuns.delete(subRunId);
           emitLocalStreamChunk({
-            id: args.runId,
-            delta: `\n[${provider.name} error: ${
-              err instanceof Error ? err.message : String(err)
-            }]\n`,
-            done: false,
-            error: null,
-            cancelled: false,
+            id: subRunId,
+            delta: '',
+            done: true,
+            error: subCancelled ? null : err instanceof Error ? err.message : String(err),
+            cancelled: subCancelled,
           });
+          completedSteps += 1;
+          if (subCancelled) break;
           previousOutput = '';
           previousName = provider.name;
         }
+      }
+      for (let remaining = completedSteps; remaining < realProviders.length; remaining += 1) {
+        const remainingRunId = `${args.runId}-s${remaining}`;
+        localCancelledRuns.delete(remainingRunId);
+        emitLocalStreamChunk({
+          id: remainingRunId,
+          delta: '',
+          done: true,
+          error: null,
+          cancelled: true,
+        });
       }
       const wasCancelled = localCancelledRuns.has(args.runId);
       localCancelledRuns.delete(args.runId);
@@ -5854,9 +5888,10 @@ export async function sendAiMessageStream(args: {
     }
     const outputs = new Map<string, string>();
     await Promise.allSettled(
-      realProviders.map(async (provider) => {
+      realProviders.map(async (provider, index) => {
+        const subRunId = `${args.runId}-p${index}`;
         emitLocalStreamChunk({
-          id: args.runId,
+          id: subRunId,
           delta: `\n\n## ${provider.name}\n\n`,
           done: false,
           error: null,
@@ -5865,37 +5900,54 @@ export async function sendAiMessageStream(args: {
         try {
           const output = await streamProviderLive(
             provider,
-            { ...args, providerIds: [provider.id] },
+            { ...args, runId: subRunId, providerIds: [provider.id] },
             { final: false, manageCancel: false },
           );
-          outputs.set(provider.id, output);
-        } catch (err) {
+          const subCancelled = localCancelledRuns.has(subRunId);
+          localCancelledRuns.delete(subRunId);
           emitLocalStreamChunk({
-            id: args.runId,
-            delta: `\n[${provider.name} error: ${
-              err instanceof Error ? err.message : String(err)
-            }]\n`,
-            done: false,
+            id: subRunId,
+            delta: '',
+            done: true,
             error: null,
-            cancelled: false,
+            cancelled: subCancelled,
+          });
+          if (!subCancelled) outputs.set(provider.id, output);
+        } catch (err) {
+          const subCancelled = localCancelledRuns.has(subRunId);
+          localCancelledRuns.delete(subRunId);
+          emitLocalStreamChunk({
+            id: subRunId,
+            delta: '',
+            done: true,
+            error: subCancelled ? null : err instanceof Error ? err.message : String(err),
+            cancelled: subCancelled,
           });
         }
       }),
     );
     const wasCancelled = localCancelledRuns.has(args.runId);
     localCancelledRuns.delete(args.runId);
+    const consensusRunId = `${args.runId}-c`;
     if (!wasCancelled) {
       const consensus = buildMoaConsensusLocal(
         realProviders.map((provider) => outputs.get(provider.id) ?? ''),
       );
       emitLocalStreamChunk({
-        id: args.runId,
+        id: consensusRunId,
         delta: `\n\n## MOA Consensus\n\n${consensus.summary}`,
         done: false,
         error: null,
         cancelled: false,
       });
     }
+    emitLocalStreamChunk({
+      id: consensusRunId,
+      delta: '',
+      done: true,
+      error: null,
+      cancelled: wasCancelled,
+    });
     emitLocalStreamChunk({
       id: args.runId,
       delta: '',
@@ -5988,6 +6040,7 @@ export async function cancelAiStream(runId: string): Promise<void> {
     return;
   }
   localCancelledRuns.add(runId);
+  localStreamControllers.get(runId)?.abort();
 }
 
 const localChunkHandlers = new Set<(chunk: StreamChunk) => void>();

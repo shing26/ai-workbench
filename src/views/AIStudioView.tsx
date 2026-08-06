@@ -66,7 +66,7 @@ import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import ModelBadge from '../components/ui/ModelBadge';
 
-type Message = { role: 'user' | 'assistant'; content: string; id?: string };
+type Message = { role: 'user' | 'assistant'; content: string; id?: string; laneKey?: string };
 type ApiMessage = { role: 'user' | 'assistant' | 'system'; content: string };
 
 function SortablePromptRow({
@@ -185,6 +185,26 @@ export default function AIStudioView() {
   const teamRunIdsRef = useRef<string[]>([]);
   const teamPendingRef = useRef(0);
   const teamResultsRef = useRef(new Map<string, string>());
+  const moaRunIdsRef = useRef<string[]>([]);
+  const moaPendingRef = useRef(0);
+  const moaProviderRunIdsRef = useRef<string[]>([]);
+  const moaConsensusRunIdRef = useRef<string | null>(null);
+  const moaConsensusLaneKeyRef = useRef<string | null>(null);
+  const moaLaneResultsRef = useRef(new Map<string, string>());
+  const moaLaneFailedRef = useRef(new Set<string>());
+  const moaLaneMetaRef = useRef(
+    new Map<
+      string,
+      {
+        runId: string;
+        providerId: string;
+        providerName: string;
+        kind: 'parallel' | 'chain' | 'consensus';
+        baseHistoryLength: number;
+        laneKey: string;
+      }
+    >(),
+  );
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [ragConfirmMode, setRagConfirmMode] = useState(false);
@@ -198,6 +218,7 @@ export default function AIStudioView() {
     'idle' | 'connecting' | 'streaming' | 'error' | 'stopped'
   >('idle');
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [activeLaneKeys, setActiveLaneKeys] = useState<Set<string>>(new Set());
   const [sessions, setSessions] = useState<db.Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionQuery, setSessionQuery] = useState('');
@@ -257,6 +278,35 @@ export default function AIStudioView() {
     ? agents.filter((a) => a.departmentId === teamDeptId && a.isActive).slice(0, 3)
     : [];
   const selectedDepartment = departments.find((d) => d.id === teamDeptId) ?? null;
+  const pickMoaProviders = () => {
+    const currentBudget = getBudgetStatus();
+    const localProviders = activeProviders.filter((p) => db.isOllamaProvider(p.name, p.baseUrl));
+    const routeProviders =
+      currentBudget.over && currentBudget.autoDegrade && localProviders.length > 0
+        ? localProviders
+        : activeProviders;
+    return routeProviders.slice(0, 3);
+  };
+  const buildMoaPlaceholders = (runId: string): Message[] => {
+    const lanes = pickMoaProviders();
+    if (lanes.length === 0) return [{ role: 'assistant', content: '__stream__' }];
+    const lanePlaceholders: Message[] = [
+      ...lanes.map((_, index) => ({
+        role: 'assistant' as const,
+        content: '__stream__',
+        laneKey: `${runId}-lane-${index}`,
+      })),
+    ];
+    if (moaChain) return lanePlaceholders;
+    return [
+      ...lanePlaceholders,
+      {
+        role: 'assistant' as const,
+        content: '__stream__',
+        laneKey: `${runId}-lane-${lanes.length}`,
+      },
+    ];
+  };
 
   const refreshQuickPrompts = async () => {
     const [loadedPrompts, usage, custom] = await Promise.all([
@@ -364,7 +414,13 @@ export default function AIStudioView() {
         const run = runsRef.current.get(chunk.id);
         if (!run) return;
         if (chunk.done) {
-          const teamRun = teamPendingRef.current > 0;
+          const teamRun = teamPendingRef.current > 0 && teamRunIdsRef.current.includes(chunk.id);
+          const moaRun = moaPendingRef.current > 0 && moaRunIdsRef.current.includes(chunk.id);
+          const finalContent = chunk.error
+            ? `请求失败: ${chunk.error}`
+            : chunk.cancelled && !run.content.endsWith('[stopped]')
+              ? `${run.content}${run.content ? ' ' : ''}[stopped]`
+              : run.content;
           setMessages((prev) => {
             const next = [...prev];
             const idx = run.index;
@@ -383,8 +439,29 @@ export default function AIStudioView() {
             }
             return next;
           });
-          if (run.label) {
+          if (teamRun && run.label) {
             teamResultsRef.current.set(chunk.id, run.content);
+          }
+          if (moaRun) {
+            moaLaneResultsRef.current.set(chunk.id, run.content);
+            if (chunk.error) moaLaneFailedRef.current.add(chunk.id);
+            else moaLaneFailedRef.current.delete(chunk.id);
+            let laneKeyToRemove: string | null = null;
+            for (const [key, value] of moaLaneMetaRef.current) {
+              if (value.runId === chunk.id) {
+                laneKeyToRemove = key;
+                break;
+              }
+            }
+            if (laneKeyToRemove) {
+              const key = laneKeyToRemove;
+              setActiveLaneKeys((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Set(prev);
+                next.delete(key);
+                return next;
+              });
+            }
           }
           if (!chunk.error && !chunk.cancelled && run.content) {
             const nextBudget = recordTokenUsage(estimateTokens(run.content));
@@ -392,14 +469,14 @@ export default function AIStudioView() {
             setBudgetStatus(budgetStatusRef.current);
           }
           runsRef.current.delete(chunk.id);
-          if (!chunk.error && sessionIdRef.current && run.content) {
-            if (recapArmedRef.current) {
+          if (sessionIdRef.current && (run.content || chunk.error || chunk.cancelled)) {
+            if (recapArmedRef.current && !chunk.error && !chunk.cancelled) {
               const today = new Date().toISOString().slice(0, 10);
               setRecapDraft(saveRecapDraft(today, run.content));
               recapArmedRef.current = false;
             }
             void db
-              .saveChatMessage(sessionIdRef.current, 'assistant', run.content)
+              .saveChatMessage(sessionIdRef.current, 'assistant', finalContent)
               .then((saved) => {
                 setMessages((prev) => {
                   const next = [...prev];
@@ -416,6 +493,14 @@ export default function AIStudioView() {
               setStreamStatus('streaming');
               return;
             }
+          }
+          if (moaRun) {
+            moaPendingRef.current -= 1;
+            if (moaPendingRef.current > 0) {
+              setStreamStatus('streaming');
+              return;
+            }
+            moaRunIdsRef.current = [];
           }
           if (chunk.error) {
             setStreamStatus('error');
@@ -575,12 +660,20 @@ export default function AIStudioView() {
   }, []);
 
   const stopStreaming = async () => {
-    const targetRuns =
-      teamPendingRef.current > 0 ? [...teamRunIdsRef.current] : [`ai-${runIdRef.current}`];
+    const targetRuns = new Set<string>();
+    if (teamPendingRef.current > 0) {
+      teamRunIdsRef.current.forEach((id) => targetRuns.add(id));
+    }
+    if (moaPendingRef.current > 0) {
+      moaRunIdsRef.current.forEach((id) => targetRuns.add(id));
+      targetRuns.add(`ai-${runIdRef.current}`);
+    }
+    if (targetRuns.size === 0) targetRuns.add(`ai-${runIdRef.current}`);
     runIdRef.current += 1;
     setBusy(false);
     setStreamStatus('stopped');
     setStreamError(null);
+    setActiveLaneKeys(new Set());
     const stoppedByIndex = new Map<number, string>();
     for (const id of targetRuns) {
       const run = runsRef.current.get(id);
@@ -615,6 +708,8 @@ export default function AIStudioView() {
     }
     teamPendingRef.current = 0;
     teamRunIdsRef.current = [];
+    moaPendingRef.current = 0;
+    moaRunIdsRef.current = [];
   };
 
   const newChat = () => {
@@ -630,6 +725,17 @@ export default function AIStudioView() {
     setHighlightMessageId(null);
     runsRef.current.clear();
     retryTargetRef.current = null;
+    setActiveLaneKeys(new Set());
+    teamPendingRef.current = 0;
+    teamRunIdsRef.current = [];
+    teamResultsRef.current.clear();
+    moaPendingRef.current = 0;
+    moaRunIdsRef.current = [];
+    moaProviderRunIdsRef.current = [];
+    moaConsensusRunIdRef.current = null;
+    moaConsensusLaneKeyRef.current = null;
+    moaLaneResultsRef.current.clear();
+    moaLaneMetaRef.current.clear();
     setStreamStatus('idle');
     setStreamError(null);
     setInput('');
@@ -671,6 +777,17 @@ export default function AIStudioView() {
     );
     setHighlightMessageId(null);
     retryTargetRef.current = null;
+    setActiveLaneKeys(new Set());
+    teamPendingRef.current = 0;
+    teamRunIdsRef.current = [];
+    teamResultsRef.current.clear();
+    moaPendingRef.current = 0;
+    moaRunIdsRef.current = [];
+    moaProviderRunIdsRef.current = [];
+    moaConsensusRunIdRef.current = null;
+    moaConsensusLaneKeyRef.current = null;
+    moaLaneResultsRef.current.clear();
+    moaLaneMetaRef.current.clear();
     setStreamStatus('idle');
     setStreamError(null);
     setInput('');
@@ -923,7 +1040,7 @@ export default function AIStudioView() {
   };
 
   const runStream = async (history: Message[], runId: string, hits: db.RagSearchResult[]) => {
-    if (!runsRef.current.has(runId)) {
+    if (!moa && !runsRef.current.has(runId)) {
       runsRef.current.set(runId, { content: '', index: history.length });
     }
     fallbackChainRef.current = [];
@@ -987,6 +1104,54 @@ export default function AIStudioView() {
           ? routeProviders.map((p) => p.id)
           : [];
     }
+    const chain = moa && moaChain;
+    if (moa) {
+      const lanePrefix = chain ? 's' : 'p';
+      const providerRuns = providerIds.map((_, index) => `${runId}-${lanePrefix}${index}`);
+      const consensusRunId = chain ? null : `${runId}-c`;
+      const consensusLaneKey = chain ? null : `${runId}-lane-${providerIds.length}`;
+      const laneKeys = providerIds.map((_, index) => `${runId}-lane-${index}`);
+      setActiveLaneKeys((prev) => {
+        const next = new Set(prev);
+        laneKeys.forEach((key) => next.add(key));
+        return next;
+      });
+      moaProviderRunIdsRef.current = providerRuns;
+      moaConsensusRunIdRef.current = consensusRunId;
+      moaConsensusLaneKeyRef.current = consensusLaneKey;
+      moaRunIdsRef.current = consensusRunId ? [...providerRuns, consensusRunId] : [...providerRuns];
+      moaPendingRef.current = moaRunIdsRef.current.length;
+      moaLaneResultsRef.current.clear();
+      moaLaneFailedRef.current.clear();
+      providerIds.forEach((pid, index) => {
+        const subRunId = providerRuns[index];
+        const provider = routeProviders.find((p) => p.id === pid);
+        const laneKey = `${runId}-lane-${index}`;
+        runsRef.current.set(subRunId, { content: '', index: history.length + index });
+        moaLaneMetaRef.current.set(laneKey, {
+          runId: subRunId,
+          providerId: pid,
+          providerName: provider?.name ?? `Provider ${index + 1}`,
+          kind: chain ? 'chain' : 'parallel',
+          baseHistoryLength: history.length,
+          laneKey,
+        });
+      });
+      if (consensusRunId && consensusLaneKey) {
+        runsRef.current.set(consensusRunId, {
+          content: '',
+          index: history.length + providerIds.length,
+        });
+        moaLaneMetaRef.current.set(consensusLaneKey, {
+          runId: consensusRunId,
+          providerId: '',
+          providerName: 'MOA Consensus',
+          kind: 'consensus',
+          baseHistoryLength: history.length,
+          laneKey: consensusLaneKey,
+        });
+      }
+    }
     if (selectedAgent) setRoutedAgent(selectedAgent);
     setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
@@ -999,7 +1164,6 @@ export default function AIStudioView() {
         content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join('\n')}`,
       });
     }
-    const chain = moa && moaChain;
     try {
       await db.sendAiMessageStream({
         providerIds,
@@ -1019,13 +1183,9 @@ export default function AIStudioView() {
       setStreamStatus('error');
       setStreamError('stream unavailable');
     }
-    let moaOutput = runsRef.current.get(runId)?.content ?? '';
-    if (moa && !chain && !moaOutput.includes('## MOA Consensus')) {
-      for (let i = 0; i < 30 && runsRef.current.has(runId); i += 1) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
-        moaOutput = runsRef.current.get(runId)?.content ?? '';
-        if (moaOutput.includes('## MOA Consensus')) break;
-      }
+    let consensusSummary = '';
+    if (moa && !chain && moaConsensusRunIdRef.current) {
+      consensusSummary = moaLaneResultsRef.current.get(moaConsensusRunIdRef.current) ?? '';
     }
     const sections: InspectorSection[] = [];
     if (selectedAgent) {
@@ -1051,14 +1211,11 @@ export default function AIStudioView() {
         if (finalProvider) {
           sections.push({ label: 'Final', value: finalProvider.name });
         }
-      } else {
-        const consensusStart = moaOutput.indexOf('## MOA Consensus');
-        if (consensusStart >= 0) {
-          sections.push({
-            label: 'Consensus',
-            value: moaOutput.slice(consensusStart).replace(/\s+/g, ' ').slice(0, 140),
-          });
-        }
+      } else if (consensusSummary) {
+        sections.push({
+          label: 'Consensus',
+          value: consensusSummary.replace(/\s+/g, ' ').slice(0, 140),
+        });
       }
     } else if (routedName) {
       sections.push({ label: 'Router', value: `auto → ${routedName}` });
@@ -1218,11 +1375,10 @@ export default function AIStudioView() {
     const messageId =
       crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const userMessage: Message = { id: messageId, role: 'user', content: text };
-    const next: Message[] = [
-      ...messages,
-      userMessage,
-      { role: 'assistant', content: '__stream__' },
-    ];
+    const placeholders: Message[] = moa
+      ? buildMoaPlaceholders(runId)
+      : [{ role: 'assistant', content: '__stream__' }];
+    const next: Message[] = [...messages, userMessage, ...placeholders];
     setMessages(next);
     retryTargetRef.current = userMessage;
     setStreamStatus('connecting');
@@ -1230,7 +1386,7 @@ export default function AIStudioView() {
     setInput('');
     const session = await ensureSession(text);
     await db.saveChatMessage(session.id, 'user', text, messageId);
-    const history: Message[] = next.slice(0, next.length - 1);
+    const history: Message[] = next.slice(0, next.length - placeholders.length);
     await runStream(history, runId, hits);
   };
 
@@ -1367,7 +1523,6 @@ export default function AIStudioView() {
     const truncated = messages
       .map((m) => (m.id === message.id ? { ...m, content: editDraft.trim() || m.content } : m))
       .slice(0, messages.findIndex((m) => m.id === message.id) + 1);
-    const history: Message[] = [...truncated, { role: 'assistant', content: '__stream__' }];
     let hits: db.RagSearchResult[] = [];
     if (useRag) {
       try {
@@ -1378,14 +1533,164 @@ export default function AIStudioView() {
     }
     setRagHits(hits);
     const runId = `ai-${++runIdRef.current}`;
-    runsRef.current.set(runId, { content: '', index: history.length - 1 });
+    const placeholders: Message[] = moa
+      ? buildMoaPlaceholders(runId)
+      : [{ role: 'assistant', content: '__stream__' }];
+    const history: Message[] = [...truncated, ...placeholders];
+    if (!moa) {
+      runsRef.current.set(runId, { content: '', index: truncated.length });
+    }
     setMessages(history);
-    await runStream(history, runId, hits);
+    await runStream(truncated, runId, hits);
   };
 
   const retryLast = () => {
     const target = retryTargetRef.current;
     if (target) void regenerateMessage(target);
+  };
+
+  const cancelMoaLane = async (laneKey: string) => {
+    const meta = moaLaneMetaRef.current.get(laneKey);
+    if (!meta) return;
+    await db.cancelAiStream(meta.runId);
+  };
+
+  const retryMoaLane = async (laneKey: string) => {
+    const meta = moaLaneMetaRef.current.get(laneKey);
+    if (!meta || busy || !sessionIdRef.current) return;
+    setBusy(true);
+    setStreamStatus('connecting');
+    setStreamError(null);
+    const current = messages;
+    const userMessage = current[meta.baseHistoryLength - 1];
+    retryTargetRef.current = userMessage ?? null;
+    const removed = current.slice(meta.baseHistoryLength);
+    await Promise.all(
+      removed
+        .filter((m) => m.id && m.content && m.content !== '__stream__')
+        .map((m) => db.saveMessageVersion(m.id as string, m.content)),
+    );
+    if (userMessage?.id) {
+      await db.truncateChatMessages(sessionIdRef.current, userMessage.id);
+    }
+    const laneIndex = current.findIndex((m) => m.laneKey === laneKey);
+    const targetIndex = laneIndex >= 0 ? laneIndex : meta.baseHistoryLength;
+    const consensusKey = moaConsensusLaneKeyRef.current;
+    const chainEnd = meta.kind === 'chain' ? targetIndex : current.length - 1;
+    const next = current
+      .map((m, i) => {
+        if (i === targetIndex) return { ...m, content: '__stream__' };
+        if (consensusKey && m.laneKey === consensusKey) return { ...m, content: '__stream__' };
+        return m;
+      })
+      .filter((m, i) => i <= chainEnd || (consensusKey && m.laneKey === consensusKey));
+    setMessages(next);
+    setActiveLaneKeys((prev) => {
+      const nextSet = new Set(prev);
+      nextSet.add(laneKey);
+      return nextSet;
+    });
+    for (let i = meta.baseHistoryLength; i < next.length; i += 1) {
+      const m = next[i];
+      if (m.role === 'assistant' && m.id && m.content && m.content !== '__stream__') {
+        await db.saveChatMessage(sessionIdRef.current, 'assistant', m.content, m.id);
+      }
+    }
+    const newRunId = `ai-${++runIdRef.current}`;
+    const subRunId = `${newRunId}-r`;
+    runsRef.current.set(subRunId, {
+      content: '',
+      index: targetIndex,
+      label: `## ${meta.providerName}`,
+    });
+    moaProviderRunIdsRef.current = moaProviderRunIdsRef.current.map((id) =>
+      id === meta.runId ? subRunId : id,
+    );
+    moaRunIdsRef.current = [subRunId];
+    moaPendingRef.current = 1;
+    moaLaneMetaRef.current.set(laneKey, { ...meta, runId: subRunId });
+    moaLaneResultsRef.current.delete(subRunId);
+    const history: Message[] = current.slice(0, meta.baseHistoryLength);
+    const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
+    const selectedAgent = agentId ? (agents.find((a) => a.id === agentId) ?? null) : null;
+    if (selectedAgent?.systemPrompt?.trim()) {
+      apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
+    }
+    let hits: db.RagSearchResult[] = [];
+    if (useRag) {
+      try {
+        hits = await db.searchThoughts(userMessage?.content ?? '', 5);
+      } catch {
+        hits = [];
+      }
+    }
+    setRagHits(hits);
+    if (hits.length > 0) {
+      apiMessages.unshift({
+        role: 'system',
+        content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join('\n')}`,
+      });
+    }
+    try {
+      await db.sendAiMessageStream({
+        providerIds: [meta.providerId],
+        messages: apiMessages,
+        moa: false,
+        runId: subRunId,
+      });
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.laneKey === laneKey ? { ...m, content: '请求失败: stream unavailable' } : m,
+        ),
+      );
+      setStreamStatus('error');
+      setStreamError('stream unavailable');
+      setBusy(false);
+      return;
+    }
+    if (moaLaneFailedRef.current.has(subRunId)) {
+      const previousConsensus = next.find((m) => m.laneKey === consensusKey);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.laneKey === consensusKey && previousConsensus
+            ? { ...m, content: previousConsensus.content }
+            : m,
+        ),
+      );
+      setStreamStatus('error');
+      setStreamError('lane retry failed');
+      setBusy(false);
+      return;
+    }
+    if (!consensusKey || meta.kind !== 'parallel') {
+      setBusy(false);
+      setStreamStatus('idle');
+      setStreamError(null);
+      retryTargetRef.current = null;
+      return;
+    }
+    const outputs = moaProviderRunIdsRef.current.map(
+      (id) => moaLaneResultsRef.current.get(id) ?? '',
+    );
+    const consensus = await db.buildMoaConsensus(outputs);
+    const consensusContent = `## MOA Consensus\n\n${consensus.summary}`;
+    const consensusMessage = next.find((m) => m.laneKey === consensusKey);
+    const savedConsensus = await db.saveChatMessage(
+      sessionIdRef.current,
+      'assistant',
+      consensusContent,
+      consensusMessage?.id,
+    );
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.laneKey === consensusKey ? { ...m, content: consensusContent, id: savedConsensus.id } : m,
+      ),
+    );
+    setBusy(false);
+    setStreamStatus('idle');
+    setStreamError(null);
+    retryTargetRef.current = null;
   };
 
   const toggleHistory = async (message: Message) => {
@@ -2000,6 +2305,37 @@ export default function AIStudioView() {
                 >
                   {m.content === '__stream__' ? '' : m.content}
                   {m.content === '__stream__' && busy && <span className="stream-caret" />}
+                  {m.laneKey && activeLaneKeys.has(m.laneKey) && (
+                    <span className="mt-1.5 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        aria-label="Stop lane"
+                        data-moa-lane-stop={m.laneKey}
+                        onClick={() => {
+                          if (m.laneKey) void cancelMoaLane(m.laneKey);
+                        }}
+                        className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-rose-500/25 bg-rose-500/10 px-2 text-[10px] text-rose-300 transition-colors hover:bg-rose-500/20"
+                      >
+                        <Square size={9} /> Stop
+                      </button>
+                    </span>
+                  )}
+                  {m.laneKey &&
+                    (m.content.startsWith('请求失败') || m.content.endsWith('[stopped]')) && (
+                      <span className="mt-1.5 flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          aria-label="Retry lane"
+                          data-moa-lane-retry={m.laneKey}
+                          onClick={() => {
+                            if (m.laneKey) void retryMoaLane(m.laneKey);
+                          }}
+                          className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-2 text-[10px] text-amber-300 transition-colors hover:bg-amber-500/20"
+                        >
+                          <RefreshCw size={9} /> Retry
+                        </button>
+                      </span>
+                    )}
                 </div>
                 {m.role === 'user' && m.id && editingMessageId === m.id ? (
                   <div className="mt-1 flex items-start gap-1.5">

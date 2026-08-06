@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 149
+
+### What went well?
+
+- MOA Parallel / Chain 升级为每 Provider 独立子流：Rust 使用 `{run_id}-p{index}` / `{run_id}-s{index}` / `{run_id}-c`，每条子流自带 done / error / cancelled 事件；浏览器 fallback 完全同构。
+- AI Studio 每张 MOA 流卡片提供独立 Stop 与失败/停止后的单路 Retry：单路取消只中断该 Provider，其它流与 Consensus 继续完成；失败单路重试只重跑该 Provider，并基于全部输出重算 `## MOA Consensus`。
+- 浏览器 fallback 新增 `localStreamControllers`：`cancelAiStream` 直接 abort 对应 fetch，避免流暂停时取消失效；单 Provider 请求严格按 `providerIds` 精确路由。
+- `verify:ui` / `verify:preview` 新增 `streamLaneCancelRetry` lane：一路失败、一路慢流被单独取消、一路正常完成，然后重试失败路并断言共识更新；`moaChain` lane 适配多卡片断言。Rust 单测增至 178 条。
+
+### What went wrong?
+
+- Chain 模式最初仍注册了 Consensus 子流，`moaPendingRef` 永远无法归零导致 busy 不结束；改为 Chain 不注册 `-c` 后稳定。
+- 浏览器 fallback 非 MOA 分支原本忽略 `providerIds` 按优先级选 Provider，导致单路重试发错 Provider；改为单 Provider 时精确匹配。
+- Chain 中途取消后未开始的子流曾不 emit done，busy 会悬挂；收尾时统一补发剩余步骤 `done + cancelled`，并新增 `streamLaneChainCancel` 自动化 lane 覆盖。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量导入导出与 API Key 加密落库；流式请求超时配置与自动重试。
+- 保留 `streamLaneCancelRetry` lane，修改子流协议、取消语义或单路重试时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 148
 
 ### What went well?
