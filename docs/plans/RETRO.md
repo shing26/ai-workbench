@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 144
+
+### What went well?
+
+- 事件总线从“只触发 Webhook”升级为可持久化、可校验、可跨设备转发的管道：新增 `event_logs` / `event_schemas` / `event_forwards` / `event_bus_config` 四张表，新库 SCHEMA 直接建表无需迁移；`emit_event_bus_event` 统一走“落库 → schema 校验 → rejected / accepted → 入队转发 → 复用 `trigger_webhook_event`”，原有 `emitWorkbenchEvent` 调用链（同步、错误、剪贴板、知识库索引）全部改为留痕后转发。
+- 转发 worker 每 2s 认领最多 8 条到期任务，POST JSON（可选 Bearer token），失败按 `1000ms << attempts` 退避并封顶 5 次；System 新增 Event bus 卡片，覆盖统计、事件输入、日志 / Schema / 转发队列、保留策略与清理按钮。
+- `verify:ui` / `verify:preview` 新增 `eventBusLogging` / `eventBusSchema` / `eventBusForward` 三条 lane，Rust 单测增至 165 条，双端全绿；验证脚本补 `--disable-extensions` 与浏览器 console.error / exception 监听，headless Edge 不再被本机扩展刷屏，CDP 超时问题根除，单轮耗时从约 8 分钟降到约 3.5 分钟。
+
+### What went wrong?
+
+- 首轮验证连续三次在 `providerToggled` 的 System 点击处 CDP 超时，初判为偶发；加浏览器日志后发现 headless Edge 加载了用户本机扩展（Immersive Translate / MetaMask 类），EventEmitter 泄漏与 ObjectMultiplex 孤儿流把 DevTools 通道打满。加 `--disable-extensions` 后双端稳定全绿。
+- schema 校验要求 Rust / TS 双端对缺省 schema 的行为一致：`schema_strict=false` 时缺 schema 不拦截、有 schema 仍校验；TS fallback 与 Rust 保持一致，并在 lane 中显式 seed 配置，避免环境间状态漂移。
+
+### Action Items
+
+- 下一 Sprint 候选：Knowledge 真实 Embedding 模型、向量增量后台重建与分片索引。
+- 保留 `eventBusLogging` / `eventBusSchema` / `eventBusForward` lane，修改事件模型、schema 校验、转发 worker 或保留策略时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 143
 
 ### What went well?

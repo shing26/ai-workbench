@@ -6,6 +6,7 @@ import {
   ChevronUp,
   Clipboard,
   CloudUpload,
+  Database,
   Download,
   HeartPulse,
   History,
@@ -14,8 +15,10 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  Send,
   ShieldCheck,
   Terminal,
+  Trash2,
   Upload,
   Users,
   Wallet,
@@ -181,6 +184,27 @@ export default function SystemView() {
   const [webhookDeliveryStats, setWebhookDeliveryStats] = useState<db.WebhookDeliveryStats | null>(
     null,
   );
+  const [eventBusStats, setEventBusStats] = useState<db.EventBusStats | null>(null);
+  const [eventBusEvent, setEventBusEvent] = useState('');
+  const [eventBusContext, setEventBusContext] = useState('{"note":"hello"}');
+  const [eventBusSource, setEventBusSource] = useState('workbench');
+  const [eventBusLogs, setEventBusLogs] = useState<db.EventLogRecord[]>([]);
+  const [eventBusSchemas, setEventBusSchemas] = useState<db.EventSchema[]>([]);
+  const [eventBusSchemaEvent, setEventBusSchemaEvent] = useState('');
+  const [eventBusSchemaJson, setEventBusSchemaJson] = useState(
+    '{"required":["note"],"properties":{"note":{"type":"string"}}}',
+  );
+  const [eventBusSchemaEnabled, setEventBusSchemaEnabled] = useState(true);
+  const [eventBusConfig, setEventBusConfig] = useState<db.EventBusConfig | null>(null);
+  const [eventBusForwardEnabled, setEventBusForwardEnabled] = useState(false);
+  const [eventBusForwardUrl, setEventBusForwardUrl] = useState('');
+  const [eventBusForwardToken, setEventBusForwardToken] = useState('');
+  const [eventBusRetentionDays, setEventBusRetentionDays] = useState('30');
+  const [eventBusMaxLogs, setEventBusMaxLogs] = useState('500');
+  const [eventBusSchemaStrict, setEventBusSchemaStrict] = useState(true);
+  const [eventBusForwards, setEventBusForwards] = useState<db.EventForwardRecord[]>([]);
+  const [eventBusMessage, setEventBusMessage] = useState('');
+  const [eventBusBusy, setEventBusBusy] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState('');
@@ -1150,6 +1174,125 @@ export default function SystemView() {
     setWebhookDeliveryStats(await db.getWebhookDeliveryStats());
   };
 
+  const loadEventBusData = useCallback(async () => {
+    const [stats, logs, schemas, config, forwards] = await Promise.all([
+      db.getEventBusStats(),
+      db.listEventLogs(undefined, 20),
+      db.listEventSchemas(),
+      db.getEventBusConfig(),
+      db.listEventForwards(undefined, 20),
+    ]);
+    setEventBusStats(stats);
+    setEventBusLogs(logs);
+    setEventBusSchemas(schemas);
+    setEventBusConfig(config);
+    setEventBusForwardEnabled(config.forwardEnabled);
+    setEventBusForwardUrl(config.forwardUrl);
+    setEventBusForwardToken(config.forwardToken);
+    setEventBusRetentionDays(String(config.retentionDays));
+    setEventBusMaxLogs(String(config.maxLogs));
+    setEventBusSchemaStrict(config.schemaStrict);
+    setEventBusForwards(forwards);
+  }, []);
+
+  const emitEventBus = async () => {
+    if (!eventBusEvent.trim()) {
+      setEventBusMessage('Event name required');
+      return;
+    }
+    let context: Record<string, unknown> = {};
+    if (eventBusContext.trim()) {
+      try {
+        context = JSON.parse(eventBusContext) as Record<string, unknown>;
+      } catch {
+        setEventBusMessage('Event context must be valid JSON');
+        return;
+      }
+    }
+    setEventBusBusy(true);
+    try {
+      const result = await db.emitEventBusEvent(
+        eventBusEvent.trim(),
+        context,
+        eventBusSource.trim() || 'workbench',
+        deviceId,
+      );
+      setEventBusMessage(
+        `${result.validated ? 'Accepted' : `Rejected: ${result.rejectedReason}`} · ${
+          result.forwarded
+        } forwarded · ${result.webhookDeliveries} webhook`,
+      );
+      await loadEventBusData();
+    } catch (err) {
+      setEventBusMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEventBusBusy(false);
+    }
+  };
+
+  const saveEventBusSchema = async () => {
+    if (!eventBusSchemaEvent.trim()) {
+      setEventBusMessage('Schema event name required');
+      return;
+    }
+    try {
+      await db.setEventSchema(
+        eventBusSchemaEvent.trim(),
+        eventBusSchemaJson.trim() || '{}',
+        eventBusSchemaEnabled,
+      );
+      setEventBusSchemas(await db.listEventSchemas());
+      setEventBusMessage(`Schema saved for ${eventBusSchemaEvent.trim()}`);
+    } catch (err) {
+      setEventBusMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const selectEventBusSchema = (schema: db.EventSchema) => {
+    setEventBusSchemaEvent(schema.event);
+    setEventBusSchemaJson(schema.schema);
+    setEventBusSchemaEnabled(schema.enabled);
+  };
+
+  const saveEventBusConfig = async () => {
+    const config = await db.setEventBusConfig(
+      eventBusForwardEnabled,
+      eventBusForwardUrl,
+      eventBusForwardToken,
+      Number(eventBusRetentionDays) || 30,
+      Number(eventBusMaxLogs) || 500,
+      eventBusSchemaStrict,
+    );
+    setEventBusConfig(config);
+    setEventBusMessage(
+      `Event bus config saved (${config.retentionDays}d / ${config.maxLogs} logs)`,
+    );
+  };
+
+  const retryEventForwardItem = async (id: string) => {
+    await db.retryEventForward(id);
+    setEventBusForwards(await db.listEventForwards(undefined, 20));
+    setEventBusMessage('Event forward requeued');
+  };
+
+  const deleteEventForwardItem = async (id: string) => {
+    await db.deleteEventForward(id);
+    setEventBusForwards(await db.listEventForwards(undefined, 20));
+    setEventBusMessage('Event forward deleted');
+  };
+
+  const clearEventBusLogs = async () => {
+    const removed = await db.clearEventLogs();
+    setEventBusMessage(`Cleared ${removed} event logs`);
+    await loadEventBusData();
+  };
+
+  const clearEventBusForwards = async () => {
+    const removed = await db.clearEventForwards();
+    setEventBusMessage(`Cleared ${removed} event forwards`);
+    await loadEventBusData();
+  };
+
   useEffect(() => {
     void checkAll();
   }, [checkAll]);
@@ -1180,6 +1323,13 @@ export default function SystemView() {
       window.removeEventListener('webhook-notification', onWebhookNotification);
     };
   }, []);
+
+  useEffect(() => {
+    void loadEventBusData();
+    const onEventBusUpdated = () => void loadEventBusData();
+    window.addEventListener('workbench:event-bus-updated', onEventBusUpdated);
+    return () => window.removeEventListener('workbench:event-bus-updated', onEventBusUpdated);
+  }, [loadEventBusData]);
 
   useEffect(() => {
     let disposed = false;
@@ -2892,6 +3042,358 @@ export default function SystemView() {
                 <span className="ml-auto text-[9px] text-slate-600">
                   config {webhookRetention.retentionDays}d / {webhookRetention.maxRecords}
                 </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </BentoCard>
+
+      <BentoCard
+        title="Event bus"
+        subtitle="持久化日志、Schema 校验与跨设备转发"
+        icon={Radio}
+        colSpan={12}
+      >
+        <div
+          data-event-bus-stats
+          className="mb-3 grid grid-cols-3 gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-2 sm:grid-cols-6"
+        >
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-slate-300">
+              {eventBusStats?.total ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">total</span>
+          </div>
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-emerald-300">
+              {eventBusStats?.accepted ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">accepted</span>
+          </div>
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-rose-300">
+              {eventBusStats?.rejected ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">rejected</span>
+          </div>
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-cyan-300">
+              {eventBusStats?.forwarded ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">forwarded</span>
+          </div>
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-amber-300">
+              {eventBusStats?.pending ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">pending</span>
+          </div>
+          <div className="flex flex-col items-center rounded-lg bg-white/[0.03] px-2 py-1.5">
+            <span className="text-sm font-semibold text-orange-300">
+              {eventBusStats?.failed ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">failed</span>
+          </div>
+        </div>
+
+        <div className="mb-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+          <input
+            value={eventBusEvent}
+            onChange={(e) => setEventBusEvent(e.target.value)}
+            placeholder="Event name (e.g. daily.summary)"
+            data-event-bus-event
+            className="h-9 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3 font-mono text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={eventBusSource}
+            onChange={(e) => setEventBusSource(e.target.value)}
+            placeholder="Source (default workbench)"
+            data-event-bus-source
+            className="h-9 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <button
+            type="button"
+            data-event-bus-emit
+            onClick={() => void emitEventBus()}
+            disabled={eventBusBusy}
+            className="flex h-9 items-center justify-center gap-1.5 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Send size={14} />
+            {eventBusBusy ? 'Emitting...' : 'Emit'}
+          </button>
+        </div>
+        <textarea
+          value={eventBusContext}
+          onChange={(e) => setEventBusContext(e.target.value)}
+          placeholder="Event context (JSON)"
+          data-event-bus-context
+          className="mb-2 h-16 w-full resize-none rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 font-mono text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+        />
+        {eventBusMessage && (
+          <span
+            data-event-bus-message
+            className="mb-2 block max-w-full truncate rounded-md bg-white/5 px-2 py-1 text-[10px] text-slate-300"
+          >
+            {eventBusMessage}
+          </span>
+        )}
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="flex min-w-0 flex-col gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-medium text-slate-400">Event logs</span>
+              <button
+                type="button"
+                data-event-bus-logs-clear
+                onClick={() => void clearEventBusLogs()}
+                className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-2 text-[9px] text-slate-400 hover:bg-white/10"
+              >
+                <Trash2 size={10} />
+                Clear
+              </button>
+            </div>
+            {eventBusLogs.map((log) => (
+              <div
+                key={log.id}
+                data-event-log-item
+                className="rounded-xl border border-white/10 bg-white/[0.03] px-2.5 py-2"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    data-event-log-status
+                    className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
+                      log.status === 'accepted'
+                        ? 'bg-emerald-500/10 text-emerald-300'
+                        : 'bg-rose-500/10 text-rose-300'
+                    }`}
+                  >
+                    {log.status}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-slate-300">
+                    {log.event}
+                  </span>
+                  <span className="shrink-0 text-[9px] text-slate-600">
+                    {formatTime(log.createdAt)}
+                  </span>
+                </div>
+                <p className="mt-1 truncate text-[9px] text-slate-500">
+                  {log.source}
+                  {log.deviceId ? ` · ${log.deviceId}` : ''} · schema v{log.schemaVersion}
+                </p>
+                {log.rejectedReason && (
+                  <p
+                    data-event-log-reason
+                    className="mt-1 break-words rounded-md bg-rose-500/10 px-1.5 py-1 text-[9px] text-rose-300"
+                  >
+                    {log.rejectedReason}
+                  </p>
+                )}
+                <pre className="mt-1 max-h-12 overflow-auto whitespace-pre-wrap font-mono text-[9px] leading-relaxed text-slate-500">
+                  {log.context}
+                </pre>
+              </div>
+            ))}
+            {eventBusLogs.length === 0 && (
+              <div className="py-6 text-center text-[10px] text-slate-600">No event logs</div>
+            )}
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-2">
+            <span className="text-[10px] font-medium text-slate-400">Schema registry</span>
+            <input
+              value={eventBusSchemaEvent}
+              onChange={(e) => setEventBusSchemaEvent(e.target.value)}
+              placeholder="Schema event name"
+              data-event-schema-event
+              className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 font-mono text-[10px] outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <textarea
+              value={eventBusSchemaJson}
+              onChange={(e) => setEventBusSchemaJson(e.target.value)}
+              placeholder='{"required":["note"],"properties":{"note":{"type":"string"}}}'
+              data-event-schema-json
+              className="h-20 w-full resize-none rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 font-mono text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+              <input
+                type="checkbox"
+                data-event-schema-enabled
+                checked={eventBusSchemaEnabled}
+                onChange={(e) => setEventBusSchemaEnabled(e.target.checked)}
+                className="accent-emerald-500"
+              />
+              Enforce schema
+            </label>
+            <button
+              type="button"
+              data-event-schema-save
+              onClick={() => void saveEventBusSchema()}
+              className="flex h-8 items-center justify-center gap-1.5 rounded-lg accent-bg-20 text-[10px] accent-text-strong accent-hover-bg-30"
+            >
+              <Database size={12} />
+              Save schema
+            </button>
+            <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1">
+              {eventBusSchemas.map((schema) => (
+                <button
+                  key={schema.event}
+                  type="button"
+                  data-event-schema-item
+                  onClick={() => selectEventBusSchema(schema)}
+                  className="flex items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5 text-left hover:bg-white/[0.06]"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-slate-300">
+                    {schema.event}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded px-1 text-[8px] ${
+                      schema.enabled
+                        ? 'bg-emerald-500/10 text-emerald-300'
+                        : 'bg-slate-500/10 text-slate-500'
+                    }`}
+                  >
+                    {schema.enabled ? 'on' : 'off'}
+                  </span>
+                </button>
+              ))}
+              {eventBusSchemas.length === 0 && (
+                <div className="py-3 text-center text-[9px] text-slate-600">No schemas</div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-medium text-slate-400">Forwarding</span>
+              <label className="flex items-center gap-1.5 text-[9px] text-slate-400">
+                <input
+                  type="checkbox"
+                  data-event-bus-forward-enabled
+                  checked={eventBusForwardEnabled}
+                  onChange={(e) => setEventBusForwardEnabled(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                enabled
+              </label>
+            </div>
+            <input
+              value={eventBusForwardUrl}
+              onChange={(e) => setEventBusForwardUrl(e.target.value)}
+              placeholder="Forward URL"
+              data-event-bus-forward-url
+              className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 font-mono text-[10px] outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <input
+              value={eventBusForwardToken}
+              onChange={(e) => setEventBusForwardToken(e.target.value)}
+              placeholder="Bearer token"
+              type="password"
+              data-event-bus-forward-token
+              className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                value={eventBusRetentionDays}
+                onChange={(e) => setEventBusRetentionDays(e.target.value)}
+                type="number"
+                aria-label="Event retention days"
+                data-event-bus-forward-retention
+                className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] outline-none focus:border-emerald-500/40"
+              />
+              <input
+                value={eventBusMaxLogs}
+                onChange={(e) => setEventBusMaxLogs(e.target.value)}
+                type="number"
+                aria-label="Max event logs"
+                data-event-bus-forward-max
+                className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] outline-none focus:border-emerald-500/40"
+              />
+              <label className="flex h-8 items-center justify-center gap-1 rounded-lg bg-white/[0.03] text-[9px] text-slate-400">
+                <input
+                  type="checkbox"
+                  data-event-bus-forward-strict
+                  checked={eventBusSchemaStrict}
+                  onChange={(e) => setEventBusSchemaStrict(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                strict
+              </label>
+            </div>
+            <button
+              type="button"
+              data-event-bus-forward-save
+              onClick={() => void saveEventBusConfig()}
+              className="flex h-8 items-center justify-center gap-1.5 rounded-lg accent-bg-20 text-[10px] accent-text-strong accent-hover-bg-30"
+            >
+              <RefreshCw size={12} />
+              Save config
+            </button>
+            {eventBusConfig && (
+              <p className="truncate text-[9px] text-slate-600">
+                config {eventBusConfig.retentionDays}d / {eventBusConfig.maxLogs} logs
+              </p>
+            )}
+            <div className="mt-1 flex items-center justify-between">
+              <span className="text-[9px] text-slate-500">Queue</span>
+              <button
+                type="button"
+                data-event-bus-forwards-clear
+                onClick={() => void clearEventBusForwards()}
+                className="flex h-5 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[8px] text-slate-400 hover:bg-white/10"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-1">
+              {eventBusForwards.map((forward) => (
+                <div
+                  key={forward.id}
+                  data-event-forward-item
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      data-event-forward-status
+                      className={`shrink-0 rounded px-1 py-0.5 text-[8px] ${
+                        forward.status === 'success'
+                          ? 'bg-emerald-500/10 text-emerald-300'
+                          : forward.status === 'queued' || forward.status === 'delivering'
+                            ? 'bg-amber-500/10 text-amber-300'
+                            : 'bg-rose-500/10 text-rose-300'
+                      }`}
+                    >
+                      {forward.status}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                      {forward.targetUrl}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-[8px] text-slate-600">
+                    attempts {forward.attempts} · {formatTime(forward.updatedAt)}
+                    {forward.lastMessage ? ` · ${forward.lastMessage}` : ''}
+                  </p>
+                  <div className="mt-1 flex gap-1">
+                    <button
+                      type="button"
+                      data-event-forward-retry
+                      onClick={() => void retryEventForwardItem(forward.id)}
+                      className="flex h-5 items-center rounded bg-white/5 px-1.5 text-[8px] text-slate-400 hover:bg-white/10"
+                    >
+                      Retry
+                    </button>
+                    <button
+                      type="button"
+                      data-event-forward-delete
+                      onClick={() => void deleteEventForwardItem(forward.id)}
+                      className="flex h-5 items-center rounded bg-rose-500/10 px-1.5 text-[8px] text-rose-300 hover:bg-rose-500/20"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {eventBusForwards.length === 0 && (
+                <div className="py-4 text-center text-[9px] text-slate-600">No forwards</div>
               )}
             </div>
           </div>

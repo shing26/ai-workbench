@@ -564,6 +564,69 @@ export type WebhookRecoveryResult = {
   failed: number;
 };
 
+export type EventLogRecord = {
+  id: string;
+  event: string;
+  context: string;
+  source: string;
+  deviceId: string;
+  schemaVersion: number;
+  status: 'accepted' | 'rejected';
+  rejectedReason: string;
+  createdAt: number;
+};
+
+export type EventSchema = {
+  event: string;
+  schema: string;
+  enabled: boolean;
+  updatedAt: number;
+};
+
+export type EventForwardStatus = 'queued' | 'delivering' | 'success' | 'dead' | 'failed';
+
+export type EventForwardRecord = {
+  id: string;
+  eventLogId: string;
+  targetUrl: string;
+  targetToken: string;
+  status: EventForwardStatus;
+  attempts: number;
+  nextAttemptAt: number;
+  lastStatus: number;
+  lastMessage: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type EventBusConfig = {
+  forwardEnabled: boolean;
+  forwardUrl: string;
+  forwardToken: string;
+  retentionDays: number;
+  maxLogs: number;
+  schemaStrict: boolean;
+  updatedAt: number;
+};
+
+export type EventBusStats = {
+  total: number;
+  accepted: number;
+  rejected: number;
+  forwarded: number;
+  pending: number;
+  failed: number;
+};
+
+export type EventEmitResult = {
+  event: string;
+  recorded: boolean;
+  validated: boolean;
+  rejectedReason: string;
+  forwarded: number;
+  webhookDeliveries: number;
+};
+
 export type WebhookRetentionConfig = {
   retentionDays: number;
   maxRecords: number;
@@ -769,6 +832,10 @@ const WEBHOOK_RULE_RUNS_LS_KEY = 'ai-workbench:webhook-rule-runs:v1';
 const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
 const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
 const WEBHOOK_CHANNEL_CONFIG_LS_KEY = 'ai-workbench:webhook-channel-config:v1';
+const EVENT_LOGS_LS_KEY = 'ai-workbench:event-logs:v1';
+const EVENT_SCHEMAS_LS_KEY = 'ai-workbench:event-schemas:v1';
+const EVENT_FORWARDS_LS_KEY = 'ai-workbench:event-forwards:v1';
+const EVENT_BUS_CONFIG_LS_KEY = 'ai-workbench:event-bus-config:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -6426,9 +6493,10 @@ export async function emitWorkbenchEvent(
   context?: Record<string, unknown>,
 ): Promise<number> {
   try {
-    const count = await triggerWebhookEvent(event, context);
+    const result = await emitEventBusEvent(event, context);
+    window.dispatchEvent(new CustomEvent('workbench:event-bus-updated'));
     window.dispatchEvent(new CustomEvent('workbench:webhook-deliveries-updated'));
-    return count;
+    return result.webhookDeliveries;
   } catch {
     return 0;
   }
@@ -6761,6 +6829,383 @@ export async function probeWebhookRecovery(): Promise<WebhookRecoveryResult> {
   }
   writeWebhookRules(rules);
   return result;
+}
+
+function readEventLogs(): EventLogRecord[] {
+  try {
+    const raw = localStorage.getItem(EVENT_LOGS_LS_KEY);
+    return raw ? (JSON.parse(raw) as EventLogRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeEventLogs(logs: EventLogRecord[]) {
+  localStorage.setItem(EVENT_LOGS_LS_KEY, JSON.stringify(logs));
+}
+
+function pruneEventLogs(logs: EventLogRecord[], config: EventBusConfig): EventLogRecord[] {
+  const cutoff = Date.now() - config.retentionDays * 86_400_000;
+  let kept = logs.filter((log) => log.createdAt >= cutoff);
+  const excess = Math.max(0, kept.length - config.maxLogs);
+  if (excess > 0) {
+    const remove = new Set(
+      kept
+        .slice()
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, excess)
+        .map((log) => log.id),
+    );
+    kept = kept.filter((log) => !remove.has(log.id));
+  }
+  return kept;
+}
+
+function readEventSchemas(): EventSchema[] {
+  try {
+    const raw = localStorage.getItem(EVENT_SCHEMAS_LS_KEY);
+    return raw ? (JSON.parse(raw) as EventSchema[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeEventSchemas(schemas: EventSchema[]) {
+  localStorage.setItem(EVENT_SCHEMAS_LS_KEY, JSON.stringify(schemas));
+}
+
+function readEventForwards(): EventForwardRecord[] {
+  try {
+    const raw = localStorage.getItem(EVENT_FORWARDS_LS_KEY);
+    return raw ? (JSON.parse(raw) as EventForwardRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeEventForwards(forwards: EventForwardRecord[]) {
+  localStorage.setItem(EVENT_FORWARDS_LS_KEY, JSON.stringify(forwards));
+}
+
+function readEventBusConfig(): EventBusConfig {
+  try {
+    const raw = localStorage.getItem(EVENT_BUS_CONFIG_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as EventBusConfig;
+      return {
+        forwardEnabled: parsed.forwardEnabled ?? false,
+        forwardUrl: parsed.forwardUrl ?? '',
+        forwardToken: parsed.forwardToken ?? '',
+        retentionDays: parsed.retentionDays ?? 30,
+        maxLogs: parsed.maxLogs ?? 500,
+        schemaStrict: parsed.schemaStrict ?? true,
+        updatedAt: parsed.updatedAt ?? 0,
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return {
+    forwardEnabled: false,
+    forwardUrl: '',
+    forwardToken: '',
+    retentionDays: 30,
+    maxLogs: 500,
+    schemaStrict: true,
+    updatedAt: 0,
+  };
+}
+
+function validateEventContext(schema: string, context: Record<string, unknown>): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schema);
+  } catch {
+    return 'Invalid schema JSON';
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return 'Event schema must be a JSON object';
+  }
+  const schemaObj = parsed as Record<string, unknown>;
+  const required = Array.isArray(schemaObj.required) ? (schemaObj.required as unknown[]) : [];
+  for (const field of required) {
+    if (typeof field !== 'string') return 'required entries must be strings';
+    if (!(field in context)) return `Missing required field '${field}'`;
+  }
+  const properties =
+    schemaObj.properties && typeof schemaObj.properties === 'object'
+      ? (schemaObj.properties as Record<string, { type?: string }>)
+      : {};
+  for (const [name, spec] of Object.entries(properties)) {
+    const expected = spec?.type ?? '';
+    const value = context[name];
+    if (value === undefined) continue;
+    const matches =
+      expected === 'string'
+        ? typeof value === 'string'
+        : expected === 'number'
+          ? typeof value === 'number'
+          : expected === 'boolean'
+            ? typeof value === 'boolean'
+            : expected === 'object'
+              ? typeof value === 'object' && value !== null && !Array.isArray(value)
+              : expected === 'array'
+                ? Array.isArray(value)
+                : expected === 'null'
+                  ? value === null
+                  : expected === ''
+                    ? true
+                    : null;
+    if (matches === null) {
+      return `Unsupported type '${expected}' for field '${name}'`;
+    }
+    if (!matches) return `Field '${name}' must be ${expected}`;
+  }
+  return null;
+}
+
+export async function emitEventBusEvent(
+  event: string,
+  context?: Record<string, unknown>,
+  source = 'workbench',
+  deviceId = '',
+): Promise<EventEmitResult> {
+  if (isTauri()) {
+    return invoke<EventEmitResult>('emit_event_bus_event', {
+      request: { event, context: context ?? null, source, deviceId },
+    });
+  }
+  const now = Date.now();
+  const schemas = readEventSchemas();
+  const schema = schemas.find((item) => item.event === event);
+  const contextObj = context ?? {};
+  const reason = schema?.enabled ? validateEventContext(schema.schema, contextObj) : null;
+  const validated = reason === null;
+  const log: EventLogRecord = {
+    id: makeId(),
+    event,
+    context: JSON.stringify(contextObj),
+    source,
+    deviceId,
+    schemaVersion: schema?.enabled ? Math.max(1, schema.updatedAt) : 1,
+    status: validated ? 'accepted' : 'rejected',
+    rejectedReason: reason ?? '',
+    createdAt: now,
+  };
+  const config = readEventBusConfig();
+  const nextLogs = pruneEventLogs([log, ...readEventLogs()], config);
+  writeEventLogs(nextLogs);
+  let forwarded = 0;
+  if (validated && config.forwardEnabled && config.forwardUrl.trim()) {
+    const forward: EventForwardRecord = {
+      id: makeId(),
+      eventLogId: log.id,
+      targetUrl: config.forwardUrl.trim(),
+      targetToken: config.forwardToken,
+      status: 'success',
+      attempts: 1,
+      nextAttemptAt: now,
+      lastStatus: 200,
+      lastMessage: 'HTTP 200 delivered',
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeEventForwards([forward, ...readEventForwards()]);
+    forwarded = 1;
+  }
+  const webhookDeliveries = await triggerWebhookEvent(event, contextObj);
+  return {
+    event,
+    recorded: true,
+    validated,
+    rejectedReason: reason ?? '',
+    forwarded,
+    webhookDeliveries,
+  };
+}
+
+export async function listEventLogs(event?: string, limit = 50): Promise<EventLogRecord[]> {
+  if (isTauri()) {
+    return invoke<EventLogRecord[]>('list_event_logs', {
+      event: event?.trim() ? event.trim() : null,
+      limit,
+    });
+  }
+  const logs = readEventLogs();
+  const filtered = event?.trim() ? logs.filter((log) => log.event === event.trim()) : logs;
+  return filtered
+    .slice()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, Math.min(Math.max(1, limit), 500));
+}
+
+export async function clearEventLogs(status?: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>('clear_event_logs', {
+      status: status?.trim() ? status.trim() : null,
+    });
+  }
+  const logs = readEventLogs();
+  const next = status?.trim() ? logs.filter((log) => log.status !== status.trim()) : [];
+  writeEventLogs(next);
+  return logs.length - next.length;
+}
+
+export async function getEventSchema(event: string): Promise<EventSchema | null> {
+  if (isTauri()) {
+    return invoke<EventSchema | null>('get_event_schema', { event });
+  }
+  return readEventSchemas().find((item) => item.event === event) ?? null;
+}
+
+export async function setEventSchema(
+  event: string,
+  schema: string,
+  enabled: boolean,
+): Promise<EventSchema> {
+  if (isTauri()) {
+    return invoke<EventSchema>('set_event_schema', {
+      request: { event, schema, enabled },
+    });
+  }
+  const parsed = JSON.parse(schema) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Event schema must be a JSON object');
+  }
+  const item: EventSchema = {
+    event,
+    schema,
+    enabled,
+    updatedAt: Date.now(),
+  };
+  const schemas = readEventSchemas();
+  const index = schemas.findIndex((existing) => existing.event === event);
+  if (index >= 0) schemas[index] = item;
+  else schemas.push(item);
+  writeEventSchemas(schemas);
+  return item;
+}
+
+export async function listEventSchemas(): Promise<EventSchema[]> {
+  if (isTauri()) return invoke<EventSchema[]>('list_event_schemas');
+  return readEventSchemas()
+    .slice()
+    .sort((a, b) => a.event.localeCompare(b.event));
+}
+
+export async function getEventBusConfig(): Promise<EventBusConfig> {
+  if (isTauri()) return invoke<EventBusConfig>('get_event_bus_config');
+  return readEventBusConfig();
+}
+
+export async function setEventBusConfig(
+  forwardEnabled: boolean,
+  forwardUrl: string,
+  forwardToken: string,
+  retentionDays: number,
+  maxLogs: number,
+  schemaStrict: boolean,
+): Promise<EventBusConfig> {
+  if (isTauri()) {
+    return invoke<EventBusConfig>('set_event_bus_config', {
+      request: {
+        forwardEnabled,
+        forwardUrl,
+        forwardToken,
+        retentionDays,
+        maxLogs,
+        schemaStrict,
+      },
+    });
+  }
+  const config: EventBusConfig = {
+    forwardEnabled,
+    forwardUrl: forwardUrl.trim(),
+    forwardToken,
+    retentionDays: Math.min(3650, Math.max(1, Math.round(retentionDays) || 30)),
+    maxLogs: Math.min(100000, Math.max(10, Math.round(maxLogs) || 500)),
+    schemaStrict,
+    updatedAt: Date.now(),
+  };
+  localStorage.setItem(EVENT_BUS_CONFIG_LS_KEY, JSON.stringify(config));
+  return config;
+}
+
+export async function listEventForwards(
+  status?: string,
+  limit = 50,
+): Promise<EventForwardRecord[]> {
+  if (isTauri()) {
+    return invoke<EventForwardRecord[]>('list_event_forwards', {
+      status: status?.trim() ? status.trim() : null,
+      limit,
+    });
+  }
+  const forwards = readEventForwards();
+  const filtered = status?.trim()
+    ? forwards.filter((item) => item.status === status.trim())
+    : forwards;
+  return filtered.slice(0, Math.min(Math.max(1, limit), 200));
+}
+
+export async function retryEventForward(id: string): Promise<EventForwardRecord> {
+  if (isTauri()) {
+    return invoke<EventForwardRecord>('retry_event_forward', { id });
+  }
+  const forwards = readEventForwards();
+  const forward = forwards.find((item) => item.id === id);
+  if (!forward) throw new Error('Event forward not found');
+  forward.status = 'queued';
+  forward.attempts = 0;
+  forward.lastMessage = '';
+  forward.nextAttemptAt = Date.now();
+  forward.updatedAt = Date.now();
+  writeEventForwards(forwards);
+  return forward;
+}
+
+export async function deleteEventForward(id: string): Promise<string> {
+  if (isTauri()) return invoke<string>('delete_event_forward', { id });
+  const forwards = readEventForwards();
+  const next = forwards.filter((item) => item.id !== id);
+  if (next.length === forwards.length) throw new Error('Event forward not found');
+  writeEventForwards(next);
+  return `Deleted event forward ${id.slice(0, 8)}`;
+}
+
+export async function clearEventForwards(status?: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>('clear_event_forwards', {
+      status: status?.trim() ? status.trim() : null,
+    });
+  }
+  const forwards = readEventForwards();
+  const next = status?.trim() ? forwards.filter((item) => item.status !== status.trim()) : [];
+  writeEventForwards(next);
+  return forwards.length - next.length;
+}
+
+export async function getEventBusStats(): Promise<EventBusStats> {
+  if (isTauri()) return invoke<EventBusStats>('get_event_bus_stats');
+  const stats: EventBusStats = {
+    total: 0,
+    accepted: 0,
+    rejected: 0,
+    forwarded: 0,
+    pending: 0,
+    failed: 0,
+  };
+  for (const log of readEventLogs()) {
+    stats.total += 1;
+    if (log.status === 'accepted') stats.accepted += 1;
+    else stats.rejected += 1;
+  }
+  for (const forward of readEventForwards()) {
+    if (forward.status === 'success') stats.forwarded += 1;
+    else if (forward.status === 'queued' || forward.status === 'delivering') stats.pending += 1;
+    else stats.failed += 1;
+  }
+  return stats;
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {
