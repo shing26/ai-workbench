@@ -2332,6 +2332,113 @@ try {
   })()`);
   results.persistence = { created, beforeReload, afterReload, habitPersisted };
 
+  const focusWeekArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Focus week archive check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const created = [...document.querySelectorAll("[data-focus-week-day]")].map((el) => {
+      const tasks = el.getAttribute("data-focus-week-day") || "";
+      const done = el.getAttribute("data-focus-day-done") || "false";
+      return { key: tasks, done };
+    });
+    if (!created.length) return { ok: false, reason: "no week strip" };
+    const now = new Date();
+    const localToday =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const todayKey = [...created].find((c) => c.key === localToday);
+    if (!todayKey) return { ok: false, reason: "today chip not found", keys: created.map((c) => c.key) };
+    const todayIndex = created.findIndex((c) => c.key === todayKey.key);
+    const tomorrow = created[(todayIndex + 1) % created.length];
+    if (!tomorrow) return { ok: false, reason: "no tomorrow chip" };
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    if (!row) {
+      return {
+        ok: false,
+        reason: "planned task row not found",
+      };
+    }
+    const nextDay = row.querySelector("[data-task-next-day]");
+    if (!nextDay) return { ok: false, reason: "next day button not found" };
+    nextDay.click();
+    await sleep(400);
+    const tomorrowChip = document.querySelector('[data-focus-week-day="' + tomorrow.key + '"]');
+    tomorrowChip.click();
+    await sleep(250);
+    const plannedRow = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    const toggle = plannedRow ? plannedRow.querySelector('button[aria-label^="Toggle "]') : null;
+    if (!toggle) {
+      return {
+        ok: false,
+        reason: "planned task toggle not found after reassign",
+        rows: [...document.querySelectorAll("[data-task-row]")].map((el) =>
+          el.textContent?.trim().slice(0, 60),
+        ),
+      };
+    }
+    toggle.click();
+    await sleep(400);
+    const archive = document.querySelector("[data-focus-archive-count]");
+    const archiveText = archive ? archive.textContent : "";
+    const restore = document.querySelector("[data-focus-archive-restore]");
+    const archiveSeen = archiveText.includes("Completed archive");
+    if (!archiveSeen) return { ok: false, reason: "archive not shown", archiveText };
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    const restoreBtn = archiveRow ? archiveRow.querySelector("[data-focus-archive-restore]") : restore;
+    restoreBtn.click();
+    await sleep(600);
+    const afterRestoreRows = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .map((el) => el.textContent || "");
+    const restoreOk = !afterRestoreRows.some((text) => text.includes("Focus week archive check"));
+    const today = document.querySelector('[data-focus-week-day="' + todayKey.key + '"]');
+    today.click();
+    await sleep(600);
+    const todayTaskVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    const todayRows = [...document.querySelectorAll("[data-task-row]")].map((el) =>
+      el.textContent?.trim().slice(0, 50),
+    );
+    return {
+      ok: archiveSeen && restoreOk && todayTaskVisible,
+      chips: created.length,
+      archiveText,
+      restoreOk,
+      todayTaskVisible,
+      todayRows,
+    };
+  })()`);
+  results.focusWeekArchive = focusWeekArchive;
+  await reloadAndWait();
+  await clickDock('Actions');
+  const focusWeekPersisted = await evaluate(`(() => {
+    const archive = document.querySelector("[data-focus-archive-count]");
+    const archiveText = archive ? archive.textContent : "";
+    const taskVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    const chips = document.querySelectorAll("[data-focus-week-day]").length;
+    return {
+      ok: chips === 7 && archiveText.includes("Completed archive") && taskVisible,
+      chips,
+      archiveText,
+      taskVisible,
+    };
+  })()`);
+  results.focusWeekPersisted = focusWeekPersisted;
+
   await clickDock('Knowledge');
   const selectedMarkdownThought = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")]
@@ -3701,6 +3808,16 @@ try {
   }
   if (results.actions.sections.overlap > 0) {
     throw new Error(`actions sections overlap: ${results.actions.sections.overlap}`);
+  }
+  if (!results.focusWeekArchive.ok) {
+    throw new Error(
+      `focus week archive assertion failed: ${JSON.stringify(results.focusWeekArchive)}`,
+    );
+  }
+  if (!results.focusWeekPersisted.ok) {
+    throw new Error(
+      `focus week archive persistence assertion failed: ${JSON.stringify(results.focusWeekPersisted)}`,
+    );
   }
 
   results.overlay = await evaluate(`(() => ({

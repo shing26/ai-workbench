@@ -1347,6 +1347,16 @@ fn set_task_today(state: State<'_, db::Db>, id: String, is_today: bool) -> Resul
 }
 
 #[tauri::command]
+fn set_task_due_date(
+    state: State<'_, db::Db>,
+    id: String,
+    due_date: Option<String>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_task_due_date(&conn, &id, due_date.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_projects(state: State<'_, db::Db>) -> Result<Vec<db::Project>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_projects(&conn).map_err(|e| e.to_string())
@@ -5319,6 +5329,7 @@ pub fn run() {
             create_task,
             update_task_status,
             set_task_today,
+            set_task_due_date,
             list_projects,
             create_project,
             list_thoughts,

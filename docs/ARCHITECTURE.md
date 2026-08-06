@@ -313,6 +313,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - System Provider 卡片新增 `data-provider-e2e-test` 按钮与 `data-provider-e2e-result` 结果展示（`ok · chunks · chars · ms`）。
 - `verify:ui` / `verify:preview` 新增 `providerE2EStream` lane：本地 SSE mock 覆盖完整链路并断言 chunk / chars / duration。
 
+## Sprint 116：Focus 周视图与完成归档
+
+- `tasks` 表新增 `completed_at`：旧库通过幂等 `migrate_task_completed_at` 补列，Rust `Task` 与浏览器 `Task` 同构新增 `completedAt: number | null`。
+- Rust 新增 `set_task_due_date(id, due_date)` Tauri 命令；`update_task_status` 在状态变为 `done` 时写入 `completed_at`，取消完成时清空；浏览器 `db.ts` 同构实现。
+- Actions Today Focus 卡片新增 7 天条带 `data-focus-week-day`（每日计数 / 完成态 / 今日标记）与 `data-focus-week-bar` 周进度；每张焦点任务卡提供 `data-task-next-day` 一键改派次日。
+- 完成归档 `data-focus-archive` 展示最近完成项（标题 + 完成时间），`data-focus-archive-restore` 恢复为待办并回到今日焦点。
+- `verify:ui` / `verify:preview` 新增 `focusWeekArchive` / `focusWeekPersisted` lane：创建任务、改派次日、完成、归档、恢复、切换回今天与 reload 持久化。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

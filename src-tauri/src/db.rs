@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT DEFAULT 'todo',
     is_today INTEGER DEFAULT 0,
     due_date TEXT,
-    created_at INTEGER
+    created_at INTEGER,
+    completed_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS thoughts (
     id TEXT PRIMARY KEY,
@@ -280,6 +281,7 @@ pub struct Task {
     pub status: String,
     pub is_today: bool,
     pub due_date: Option<String>,
+    pub completed_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -1104,6 +1106,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_webhook_secret_retries(&conn)?;
     migrate_webhook_trigger_event(&conn)?;
     migrate_session_pinned(&conn)?;
+    migrate_task_completed_at(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -1279,6 +1282,13 @@ fn migrate_version_parent(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_task_completed_at(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "tasks", "completed_at")? {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN completed_at INTEGER;")?;
+    }
+    Ok(())
+}
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
@@ -1303,11 +1313,11 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
         params![uid(), "AI Workbench", "D:\\ai-workbench", now],
     )?;
     conn.execute(
-        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at) VALUES (?1, ?2, 'in_progress', 1, NULL, ?3)",
+        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at, completed_at) VALUES (?1, ?2, 'in_progress', 1, NULL, ?3, NULL)",
         params![uid(), "Ship App Shell", now],
     )?;
     conn.execute(
-        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at) VALUES (?1, ?2, 'todo', 1, NULL, ?3)",
+        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at, completed_at) VALUES (?1, ?2, 'todo', 1, NULL, ?3, NULL)",
         params![uid(), "Review design tokens", now],
     )?;
     conn.execute(
@@ -1500,7 +1510,9 @@ fn seed_agents_if_empty(conn: &Connection) -> Result<()> {
 }
 
 pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare("SELECT id, title, status, is_today, due_date, created_at FROM tasks ORDER BY created_at DESC")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, status, is_today, due_date, completed_at, created_at FROM tasks ORDER BY created_at DESC",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(Task {
             id: row.get(0)?,
@@ -1508,7 +1520,8 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
             status: row.get(2)?,
             is_today: row.get::<_, i64>(3)? != 0,
             due_date: row.get(4)?,
-            created_at: row.get(5)?,
+            completed_at: row.get(5)?,
+            created_at: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -1518,7 +1531,7 @@ pub fn create_task(conn: &Connection, title: &str, is_today: bool) -> Result<Tas
     let id = uid();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at) VALUES (?1, ?2, 'todo', ?3, NULL, ?4)",
+        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at, completed_at) VALUES (?1, ?2, 'todo', ?3, NULL, ?4, NULL)",
         params![id, title, is_today as i64, now],
     )?;
     Ok(Task {
@@ -1527,14 +1540,16 @@ pub fn create_task(conn: &Connection, title: &str, is_today: bool) -> Result<Tas
         status: "todo".to_string(),
         is_today,
         due_date: None,
+        completed_at: None,
         created_at: now,
     })
 }
 
 pub fn update_task_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
+    let now = now_millis();
     conn.execute(
-        "UPDATE tasks SET status = ?1 WHERE id = ?2",
-        params![status, id],
+        "UPDATE tasks SET status = ?1, completed_at = CASE WHEN ?1 = 'done' THEN ?3 ELSE NULL END WHERE id = ?2",
+        params![status, id, now],
     )?;
     Ok(())
 }
@@ -1543,6 +1558,14 @@ pub fn set_task_today(conn: &Connection, id: &str, is_today: bool) -> Result<()>
     conn.execute(
         "UPDATE tasks SET is_today = ?1 WHERE id = ?2",
         params![is_today as i64, id],
+    )?;
+    Ok(())
+}
+
+pub fn set_task_due_date(conn: &Connection, id: &str, due_date: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE tasks SET due_date = ?1 WHERE id = ?2",
+        params![due_date, id],
     )?;
     Ok(())
 }
@@ -4780,9 +4803,36 @@ mod tests {
             .find(|t| t.id == task.id)
             .expect("created task should persist after update");
         assert_eq!(updated.status, "done");
+        assert!(updated.completed_at.is_some());
+        set_task_due_date(&conn, &task.id, Some("2026-08-07")).unwrap();
+        let dated = list_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .expect("created task should persist after due date update");
+        assert_eq!(dated.due_date.as_deref(), Some("2026-08-07"));
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn task_completed_at_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT DEFAULT 'todo',
+                is_today INTEGER DEFAULT 0,
+                due_date TEXT,
+                created_at INTEGER
+            );",
+        )
+        .unwrap();
+        migrate_task_completed_at(&conn).unwrap();
+        migrate_task_completed_at(&conn).unwrap();
+        assert!(column_exists(&conn, "tasks", "completed_at").unwrap());
     }
 
     #[test]
