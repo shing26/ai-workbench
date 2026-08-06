@@ -18,6 +18,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 
 mod db;
+mod webhook_condition;
 
 #[derive(Default)]
 struct StreamCancellation {
@@ -2720,9 +2721,21 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
             let Ok(conn) = state.0.lock() else {
                 continue;
             };
-            let Ok(due) = db::list_due_webhook_rules(&conn, now) else {
+            let Ok(all_due) = db::list_due_webhook_rules(&conn, now) else {
                 continue;
             };
+            let now_local = chrono::Local::now();
+            let due: Vec<db::WebhookRule> = all_due
+                .into_iter()
+                .filter(|rule| {
+                    webhook_condition::matches_condition(
+                        &rule.trigger_condition,
+                        "",
+                        None,
+                        &now_local,
+                    )
+                })
+                .collect();
             for rule in &due {
                 let payload = render_webhook_payload(&rule.payload, "", None, now);
                 let _ = db::enqueue_webhook_delivery(&conn, rule, "", &payload);
@@ -2901,6 +2914,34 @@ fn webhook_signature(secret: &str, payload: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookSignatureVerifyResult {
+    valid: bool,
+    expected: String,
+    algorithm: String,
+}
+
+#[tauri::command]
+fn verify_webhook_signature(
+    secret: String,
+    payload: String,
+    signature: String,
+) -> WebhookSignatureVerifyResult {
+    let expected = webhook_signature(&secret, &payload);
+    let provided = signature.trim();
+    let normalized = provided
+        .strip_prefix("sha256=")
+        .or_else(|| provided.strip_prefix("SHA256="))
+        .unwrap_or(provided)
+        .trim();
+    WebhookSignatureVerifyResult {
+        valid: !provided.is_empty() && normalized.eq_ignore_ascii_case(&expected),
+        expected,
+        algorithm: "HMAC-SHA256".to_string(),
+    }
 }
 
 const SYNC_PBKDF2_ITERATIONS: u32 = 100_000;
@@ -4844,6 +4885,7 @@ struct WebhookRuleRequest {
     cooldown_seconds: Option<i64>,
     interval_seconds: i64,
     trigger_event: Option<String>,
+    trigger_condition: Option<String>,
     auto_disable_after: Option<i64>,
 }
 
@@ -4857,6 +4899,11 @@ fn create_webhook_rule(
     }
     if request.url.trim().is_empty() {
         return Err("Webhook URL is required".to_string());
+    }
+    let trigger_condition = request.trigger_condition.as_deref().unwrap_or("").trim();
+    if !trigger_condition.is_empty() {
+        webhook_condition::validate_condition(trigger_condition)
+            .map_err(|e| format!("Invalid trigger condition: {}", e))?;
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::create_webhook_rule(
@@ -4872,6 +4919,7 @@ fn create_webhook_rule(
             cooldown_seconds: request.cooldown_seconds.unwrap_or(0).max(0),
             interval_seconds: request.interval_seconds.max(5),
             trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
+            trigger_condition,
             auto_disable_after: request.auto_disable_after.unwrap_or(3).max(0),
         },
     )
@@ -4923,7 +4971,19 @@ fn trigger_webhook_event(
 ) -> Result<i64, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let now = now_millis();
-    let rules = db::list_event_webhook_rules(&conn, &event, now).map_err(|e| e.to_string())?;
+    let all_rules = db::list_event_webhook_rules(&conn, &event, now).map_err(|e| e.to_string())?;
+    let now_local = chrono::Local::now();
+    let rules: Vec<db::WebhookRule> = all_rules
+        .into_iter()
+        .filter(|rule| {
+            webhook_condition::matches_condition(
+                &rule.trigger_condition,
+                &event,
+                context.as_ref(),
+                &now_local,
+            )
+        })
+        .collect();
     let mut count = 0i64;
     for rule in &rules {
         let payload = render_webhook_payload(&rule.payload, &event, context.as_ref(), now_millis());
@@ -5660,6 +5720,7 @@ pub fn run() {
             check_provider_health,
             run_provider_heartbeat,
             deliver_webhook,
+            verify_webhook_signature,
             list_webhook_rules,
             create_webhook_rule,
             set_webhook_rule_enabled,
@@ -7369,6 +7430,34 @@ mod tests {
     }
 
     #[test]
+    fn verify_webhook_signature_accepts_hex_and_prefix() {
+        let secret = "verify-secret".to_string();
+        let payload = r#"{"event":"signed.delivery"}"#.to_string();
+        let expected = webhook_signature(&secret, &payload);
+        let bare = verify_webhook_signature(secret.clone(), payload.clone(), expected.clone());
+        assert!(bare.valid);
+        assert_eq!(bare.expected, expected);
+        assert_eq!(bare.algorithm, "HMAC-SHA256");
+
+        let prefixed = verify_webhook_signature(
+            secret.clone(),
+            payload.clone(),
+            format!("sha256={}", expected.to_uppercase()),
+        );
+        assert!(prefixed.valid);
+
+        let wrong = verify_webhook_signature(
+            secret.clone(),
+            payload.clone(),
+            format!("sha256={}deadbeef", expected),
+        );
+        assert!(!wrong.valid);
+
+        let empty = verify_webhook_signature(secret, payload, String::new());
+        assert!(!empty.valid);
+    }
+
+    #[test]
     fn webhook_delivery_posts_json_with_auth() {
         use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -7538,6 +7627,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                trigger_condition: "",
                 auto_disable_after: 3,
             },
         )

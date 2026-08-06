@@ -14,6 +14,7 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  ShieldCheck,
   Terminal,
   Upload,
   Users,
@@ -141,8 +142,17 @@ export default function SystemView() {
   const [webhookRuleCooldown, setWebhookRuleCooldown] = useState('0');
   const [webhookRuleAutoDisable, setWebhookRuleAutoDisable] = useState('3');
   const [webhookRuleTrigger, setWebhookRuleTrigger] = useState('');
+  const [webhookRuleCondition, setWebhookRuleCondition] = useState('');
+  const [webhookConditionError, setWebhookConditionError] = useState('');
   const [webhookEventContext, setWebhookEventContext] = useState('');
   const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
+  const [webhookSigPayload, setWebhookSigPayload] = useState('{"event":"signed.delivery"}');
+  const [webhookSigSecret, setWebhookSigSecret] = useState('');
+  const [webhookSigSignature, setWebhookSigSignature] = useState('');
+  const [webhookSigResult, setWebhookSigResult] = useState<db.WebhookSignatureVerifyResult | null>(
+    null,
+  );
+  const [webhookSigBusy, setWebhookSigBusy] = useState(false);
   const [webhookDeliveries, setWebhookDeliveries] = useState<db.WebhookDelivery[]>([]);
   const [webhookRetention, setWebhookRetention] = useState<db.WebhookRetentionConfig | null>(null);
   const [webhookRetentionDays, setWebhookRetentionDays] = useState('30');
@@ -832,6 +842,35 @@ export default function SystemView() {
     }
   };
 
+  const verifyWebhookSignature = async () => {
+    if (!webhookSigSecret.trim() || !webhookSigSignature.trim()) {
+      setWebhookSigResult({
+        valid: false,
+        expected: '',
+        algorithm: 'HMAC-SHA256',
+      });
+      return;
+    }
+    setWebhookSigBusy(true);
+    try {
+      setWebhookSigResult(
+        await db.verifyWebhookSignature(
+          webhookSigSecret,
+          webhookSigPayload.trim() || '{}',
+          webhookSigSignature.trim(),
+        ),
+      );
+    } catch {
+      setWebhookSigResult({
+        valid: false,
+        expected: '',
+        algorithm: 'HMAC-SHA256',
+      });
+    } finally {
+      setWebhookSigBusy(false);
+    }
+  };
+
   const loadWebhookRules = async () => {
     setWebhookRules(await db.listWebhookRules());
   };
@@ -852,26 +891,42 @@ export default function SystemView() {
       });
       return;
     }
-    await db.createWebhookRule(
-      webhookRuleName.trim(),
-      webhookUrl.trim(),
-      webhookPayload,
-      webhookMethod,
-      webhookToken,
-      Number(webhookRuleInterval) || 60,
-      webhookSecret,
-      Math.max(0, Number(webhookRetries) || 0),
-      Math.max(0, Number(webhookRuleCooldown) || 0),
-      webhookRuleTrigger.trim(),
-      Math.max(0, Number(webhookRuleAutoDisable) || 0),
-    );
-    await loadWebhookRules();
-    await loadWebhookDeliveries();
-    await loadWebhookRuleRuns();
-    setWebhookRuleName('');
-    setWebhookRuleCooldown('0');
-    setWebhookRuleAutoDisable('3');
-    setWebhookRuleTrigger('');
+    setWebhookConditionError('');
+    try {
+      await db.createWebhookRule(
+        webhookRuleName.trim(),
+        webhookUrl.trim(),
+        webhookPayload,
+        webhookMethod,
+        webhookToken,
+        Number(webhookRuleInterval) || 60,
+        webhookSecret,
+        Math.max(0, Number(webhookRetries) || 0),
+        Math.max(0, Number(webhookRuleCooldown) || 0),
+        webhookRuleTrigger.trim(),
+        Math.max(0, Number(webhookRuleAutoDisable) || 0),
+        webhookRuleCondition.trim(),
+      );
+      await loadWebhookRules();
+      await loadWebhookDeliveries();
+      await loadWebhookRuleRuns();
+      setWebhookRuleName('');
+      setWebhookRuleCooldown('0');
+      setWebhookRuleAutoDisable('3');
+      setWebhookRuleTrigger('');
+      setWebhookRuleCondition('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setWebhookConditionError(message);
+      setWebhookResult({
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        attempts: 0,
+        signed: false,
+        message,
+      });
+    }
   };
 
   const toggleWebhookRule = async (id: string, enabled: boolean) => {
@@ -2048,6 +2103,67 @@ export default function SystemView() {
         </div>
         <div className="mt-3 border-t border-white/5 pt-2">
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            <ShieldCheck size={12} className="text-emerald-400" />
+            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Signature verify
+            </span>
+            <input
+              value={webhookSigSecret}
+              onChange={(e) => setWebhookSigSecret(e.target.value)}
+              placeholder="Secret"
+              data-webhook-sig-secret
+              className="h-7 w-44 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <input
+              value={webhookSigSignature}
+              onChange={(e) => setWebhookSigSignature(e.target.value)}
+              placeholder="sha256=<hex>"
+              data-webhook-sig-signature
+              className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-2 font-mono text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <button
+              type="button"
+              data-webhook-sig-verify
+              onClick={() => void verifyWebhookSignature()}
+              disabled={webhookSigBusy}
+              className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <ShieldCheck size={10} />
+              {webhookSigBusy ? 'Verifying...' : 'Verify'}
+            </button>
+          </div>
+          <textarea
+            value={webhookSigPayload}
+            onChange={(e) => setWebhookSigPayload(e.target.value)}
+            placeholder="Payload to verify (JSON)"
+            data-webhook-sig-payload
+            className="mt-1 h-16 w-full resize-none rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 font-mono text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          {webhookSigResult && (
+            <div
+              data-webhook-sig-result
+              className={`mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md px-2 py-1 text-[10px] ${
+                webhookSigResult.valid
+                  ? 'bg-emerald-500/10 text-emerald-300'
+                  : 'bg-rose-500/10 text-rose-300'
+              }`}
+            >
+              <span className="font-medium">
+                {webhookSigResult.valid ? 'VALID' : 'INVALID'} - {webhookSigResult.algorithm}
+              </span>
+              {webhookSigResult.expected && (
+                <span
+                  data-webhook-sig-expected
+                  className="max-w-full truncate font-mono text-[9px] opacity-70"
+                >
+                  expected {webhookSigResult.expected}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="mt-3 border-t border-white/5 pt-2">
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
             <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
               Scheduled rules
             </span>
@@ -2092,6 +2208,13 @@ export default function SystemView() {
               data-webhook-rule-trigger-input
               className="h-7 w-36 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
             />
+            <input
+              value={webhookRuleCondition}
+              onChange={(e) => setWebhookRuleCondition(e.target.value)}
+              placeholder='Condition (event == "x" / cron(...))'
+              data-webhook-rule-condition-input
+              className="h-7 w-80 rounded-md border border-white/10 bg-white/[0.03] px-2 font-mono text-[10px] text-slate-300 outline-none focus:border-cyan-500/40 placeholder:text-slate-600"
+            />
             <button
               type="button"
               data-webhook-rule-save
@@ -2101,6 +2224,14 @@ export default function SystemView() {
               <Webhook size={10} /> Save rule
             </button>
           </div>
+          {webhookConditionError && (
+            <div
+              data-webhook-condition-error
+              className="mt-1.5 rounded-md bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300"
+            >
+              {webhookConditionError}
+            </div>
+          )}
           <div data-webhook-rules className="space-y-1.5">
             {webhookRules.length === 0 && (
               <div className="rounded-lg border border-white/5 px-2 py-1.5 text-[10px] text-slate-600">
@@ -2131,6 +2262,15 @@ export default function SystemView() {
                     every {rule.intervalSeconds}s
                   </span>
                 )}
+                {rule.triggerCondition ? (
+                  <span
+                    data-webhook-rule-condition
+                    className="max-w-64 truncate rounded-md bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[9px] text-cyan-300"
+                  >
+                    {rule.triggerCondition.includes('cron(') ? 'cron' : 'if'}:{' '}
+                    {rule.triggerCondition}
+                  </span>
+                ) : null}
                 {rule.triggerEvent && rule.cooldownSeconds > 0 && (
                   <span
                     data-webhook-rule-cooldown-badge
