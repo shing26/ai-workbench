@@ -21,7 +21,7 @@
 - [x] 定时调度与事件投递的终态都走同一熔断函数，202 入队标记不误改计数。
 - [x] `verify:ui` / `verify:preview` 的 `webhookRuleCircuitBreaker` lane 双端通过。
 - [x] `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib` 全绿。
-- [ ] PR 合并到 develop，RETRO / ARCHITECTURE / DATABASE 已更新。
+- [x] PR 合并到 develop，RETRO / ARCHITECTURE / DATABASE 已更新。
 
 ## 范围外（Backlog）
 
