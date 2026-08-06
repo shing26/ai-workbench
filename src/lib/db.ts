@@ -53,6 +53,23 @@ export type Thought = {
   createdAt: number;
 };
 
+export type WikiLinkRef = {
+  target: string;
+  alias: string;
+};
+
+export type ThoughtLinkRef = {
+  id: string;
+  title: string;
+  target: string;
+  alias: string;
+};
+
+export type ThoughtBacklinkGraph = {
+  outgoing: Record<string, ThoughtLinkRef[]>;
+  incoming: Record<string, ThoughtLinkRef[]>;
+};
+
 export type QuickPromptUsageEntry = {
   id: string;
   count: number;
@@ -1389,6 +1406,71 @@ export async function deleteThought(id: string): Promise<void> {
   if (!exists) throw new Error('thought not found');
   shape.thoughts = shape.thoughts.filter((t) => t.id !== id);
   writeLocal(shape);
+}
+
+export function extractWikiLinks(content: string): WikiLinkRef[] {
+  const refs: WikiLinkRef[] = [];
+  const seen = new Set<string>();
+  const pattern = /\[\[([^\]]+)\]\]/g;
+  for (const match of content.matchAll(pattern)) {
+    const raw = match[1] ?? '';
+    const [targetPart, aliasPart] = raw.split('|');
+    const target = (targetPart ?? '').trim();
+    if (!target) continue;
+    const alias = (aliasPart ?? target).trim() || target;
+    const key = target.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ target, alias });
+  }
+  return refs;
+}
+
+export function thoughtTitle(thought: Thought): string {
+  const firstLine =
+    thought.content
+      .split('\n')
+      .map((line) => line.trim())
+      .find(Boolean) ?? '';
+  return firstLine.replace(/^#+\s*/, '').trim() || 'Untitled';
+}
+
+export function resolveWikiLinkTarget(thoughts: Thought[], target: string): Thought | undefined {
+  const normalized = target.replace(/^#/, '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  const direct = thoughts.find((t) => thoughtTitle(t).trim().toLowerCase() === normalized);
+  if (direct) return direct;
+  return thoughts.find((t) => thoughtTitle(t).trim().toLowerCase().includes(normalized));
+}
+
+export function buildThoughtLinkGraph(thoughts: Thought[]): ThoughtBacklinkGraph {
+  const outgoing: ThoughtBacklinkGraph['outgoing'] = {};
+  const incoming: ThoughtBacklinkGraph['incoming'] = {};
+  for (const thought of thoughts) {
+    const refs: ThoughtLinkRef[] = [];
+    for (const link of extractWikiLinks(thought.content)) {
+      const target = resolveWikiLinkTarget(thoughts, link.target);
+      if (!target) continue;
+      const ref: ThoughtLinkRef = {
+        id: target.id,
+        title: thoughtTitle(target),
+        target: link.target,
+        alias: link.alias,
+      };
+      refs.push(ref);
+      incoming[target.id] = [
+        ...(incoming[target.id] ?? []),
+        {
+          id: thought.id,
+          title: thoughtTitle(thought),
+          target: link.target,
+          alias: link.alias,
+        },
+      ];
+    }
+    outgoing[thought.id] = refs;
+  }
+  return { outgoing, incoming };
 }
 
 export async function listProviders(): Promise<Provider[]> {

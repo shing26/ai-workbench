@@ -3821,6 +3821,120 @@ try {
   }
   results.vectorRagCrossFile = vectorRagCrossFile;
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.thoughts = [
+      {
+        id: "bl-a",
+        content: "# Alpha\\n\\nSee [[Beta]] and [[Gamma]] and [[Missing Note]]",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 3000,
+      },
+      {
+        id: "bl-b",
+        content: "# Beta\\n\\nBack to [[Alpha]]",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 2000,
+      },
+      {
+        id: "bl-c",
+        content: "# Gamma\\n\\nNo links",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 1000,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+
+  const knowledgeBacklinks = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const clickThought = async (id) => {
+      const btn = document.querySelector('[data-rag-result="' + id + '"]');
+      if (!btn) return false;
+      btn.click();
+      for (let i = 0; i < 30; i++) {
+        if (document.querySelector('[data-thought-links]')) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    if (!(await clickThought("bl-a"))) {
+      return { ok: false, reason: "alpha note not selectable" };
+    }
+    const outgoing = () => [...document.querySelectorAll("[data-thought-link-out]")];
+    const incoming = () => [...document.querySelectorAll("[data-thought-link-back]")];
+    const missing = () => [...document.querySelectorAll("[data-thought-link-missing]")];
+    const stats = () =>
+      document.querySelector("[data-knowledge-graph-stats]")?.textContent ?? "";
+    let outTargets = [];
+    let backTargets = [];
+    let missingTargets = [];
+    let statsText = "";
+    for (let i = 0; i < 30; i++) {
+      outTargets = outgoing().map((el) => el.getAttribute("data-thought-link-target"));
+      backTargets = incoming().map((el) => el.getAttribute("data-thought-link-target"));
+      missingTargets = missing().map((el) => el.getAttribute("data-thought-link-target"));
+      statsText = stats();
+      if (
+        outTargets.includes("Beta") &&
+        outTargets.includes("Gamma") &&
+        missingTargets.includes("Missing Note") &&
+        backTargets.includes("Alpha") &&
+        statsText.includes("3 links") &&
+        statsText.includes("1 backlinks") &&
+        statsText.includes("1 missing")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const alphaOk =
+      outTargets.includes("Beta") &&
+      outTargets.includes("Gamma") &&
+      missingTargets.includes("Missing Note") &&
+      backTargets.includes("Alpha") &&
+      incoming().some((el) => el.getAttribute("data-thought-link-source") === "bl-b") &&
+      statsText.includes("3 links") &&
+      statsText.includes("1 backlinks") &&
+      statsText.includes("1 missing");
+
+    incoming()[0]?.click();
+    let betaBack = "";
+    let betaOut = "";
+    for (let i = 0; i < 30; i++) {
+      const back = [...document.querySelectorAll("[data-thought-link-back]")];
+      const out = [...document.querySelectorAll("[data-thought-link-out]")];
+      betaBack = back.map((el) => el.getAttribute("data-thought-link-target")).join(",");
+      betaOut = out.map((el) => el.getAttribute("data-thought-link-target")).join(",");
+      if (betaBack.includes("Beta") && betaOut.includes("Alpha")) break;
+      await sleep(100);
+    }
+    const betaOk = betaBack.includes("Beta") && betaOut.includes("Alpha");
+    return {
+      ok: alphaOk && betaOk,
+      outTargets,
+      backTargets,
+      missingTargets,
+      statsText,
+      betaBack,
+      betaOut,
+      alphaOk,
+      betaOk,
+    };
+  })()`);
+  if (!knowledgeBacklinks.ok) {
+    throw new Error(`Knowledge backlinks assertion failed: ${JSON.stringify(knowledgeBacklinks)}`);
+  }
+  results.knowledgeBacklinks = knowledgeBacklinks;
+  laneLog('knowledgeBacklinks ok');
+
   const concurrencyAuto = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const autoBtn = document.querySelector("[data-index-concurrency-auto]");

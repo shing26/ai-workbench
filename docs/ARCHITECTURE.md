@@ -448,6 +448,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增同构 `WebhookRetentionConfig` / `WebhookPruneResult` / `WebhookDeliveryStats` 与 get / set / prune / stats，浏览器 fallback 用 `ai-workbench:webhook-retention:v1`，`triggerWebhookEvent` 写入时按 autoCleanup 自动裁剪。
 - `verify:ui` / `verify:preview` 新增 `webhookRetention` lane；Rust 单测覆盖默认值 / 钳制、年龄与条数裁剪、状态统计，`cargo test --lib` 增至 140 条。
 
+## Sprint 135：Knowledge 笔记双链与回溯
+
+- `db.ts` 新增 `extractWikiLinks`（解析 `[[target]]` / `[[target|alias]]` 并按笔记去重）、`thoughtTitle`（首行 Markdown 标题）、`resolveWikiLinkTarget`（标题精确匹配 + 子串兜底）与 `buildThoughtLinkGraph`（outgoing / incoming 双链图），全部为运行时派生，无新增表结构。
+- Knowledge 详情新增 `data-thought-links` 区：`data-thought-link-out` 出链按钮、`data-thought-link-back` 回链按钮、`data-thought-link-missing` 未解析目标、`data-knowledge-graph-stats` 统计（links / backlinks / missing）。
+- `navigateToThought` 点击双链时清空 RAG 结果、跨文件过滤与标签过滤，再切换到目标笔记；链接解析同时覆盖编辑器预览，正文编辑后立即重新计算。
+- `verify:ui` / `verify:preview` 新增 `knowledgeBacklinks` lane：覆盖出链、回链、缺失统计与双向跳转；纯前端改动，无新增 Rust 命令与表结构。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
