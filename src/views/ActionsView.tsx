@@ -8,6 +8,7 @@ import {
   Plus,
   RotateCcw,
   Target,
+  TrendingUp,
   Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -93,6 +94,7 @@ export default function ActionsView() {
   const [habitEditId, setHabitEditId] = useState<string | null>(null);
   const [habitEditResults, setHabitEditResults] = useState<Record<string, string>>({});
   const [habitDeleteId, setHabitDeleteId] = useState<string | null>(null);
+  const [archiveResult, setArchiveResult] = useState('');
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
@@ -109,11 +111,42 @@ export default function ActionsView() {
     const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
     return dayKey(d);
   });
-  const weekTasks = tasks.filter((t) =>
-    t.dueDate ? weekDays.includes(t.dueDate) : t.isToday && selectedDay === dayKey(now),
-  );
+  const todayKey = dayKey(now);
+  const weekTasks = tasks.filter((t) => (t.dueDate ? weekDays.includes(t.dueDate) : t.isToday));
   const weekDone = weekTasks.filter((t) => t.status === 'done').length;
   const weekProgress = weekTasks.length > 0 ? weekDone / weekTasks.length : 0;
+  const weekDayStats = weekDays.map((key) => {
+    const dayList = tasks.filter(
+      (t) => t.dueDate === key || (!t.dueDate && t.isToday && key === todayKey),
+    );
+    return {
+      key,
+      total: dayList.length,
+      done: dayList.filter((t) => t.status === 'done').length,
+    };
+  });
+  let bestDay: { key: string; total: number; done: number } | null = null;
+  for (const day of weekDayStats) {
+    if (
+      !bestDay ||
+      day.done > bestDay.done ||
+      (day.done === bestDay.done && weekDays.indexOf(day.key) < weekDays.indexOf(bestDay.key))
+    ) {
+      bestDay = day;
+    }
+  }
+  const bestDayLabel = bestDay
+    ? `${WEEKDAY_LABELS[weekDays.indexOf(bestDay.key)]} ${bestDay.done}/${bestDay.total}`
+    : '—';
+  let weekStreak = 0;
+  for (let i = weekDays.length - 1; i >= 0; i -= 1) {
+    const dayList = tasks.filter(
+      (t) => t.dueDate === weekDays[i] || (!t.dueDate && t.isToday && weekDays[i] === todayKey),
+    );
+    if (dayList.length === 0) continue;
+    if (dayList.every((t) => t.status === 'done')) weekStreak += 1;
+    else break;
+  }
   const dayTasks = tasks.filter(
     (t) => t.dueDate === selectedDay || (!t.dueDate && t.isToday && selectedDay === dayKey(now)),
   );
@@ -166,6 +199,15 @@ export default function ActionsView() {
     if (!eventTitle.trim()) return;
     await addScheduleEvent(eventTitle.trim(), eventTime, eventTag);
     setEventTitle('');
+  };
+
+  const archiveWeekDone = async () => {
+    const doneTasks = weekTasks.filter((t) => t.status === 'done');
+    for (const t of doneTasks) {
+      await setTaskToday(t.id, false);
+      await setTaskDueDate(t.id, null);
+    }
+    setArchiveResult(doneTasks.length > 0 ? `Archived ${doneTasks.length}` : 'Nothing to archive');
   };
 
   return (
@@ -727,6 +769,85 @@ export default function ActionsView() {
             {scheduleEvents.length === 0 && (
               <div className="py-8 text-center text-xs text-slate-600">No events</div>
             )}
+          </div>
+        </BentoCard>
+
+        <BentoCard
+          title="Week Review"
+          subtitle="本周目标统计与快速归档"
+          icon={TrendingUp}
+          colSpan={12}
+        >
+          <div data-week-review className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <div data-week-review-total className="min-w-0">
+                <StatPill
+                  label="Week done"
+                  value={`${weekDone}/${weekTasks.length}`}
+                  tone="green"
+                />
+              </div>
+              <div data-week-review-rate className="min-w-0">
+                <StatPill label="Rate" value={`${Math.round(weekProgress * 100)}%`} tone="blue" />
+              </div>
+              <div data-week-review-best className="min-w-0">
+                <StatPill label="Best day" value={bestDayLabel} tone="neutral" />
+              </div>
+              <div data-week-review-streak className="min-w-0">
+                <StatPill label="Streak" value={`${weekStreak}d`} tone="blue" />
+              </div>
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {weekDays.map((key, i) => {
+                const stats = weekDayStats.find((d) => d.key === key) ?? {
+                  key,
+                  total: 0,
+                  done: 0,
+                };
+                const isSelected = selectedDay === key;
+                const pct = stats.total > 0 ? stats.done / stats.total : 0;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    data-week-review-day={key}
+                    data-week-review-day-total={stats.total}
+                    data-week-review-day-done={stats.done}
+                    data-week-review-day-selected={isSelected ? 'true' : 'false'}
+                    onClick={() => setSelectedDay(key)}
+                    className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
+                      isSelected
+                        ? 'accent-border accent-bg-15 accent-text-strong'
+                        : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <span>{WEEKDAY_LABELS[i]}</span>
+                    <span className="flex h-8 w-2 items-end overflow-hidden rounded-[2px] bg-white/[0.06]">
+                      <span
+                        className={`w-full ${stats.done > 0 ? 'accent-bg' : 'bg-white/10'}`}
+                        style={{ height: `${Math.max(pct * 100, stats.total > 0 ? 14 : 3)}%` }}
+                      />
+                    </span>
+                    <span className="font-mono text-[9px] opacity-70">
+                      {stats.done}/{stats.total}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-week-review-archive
+                onClick={() => void archiveWeekDone()}
+                className="flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+              >
+                <ArchiveRestore size={12} /> Archive done
+              </button>
+              <span data-week-review-archived className="text-[11px] text-slate-400">
+                {archiveResult}
+              </span>
+            </div>
           </div>
         </BentoCard>
       </div>

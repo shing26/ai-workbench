@@ -413,6 +413,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Projects 项目卡片设置区下方新增 `data-project-revenue-trend` 条形趋势，每个点带 `data-project-revenue-point` / `data-project-revenue-value` / `data-project-revenue-at`，reload 后按历史恢复。
 - `verify:ui` / `verify:preview` 新增 `projectRevenueTrend` / `projectRevenueTrendPersisted` 两条 lane；`cargo test --lib` 增至 135 条。
 
+## Sprint 130：Actions 周目标统计与快速归档
+
+- Actions 新增 `data-week-review` Week Review 卡片：由 `tasks` 派生本周每日 planned / done、周完成率、最佳日与连续完成天数（空档日不断连），含 `data-week-review-total` / `data-week-review-rate` / `data-week-review-best` / `data-week-review-streak`。
+- 7 个日按钮带 `data-week-review-day` / `data-week-review-day-total` / `data-week-review-day-done` / `data-week-review-day-selected`，点击联动 Today Focus 选中日；无 dueDate 的今日 Focus 任务按 `isToday` 归入今天。
+- 新增 `data-week-review-archive` 一键快速归档：本周 done 任务顺序执行 `setTaskToday(false)` + `setTaskDueDate(null)`，结果写入 `data-week-review-archived`，reload 后保持归档结果。
+- `verify:ui` / `verify:preview` 新增 `weekReviewStats` / `weekReviewArchive` / `weekReviewArchivePersisted` 三条 lane；纯前端改动，无新增 Rust 命令与表结构。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

@@ -550,6 +550,10 @@ CREATE TABLE IF NOT EXISTS project_revenue_history (
 - 新库 SCHEMA 直接包含该表，旧库由 `CREATE TABLE IF NOT EXISTS` 幂等补建；`create_project` / `update_project` 在写项目后追加收益快照，`delete_project` 同步删除该项目历史。
 - `list_project_revenue_history(project_id, limit)` 按 `recorded_at DESC, rowid DESC` 取最近 N 条后升序返回；浏览器 fallback 在 `ai-workbench:db:v1` 下新增 `projectRevenueHistory` 数组并维护同一语义。
 
+## Sprint 130：Actions 周目标统计与快速归档
+
+无表结构变更。周统计是运行时派生数据：Week Review 复用 `tasks` 既有字段（`dueDate` / `isToday` / `status` / `completedAt`），快速归档通过既有 `set_task_today` / `set_task_due_date` 命令把完成任务的 `isToday` 置 false 并清空 `dueDate`，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `tasks` 数组，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
