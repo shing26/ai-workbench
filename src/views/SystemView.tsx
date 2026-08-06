@@ -115,6 +115,11 @@ export default function SystemView() {
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
   const [e2eResults, setE2eResults] = useState<Record<string, db.ProviderE2eResult>>({});
+  const [e2eBatch, setE2eBatch] = useState<Array<{
+    providerId: string;
+    result: db.ProviderE2eResult;
+  }> | null>(null);
+  const [e2eBatchBusy, setE2eBatchBusy] = useState(false);
   const [providerModels, setProviderModels] = useState<Record<string, db.ProviderModel[]>>({});
   const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
   const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
@@ -748,6 +753,37 @@ export default function SystemView() {
     setE2eResults((prev) => ({ ...prev, [id]: result }));
   };
 
+  const runAllProviderE2E = async () => {
+    if (e2eBatchBusy) return;
+    setE2eBatchBusy(true);
+    const targets = providers.filter((p) => p.isActive);
+    const results = await Promise.all(
+      targets.map(async (p) => {
+        try {
+          return { providerId: p.id, result: await db.runProviderE2EStream(p.id) };
+        } catch (err) {
+          return {
+            providerId: p.id,
+            result: {
+              ok: false,
+              chunks: 0,
+              chars: 0,
+              durationMs: 0,
+              message: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
+      }),
+    );
+    setE2eResults((prev) => {
+      const next = { ...prev };
+      for (const { providerId, result } of results) next[providerId] = result;
+      return next;
+    });
+    setE2eBatch(results);
+    setE2eBatchBusy(false);
+  };
+
   const deliverWebhook = async () => {
     if (!webhookUrl.trim()) {
       setWebhookResult({
@@ -1277,6 +1313,30 @@ export default function SystemView() {
           >
             Check all
           </button>
+          <button
+            type="button"
+            data-provider-batch-test
+            onClick={() => void runAllProviderE2E()}
+            disabled={e2eBatchBusy}
+            className="flex h-9 items-center gap-1 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Zap size={14} /> {e2eBatchBusy ? 'E2E all...' : 'E2E all'}
+          </button>
+          {e2eBatch && (
+            <span
+              data-provider-batch-result
+              className={`flex h-9 items-center rounded-xl px-3 text-xs ${
+                e2eBatch.every((entry) => entry.result.ok)
+                  ? 'bg-emerald-500/10 text-emerald-300'
+                  : 'bg-rose-500/10 text-rose-300'
+              }`}
+            >
+              {e2eBatch.filter((entry) => entry.result.ok).length}/{e2eBatch.length} ok
+              {e2eBatch.some((entry) => !entry.result.ok)
+                ? ` · ${e2eBatch.filter((entry) => !entry.result.ok).length} failed`
+                : ''}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => void create()}

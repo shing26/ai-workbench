@@ -386,6 +386,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 删除后项目卡片、Portfolio summary 与 Project carousel 同步刷新，reload 后保持删除结果。
 - `verify:ui` / `verify:preview` 新增 `projectDelete` / `projectDeletePersisted` / `projectDeleteCancel`：删除 → reload 持久化 → 取消不删除；`cargo test --lib` 增至 132 条。
 
+## Sprint 126：System Provider 批量 E2E 测试
+
+- SystemView 新增 `runAllProviderE2E()`：对全部 active Provider 并行执行 `runProviderE2EStream`，单个异常捕获为失败项（`ok=false`）不中断整批。
+- Providers 操作区新增 `data-provider-batch-test` 按钮与 busy 状态，完成后显示 `data-provider-batch-result` 汇总（`N/M ok`，失败时追加失败数），结果同步写入各 Provider 卡片 `data-provider-e2e-result`。
+- `verify:ui` / `verify:preview` 新增 `providerBatchE2E` lane：点击批量按钮后断言 `2/2 ok` 与卡片结果数；`cargo test --lib` 保持 132 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
