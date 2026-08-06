@@ -2791,6 +2791,9 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                 attempts,
                 next_attempt_at,
             );
+            if state != "queued" {
+                let _ = db::record_webhook_rule_outcome(&conn, &delivery.rule_id, status, &message);
+            }
         }
     });
 }
@@ -4759,15 +4762,22 @@ fn run_webhook_rule_inner(
         Some(rule.secret.as_str())
     };
     let payload = render_webhook_payload(&rule.payload, &rule.trigger_event, None, now_millis());
-    let result = deliver_webhook_http(
+    let result = match deliver_webhook_http(
         &rule.url,
         &payload,
         &rule.method,
         token,
         secret,
         rule.retries.max(0) as u32,
-    )?;
-    db::mark_webhook_rule_run(conn, &rule.id, result.status as i64, &result.message)
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            let message = format!("Webhook delivery failed: {}", err);
+            let _ = db::record_webhook_rule_outcome(conn, &rule.id, 0, &message);
+            return Err(message);
+        }
+    };
+    db::record_webhook_rule_outcome(conn, &rule.id, result.status as i64, &result.message)
         .map_err(|e| e.to_string())?;
     Ok(result)
 }
@@ -4791,6 +4801,7 @@ struct WebhookRuleRequest {
     cooldown_seconds: Option<i64>,
     interval_seconds: i64,
     trigger_event: Option<String>,
+    auto_disable_after: Option<i64>,
 }
 
 #[tauri::command]
@@ -4818,6 +4829,7 @@ fn create_webhook_rule(
             cooldown_seconds: request.cooldown_seconds.unwrap_or(0).max(0),
             interval_seconds: request.interval_seconds.max(5),
             trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
+            auto_disable_after: request.auto_disable_after.unwrap_or(3).max(0),
         },
     )
     .map_err(|e| e.to_string())
@@ -7471,6 +7483,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -7481,6 +7494,7 @@ mod tests {
         assert!(result.signed);
         let after = db::get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
         assert_eq!(after.last_status, 200);
+        assert_eq!(after.consecutive_failures, 0);
         assert_eq!(after.secret, "rule-secret");
         assert_eq!(after.retries, 2);
         assert!(

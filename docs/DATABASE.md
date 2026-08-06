@@ -595,6 +595,17 @@ CREATE TABLE IF NOT EXISTS webhook_retention_config (
 
 无表结构变更。收益聚合是运行时派生数据：ProjectsView 复用 `projects.revenue` 与 `project_revenue_history`（前端 `projectRevenueHistory`）计算最新值、趋势点数、7d / 30d 变化与状态拆分，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `projectRevenueHistory`，不新增 localStorage key。
 
+## Sprint 138：Webhook 自动熔断
+
+```sql
+ALTER TABLE webhook_rules ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE webhook_rules ADD COLUMN auto_disable_after INTEGER NOT NULL DEFAULT 3;
+```
+
+- 新库 SCHEMA 的 `webhook_rules` 建表语句直接包含这两列，旧库由 `migrate_webhook_circuit_breaker` 幂等补列并加入 `init_connection` 迁移链。
+- `record_webhook_rule_outcome` 以真实投递终态更新规则：2xx 把 `consecutive_failures` 清零，非 2xx / 网络错误累加；当 `auto_disable_after > 0` 且累计值达到阈值时把 `enabled` 置 0，并把 `last_message` 写成 `Auto-disabled after N consecutive failures`。
+- `set_webhook_rule_enabled(true)` 同时把 `consecutive_failures` 清零；`auto_disable_after = 0` 表示只累计不自动停用。浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 保存同一模型，不新增 localStorage key。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 无表结构变更。会话摘要是运行时派生数据：`buildSessionSummary` 复用 `chat_messages`（前端 `chatMessages`）的 role / content 生成问题数、关键词与问答要点；`buildSessionMarkdown` 只是导出文本，摘要不新增 SQLite 字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `chatMessages`，不新增 localStorage key。

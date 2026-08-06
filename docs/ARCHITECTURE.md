@@ -462,6 +462,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Portfolio export 报告 Overview 新增 Latest revenue / Revenue points / 7d delta / 30d delta 四行；聚合全部为运行时派生，无新增表结构。
 - `verify:ui` / `verify:preview` 新增 `projectRevenueSummary` lane：种子两个项目与 4 个趋势点后断言聚合数值与状态拆分，并在 lane 结束后恢复原始 projects / history 以保护后续 Git 与编辑 lane。
 
+## Sprint 138：Webhook 自动熔断
+
+- `webhook_rules` 新增 `consecutive_failures INTEGER NOT NULL DEFAULT 0` 与 `auto_disable_after INTEGER NOT NULL DEFAULT 3`：新库 SCHEMA 建列，旧库 `migrate_webhook_circuit_breaker` 幂等补列；`WebhookRule` / `WebhookRuleInput` / `WebhookRuleRequest` 全程携带这两个字段，创建时 `auto_disable_after` clamp >= 0（0 表示不自动熔断）。
+- `db::record_webhook_rule_outcome` 按真实投递终态更新规则：2xx 清空连续失败，非 2xx / 网络错误累加；达到阈值自动 `enabled = 0` 并写入 `Auto-disabled after N consecutive failures`；`set_webhook_rule_enabled(true)` 同时重置失败计数，手动恢复后从干净状态开始。
+- `run_webhook_rule_inner` 与 delivery worker 的 success / dead 终态共用同一熔断函数；入队时的 202 标记仍走 `mark_webhook_rule_run`，只更新 `last_run_at`，不干扰失败计数。
+- SystemView Webhook 表单新增 `data-webhook-rule-auto-disable` 输入，规则行新增 `data-webhook-rule-failures`（连续失败徽标）与 `data-webhook-rule-auto-disable`（熔断阈值徽标）；`db.ts` 的 `WebhookRule` / `createWebhookRule` / fallback 与 Rust 同构，fallback 按 URL 含 `/fail` 模拟失败并执行相同累计 / 清零 / 停用语义。
+- `verify:ui` / `verify:preview` 新增 `webhookRuleCircuitBreaker` lane；Rust 新增迁移、累计、自动停用、零阈值不熔断与重新启用重置单测，`cargo test --lib` 增至 143 条。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 - `db.ts` 新增 `buildSessionSummary`：questionCount、keywords（中文 2-3 字 n-gram + 英文词，过滤停用词，top 6）、points（user 消息配对下一条 assistant 回复，各取首行截断），纯运行时派生。

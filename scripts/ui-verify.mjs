@@ -9621,6 +9621,273 @@ try {
   results.webhookSystemEvents = webhookSystemEvents;
   laneLog('webhookSystemEvents ok');
 
+  const circuitSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const base = {
+      url: "https://hooks.example.test/fail",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      enabled: true,
+      lastRunAt: 0,
+      lastStatus: 500,
+      lastMessage: "HTTP 500 simulated failure",
+      createdAt: now,
+      updatedAt: now,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        {
+          ...base,
+          id: "cb-fail",
+          name: "Circuit fail hook",
+          consecutiveFailures: 2,
+          autoDisableAfter: 3,
+        },
+        {
+          ...base,
+          id: "cb-reset",
+          name: "Circuit reset hook",
+          url: "https://hooks.example.test/ok",
+          consecutiveFailures: 2,
+          autoDisableAfter: 3,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    return true;
+  })()`);
+  if (!circuitSeed) {
+    throw new Error('Webhook circuit breaker seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRuleCircuitBreaker = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const RULES_KEY = "ai-workbench:webhook-rules:v1";
+    const DELIVERY_KEY = "ai-workbench:webhook-deliveries:v1";
+    const priorRules = localStorage.getItem(RULES_KEY);
+    const priorDeliveries = localStorage.getItem(DELIVERY_KEY);
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const stored = () => JSON.parse(localStorage.getItem(RULES_KEY) || "[]");
+    const findStored = (id) => stored().find((r) => r.id === id);
+    const findItem = (name) =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes(name),
+      );
+    const waitForItem = async (name, tries = 40) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = findItem(name);
+        if (item && item.querySelector("[data-webhook-rule-run]")) return item;
+        await sleep(100);
+      }
+      return null;
+    };
+    const waitForDomText = async (name, check, tries = 50) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = findItem(name);
+        if (item && check(item.textContent ?? "")) return item;
+        await sleep(100);
+      }
+      return null;
+    };
+    const clickRun = async (name) => {
+      const item = await waitForItem(name, 20);
+      if (!item) return false;
+      item.querySelector("[data-webhook-rule-run]")?.click();
+      await sleep(150);
+      return true;
+    };
+    const clickRunUntil = async (name, predicate, tries = 40) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = await waitForItem(name, 5);
+        if (!item) return false;
+        item.querySelector("[data-webhook-rule-run]")?.click();
+        for (let j = 0; j < 6; j += 1) {
+          if (predicate()) return true;
+          await sleep(100);
+        }
+      }
+      return false;
+    };
+    const findStoredByName = (name) => stored().find((r) => r.name === name);
+    const createdStoredBefore = () => {
+      const rule = findStoredByName("Circuit created hook");
+      return rule && rule.autoDisableAfter === 2;
+    };
+    const failPredicate = () => {
+      const rule = findStored("cb-fail");
+      return rule && rule.enabled === false && rule.consecutiveFailures === 3;
+    };
+    const resetPredicate = () => {
+      const rule = findStored("cb-reset");
+      return rule && rule.consecutiveFailures === 0 && rule.lastMessage.includes("HTTP 200");
+    };
+    const createdFailPredicate = () => {
+      const rule = createdId ? findStored(createdId) : null;
+      return rule && rule.consecutiveFailures === 1 && rule.enabled === true;
+    };
+    const createdTripPredicate = () => {
+      const rule = createdId ? findStored(createdId) : null;
+      return (
+        rule &&
+        rule.consecutiveFailures === 2 &&
+        rule.enabled === false &&
+        rule.lastMessage.includes("Auto-disabled after 2")
+      );
+    };
+    let createdId = "";
+    const setCreatedId = () => {
+      createdId = stored().find((r) => r.name === "Circuit created hook")?.id ?? "";
+    };
+    let ready = false;
+    for (let i = 0; i < 40; i += 1) {
+      if (findItem("Circuit fail hook") && findItem("Circuit reset hook")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) return { ok: false, reason: "circuit rules not rendered" };
+
+    const tripped = await clickRunUntil("Circuit fail hook", failPredicate);
+    const failItemFresh = await waitForDomText(
+      "Circuit fail hook",
+      (text) =>
+        text.includes("Auto-disabled after 3") &&
+        text.includes("off - HTTP 500") &&
+        text.includes("3 failure(s)"),
+    );
+    const failText = failItemFresh?.textContent ?? "";
+    const failBadge =
+      failItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "";
+    const trippedOk =
+      tripped &&
+      !!failItemFresh &&
+      failText.includes("Auto-disabled after 3") &&
+      failBadge.includes("3 failure(s)") &&
+      failText.includes("off - HTTP 500");
+
+    const reset = await clickRunUntil("Circuit reset hook", resetPredicate);
+    const resetItemFresh = await waitForDomText(
+      "Circuit reset hook",
+      (text) => text.includes("HTTP 200 delivered") && text.includes("0 failure(s)"),
+    );
+    const resetOk =
+      reset &&
+      !!resetItemFresh &&
+      (resetItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "").includes(
+        "0 failure(s)",
+      );
+
+    const failItemEnabled = await waitForDomText("Circuit fail hook", (text) =>
+      text.includes("Enable"),
+    );
+    failItemEnabled?.querySelector("[data-webhook-rule-toggle]")?.click();
+    let reEnabled = false;
+    for (let i = 0; i < 40; i += 1) {
+      const rule = findStored("cb-fail");
+      if (rule && rule.enabled === true && rule.consecutiveFailures === 0) {
+        reEnabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const failDomEnabled = await waitForDomText(
+      "Circuit fail hook",
+      (text) => text.includes("on - HTTP 500") && text.includes("0 failure(s)"),
+    );
+    const reEnabledOk = reEnabled && !!failDomEnabled;
+
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const autoDisableInput = document.querySelector("input[data-webhook-rule-auto-disable]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !autoDisableInput || !saveBtn) {
+      return { ok: false, reason: "circuit form controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/fail");
+    setValue(nameInput, "Circuit created hook");
+    setValue(autoDisableInput, "2");
+    await sleep(80);
+    saveBtn.click();
+    let created = false;
+    for (let i = 0; i < 40; i += 1) {
+      if (createdStoredBefore()) {
+        setCreatedId();
+        created = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const createdStored = created && !!createdId;
+    const firstFailure = await clickRunUntil("Circuit created hook", createdFailPredicate);
+    const firstDom = await waitForDomText("Circuit created hook", (text) =>
+      text.includes("1 failure(s)"),
+    );
+    const firstFailureOk = firstFailure && !!firstDom;
+    const createdTripped = await clickRunUntil("Circuit created hook", createdTripPredicate);
+    const createdItemFresh = await waitForDomText(
+      "Circuit created hook",
+      (text) =>
+        text.includes("Auto-disabled after 2") &&
+        text.includes("off - HTTP 500") &&
+        text.includes("2 failure(s)"),
+    );
+    const createdText = createdItemFresh?.textContent ?? "";
+    const createdBadges =
+      !!createdItemFresh &&
+      (createdItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "").includes(
+        "2 failure(s)",
+      ) &&
+      (createdItemFresh?.querySelector("[data-webhook-rule-auto-disable]")?.textContent ?? "").includes(
+        "auto-off after 2",
+      );
+
+    localStorage.setItem(RULES_KEY, priorRules ?? "[]");
+    localStorage.setItem(DELIVERY_KEY, priorDeliveries ?? "[]");
+    return {
+      ok:
+        trippedOk &&
+        resetOk &&
+        reEnabledOk &&
+        createdStored &&
+        firstFailureOk &&
+        createdTripped &&
+        createdBadges,
+      trippedOk,
+      resetOk,
+      reEnabledOk,
+      createdStored,
+      firstFailureOk,
+      createdTripped,
+      createdBadges,
+      failBadge,
+      createdText: createdText.slice(0, 240),
+    };
+  })()`);
+  if (!webhookRuleCircuitBreaker.ok) {
+    throw new Error(
+      `Webhook circuit breaker assertion failed: ${JSON.stringify(webhookRuleCircuitBreaker)}`,
+    );
+  }
+  results.webhookRuleCircuitBreaker = webhookRuleCircuitBreaker;
+  laneLog('webhookRuleCircuitBreaker ok');
+
   let budgetServer = null;
   try {
     budgetServer = http.createServer((req, res) => {
