@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 113
+
+### What went well?
+
+- Sync audit Activity 图升级为跨时间轴分层图：每个日 / 周 bucket 按 merge / resolve / other 三色堆叠，`data-sync-audit-segment` 带 kind / count 锚点，旧 `data-sync-audit-bar` 总数锚点保留。
+- 图例 `data-sync-audit-legend` 显示三类合计，桶数 > 1 时新增 `data-sync-audit-trend-line` 累计折线；过滤条件与 Day / Week 粒度联动不变。
+- `verify:ui` / `verify:preview` 的 `syncAuditChart` lane 新增分段合计 = 总数、图例合计 = 总数、趋势线存在性 = 桶数 > 1、Week 切换后分段合计一致。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（122 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮断言把趋势线当作必须存在，但单日数据只有一个 bucket，UI 按“桶数 > 1”才渲染折线；改为断言存在性与桶数一致后稳定。
+- preview 出现一次 CDP `Runtime.evaluate` 超时（providerToggled 之后），重跑通过，属环境抖动而非功能回归。
+
+### Action Items
+
+- 下一 Sprint 候选：AI 复盘结果一键保存更多入口、真实 Provider 端到端流式联调。
+- 保留 `syncAuditChart` lane，修改审计聚合、图表结构或趋势线规则时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 112
 
 ### What went well?

@@ -4603,6 +4603,23 @@ try {
       0,
     );
     const countsMatch = total > 0 && barTotal === total;
+    const segments = [...document.querySelectorAll("[data-sync-audit-segment]")];
+    const segmentTotal = segments.reduce(
+      (sum, segment) => sum + Number(segment.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const legendItems = [...document.querySelectorAll("[data-sync-audit-legend-item]")];
+    const legendTotal = legendItems.reduce((sum, item) => {
+      const number = Number((item.textContent ?? "").replace(/[^0-9]/g, "") || 0);
+      return sum + number;
+    }, 0);
+    const trendLineExpected = bars.length > 1;
+    const trendLine = !!document.querySelector("[data-sync-audit-trend-line]");
+    const stackedOk =
+      total > 0 &&
+      segmentTotal === total &&
+      legendTotal === total &&
+      trendLine === trendLineExpected;
     const dayAttr = chart()?.getAttribute("data-audit-granularity");
     document.querySelector("[data-audit-granularity-week]")?.click();
     let weekOk = false;
@@ -4616,16 +4633,33 @@ try {
     }
     const weekTotalText = document.querySelector("[data-sync-audit-total]")?.textContent ?? "";
     const weekTotal = Number(weekTotalText.replace(/[^0-9]/g, "") || 0);
+    const weekSegmentTotal = [...document.querySelectorAll("[data-sync-audit-segment]")].reduce(
+      (sum, segment) => sum + Number(segment.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const weekStackedOk = weekSegmentTotal === weekTotal;
     document.querySelector("[data-audit-granularity-day]")?.click();
     await sleep(250);
     const dayRestored = chart()?.getAttribute("data-audit-granularity") === "day";
     return {
-      ok: countsMatch && weekOk && weekTotal === total && dayRestored,
+      ok:
+        countsMatch &&
+        stackedOk &&
+        weekOk &&
+        weekTotal === total &&
+        weekStackedOk &&
+        dayRestored,
       total,
       barTotal,
+      segmentTotal,
+      legendTotal,
+      trendLine,
+      stackedOk,
       dayAttr,
       weekBars,
       weekTotal,
+      weekSegmentTotal,
+      weekStackedOk,
       dayRestored,
     };
   })()`);
