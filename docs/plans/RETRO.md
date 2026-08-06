@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 139
+
+### What went well?
+
+- 新增 `webhook_rule_runs` 表与 `record_webhook_rule_run` / `list_webhook_rule_runs`：手动 Run、定时调度、事件投递的 success / dead 终态都会落日志，按规则裁剪保留最近 50 条。
+- SystemView Webhook 卡片新增 Run log 区与 `data-webhook-rule-fail-alert` 24h 失败告警；`db.ts` fallback 用 `ai-workbench:webhook-rule-runs:v1` 同构持久化。
+- `verify:ui` / `verify:preview` 新增 `webhookRuleRunLog` lane：种子 3 条运行记录，断言列表 / failed 徽标 / 告警条，并验证成功与失败 Run now 都即时追加日志；Rust 单测增至 144 条，全部门禁全绿。
+
+### What went wrong?
+
+- `list_webhook_rule_runs` 首版在 stmt 分支里绑定了未使用的 `rule_id`，cargo test 报 unused variable 警告；改为 `rule_id.is_some()` 分支后 clippy `-D warnings` 通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Knowledge 双链补全编辑器提示、Actions 周计划模板、Webhook 复杂触发器条件表达式。
+- 保留 `webhookRuleRunLog` lane，修改运行日志模型、规则执行链路或 Run log 渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 138
 
 ### What went well?

@@ -606,6 +606,26 @@ ALTER TABLE webhook_rules ADD COLUMN auto_disable_after INTEGER NOT NULL DEFAULT
 - `record_webhook_rule_outcome` 以真实投递终态更新规则：2xx 把 `consecutive_failures` 清零，非 2xx / 网络错误累加；当 `auto_disable_after > 0` 且累计值达到阈值时把 `enabled` 置 0，并把 `last_message` 写成 `Auto-disabled after N consecutive failures`。
 - `set_webhook_rule_enabled(true)` 同时把 `consecutive_failures` 清零；`auto_disable_after = 0` 表示只累计不自动停用。浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1` 保存同一模型，不新增 localStorage key。
 
+## Sprint 139：Webhook 规则执行日志与失败告警
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_rule_runs (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'success',
+    http_status INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rule_runs_rule_created
+    ON webhook_rule_runs(rule_id, created_at DESC);
+```
+
+- 新表由 SCHEMA 自动创建，无旧库迁移；`record_webhook_rule_run` 写入后按 `rule_id` 裁剪保留最近 50 条，`list_webhook_rule_runs` 按 `created_at DESC` 返回。
+- `run_webhook_rule_inner` 写 `manual` 运行，delivery worker 终态写 `scheduled` / `event` 运行；浏览器 fallback 使用 `ai-workbench:webhook-rule-runs:v1` 保存同一模型，不写入 SQLite。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 无表结构变更。会话摘要是运行时派生数据：`buildSessionSummary` 复用 `chat_messages`（前端 `chatMessages`）的 role / content 生成问题数、关键词与问答要点；`buildSessionMarkdown` 只是导出文本，摘要不新增 SQLite 字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `chatMessages`，不新增 localStorage key。

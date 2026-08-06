@@ -2793,6 +2793,25 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
             );
             if state != "queued" {
                 let _ = db::record_webhook_rule_outcome(&conn, &delivery.rule_id, status, &message);
+                let run_kind = if delivery.event.trim().is_empty() {
+                    "scheduled"
+                } else {
+                    "event"
+                };
+                let run_status = if state == "success" {
+                    "success"
+                } else {
+                    "failed"
+                };
+                let _ = db::record_webhook_rule_run(
+                    &conn,
+                    &delivery.rule_id,
+                    run_kind,
+                    run_status,
+                    status,
+                    attempts,
+                    &message,
+                );
             }
         }
     });
@@ -4774,11 +4793,34 @@ fn run_webhook_rule_inner(
         Err(err) => {
             let message = format!("Webhook delivery failed: {}", err);
             let _ = db::record_webhook_rule_outcome(conn, &rule.id, 0, &message);
+            let _ = db::record_webhook_rule_run(
+                conn,
+                &rule.id,
+                "manual",
+                "failed",
+                0,
+                rule.retries.max(0) + 1,
+                &message,
+            );
             return Err(message);
         }
     };
     db::record_webhook_rule_outcome(conn, &rule.id, result.status as i64, &result.message)
         .map_err(|e| e.to_string())?;
+    let run_status = if result.status >= 200 && result.status < 300 {
+        "success"
+    } else {
+        "failed"
+    };
+    let _ = db::record_webhook_rule_run(
+        conn,
+        &rule.id,
+        "manual",
+        run_status,
+        result.status as i64,
+        result.attempts as i64,
+        &result.message,
+    );
     Ok(result)
 }
 
@@ -4859,6 +4901,17 @@ fn delete_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<String, S
 fn run_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<WebhookDeliveryResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     run_webhook_rule_inner(&conn, &id)
+}
+
+#[tauri::command]
+fn list_webhook_rule_runs(
+    state: State<'_, db::Db>,
+    rule_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<db::WebhookRuleRun>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_webhook_rule_runs(&conn, rule_id.as_deref(), limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5611,6 +5664,7 @@ pub fn run() {
             set_webhook_rule_enabled,
             delete_webhook_rule,
             run_webhook_rule,
+            list_webhook_rule_runs,
             trigger_webhook_event,
             list_webhook_deliveries,
             retry_webhook_delivery,

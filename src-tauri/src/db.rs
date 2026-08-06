@@ -266,6 +266,18 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rule_id);
+CREATE TABLE IF NOT EXISTS webhook_rule_runs (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'success',
+    http_status INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rule_runs_rule_created
+    ON webhook_rule_runs(rule_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS webhook_retention_config (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     retention_days INTEGER NOT NULL DEFAULT 30,
@@ -767,6 +779,19 @@ pub struct WebhookRuleInput<'a> {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WebhookRuleRun {
+    pub id: String,
+    pub rule_id: String,
+    pub kind: String,
+    pub status: String,
+    pub http_status: i64,
+    pub attempts: i64,
+    pub message: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebhookDelivery {
     pub id: String,
     pub rule_id: String,
@@ -1079,6 +1104,103 @@ pub fn record_webhook_rule_outcome(
         params![now, status, message, id],
     )?;
     Ok(())
+}
+
+const WEBHOOK_RULE_RUN_COLUMNS: &str =
+    "id, rule_id, kind, status, http_status, attempts, message, created_at";
+
+fn map_webhook_rule_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRuleRun> {
+    Ok(WebhookRuleRun {
+        id: row.get(0)?,
+        rule_id: row.get(1)?,
+        kind: row.get(2)?,
+        status: row.get(3)?,
+        http_status: row.get(4)?,
+        attempts: row.get(5)?,
+        message: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+pub fn get_webhook_rule_run(conn: &Connection, id: &str) -> Result<Option<WebhookRuleRun>> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM webhook_rule_runs WHERE id = ?1",
+            WEBHOOK_RULE_RUN_COLUMNS
+        ),
+        params![id],
+        map_webhook_rule_run,
+    )
+    .optional()
+}
+
+pub fn record_webhook_rule_run(
+    conn: &Connection,
+    rule_id: &str,
+    kind: &str,
+    status: &str,
+    http_status: i64,
+    attempts: i64,
+    message: &str,
+) -> Result<WebhookRuleRun> {
+    let now = now_millis();
+    let id = uid();
+    conn.execute(
+        "INSERT INTO webhook_rule_runs (id, rule_id, kind, status, http_status, attempts, message, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            rule_id,
+            kind,
+            status,
+            http_status,
+            attempts.max(1),
+            message,
+            now,
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM webhook_rule_runs
+         WHERE rule_id = ?1 AND id NOT IN (
+             SELECT id FROM webhook_rule_runs
+             WHERE rule_id = ?1
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 50
+         )",
+        params![rule_id],
+    )?;
+    get_webhook_rule_run(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn list_webhook_rule_runs(
+    conn: &Connection,
+    rule_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<WebhookRuleRun>> {
+    let limit = limit.clamp(1, 200);
+    let rule_id = rule_id.filter(|id| !id.trim().is_empty());
+    let mut stmt = if rule_id.is_some() {
+        conn.prepare(&format!(
+            "SELECT {} FROM webhook_rule_runs
+             WHERE rule_id = ?1
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?2",
+            WEBHOOK_RULE_RUN_COLUMNS
+        ))?
+    } else {
+        conn.prepare(&format!(
+            "SELECT {} FROM webhook_rule_runs
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?1",
+            WEBHOOK_RULE_RUN_COLUMNS
+        ))?
+    };
+    let rows = if let Some(rule_id) = rule_id {
+        stmt.query_map(params![rule_id, limit], map_webhook_rule_run)?
+    } else {
+        stmt.query_map(params![limit], map_webhook_rule_run)?
+    };
+    rows.collect()
 }
 
 const WEBHOOK_DELIVERY_COLUMNS: &str =
@@ -8120,6 +8242,82 @@ mod tests {
         let after = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
         assert_eq!(after.consecutive_failures, 5);
         assert!(after.enabled);
+    }
+
+    #[test]
+    fn webhook_rule_runs_record_list_and_prune() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Log hook",
+                url: "https://example.test/log",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+                auto_disable_after: 3,
+            },
+        )
+        .unwrap();
+
+        let first = record_webhook_rule_run(
+            &conn,
+            &rule.id,
+            "manual",
+            "success",
+            200,
+            1,
+            "HTTP 200 delivered",
+        )
+        .unwrap();
+        assert_eq!(first.kind, "manual");
+        assert_eq!(first.status, "success");
+        assert_eq!(first.http_status, 200);
+        assert_eq!(first.attempts, 1);
+
+        record_webhook_rule_run(
+            &conn,
+            &rule.id,
+            "scheduled",
+            "failed",
+            500,
+            3,
+            "HTTP 500 boom",
+        )
+        .unwrap();
+
+        let runs = list_webhook_rule_runs(&conn, Some(&rule.id), 10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].status, "failed");
+        assert_eq!(runs[0].kind, "scheduled");
+        assert_eq!(runs[1].status, "success");
+
+        for i in 0..60 {
+            record_webhook_rule_run(
+                &conn,
+                &rule.id,
+                "event",
+                "success",
+                200,
+                1,
+                &format!("run {}", i),
+            )
+            .unwrap();
+        }
+        let pruned = list_webhook_rule_runs(&conn, Some(&rule.id), 200).unwrap();
+        assert_eq!(pruned.len(), 50);
+        assert_eq!(pruned[0].message, "run 59");
+
+        let all = list_webhook_rule_runs(&conn, None, 200).unwrap();
+        assert_eq!(all.len(), 50);
+        let limited = list_webhook_rule_runs(&conn, None, 3).unwrap();
+        assert_eq!(limited.len(), 3);
     }
 
     #[test]
