@@ -9,6 +9,13 @@ use std::sync::Mutex;
 
 pub struct Db(pub Mutex<Connection>);
 
+#[cfg(test)]
+pub fn new_test_connection() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.execute_batch(SCHEMA).expect("schema setup");
+    conn
+}
+
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -308,6 +315,38 @@ CREATE TABLE IF NOT EXISTS sync_audit_log (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sync_audit_created ON sync_audit_log(created_at DESC);
+CREATE TABLE IF NOT EXISTS sync_credentials (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    device_id TEXT NOT NULL DEFAULT '',
+    encryption_enabled INTEGER NOT NULL DEFAULT 0,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    active_key_version INTEGER NOT NULL DEFAULT 0,
+    rotated_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sync_key_versions (
+    device_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    salt TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    algorithm TEXT NOT NULL DEFAULT 'AES-256-GCM',
+    iterations INTEGER NOT NULL DEFAULT 100000,
+    active INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    rotated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_key_versions_active
+    ON sync_key_versions(device_id, active DESC, version DESC);
+CREATE TABLE IF NOT EXISTS sync_paired_devices (
+    device_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    pairing_code TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
+    paired_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_paired_devices_paired
+    ON sync_paired_devices(paired_at DESC);
 CREATE TABLE IF NOT EXISTS webhook_rules (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -813,6 +852,64 @@ pub struct SyncAuditSummary {
     pub granularity: String,
     pub total: i64,
     pub buckets: Vec<SyncAuditBucket>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCredential {
+    pub device_id: String,
+    pub encryption_enabled: bool,
+    pub confirmed: bool,
+    pub active_key_version: i64,
+    pub rotated_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncKeyVersion {
+    pub device_id: String,
+    pub version: i64,
+    pub salt: String,
+    pub fingerprint: String,
+    pub algorithm: String,
+    pub iterations: i64,
+    pub active: bool,
+    pub created_at: i64,
+    pub rotated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPairedDevice {
+    pub device_id: String,
+    pub fingerprint: String,
+    pub pairing_code: String,
+    pub version: i64,
+    pub paired_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncKeyStatus {
+    pub device_id: String,
+    pub encryption_enabled: bool,
+    pub confirmed: bool,
+    pub active_key_version: i64,
+    pub active_salt: String,
+    pub active_fingerprint: String,
+    pub iterations: i64,
+    pub rotated_at: i64,
+    pub updated_at: i64,
+    pub paired_devices: Vec<SyncPairedDevice>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassphraseStrength {
+    pub score: u8,
+    pub label: String,
+    pub feedback: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -5100,6 +5197,371 @@ pub fn export_sync_audit_range(
 pub fn clear_sync_audit(conn: &Connection) -> Result<usize, String> {
     conn.execute("DELETE FROM sync_audit_log", [])
         .map_err(|e| e.to_string())
+}
+
+fn ensure_sync_credential_row(conn: &Connection, device_id: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sync_credentials (id, device_id, encryption_enabled, confirmed,
+                                       active_key_version, rotated_at, updated_at)
+         VALUES (1, ?1, 0, 0, 0, 0, ?2)
+         ON CONFLICT(id) DO NOTHING",
+        params![device_id, now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_sync_credential(conn: &Connection) -> Result<SyncCredential, String> {
+    let device_id: String = conn
+        .query_row(
+            "SELECT device_id FROM sync_credentials WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Sync credential is not initialized".to_string())?;
+    ensure_sync_credential_row(conn, &device_id)?;
+    conn.query_row(
+        "SELECT device_id, encryption_enabled, confirmed, active_key_version, rotated_at, updated_at
+         FROM sync_credentials WHERE id = 1",
+        [],
+        |row| {
+            let encryption_enabled: i64 = row.get(1)?;
+            let confirmed: i64 = row.get(2)?;
+            Ok(SyncCredential {
+                device_id: row.get(0)?,
+                encryption_enabled: encryption_enabled != 0,
+                confirmed: confirmed != 0,
+                active_key_version: row.get(3)?,
+                rotated_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_sync_credential(conn: &Connection, device_id: &str) -> Result<SyncCredential, String> {
+    ensure_sync_credential_row(conn, device_id)?;
+    read_sync_credential(conn)
+}
+
+pub fn register_sync_key_version(
+    conn: &Connection,
+    device_id: &str,
+    salt_hex: &str,
+    fingerprint: &str,
+    algorithm: &str,
+    iterations: i64,
+) -> Result<SyncCredential, String> {
+    ensure_sync_credential_row(conn, device_id)?;
+    let now = now_millis();
+    let current = read_sync_credential(conn)?;
+    let version = current.active_key_version + 1;
+    conn.execute(
+        "UPDATE sync_key_versions SET active = 0
+         WHERE device_id = ?1 AND version <> ?2",
+        params![current.device_id, version],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO sync_key_versions
+           (device_id, version, salt, fingerprint, algorithm, iterations, active, created_at, rotated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+        params![
+            current.device_id,
+            version,
+            salt_hex,
+            fingerprint,
+            algorithm,
+            iterations,
+            now,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sync_credentials
+         SET encryption_enabled = 1, confirmed = 1, active_key_version = ?1,
+             rotated_at = ?2, updated_at = ?2
+         WHERE id = 1",
+        params![version, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        if version == 1 {
+            "sync.key.registered"
+        } else {
+            "sync.key.rotated"
+        },
+        &format!("version {}", version),
+        &current.device_id,
+    );
+    read_sync_credential(conn)
+}
+
+pub fn confirm_sync_credential(
+    conn: &Connection,
+    fingerprint: &str,
+) -> Result<SyncCredential, String> {
+    let current = read_sync_credential(conn)?;
+    if current.active_key_version == 0 {
+        return Err("Register a sync passphrase before confirming encryption".to_string());
+    }
+    let stored_fingerprint: String = conn
+        .query_row(
+            "SELECT fingerprint FROM sync_key_versions
+         WHERE device_id = ?1 AND version = ?2",
+            params![current.device_id, current.active_key_version],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if stored_fingerprint != fingerprint {
+        return Err("Passphrase does not match the registered sync key".to_string());
+    }
+    conn.execute(
+        "UPDATE sync_credentials SET confirmed = 1, updated_at = ?1 WHERE id = 1",
+        params![now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.key.confirmed",
+        "user confirmed the registered sync passphrase",
+        &current.device_id,
+    );
+    read_sync_credential(conn)
+}
+
+pub fn list_sync_key_versions(conn: &Connection) -> Result<Vec<SyncKeyVersion>, String> {
+    let device_id = conn
+        .query_row(
+            "SELECT device_id FROM sync_credentials WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(device_id) = device_id {
+        ensure_sync_credential_row(conn, &device_id)?;
+    } else {
+        ensure_sync_credential_row(conn, "")?;
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT device_id, version, salt, fingerprint, algorithm, iterations,
+                active, created_at, rotated_at
+         FROM sync_key_versions ORDER BY version DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let active: i64 = row.get(6)?;
+            Ok(SyncKeyVersion {
+                device_id: row.get(0)?,
+                version: row.get(1)?,
+                salt: row.get(2)?,
+                fingerprint: row.get(3)?,
+                algorithm: row.get(4)?,
+                iterations: row.get(5)?,
+                active: active != 0,
+                created_at: row.get(7)?,
+                rotated_at: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn upsert_sync_paired_device(
+    conn: &Connection,
+    remote_device_id: &str,
+    fingerprint: &str,
+    pairing_code: &str,
+    version: i64,
+) -> Result<SyncPairedDevice, String> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO sync_paired_devices (device_id, fingerprint, pairing_code, version, paired_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(device_id) DO UPDATE SET
+           fingerprint = excluded.fingerprint,
+           pairing_code = excluded.pairing_code,
+           version = excluded.version,
+           paired_at = excluded.paired_at",
+        params![remote_device_id, fingerprint, pairing_code, version, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = append_sync_audit(
+        conn,
+        "sync.key.paired",
+        &format!(
+            "paired {}",
+            remote_device_id.chars().take(8).collect::<String>()
+        ),
+        remote_device_id,
+    );
+    Ok(SyncPairedDevice {
+        device_id: remote_device_id.to_string(),
+        fingerprint: fingerprint.to_string(),
+        pairing_code: pairing_code.to_string(),
+        version,
+        paired_at: now,
+    })
+}
+
+pub fn list_sync_paired_devices(conn: &Connection) -> Result<Vec<SyncPairedDevice>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT device_id, fingerprint, pairing_code, version, paired_at
+         FROM sync_paired_devices ORDER BY paired_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SyncPairedDevice {
+                device_id: row.get(0)?,
+                fingerprint: row.get(1)?,
+                pairing_code: row.get(2)?,
+                version: row.get(3)?,
+                paired_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn remove_sync_paired_device(
+    conn: &Connection,
+    remote_device_id: &str,
+) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM sync_paired_devices WHERE device_id = ?1",
+        params![remote_device_id],
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_sync_key_status(conn: &Connection) -> Result<SyncKeyStatus, String> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT device_id FROM sync_credentials WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let credential = match existing {
+        Some(device_id) => {
+            ensure_sync_credential_row(conn, &device_id)?;
+            read_sync_credential(conn)?
+        }
+        None => {
+            ensure_sync_credential_row(conn, "")?;
+            read_sync_credential(conn)?
+        }
+    };
+    let mut active_salt = String::new();
+    let mut active_fingerprint = String::new();
+    let mut iterations = 0i64;
+    if credential.active_key_version > 0 {
+        let row = conn.query_row(
+            "SELECT salt, fingerprint, iterations FROM sync_key_versions
+             WHERE device_id = ?1 AND version = ?2",
+            params![credential.device_id, credential.active_key_version],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        );
+        match row {
+            Ok((salt, fingerprint, iteration_count)) => {
+                active_salt = salt;
+                active_fingerprint = fingerprint;
+                iterations = iteration_count;
+            }
+            Err(_) => {
+                active_salt = String::new();
+                active_fingerprint = String::new();
+                iterations = 0;
+            }
+        }
+    }
+    Ok(SyncKeyStatus {
+        device_id: credential.device_id.clone(),
+        encryption_enabled: credential.encryption_enabled,
+        confirmed: credential.confirmed,
+        active_key_version: credential.active_key_version,
+        active_salt,
+        active_fingerprint,
+        iterations,
+        rotated_at: credential.rotated_at,
+        updated_at: credential.updated_at,
+        paired_devices: list_sync_paired_devices(conn)?,
+    })
+}
+
+pub fn assess_passphrase_strength(passphrase: &str) -> PassphraseStrength {
+    let trimmed = passphrase.trim();
+    let length = trimmed.chars().count();
+    let has_lower = trimmed.chars().any(|c| c.is_ascii_lowercase());
+    let has_upper = trimmed.chars().any(|c| c.is_ascii_uppercase());
+    let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
+    let has_symbol = trimmed.chars().any(|c| c.is_ascii_punctuation());
+    let variety = [has_lower, has_upper, has_digit, has_symbol]
+        .iter()
+        .filter(|flag| **flag)
+        .count();
+
+    let mut score = length.saturating_mul(4) as u16;
+    score += variety.saturating_mul(8) as u16;
+    if length >= 16 {
+        score += 10;
+    } else if length >= 12 {
+        score += 6;
+    } else if length >= 8 {
+        score += 3;
+    }
+    if trimmed.len() > 24 {
+        score += 8;
+    }
+    if has_lower && has_upper && has_digit && has_symbol {
+        score += 8;
+    }
+    let score = score.min(100) as u8;
+
+    let mut feedback = Vec::new();
+    if length < 8 {
+        feedback.push("at least 8 characters".to_string());
+    }
+    if !has_digit {
+        feedback.push("add digits".to_string());
+    }
+    if !has_upper || !has_lower {
+        feedback.push("mix upper and lower case".to_string());
+    }
+    if !has_symbol {
+        feedback.push("add symbols".to_string());
+    }
+    if feedback.is_empty() && length < 12 {
+        feedback.push("lengthen to 12+ characters for strong protection".to_string());
+    }
+    let label = match score {
+        0..=39 => "weak",
+        40..=69 => "fair",
+        70..=89 => "strong",
+        _ => "excellent",
+    };
+    PassphraseStrength {
+        score,
+        label: label.to_string(),
+        feedback,
+    }
 }
 
 pub fn get_vault_watch_config(conn: &Connection) -> Result<VaultWatchConfig> {

@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 152
+
+### What went well?
+
+- SQLite 新增 `sync_credentials` / `sync_key_versions` / `sync_paired_devices`：口令本身不落盘，只保存 device id、salt、密钥指纹、算法、迭代次数、激活版本与轮换时间；注册自动生成 v1，轮换生成新 salt + 新指纹并把旧版本标记为非激活。
+- Rust 新增口令强度评估（长度 / 大小写 / 数字 / 符号，40 以下拒绝注册与轮换）、PBKDF2 密钥指纹（SHA-256 前 8 字节 hex）、配对码 `WB-<prefix>-<salt>.<fingerprint>.<version>.<deviceId>` 生成与校验；浏览器 fallback 用 Web Crypto 同构镜像同一算法。
+- System Sync card 新增强度条、确认门（未确认时 export / import / push / pull / auto sync 被拦截）、配对码复制 / 粘贴校验、已配对设备列表与 Rotate 轮换；确认口令只校验指纹并置确认态，不产生新密钥版本；`verify:ui` / `verify:preview` 新增 `syncPassphraseSecurity` lane，`syncE2e` lane 适配确认门后双端全绿。Rust 单测增至 188 条。
+
+### What went wrong?
+
+- Web Crypto 默认派生不可导出密钥，浏览器端计算指纹时报 `key is not extractable`；`deriveBrowserSyncKey` 改为可导出后与 Rust 语义一致。
+- 配对码 salt 采用 base64url，可能包含 `-`，首版按固定位置解析会把连字符算进 salt；改为先取 4 位设备前缀 + 固定分隔符，再取剩余部分为 salt。
+- 确认门会拦截 `syncE2e` 的“换回正确口令后 push”步骤，lane 补了一次重新确认后再验证加密 push。
+- 首版“确认”复用注册命令，每次确认都会生成新 salt 并轮换版本；改为独立 `confirm_sync_passphrase` 后，确认只校验指纹、版本保持稳定，并新增重复确认不轮换的自动化断言。
+- 浏览器 fallback 的 `sync-keys` 曾用随机注册设备 id 覆盖应用主 `deviceId`，导致 Error log 的 “current” 过滤匹配不到 `device-local`；`getSyncKeyStatus` 改以 `syncDeviceId` 为准，注册口令时也回退到该 id，并把口令安全验证 lane 放到全部冲突/筛选 lane 之后。
+
+### Action Items
+
+- 下一 Sprint 候选：RAG 命中来源跨文件选择器与“记住选择”偏好。
+- 保留 `syncPassphraseSecurity` / `syncE2e` lane，修改口令安全、密钥轮换或配对逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 151
 
 ### What went well?

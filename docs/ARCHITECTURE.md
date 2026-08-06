@@ -909,3 +909,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 模型选项行展示 `ctx / $in/$out / TPM` 能力徽标、收藏星标与 5 字段元数据编辑器（contextWindow / inputPricePerMtok / outputPricePerMtok / rateTpm / rateRpm）；选择模型调用 `touchProviderModelUsage` 并即时重排，收藏点击后即时重排。
 - 浏览器 fallback 在 `ai-workbench:db:v1` 新增 `modelCache`（按 providerId 分组的 `ProviderModel[]`），`MODEL_CACHE_TTL_MS` 为 24h；`listCachedProviderModels` / `refreshProviderModels` / 元数据与收藏函数同构，不新增独立 localStorage key。
 - `verify:ui` / `verify:preview` 新增 `providerModelCatalog` lane：种子 stale 缓存触发自动刷新，断言初始排序、收藏重排、选择后最近使用排序、元数据持久化与 fresh 状态；Rust 单测 183 条。
+
+## Sprint 152：Sync 口令安全、多设备配对与密钥轮换
+
+- SQLite 新增 `sync_credentials` / `sync_key_versions` / `sync_paired_devices`：口令明文不入库，只保存 16 字节 salt（hex）、SHA-256 前 8 字节密钥指纹、算法、迭代次数、激活版本与配对记录；注册写 v1，轮换生成新 salt + 新指纹并归档旧版本。
+- 新增 Tauri 命令：`sync_passphrase_strength` / `get_sync_key_status` / `list_sync_key_versions` / `register_sync_passphrase` / `confirm_sync_passphrase` / `rotate_sync_passphrase` / `get_sync_pairing_code` / `verify_sync_pairing_code` / `list_sync_paired_devices` / `remove_sync_paired_device`；强度评分 < 40 拒绝注册与轮换，`confirm_sync_passphrase` 只校验指纹并置确认态，不轮换密钥。
+- 配对码格式为 `WB-<4位设备前缀>-<salt(base64url)>.<fingerprint>.<version>.<deviceId(base64url)>`；校验方用同一口令 + 远端 salt 推导指纹，一致才写 `sync_paired_devices`。
+- `db.ts` 新增同构 API 与 `ai-workbench:sync-keys:v1` localStorage key；`deriveBrowserSyncKey` 改为可导出密钥，使浏览器与 Rust 都能计算同一密钥指纹。
+- System Sync card 新增强度条、确认按钮与确认门（未确认时 export / import / push / pull / auto sync 被拦截）、配对码复制 / 粘贴校验、已配对设备列表、Rotate 轮换与版本历史徽标；锚点 `data-sync-strength` / `data-sync-confirm` / `data-sync-pairing-code` / `data-sync-pair-verify` / `data-sync-rotate` / `data-sync-key-status` / `data-sync-key-versions`。
+- `verify:ui` / `verify:preview` 新增 `syncPassphraseSecurity` lane（强度、确认、配对码、轮换、重复确认不轮换），`syncE2e` lane 适配确认门后双端全绿；Rust 单测增至 188 条。

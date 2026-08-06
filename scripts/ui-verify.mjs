@@ -7609,6 +7609,17 @@ try {
     if (!passInput) return { ok: false, reason: "passphrase input missing" };
     setValue(passInput, "test-passphrase");
     await sleep(120);
+    const confirmBtn = document.querySelector("[data-sync-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "passphrase confirm button missing" };
+    confirmBtn.click();
+    let confirmed = false;
+    for (let i = 0; i < 30; i++) {
+      const statusText = document.querySelector("[data-sync-e2e-status]")?.textContent ?? "";
+      confirmed = statusText.includes("encrypted");
+      if (confirmed) break;
+      await sleep(100);
+    }
+    if (!confirmed) return { ok: false, reason: "passphrase not confirmed" };
     exportBtn.click();
     let exported = false;
     let envelopeRaw = "";
@@ -7661,6 +7672,17 @@ try {
     }
     const urlInput = document.querySelector('input[placeholder="Remote URL"]');
     const pushBtn = document.querySelector('button[aria-label="Push sync snapshot"]');
+    setValue(passInput, "test-passphrase");
+    await sleep(150);
+    document.querySelector("[data-sync-confirm]")?.click();
+    let reconfirmed = false;
+    for (let i = 0; i < 30; i++) {
+      const statusText = document.querySelector("[data-sync-e2e-status]")?.textContent ?? "";
+      reconfirmed = statusText.includes("encrypted");
+      if (reconfirmed) break;
+      await sleep(100);
+    }
+    if (!reconfirmed) return { ok: false, reason: "passphrase not reconfirmed before push" };
     setValue(urlInput, "https://sync.example.test/e2e");
     await sleep(80);
     pushBtn.click();
@@ -7748,14 +7770,24 @@ try {
     if (!merged) return { ok: false, reason: "batch union not merged", merged };
     document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
     let secondConflictSeen = false;
+    let secondMsg = "";
+    let secondBody = "";
     for (let i = 0; i < 20; i++) {
       secondConflictSeen = !!document.querySelector("[data-sync-conflict-item]");
+      secondMsg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      secondBody = document.body.innerText;
       if (secondConflictSeen) break;
       await sleep(100);
     }
     const batchBtn = document.querySelector('[data-batch-resolve="remote"]');
     if (!secondConflictSeen || !batchBtn) {
-      return { ok: false, reason: "no second conflict for batch remote", secondConflictSeen };
+      return {
+        ok: false,
+        reason: "no second conflict for batch remote",
+        secondConflictSeen,
+        secondMsg,
+        secondBody: secondBody.slice(0, 600),
+      };
     }
     batchBtn.click();
     let resolved = false;
@@ -8675,6 +8707,122 @@ try {
     throw new Error(`auto sync assertion failed: ${JSON.stringify(autoSyncCheck)}`);
   }
   results.autoSync = autoSyncCheck;
+
+  await evaluate(`localStorage.removeItem("ai-workbench:sync-keys:v1"); "cleared"`);
+  await reloadAndWait();
+  await clickDock('System');
+  const syncPassphraseSecurity = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const toggle = document.querySelector("[data-sync-e2e-toggle]");
+    if (!toggle) return { ok: false, reason: "e2e toggle missing" };
+    if (!toggle.checked) toggle.click();
+    await sleep(120);
+    const passInput = document.querySelector("[data-sync-passphrase]");
+    if (!passInput) return { ok: false, reason: "passphrase input missing" };
+    setValue(passInput, "Sprint152!Sync#2026");
+    let score = 0;
+    let label = "";
+    for (let i = 0; i < 30; i++) {
+      const scoreEl = document.querySelector("[data-sync-strength-score]");
+      const labelEl = document.querySelector("[data-sync-strength-label]");
+      score = Number(scoreEl?.textContent ?? 0);
+      label = labelEl?.textContent ?? "";
+      if (score >= 70 && label) break;
+      await sleep(100);
+    }
+    if (score < 70) {
+      return { ok: false, reason: "strength meter below strong", score, label };
+    }
+    const confirmBtn = document.querySelector("[data-sync-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "confirm button missing" };
+    confirmBtn.click();
+    let pairingCode = "";
+    let versionBefore = 0;
+    let confirmMessage = "";
+    let confirmMsgClass = "";
+    for (let i = 0; i < 50; i++) {
+      pairingCode = document.querySelector("[data-sync-pairing-code]")?.textContent ?? "";
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionBefore = Number(match[1]);
+      confirmMessage = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      confirmMsgClass = document.querySelector("[data-sync-message]")?.className ?? "";
+      if (pairingCode.startsWith("WB-") && versionBefore >= 1) break;
+      await sleep(100);
+    }
+    if (!pairingCode.startsWith("WB-") || versionBefore < 1) {
+      return {
+        ok: false,
+        reason: "pairing code or key status missing",
+        pairingCode,
+        versionBefore,
+        confirmMessage,
+        confirmMsgClass,
+        stored: localStorage.getItem("ai-workbench:sync-keys:v1"),
+      };
+    }
+    const rotateBtn = document.querySelector("[data-sync-rotate]");
+    if (!rotateBtn) return { ok: false, reason: "rotate button missing" };
+    rotateBtn.click();
+    let versionAfter = versionBefore;
+    let rotated = false;
+    for (let i = 0; i < 50; i++) {
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionAfter = Number(match[1]);
+      if (versionAfter > versionBefore) {
+        rotated = true;
+        break;
+      }
+      await sleep(100);
+    }
+    document.querySelector("[data-sync-confirm]")?.click();
+    let versionAfterReconfirm = versionAfter;
+    let reconfirmStable = false;
+    for (let i = 0; i < 30; i++) {
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionAfterReconfirm = Number(match[1]);
+      const confirmText = document.querySelector("[data-sync-confirm]")?.textContent ?? "";
+      if (versionAfterReconfirm === versionAfter && confirmText.includes("Confirmed")) {
+        reconfirmStable = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const rotateMessage = document.querySelector("[data-sync-message]")?.textContent ?? "";
+    const pairInput = document.querySelector("[data-sync-pair-input]");
+    const verifyBtn = document.querySelector("[data-sync-pair-verify]");
+    setValue(passInput, "");
+    await sleep(120);
+    if (toggle.checked) toggle.click();
+    await sleep(120);
+    localStorage.removeItem("ai-workbench:sync-keys:v1");
+    return {
+      ok:
+        rotated &&
+        reconfirmStable &&
+        rotateMessage.includes("Rotated sync key") &&
+        !!pairInput &&
+        !!verifyBtn,
+      rotated,
+      versionBefore,
+      versionAfter,
+      versionAfterReconfirm,
+      rotateMessage,
+    };
+  })()`);
+  if (!syncPassphraseSecurity.ok) {
+    throw new Error(
+      `sync passphrase security assertion failed: ${JSON.stringify(syncPassphraseSecurity)}`,
+    );
+  }
+  results.syncPassphraseSecurity = syncPassphraseSecurity;
+
   laneLog('autoSync ok');
 
   await setViewport(390, 844);
