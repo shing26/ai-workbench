@@ -20,6 +20,26 @@
 - 保留 `recapSaveEntries` lane，修改复盘生成、草稿持久化或保存入口时重跑 `verify:ui` / `verify:preview`。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 115
+
+### What went well?
+
+- Rust 新增 `run_provider_e2e_stream(provider_id)`：复用 `stream_openai_compatible_with` / `stream_ollama_with` 真实流式链路，逐块统计 chunk / chars 并计时，返回 `ProviderE2eResult { ok, chunks, chars, durationMs, message }`。
+- `src/lib/db.ts` 新增 `runProviderE2EStream`：真实 Provider 走 `streamProviderLive`（新增 `onChunk` 计数回调），无真实链路时返回确定性 mock，与 Rust 同构。
+- System Provider 卡片新增 `data-provider-e2e-test` 按钮与 `data-provider-e2e-result` 展示，点击后显示 `ok · chunks · chars · ms` 完整报告。
+- `verify:ui` / `verify:preview` 新增 `providerE2EStream` lane：用本地 SSE mock 覆盖完整链路并断言 chunk / chars / duration 三段指标。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（122 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 lane 只断言结果文本，未覆盖真实流式计数，改为点击 E2E 后校验 `ok · 2 chunks · 26 chars · 120ms` 三段指标，避免 UI 其它文本干扰。
+- 真实链路耗时依赖本机网络与 Provider 配置，验证统一走本地 SSE mock，Rust 端到端仍以单测覆盖流式复用逻辑。
+
+### Action Items
+
+- 下个 Sprint 候选：Actions Focus 周视图与完成归档、Projects 收益/进度汇总导出、Knowledge 文档标签分类视图、System Provider 批量测试、AI Studio 会话分组/归档。
+- 保持 `providerE2EStream` lane，改动 Provider 卡片或流式命令时重跑 `verify:ui` / `verify:preview`。
+
 ## Sprint 113
 
 ### What went well?

@@ -20,6 +20,7 @@ import {
   Wallet,
   Webhook,
   X,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
@@ -113,6 +114,7 @@ export default function SystemView() {
   const [health, setHealth] = useState<Record<string, db.ProviderHealth>>({});
   const [heartbeat, setHeartbeat] = useState<db.ProviderHeartbeatSnapshot | null>(null);
   const [streamSmoke, setStreamSmoke] = useState<Record<string, db.StreamSmokeResult>>({});
+  const [e2eResults, setE2eResults] = useState<Record<string, db.ProviderE2eResult>>({});
   const [providerModels, setProviderModels] = useState<Record<string, db.ProviderModel[]>>({});
   const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
   const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
@@ -741,6 +743,11 @@ export default function SystemView() {
     setStreamSmoke((prev) => ({ ...prev, [id]: result }));
   };
 
+  const runProviderE2E = async (id: string) => {
+    const result = await db.runProviderE2EStream(id);
+    setE2eResults((prev) => ({ ...prev, [id]: result }));
+  };
+
   const deliverWebhook = async () => {
     if (!webhookUrl.trim()) {
       setWebhookResult({
@@ -1201,6 +1208,28 @@ export default function SystemView() {
                       }`}
                     >
                       {streamSmoke[p.id].message}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    data-provider-e2e-test
+                    onClick={() => void runProviderE2E(p.id)}
+                    className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
+                  >
+                    <Zap size={9} /> E2E test
+                  </button>
+                  {e2eResults[p.id] && (
+                    <span
+                      data-provider-e2e-result
+                      className={`rounded-md px-1.5 py-0.5 text-[9px] ${
+                        e2eResults[p.id].ok
+                          ? 'bg-emerald-500/10 text-emerald-300'
+                          : 'bg-rose-500/10 text-rose-300'
+                      }`}
+                    >
+                      {e2eResults[p.id].ok
+                        ? `ok · ${e2eResults[p.id].chunks} chunks · ${e2eResults[p.id].chars} chars · ${e2eResults[p.id].durationMs}ms`
+                        : e2eResults[p.id].message}
                     </span>
                   )}
                 </div>

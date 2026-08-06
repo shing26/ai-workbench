@@ -3920,6 +3920,27 @@ try {
   }
   results.streamSmoke = streamSmokeCheck;
 
+  const providerE2EStream = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-provider-e2e-test]');
+    if (!btn) return { ok: false, reason: "no e2e test button" };
+    btn.click();
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      text = document.querySelector('[data-provider-e2e-result]')?.textContent ?? "";
+      if (text) break;
+      await sleep(100);
+    }
+    return {
+      ok: text.includes("chunks") && text.includes("chars") && text.includes("ms"),
+      text,
+    };
+  })()`);
+  if (!providerE2EStream.ok) {
+    throw new Error(`Provider E2E stream assertion failed: ${JSON.stringify(providerE2EStream)}`);
+  }
+  results.providerE2EStream = providerE2EStream;
+
   const webhookDelivery = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const urlInput = document.querySelector('input[placeholder="Webhook URL"]');

@@ -478,6 +478,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。复盘草稿保存在前端 `ai-workbench:recap-draft:v1`（date / content / saved / savedAt），实际笔记仍由 `thoughts` 表与 `ai-workbench:db:v1` 的 `thoughts` 保存，不新增表、索引或字段。
 
+## Sprint 115：Provider 端到端流式联调
+
+无表结构变更。`run_provider_e2e_stream` 是运行时命令：复用既有 `stream_openai_compatible_with` / `stream_ollama_with` 真实流式链路，结果仅在内存返回（ok / chunks / chars / durationMs / message），不落库；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `providers` 配置，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
