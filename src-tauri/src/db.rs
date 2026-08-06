@@ -239,6 +239,9 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     interval_seconds INTEGER NOT NULL DEFAULT 60,
     trigger_event TEXT NOT NULL DEFAULT '',
     trigger_condition TEXT NOT NULL DEFAULT '',
+    channels TEXT NOT NULL DEFAULT '["http"]',
+    recovery_backoff_seconds INTEGER NOT NULL DEFAULT 300,
+    circuit_opened_at INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 0,
     last_run_at INTEGER NOT NULL DEFAULT 0,
     last_status INTEGER NOT NULL DEFAULT 0,
@@ -252,6 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, i
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id TEXT PRIMARY KEY,
     rule_id TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT 'http',
     event TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL DEFAULT '{}',
     method TEXT NOT NULL DEFAULT 'POST',
@@ -286,6 +290,19 @@ CREATE TABLE IF NOT EXISTS webhook_retention_config (
     retention_days INTEGER NOT NULL DEFAULT 30,
     max_records INTEGER NOT NULL DEFAULT 200,
     auto_cleanup INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS webhook_channel_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    email_enabled INTEGER NOT NULL DEFAULT 0,
+    email_from TEXT NOT NULL DEFAULT '',
+    email_to TEXT NOT NULL DEFAULT '',
+    smtp_host TEXT NOT NULL DEFAULT '',
+    smtp_port INTEGER NOT NULL DEFAULT 587,
+    smtp_user TEXT NOT NULL DEFAULT '',
+    smtp_password TEXT NOT NULL DEFAULT '',
+    notification_enabled INTEGER NOT NULL DEFAULT 0,
+    notification_title TEXT NOT NULL DEFAULT 'AI Workbench webhook',
     updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS quick_prompts (
@@ -758,6 +775,9 @@ pub struct WebhookRule {
     pub interval_seconds: i64,
     pub trigger_event: String,
     pub trigger_condition: String,
+    pub channels: Vec<String>,
+    pub recovery_backoff_seconds: i64,
+    pub circuit_opened_at: i64,
     pub enabled: bool,
     pub last_run_at: i64,
     pub last_status: i64,
@@ -780,6 +800,8 @@ pub struct WebhookRuleInput<'a> {
     pub interval_seconds: i64,
     pub trigger_event: &'a str,
     pub trigger_condition: &'a str,
+    pub channels: Vec<String>,
+    pub recovery_backoff_seconds: i64,
     pub auto_disable_after: i64,
 }
 
@@ -801,6 +823,7 @@ pub struct WebhookRuleRun {
 pub struct WebhookDelivery {
     pub id: String,
     pub rule_id: String,
+    pub channel: String,
     pub event: String,
     pub payload: String,
     pub method: String,
@@ -824,6 +847,33 @@ pub struct WebhookRetentionConfig {
     pub max_records: i64,
     pub auto_cleanup: bool,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookChannelConfig {
+    pub email_enabled: bool,
+    pub email_from: String,
+    pub email_to: String,
+    pub smtp_host: String,
+    pub smtp_port: i64,
+    pub smtp_user: String,
+    pub smtp_password: String,
+    pub notification_enabled: bool,
+    pub notification_title: String,
+    pub updated_at: i64,
+}
+
+pub struct WebhookChannelConfigInput<'a> {
+    pub email_enabled: bool,
+    pub email_from: &'a str,
+    pub email_to: &'a str,
+    pub smtp_host: &'a str,
+    pub smtp_port: i64,
+    pub smtp_user: &'a str,
+    pub smtp_password: &'a str,
+    pub notification_enabled: bool,
+    pub notification_title: &'a str,
 }
 
 #[derive(Clone, Serialize)]
@@ -927,7 +977,16 @@ fn uid() -> String {
 const WEBHOOK_RULE_COLUMNS: &str =
     "id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, enabled, \
      last_run_at, last_status, last_message, created_at, updated_at, trigger_event, \
-     trigger_condition, consecutive_failures, auto_disable_after";
+     trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, \
+     consecutive_failures, auto_disable_after";
+
+fn parse_webhook_channels(text: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(text)
+        .unwrap_or_else(|_| vec!["http".to_string()])
+        .into_iter()
+        .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
+        .collect::<Vec<_>>()
+}
 
 fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
     Ok(WebhookRule {
@@ -949,8 +1008,11 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         updated_at: row.get(15)?,
         trigger_event: row.get(16)?,
         trigger_condition: row.get(17)?,
-        consecutive_failures: row.get(18)?,
-        auto_disable_after: row.get(19)?,
+        channels: parse_webhook_channels(&row.get::<_, String>(18)?),
+        recovery_backoff_seconds: row.get(19)?,
+        circuit_opened_at: row.get(20)?,
+        consecutive_failures: row.get(21)?,
+        auto_disable_after: row.get(22)?,
     })
 }
 
@@ -990,9 +1052,26 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
     };
     let interval = input.interval_seconds.max(5);
     let cooldown = input.cooldown_seconds.max(0);
+    let channels = if input.channels.is_empty() {
+        vec!["http".to_string()]
+    } else {
+        input
+            .channels
+            .iter()
+            .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let channels = if channels.is_empty() {
+        vec!["http".to_string()]
+    } else {
+        channels
+    };
+    let channels_json =
+        serde_json::to_string(&channels).unwrap_or_else(|_| "[\"http\"]".to_string());
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, trigger_condition, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 0, 0, '', ?13, ?13, 0, ?14)",
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, 1, 0, 0, '', ?15, ?15, 0, ?16)",
         params![
             id,
             input.name,
@@ -1006,6 +1085,8 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
             interval,
             input.trigger_event,
             input.trigger_condition,
+            channels_json,
+            input.recovery_backoff_seconds.max(0),
             now,
             input.auto_disable_after.max(0),
         ],
@@ -1018,6 +1099,7 @@ pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> R
         "UPDATE webhook_rules
          SET enabled = ?1,
              consecutive_failures = CASE WHEN ?1 = 1 THEN 0 ELSE consecutive_failures END,
+             circuit_opened_at = CASE WHEN ?1 = 1 THEN 0 ELSE circuit_opened_at END,
              updated_at = ?2
          WHERE id = ?3",
         params![enabled as i64, now_millis(), id],
@@ -1107,10 +1189,42 @@ pub fn record_webhook_rule_outcome(
                  WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after THEN 0
                  ELSE enabled
              END,
+             circuit_opened_at = CASE
+                 WHEN ?2 >= 200 AND ?2 < 300 THEN 0
+                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after THEN ?1
+                 ELSE circuit_opened_at
+             END,
              updated_at = ?1
          WHERE id = ?4",
         params![now, status, message, id],
     )?;
+    Ok(())
+}
+
+pub fn list_circuit_open_webhook_rules(conn: &Connection) -> Result<Vec<WebhookRule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM webhook_rules
+         WHERE enabled = 0
+           AND auto_disable_after > 0
+           AND consecutive_failures >= auto_disable_after
+           AND circuit_opened_at > 0
+         ORDER BY circuit_opened_at ASC",
+        WEBHOOK_RULE_COLUMNS
+    ))?;
+    let rows = stmt.query_map([], map_webhook_rule)?;
+    rows.collect()
+}
+
+pub fn set_webhook_circuit_opened_at(conn: &Connection, id: &str, at: i64) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE webhook_rules
+         SET circuit_opened_at = ?1, updated_at = ?1
+         WHERE id = ?2",
+        params![at, id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     Ok(())
 }
 
@@ -1212,27 +1326,28 @@ pub fn list_webhook_rule_runs(
 }
 
 const WEBHOOK_DELIVERY_COLUMNS: &str =
-    "id, rule_id, event, payload, method, url, token, secret, retries, attempts, status, \
+    "id, rule_id, channel, event, payload, method, url, token, secret, retries, attempts, status, \
      last_status, last_message, next_attempt_at, created_at, updated_at";
 
 fn map_webhook_delivery(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookDelivery> {
     Ok(WebhookDelivery {
         id: row.get(0)?,
         rule_id: row.get(1)?,
-        event: row.get(2)?,
-        payload: row.get(3)?,
-        method: row.get(4)?,
-        url: row.get(5)?,
-        token: row.get(6)?,
-        secret: row.get(7)?,
-        retries: row.get(8)?,
-        attempts: row.get(9)?,
-        status: row.get(10)?,
-        last_status: row.get(11)?,
-        last_message: row.get(12)?,
-        next_attempt_at: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
+        channel: row.get(2)?,
+        event: row.get(3)?,
+        payload: row.get(4)?,
+        method: row.get(5)?,
+        url: row.get(6)?,
+        token: row.get(7)?,
+        secret: row.get(8)?,
+        retries: row.get(9)?,
+        attempts: row.get(10)?,
+        status: row.get(11)?,
+        last_status: row.get(12)?,
+        last_message: row.get(13)?,
+        next_attempt_at: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 
@@ -1248,20 +1363,40 @@ pub fn get_webhook_delivery(conn: &Connection, id: &str) -> Result<Option<Webhoo
     .optional()
 }
 
+#[allow(dead_code)]
 pub fn enqueue_webhook_delivery(
     conn: &Connection,
     rule: &WebhookRule,
     event: &str,
     payload: &str,
 ) -> Result<WebhookDelivery> {
+    enqueue_webhook_delivery_channel(conn, rule, event, payload, "http")
+}
+
+pub fn enqueue_webhook_delivery_channel(
+    conn: &Connection,
+    rule: &WebhookRule,
+    event: &str,
+    payload: &str,
+    channel: &str,
+) -> Result<WebhookDelivery> {
     let now = now_millis();
     let id = uid();
     conn.execute(
-        "INSERT INTO webhook_deliveries (id, rule_id, event, payload, method, url, token, secret, retries, attempts, status, last_status, last_message, next_attempt_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 'queued', 0, '', ?10, ?10, ?10)",
+        "INSERT INTO webhook_deliveries (id, rule_id, channel, event, payload, method, url, token, secret, retries, attempts, status, last_status, last_message, next_attempt_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 'queued', 0, '', ?11, ?11, ?11)",
         params![
-            id, rule.id, event, payload, rule.method, rule.url, rule.token, rule.secret,
-            rule.retries.max(0), now,
+            id,
+            rule.id,
+            channel,
+            event,
+            payload,
+            rule.method,
+            rule.url,
+            rule.token,
+            rule.secret,
+            rule.retries.max(0),
+            now,
         ],
     )?;
     get_webhook_delivery(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
@@ -1430,6 +1565,109 @@ pub fn set_webhook_retention_config(
     get_webhook_retention_config(conn)
 }
 
+pub fn get_webhook_channel_config(conn: &Connection) -> Result<WebhookChannelConfig> {
+    let row = conn.query_row(
+        "SELECT email_enabled, email_from, email_to, smtp_host, smtp_port, smtp_user, smtp_password,
+                notification_enabled, notification_title, updated_at
+         FROM webhook_channel_config WHERE id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, i64>(9)?,
+            ))
+        },
+    );
+    match row {
+        Ok((
+            email_enabled,
+            email_from,
+            email_to,
+            smtp_host,
+            smtp_port,
+            smtp_user,
+            smtp_password,
+            notification_enabled,
+            notification_title,
+            updated_at,
+        )) => Ok(WebhookChannelConfig {
+            email_enabled: email_enabled != 0,
+            email_from,
+            email_to,
+            smtp_host,
+            smtp_port,
+            smtp_user,
+            smtp_password,
+            notification_enabled: notification_enabled != 0,
+            notification_title,
+            updated_at,
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(WebhookChannelConfig {
+            email_enabled: false,
+            email_from: String::new(),
+            email_to: String::new(),
+            smtp_host: String::new(),
+            smtp_port: 587,
+            smtp_user: String::new(),
+            smtp_password: String::new(),
+            notification_enabled: false,
+            notification_title: "AI Workbench webhook".to_string(),
+            updated_at: 0,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn set_webhook_channel_config(
+    conn: &Connection,
+    input: &WebhookChannelConfigInput<'_>,
+) -> Result<WebhookChannelConfig> {
+    let port = input.smtp_port.clamp(1, 65_535);
+    let title = if input.notification_title.trim().is_empty() {
+        "AI Workbench webhook".to_string()
+    } else {
+        input.notification_title.trim().to_string()
+    };
+    conn.execute(
+        "INSERT INTO webhook_channel_config
+           (id, email_enabled, email_from, email_to, smtp_host, smtp_port, smtp_user, smtp_password,
+            notification_enabled, notification_title, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(id) DO UPDATE SET
+           email_enabled = excluded.email_enabled,
+           email_from = excluded.email_from,
+           email_to = excluded.email_to,
+           smtp_host = excluded.smtp_host,
+           smtp_port = excluded.smtp_port,
+           smtp_user = excluded.smtp_user,
+           smtp_password = excluded.smtp_password,
+           notification_enabled = excluded.notification_enabled,
+           notification_title = excluded.notification_title,
+           updated_at = excluded.updated_at",
+        params![
+            input.email_enabled as i64,
+            input.email_from.trim(),
+            input.email_to.trim(),
+            input.smtp_host.trim(),
+            port,
+            input.smtp_user.trim(),
+            input.smtp_password,
+            input.notification_enabled as i64,
+            title,
+            now_millis(),
+        ],
+    )?;
+    get_webhook_channel_config(conn)
+}
+
 pub fn get_webhook_delivery_stats(conn: &Connection) -> Result<WebhookDeliveryStats> {
     let mut stmt =
         conn.prepare("SELECT status, COUNT(*) FROM webhook_deliveries GROUP BY status")?;
@@ -1523,6 +1761,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_webhook_cooldown(&conn)?;
     migrate_webhook_circuit_breaker(&conn)?;
     migrate_webhook_trigger_condition(&conn)?;
+    migrate_webhook_channels_recovery(&conn)?;
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
@@ -1690,6 +1929,30 @@ fn migrate_webhook_trigger_condition(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "webhook_rules", "trigger_condition")? {
         conn.execute_batch(
             "ALTER TABLE webhook_rules ADD COLUMN trigger_condition TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_webhook_channels_recovery(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "channels")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN channels TEXT NOT NULL DEFAULT '[\"http\"]';",
+        )?;
+    }
+    if !column_exists(conn, "webhook_rules", "recovery_backoff_seconds")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN recovery_backoff_seconds INTEGER NOT NULL DEFAULT 300;",
+        )?;
+    }
+    if !column_exists(conn, "webhook_rules", "circuit_opened_at")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN circuit_opened_at INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "webhook_deliveries", "channel")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_deliveries ADD COLUMN channel TEXT NOT NULL DEFAULT 'http';",
         )?;
     }
     Ok(())
@@ -7898,6 +8161,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8295,6 +8560,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
                 trigger_condition: "context.status == \"ok\"",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8324,6 +8591,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 2,
             },
         )
@@ -8379,6 +8648,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 0,
             },
         )
@@ -8409,6 +8680,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8487,6 +8760,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "error.reported",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8505,6 +8780,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "error.reported",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8543,6 +8820,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8561,6 +8840,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8580,6 +8861,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8675,6 +8958,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8742,6 +9027,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -8768,5 +9055,274 @@ mod tests {
         assert_eq!(stats.dead, 1);
         assert_eq!(stats.failed, 0);
         assert!(get_webhook_delivery(&conn, &queued.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn webhook_channels_recovery_migration_adds_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                trigger_event TEXT NOT NULL DEFAULT '',
+                trigger_condition TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                auto_disable_after INTEGER NOT NULL DEFAULT 3
+            );
+            CREATE TABLE webhook_deliveries (
+                id TEXT PRIMARY KEY,
+                rule_id TEXT NOT NULL,
+                event TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                url TEXT NOT NULL DEFAULT '',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'queued',
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_webhook_channels_recovery(&conn).unwrap();
+        migrate_webhook_channels_recovery(&conn).unwrap();
+        for (table, column) in [
+            ("webhook_rules", "channels"),
+            ("webhook_rules", "recovery_backoff_seconds"),
+            ("webhook_rules", "circuit_opened_at"),
+            ("webhook_deliveries", "channel"),
+        ] {
+            assert!(column_exists(&conn, table, column).unwrap());
+        }
+        conn.execute(
+            "INSERT INTO webhook_rules (id, name, url, created_at, updated_at)
+             VALUES ('legacy-multi', 'Legacy', 'https://example.test', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO webhook_deliveries (id, rule_id, created_at, updated_at)
+             VALUES ('legacy-delivery', 'legacy-multi', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let channels: String = conn
+            .query_row(
+                "SELECT channels FROM webhook_rules WHERE id = 'legacy-multi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let backoff: i64 = conn
+            .query_row(
+                "SELECT recovery_backoff_seconds FROM webhook_rules WHERE id = 'legacy-multi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let circuit: i64 = conn
+            .query_row(
+                "SELECT circuit_opened_at FROM webhook_rules WHERE id = 'legacy-multi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let channel: String = conn
+            .query_row(
+                "SELECT channel FROM webhook_deliveries WHERE id = 'legacy-delivery'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(channels, "[\"http\"]");
+        assert_eq!(backoff, 300);
+        assert_eq!(circuit, 0);
+        assert_eq!(channel, "http");
+    }
+
+    #[test]
+    fn webhook_channel_config_default_roundtrip_and_clamp() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let defaults = get_webhook_channel_config(&conn).unwrap();
+        assert!(!defaults.email_enabled);
+        assert_eq!(defaults.smtp_port, 587);
+        assert_eq!(defaults.notification_title, "AI Workbench webhook");
+
+        let saved = set_webhook_channel_config(
+            &conn,
+            &WebhookChannelConfigInput {
+                email_enabled: true,
+                email_from: "from@example.test",
+                email_to: "to@example.test",
+                smtp_host: "smtp.example.test",
+                smtp_port: 70_000,
+                smtp_user: "smtp-user",
+                smtp_password: "smtp-pass",
+                notification_enabled: true,
+                notification_title: "   ",
+            },
+        )
+        .unwrap();
+        assert!(saved.email_enabled);
+        assert_eq!(saved.email_from, "from@example.test");
+        assert_eq!(saved.email_to, "to@example.test");
+        assert_eq!(saved.smtp_host, "smtp.example.test");
+        assert_eq!(saved.smtp_port, 65_535);
+        assert_eq!(saved.smtp_user, "smtp-user");
+        assert_eq!(saved.smtp_password, "smtp-pass");
+        assert!(saved.notification_enabled);
+        assert_eq!(saved.notification_title, "AI Workbench webhook");
+        assert!(saved.updated_at > 0);
+
+        let clamped = set_webhook_channel_config(
+            &conn,
+            &WebhookChannelConfigInput {
+                email_enabled: false,
+                email_from: "a@example.test",
+                email_to: "b@example.test",
+                smtp_host: "host",
+                smtp_port: 0,
+                smtp_user: "user",
+                smtp_password: "pass",
+                notification_enabled: false,
+                notification_title: "Custom title",
+            },
+        )
+        .unwrap();
+        assert_eq!(clamped.smtp_port, 1);
+        assert_eq!(clamped.notification_title, "Custom title");
+        let roundtrip = get_webhook_channel_config(&conn).unwrap();
+        assert!(!roundtrip.email_enabled);
+        assert_eq!(roundtrip.smtp_port, 1);
+        assert_eq!(roundtrip.notification_title, "Custom title");
+        assert_eq!(roundtrip.smtp_user, "user");
+    }
+
+    #[test]
+    fn webhook_multi_channel_create_persists_and_enqueues_channel() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Multi channel hook",
+                url: "https://example.test/multi",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "sync.completed",
+                trigger_condition: "",
+                channels: vec![
+                    "http".to_string(),
+                    "email".to_string(),
+                    "notification".to_string(),
+                ],
+                recovery_backoff_seconds: 600,
+                auto_disable_after: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(rule.channels, vec!["http", "email", "notification"]);
+        assert_eq!(rule.recovery_backoff_seconds, 600);
+        assert_eq!(rule.circuit_opened_at, 0);
+        let stored = list_webhook_rules(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == rule.id)
+            .unwrap();
+        assert_eq!(stored.channels, vec!["http", "email", "notification"]);
+        assert_eq!(stored.recovery_backoff_seconds, 600);
+
+        for channel in ["http", "email", "notification"] {
+            let delivery =
+                enqueue_webhook_delivery_channel(&conn, &stored, "sync.completed", "{}", channel)
+                    .unwrap();
+            assert_eq!(delivery.channel, channel);
+        }
+        let deliveries = list_webhook_deliveries(&conn, 100, "").unwrap();
+        assert_eq!(deliveries.len(), 3);
+        let channels: std::collections::HashSet<&str> =
+            deliveries.iter().map(|d| d.channel.as_str()).collect();
+        assert_eq!(channels.len(), 3);
+        assert!(channels.contains("http"));
+        assert!(channels.contains("email"));
+        assert!(channels.contains("notification"));
+    }
+
+    #[test]
+    fn webhook_circuit_open_list_and_recovery_reset() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Circuit recovery hook",
+                url: "https://example.test/recovery",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+                trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 30,
+                auto_disable_after: 2,
+            },
+        )
+        .unwrap();
+        assert!(list_circuit_open_webhook_rules(&conn).unwrap().is_empty());
+        record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500 boom").unwrap();
+        record_webhook_rule_outcome(&conn, &rule.id, 0, "timeout").unwrap();
+        let opened = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert!(!opened.enabled);
+        assert!(opened.circuit_opened_at > 0);
+        assert_eq!(opened.consecutive_failures, 2);
+
+        let open = list_circuit_open_webhook_rules(&conn).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, rule.id);
+
+        let later = opened.circuit_opened_at + 10_000;
+        set_webhook_circuit_opened_at(&conn, &rule.id, later).unwrap();
+        assert_eq!(
+            get_webhook_rule(&conn, &rule.id)
+                .unwrap()
+                .unwrap()
+                .circuit_opened_at,
+            later
+        );
+
+        let restored = set_webhook_rule_enabled(&conn, &rule.id, true).unwrap();
+        assert!(restored.enabled);
+        assert_eq!(restored.circuit_opened_at, 0);
+        assert_eq!(restored.consecutive_failures, 0);
+        assert!(list_circuit_open_webhook_rules(&conn).unwrap().is_empty());
     }
 }

@@ -497,6 +497,9 @@ export type WebhookRule = {
   intervalSeconds: number;
   triggerEvent: string;
   triggerCondition: string;
+  channels: WebhookChannelName[];
+  recoveryBackoffSeconds: number;
+  circuitOpenedAt: number;
   enabled: boolean;
   lastRunAt: number;
   lastStatus: number;
@@ -506,6 +509,8 @@ export type WebhookRule = {
   consecutiveFailures: number;
   autoDisableAfter: number;
 };
+
+export type WebhookChannelName = 'http' | 'email' | 'notification';
 
 export type WebhookRuleRun = {
   id: string;
@@ -523,6 +528,7 @@ export type WebhookDeliveryStatus = 'queued' | 'delivering' | 'success' | 'faile
 export type WebhookDelivery = {
   id: string;
   ruleId: string;
+  channel: WebhookChannelName;
   event: string;
   payload: string;
   method: string;
@@ -537,6 +543,25 @@ export type WebhookDelivery = {
   nextAttemptAt: number;
   createdAt: number;
   updatedAt: number;
+};
+
+export type WebhookChannelConfig = {
+  emailEnabled: boolean;
+  emailFrom: string;
+  emailTo: string;
+  smtpHost: string;
+  smtpPort: number;
+  smtpUser: string;
+  smtpPassword: string;
+  notificationEnabled: boolean;
+  notificationTitle: string;
+  updatedAt: number;
+};
+
+export type WebhookRecoveryResult = {
+  probed: number;
+  recovered: number;
+  failed: number;
 };
 
 export type WebhookRetentionConfig = {
@@ -743,6 +768,7 @@ const WEBHOOK_RULES_LS_KEY = 'ai-workbench:webhook-rules:v1';
 const WEBHOOK_RULE_RUNS_LS_KEY = 'ai-workbench:webhook-rule-runs:v1';
 const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
 const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
+const WEBHOOK_CHANNEL_CONFIG_LS_KEY = 'ai-workbench:webhook-channel-config:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -5597,6 +5623,13 @@ function readWebhookRules(): WebhookRule[] {
       consecutiveFailures: rule.consecutiveFailures ?? 0,
       autoDisableAfter: rule.autoDisableAfter ?? 3,
       triggerCondition: rule.triggerCondition ?? '',
+      channels: Array.isArray(rule.channels)
+        ? rule.channels.filter(
+            (channel) => channel === 'http' || channel === 'email' || channel === 'notification',
+          )
+        : ['http'],
+      recoveryBackoffSeconds: rule.recoveryBackoffSeconds ?? 300,
+      circuitOpenedAt: rule.circuitOpenedAt ?? 0,
     }));
   } catch {
     return [];
@@ -5686,9 +5719,16 @@ export async function createWebhookRule(
   triggerEvent = '',
   autoDisableAfter = 3,
   triggerCondition = '',
+  channels: WebhookChannelName[] = ['http'],
+  recoveryBackoffSeconds = 300,
 ): Promise<WebhookRule> {
   const conditionError = validateWebhookCondition(triggerCondition);
   if (conditionError) throw new Error(`Invalid trigger condition: ${conditionError}`);
+  const normalizedChannels: WebhookChannelName[] = channels.filter(
+    (channel) => channel === 'http' || channel === 'email' || channel === 'notification',
+  );
+  const finalChannels: WebhookChannelName[] =
+    normalizedChannels.length > 0 ? normalizedChannels : ['http'];
   if (isTauri()) {
     return invoke<WebhookRule>('create_webhook_rule', {
       request: {
@@ -5704,6 +5744,8 @@ export async function createWebhookRule(
         triggerEvent: triggerEvent.trim(),
         autoDisableAfter: Math.max(0, autoDisableAfter),
         triggerCondition: triggerCondition.trim(),
+        channels: finalChannels,
+        recoveryBackoffSeconds: Math.max(0, recoveryBackoffSeconds),
       },
     });
   }
@@ -5721,6 +5763,9 @@ export async function createWebhookRule(
     intervalSeconds: Math.max(5, intervalSeconds),
     triggerEvent: triggerEvent.trim(),
     triggerCondition: triggerCondition.trim(),
+    channels: finalChannels,
+    recoveryBackoffSeconds: Math.max(0, recoveryBackoffSeconds),
+    circuitOpenedAt: 0,
     enabled: true,
     lastRunAt: 0,
     lastStatus: 0,
@@ -5742,7 +5787,10 @@ export async function setWebhookRuleEnabled(id: string, enabled: boolean): Promi
   const rule = rules.find((r) => r.id === id);
   if (!rule) throw new Error('Webhook rule not found');
   rule.enabled = enabled;
-  if (enabled) rule.consecutiveFailures = 0;
+  if (enabled) {
+    rule.consecutiveFailures = 0;
+    rule.circuitOpenedAt = 0;
+  }
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
   return rule;
@@ -5783,7 +5831,10 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
     rule.consecutiveFailures >= (rule.autoDisableAfter ?? 3)
   ) {
     rule.enabled = false;
+    rule.circuitOpenedAt = Date.now();
     rule.lastMessage = `Auto-disabled after ${rule.consecutiveFailures} consecutive failures`;
+  } else if (!failed) {
+    rule.circuitOpenedAt = 0;
   }
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
@@ -5801,7 +5852,14 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
 function readWebhookDeliveries(): WebhookDelivery[] {
   try {
     const raw = localStorage.getItem(WEBHOOK_DELIVERIES_LS_KEY);
-    return raw ? (JSON.parse(raw) as WebhookDelivery[]) : [];
+    const deliveries: WebhookDelivery[] = raw ? (JSON.parse(raw) as WebhookDelivery[]) : [];
+    return deliveries.map((delivery) => ({
+      ...delivery,
+      channel:
+        delivery.channel === 'email' || delivery.channel === 'notification'
+          ? delivery.channel
+          : 'http',
+    }));
   } catch {
     return [];
   }
@@ -6307,24 +6365,35 @@ export async function triggerWebhookEvent(
       matchesWebhookCondition(r.triggerCondition ?? '', event, context ?? {}) &&
       (r.lastRunAt === 0 || now - r.lastRunAt >= (r.cooldownSeconds || 0) * 1000),
   );
-  const deliveries: WebhookDelivery[] = rules.map((rule) => ({
-    id: makeId(),
-    ruleId: rule.id,
-    event,
-    payload: renderWebhookPayload(rule.payload, event, context ?? {}, now),
-    method: rule.method,
-    url: rule.url,
-    token: rule.token,
-    secret: rule.secret,
-    retries: rule.retries,
-    attempts: 1,
-    status: 'success',
-    lastStatus: 200,
-    lastMessage: `HTTP 200 delivered (event: ${event})`,
-    nextAttemptAt: now,
-    createdAt: now,
-    updatedAt: now,
-  }));
+  const deliveries: WebhookDelivery[] = rules.flatMap((rule) => {
+    const channels: WebhookChannelName[] =
+      rule.channels && rule.channels.length > 0 ? rule.channels : ['http'];
+    const payload = renderWebhookPayload(rule.payload, event, context ?? {}, now);
+    return channels.map((channel) => ({
+      id: makeId(),
+      ruleId: rule.id,
+      channel,
+      event,
+      payload,
+      method: rule.method,
+      url: rule.url,
+      token: rule.token,
+      secret: rule.secret,
+      retries: rule.retries,
+      attempts: 1,
+      status: 'success',
+      lastStatus: 200,
+      lastMessage:
+        channel === 'email'
+          ? `Email queued (event: ${event})`
+          : channel === 'notification'
+            ? `Notification delivered (event: ${event})`
+            : `HTTP 200 delivered (event: ${event})`,
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }));
+  });
   if (rules.length > 0) {
     const storedRules = readWebhookRules();
     const fired = new Set(rules.map((rule) => rule.id));
@@ -6523,6 +6592,175 @@ export async function getWebhookDeliveryStats(): Promise<WebhookDeliveryStats> {
     else stats.failed += 1;
   }
   return stats;
+}
+
+function readWebhookChannelConfig(): WebhookChannelConfig {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_CHANNEL_CONFIG_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as WebhookChannelConfig;
+      return {
+        emailEnabled: parsed.emailEnabled ?? false,
+        emailFrom: parsed.emailFrom ?? '',
+        emailTo: parsed.emailTo ?? '',
+        smtpHost: parsed.smtpHost ?? '',
+        smtpPort: parsed.smtpPort ?? 587,
+        smtpUser: parsed.smtpUser ?? '',
+        smtpPassword: parsed.smtpPassword ?? '',
+        notificationEnabled: parsed.notificationEnabled ?? false,
+        notificationTitle: parsed.notificationTitle || 'AI Workbench webhook',
+        updatedAt: parsed.updatedAt ?? 0,
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return {
+    emailEnabled: false,
+    emailFrom: '',
+    emailTo: '',
+    smtpHost: '',
+    smtpPort: 587,
+    smtpUser: '',
+    smtpPassword: '',
+    notificationEnabled: false,
+    notificationTitle: 'AI Workbench webhook',
+    updatedAt: 0,
+  };
+}
+
+export async function getWebhookChannelConfig(): Promise<WebhookChannelConfig> {
+  if (isTauri()) {
+    return invoke<WebhookChannelConfig>('get_webhook_channel_config');
+  }
+  return readWebhookChannelConfig();
+}
+
+export async function setWebhookChannelConfig(
+  emailEnabled: boolean,
+  emailFrom: string,
+  emailTo: string,
+  smtpHost: string,
+  smtpPort: number,
+  smtpUser: string,
+  smtpPassword: string,
+  notificationEnabled: boolean,
+  notificationTitle: string,
+): Promise<WebhookChannelConfig> {
+  if (isTauri()) {
+    return invoke<WebhookChannelConfig>('set_webhook_channel_config', {
+      request: {
+        emailEnabled,
+        emailFrom,
+        emailTo,
+        smtpHost,
+        smtpPort,
+        smtpUser,
+        smtpPassword,
+        notificationEnabled,
+        notificationTitle,
+      },
+    });
+  }
+  const config: WebhookChannelConfig = {
+    emailEnabled,
+    emailFrom: emailFrom.trim(),
+    emailTo: emailTo.trim(),
+    smtpHost: smtpHost.trim(),
+    smtpPort: Math.min(65_535, Math.max(1, Math.round(smtpPort) || 587)),
+    smtpUser: smtpUser.trim(),
+    smtpPassword,
+    notificationEnabled,
+    notificationTitle: notificationTitle.trim() || 'AI Workbench webhook',
+    updatedAt: Date.now(),
+  };
+  localStorage.setItem(WEBHOOK_CHANNEL_CONFIG_LS_KEY, JSON.stringify(config));
+  return config;
+}
+
+export async function testWebhookNotification(): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>('test_webhook_notification');
+  }
+  const config = readWebhookChannelConfig();
+  const title = config.notificationTitle.trim() || 'AI Workbench webhook';
+  window.dispatchEvent(
+    new CustomEvent('webhook-notification', {
+      detail: {
+        title,
+        body: 'Webhook notification channel test',
+        ruleId: 'test',
+        event: 'notification.test',
+        channel: 'notification',
+      },
+    }),
+  );
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification(title, { body: 'Webhook notification channel test' });
+  }
+  return 'Notification channel test sent';
+}
+
+export async function testWebhookEmail(): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>('test_webhook_email');
+  }
+  const config = readWebhookChannelConfig();
+  if (!config.emailEnabled) {
+    throw new Error('Email channel is not enabled');
+  }
+  if (!config.emailFrom.trim() || !config.emailTo.trim() || !config.smtpHost.trim()) {
+    throw new Error('Email from/to addresses and SMTP host are required');
+  }
+  return 'Email channel test sent (Email queued via SMTP)';
+}
+
+export async function probeWebhookRecovery(): Promise<WebhookRecoveryResult> {
+  if (isTauri()) {
+    return invoke<WebhookRecoveryResult>('probe_webhook_recovery');
+  }
+  const now = Date.now();
+  const rules = readWebhookRules();
+  const result: WebhookRecoveryResult = { probed: 0, recovered: 0, failed: 0 };
+  for (const rule of rules) {
+    const base = Math.max(5, rule.recoveryBackoffSeconds ?? 300) * 1000;
+    const exponent = Math.max(
+      0,
+      (rule.consecutiveFailures ?? 0) - Math.max(1, rule.autoDisableAfter ?? 3),
+    );
+    const backoffMs = Math.min(86_400_000, base * 2 ** Math.min(30, exponent));
+    if (
+      !rule.enabled &&
+      (rule.circuitOpenedAt ?? 0) > 0 &&
+      now - rule.circuitOpenedAt >= backoffMs
+    ) {
+      result.probed += 1;
+      const recovered = !/\/fail|\/broken/i.test(rule.url) && !rule.payload.includes('"fail":true');
+      rule.consecutiveFailures = recovered ? 0 : (rule.consecutiveFailures ?? 0) + 1;
+      rule.lastStatus = recovered ? 200 : 500;
+      rule.updatedAt = now;
+      if (recovered) {
+        rule.enabled = true;
+        rule.circuitOpenedAt = 0;
+        rule.lastMessage = 'Recovery probe succeeded: HTTP 200 delivered';
+        result.recovered += 1;
+      } else {
+        rule.circuitOpenedAt = now;
+        rule.lastMessage = 'Recovery probe failed: HTTP 500 simulated failure';
+        result.failed += 1;
+      }
+      appendWebhookRuleRun(
+        rule.id,
+        'scheduled',
+        recovered ? 'success' : 'failed',
+        rule.lastStatus,
+        1,
+        rule.lastMessage,
+      );
+    }
+  }
+  writeWebhookRules(rules);
+  return result;
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {

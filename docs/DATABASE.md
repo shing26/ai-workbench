@@ -636,6 +636,35 @@ ALTER TABLE schedule_events ADD COLUMN date TEXT NOT NULL DEFAULT '';
 - `create_schedule_event` / `list_schedule_events` 全程携带 `date`，列表按 `date ASC, start_time ASC` 排序；浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `scheduleEvents` 数组，新增事件写入 `date` 字段，旧数据缺省视为空日期。
 - 周计划模板本身只保存在 `ai-workbench:week-plan-templates:v1`，不写入 SQLite。
 
+## Sprint 143：Webhook 多通道投递与熔断恢复指数退避
+
+```sql
+ALTER TABLE webhook_rules ADD COLUMN channels TEXT NOT NULL DEFAULT '["http"]';
+ALTER TABLE webhook_rules ADD COLUMN recovery_backoff_seconds INTEGER NOT NULL DEFAULT 300;
+ALTER TABLE webhook_rules ADD COLUMN circuit_opened_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE webhook_deliveries ADD COLUMN channel TEXT NOT NULL DEFAULT 'http';
+
+CREATE TABLE IF NOT EXISTS webhook_channel_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    email_enabled INTEGER NOT NULL DEFAULT 0,
+    email_from TEXT NOT NULL DEFAULT '',
+    email_to TEXT NOT NULL DEFAULT '',
+    smtp_host TEXT NOT NULL DEFAULT '',
+    smtp_port INTEGER NOT NULL DEFAULT 587,
+    smtp_user TEXT NOT NULL DEFAULT '',
+    smtp_password TEXT NOT NULL DEFAULT '',
+    notification_enabled INTEGER NOT NULL DEFAULT 0,
+    notification_title TEXT NOT NULL DEFAULT 'AI Workbench webhook',
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- 新库 SCHEMA 的 `webhook_rules` / `webhook_deliveries` 建表语句直接包含新列，`webhook_channel_config` 由 SCHEMA 直接建表；旧库由 `migrate_webhook_channels_recovery` 按列存在性幂等补列并加入 `init_connection` 迁移链。
+- `webhook_rules.channels` 保存 JSON 数组（`["http"]` / `["http","email","notification"]`），`parse_webhook_channels` 读取时过滤非法通道并回退 `["http"]`；`webhook_deliveries.channel` 记录每条投递的实际通道。
+- `webhook_channel_config` 是单行配置表（id=1）：`get_webhook_channel_config` 空行回退默认值（smtp_port 587、notification_title 默认标题），`set_webhook_channel_config` 以 `WebhookChannelConfigInput` 收敛参数并对 smtp_port 1~65535、标题非空钳制后 upsert。
+- `record_webhook_rule_outcome` 达到熔断阈值时写 `circuit_opened_at = now`；`list_circuit_open_webhook_rules` 只返回 `enabled=0 AND auto_disable_after>0 AND consecutive_failures>=auto_disable_after AND circuit_opened_at>0` 的规则，`set_webhook_rule_enabled(true)` 同时清零失败计数与 `circuit_opened_at`。
+- 浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1`（规则新增 `channels` / `recoveryBackoffSeconds` / `circuitOpenedAt`，旧数据读取时默认补值）与 `ai-workbench:webhook-deliveries:v1`（投递新增 `channel`，旧数据默认 `http`），通道配置使用新 key `ai-workbench:webhook-channel-config:v1`。
+
 ## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
 
 ```sql
