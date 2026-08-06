@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_id TEXT,
     title TEXT,
     model TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER
 );
 ```
@@ -509,6 +511,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 ## Sprint 122：Actions 习惯删除与周目标编辑
 
 无表结构变更。`update_habit_week_goal` 复用 `habits.week_goal`（钳制 1~31）；`delete_habit` 先删除 `habit_logs` 中该习惯日志再删除习惯行，与既有 `ON DELETE CASCADE` 语义一致。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `habits` / `habitLogs`，不新增 localStorage key。
+
+## Sprint 123：AI Studio 会话归档与恢复
+
+`sessions` 新增 `archived INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建表语句已直接包含该列，旧库由 `migrate_session_archived` 幂等补列，已加入 `init_connection` 迁移链。`search_sessions` 默认过滤 `archived = 0`，归档会话不进入搜索与 active 列表；`create_session` / `duplicate_session` 生成 active 会话。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `sessions`，旧数据读取时自动补 `archived=false`，不新增 localStorage key。
 
 ## Sprint 63：RAG 文档状态面板
 

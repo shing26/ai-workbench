@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   CalendarDays,
   Check,
   ChevronDown,
@@ -201,6 +203,7 @@ export default function AIStudioView() {
   const [sessionQuery, setSessionQuery] = useState('');
   const [sessionRange, setSessionRange] = useState('all');
   const [sessionFullText, setSessionFullText] = useState(true);
+  const [sessionArchiveTab, setSessionArchiveTab] = useState<'active' | 'archived'>('active');
   const [sessionHits, setSessionHits] = useState<db.SessionSearchHit[] | null>(null);
   const [sessionSearchBusy, setSessionSearchBusy] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<SessionSearchHistoryEntry[]>(() =>
@@ -454,7 +457,7 @@ export default function AIStudioView() {
     void db.listSessions().then(async (list) => {
       if (disposed) return;
       setSessions(list);
-      const first = list[0];
+      const first = list.find((s) => !s.archived) ?? list[0];
       if (first) {
         sessionIdRef.current = first.id;
         setSessionId(first.id);
@@ -504,6 +507,11 @@ export default function AIStudioView() {
 
   useEffect(() => {
     let cancelled = false;
+    if (sessionArchiveTab === 'archived') {
+      setSessionHits(null);
+      setSessionSearchBusy(false);
+      return;
+    }
     const q = sessionQuery.trim();
     if (!q) {
       setSessionHits(null);
@@ -539,7 +547,7 @@ export default function AIStudioView() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sessionQuery, sessionRange, sessionFullText, sessions]);
+  }, [sessionQuery, sessionRange, sessionFullText, sessionArchiveTab, sessions]);
 
   useEffect(() => {
     let disposed = false;
@@ -731,6 +739,46 @@ export default function AIStudioView() {
     setSessions(await db.listSessions());
   };
 
+  const setSessionArchive = async (session: db.Session, archived: boolean) => {
+    await db.setSessionArchived(session.id, archived);
+    const list = await db.listSessions();
+    setSessions(list);
+    if (!archived) {
+      setSessionArchiveTab('active');
+      return;
+    }
+    if (sessionIdRef.current !== session.id) return;
+    const next = list.find((s) => !s.archived);
+    if (next) {
+      sessionIdRef.current = next.id;
+      setSessionId(next.id);
+      const stored = await db.listChatMessages(next.id);
+      setMessages(
+        stored.length > 0
+          ? stored.map((m) => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }))
+          : [
+              {
+                role: 'assistant',
+                content: 'Ready. Ask anything or switch to MOA for multi-model consensus.',
+              },
+            ],
+      );
+    } else {
+      sessionIdRef.current = null;
+      setSessionId(null);
+      setMessages([
+        {
+          role: 'assistant',
+          content: 'Ready. Ask anything or switch to MOA for multi-model consensus.',
+        },
+      ]);
+    }
+  };
+
   const duplicateSessionRow = async (session: db.Session) => {
     const copy = await db.duplicateSession(session.id);
     setSessions(await db.listSessions());
@@ -783,14 +831,23 @@ export default function AIStudioView() {
   const isMessageHit = (hit?: db.SessionSearchHit) =>
     hit?.matchType === 'message' || hit?.matchType === 'pinyin-message';
   const searchStats = sessionHits ? summarizeSearchHits(sessionHits) : null;
-  const filteredSessions = sessions
+  const activeSessions = sessions.filter((s) => !s.archived);
+  const archivedSessions = sessions.filter((s) => s.archived);
+  const tabSessions = sessionArchiveTab === 'active' ? activeSessions : archivedSessions;
+  const filteredSessions = tabSessions
     .filter((s) => {
       const q = sessionQuery.trim().toLowerCase();
       if (!q) return true;
       return `${s.title} ${s.model}`.toLowerCase().includes(q);
     })
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
-  const visibleSessions = sessionHits ? sessionHits.map((hit) => hit.session) : filteredSessions;
+  const visibleSessions = sessionHits
+    ? sessionHits
+        .filter((hit) =>
+          sessionArchiveTab === 'active' ? !hit.session.archived : hit.session.archived,
+        )
+        .map((hit) => hit.session)
+    : filteredSessions;
 
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
@@ -1555,6 +1612,38 @@ export default function AIStudioView() {
               className="min-w-0 flex-1 bg-transparent text-[11px] text-slate-300 outline-none placeholder:text-slate-600"
             />
           </label>
+          <div className="flex h-6 shrink-0 items-center gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] p-0.5">
+            <button
+              type="button"
+              data-session-archive-tab="active"
+              onClick={() => setSessionArchiveTab('active')}
+              className={`flex h-5 flex-1 items-center justify-center gap-1 rounded-md text-[9px] transition-colors ${
+                sessionArchiveTab === 'active'
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              Active
+              <span className="rounded bg-white/10 px-1 text-[8px] leading-3 text-slate-400">
+                {activeSessions.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              data-session-archive-tab="archived"
+              onClick={() => setSessionArchiveTab('archived')}
+              className={`flex h-5 flex-1 items-center justify-center gap-1 rounded-md text-[9px] transition-colors ${
+                sessionArchiveTab === 'archived'
+                  ? 'bg-cyan-500/20 text-cyan-300'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              Archived
+              <span className="rounded bg-white/10 px-1 text-[8px] leading-3 text-slate-400">
+                {archivedSessions.length}
+              </span>
+            </button>
+          </div>
           <div className="flex h-6 shrink-0 items-center gap-1">
             <select
               value={sessionRange}
@@ -1694,6 +1783,7 @@ export default function AIStudioView() {
                         ? (sessionHitBy.get(s.id)?.messageId ?? '')
                         : ''
                     }
+                    data-session-archived={s.archived ? 'true' : 'false'}
                     className={`w-full rounded-lg border py-1.5 pl-7 pr-16 text-left ${
                       sessionId === s.id
                         ? 'border-emerald-500/30 bg-emerald-500/10'
@@ -1757,6 +1847,27 @@ export default function AIStudioView() {
                       >
                         <Pencil size={10} />
                       </button>
+                      {s.archived ? (
+                        <button
+                          type="button"
+                          aria-label="Restore session"
+                          data-session-restore={s.id}
+                          onClick={() => void setSessionArchive(s, false)}
+                          className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+                        >
+                          <ArchiveRestore size={10} />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label="Archive session"
+                          data-session-archive={s.id}
+                          onClick={() => void setSessionArchive(s, true)}
+                          className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-cyan-300"
+                        >
+                          <Archive size={10} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         aria-label="Delete session"
@@ -1776,7 +1887,9 @@ export default function AIStudioView() {
                   ? sessionSearchBusy
                     ? 'Searching...'
                     : 'No matching sessions'
-                  : 'No sessions'}
+                  : sessionArchiveTab === 'archived'
+                    ? 'No archived sessions'
+                    : 'No sessions'}
               </div>
             )}
           </div>

@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 123
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构支持会话归档：`sessions` 新增 `archived` 列 + `migrate_session_archived` 幂等迁移，新增 `set_session_archived` 命令返回最新 Session，`search_sessions` 默认只命中 active 会话。
+- AI Studio 会话侧栏新增 Active / Archived 切换与归档/恢复行操作：归档当前会话自动切到下一个 active，恢复后回到 active tab，搜索与选中逻辑跟随当前 tab。
+- `verify:ui` / `verify:preview` 新增 `sessionArchive` / `sessionArchivePersisted` / `sessionArchiveRestored`，覆盖归档 → reload 持久化 → 恢复全链路；`cargo test --lib` 增至 130 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；双端验证一次全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话分组、Knowledge 笔记正文编辑、Projects 项目删除或收益趋势、System Provider 批量测试。
+- 保留 `sessionArchive` / `sessionArchivePersisted` / `sessionArchiveRestored` lane，修改会话模型、侧栏或归档逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 114
 
 ### What went well?
