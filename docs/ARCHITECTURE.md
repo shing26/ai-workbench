@@ -406,6 +406,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 输入查询或 RAG 命中时自动隐藏分组头退化为平铺列表，清空查询后分组恢复；会话行渲染抽为 `renderSessionRow` 复用。
 - `verify:ui` / `verify:preview` 新增 `sessionGrouping` / `sessionGroupingToggle` / `sessionGroupingSearchFlat` 三条 lane。
 
+## Sprint 129：Projects 收益趋势
+
+- SQLite 新增 `project_revenue_history`（id / project_id / revenue / recorded_at），新库 SCHEMA 直接建表，旧库由 `CREATE TABLE IF NOT EXISTS` 幂等补建；`create_project` / `update_project` 自动写入收益快照，`delete_project` 同步清理该项目历史。
+- Rust 新增 `list_project_revenue_history(project_id, limit)`：按 `recorded_at DESC, rowid DESC` 取最近 N 条后升序返回，Tauri 命令已注册；`db.ts` / localStorage 新增同构 `listProjectRevenueHistory`，创建 / 更新 / 删除同步维护 `projectRevenueHistory`。
+- Projects 项目卡片设置区下方新增 `data-project-revenue-trend` 条形趋势，每个点带 `data-project-revenue-point` / `data-project-revenue-value` / `data-project-revenue-at`，reload 后按历史恢复。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueTrend` / `projectRevenueTrendPersisted` 两条 lane；`cargo test --lib` 增至 135 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

@@ -1889,6 +1889,117 @@ try {
       `Project delete cancel assertion failed: ${JSON.stringify(results.projectDeleteCancel)}`,
     );
   }
+  const projectRevenueTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = document.querySelector("[data-project-edit]");
+    if (!edit) return { ok: false, reason: "project edit missing for trend" };
+    const projectId = edit.getAttribute("data-project-edit");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!revenue || !save) return { ok: false, reason: "project controls missing for trend" };
+    const pointsOf = (section) => section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    const pointsBefore = pointsOf(edit.closest("section")).length;
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "250");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    const updated = await waitFor(() => {
+      const section = document
+        .querySelector('[data-project-edit="' + projectId + '"]')
+        ?.closest("section");
+      const points = pointsOf(section);
+      const last = points[points.length - 1];
+      return points.length > pointsBefore && last?.getAttribute("data-project-revenue-value") === "250";
+    });
+    const section = document
+      .querySelector('[data-project-edit="' + projectId + '"]')
+      ?.closest("section");
+    const points = pointsOf(section);
+    const last = points[points.length - 1];
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedPoints = (stored.projectRevenueHistory ?? []).filter(
+      (point) => point.projectId === projectId,
+    );
+    const storedLast = storedPoints[storedPoints.length - 1];
+    return {
+      ok:
+        updated &&
+        Number(last?.getAttribute("data-project-revenue-value")) === 250 &&
+        storedLast?.revenue === 250,
+      projectId,
+      pointsBefore,
+      pointsAfter: points.length,
+      lastValue: last?.getAttribute("data-project-revenue-value") ?? "",
+      storedCount: storedPoints.length,
+      storedLast: storedLast?.revenue,
+    };
+  })()`);
+  results.projectRevenueTrend = projectRevenueTrend;
+  if (!results.projectRevenueTrend.ok) {
+    throw new Error(
+      `Project revenue trend assertion failed: ${JSON.stringify(results.projectRevenueTrend)}`,
+    );
+  }
+  const projectRevenueTrendId = results.projectRevenueTrend.projectId ?? '';
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectRevenueTrendPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const id = ${JSON.stringify(projectRevenueTrendId)};
+    let edit = null;
+    for (let i = 0; i < 20; i++) {
+      edit = document.querySelector('[data-project-edit="' + id + '"]');
+      if (edit) break;
+      await sleep(100);
+    }
+    if (!edit) return { ok: false, reason: "project edit missing after trend reload" };
+    const section = edit.closest("section");
+    const points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    const last = points[points.length - 1];
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedPoints = (stored.projectRevenueHistory ?? []).filter(
+      (point) => point.projectId === id,
+    );
+    const storedCount = storedPoints.length;
+    const storedLast = storedPoints[storedPoints.length - 1];
+    const ok =
+      points.length >= 2 &&
+      points.length === storedCount &&
+      Number(last?.getAttribute("data-project-revenue-value")) === 250 &&
+      storedLast?.revenue === 250;
+    return {
+      ok,
+      points: points.length,
+      lastValue: last?.getAttribute("data-project-revenue-value") ?? "",
+      storedCount: storedPoints.length,
+      storedLast: storedLast?.revenue,
+    };
+  })()`);
+  results.projectRevenueTrendPersisted = projectRevenueTrendPersisted;
+  if (!results.projectRevenueTrendPersisted?.ok) {
+    throw new Error(
+      `Project revenue trend persistence assertion failed: ${JSON.stringify(
+        results.projectRevenueTrendPersisted,
+      )}`,
+    );
+  }
   results.gitActivityFilters = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const board = () => document.querySelector("[data-git-activity]");

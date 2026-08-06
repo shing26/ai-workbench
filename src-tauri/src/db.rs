@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT DEFAULT 'active',
     created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS project_revenue_history (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    revenue REAL NOT NULL,
+    recorded_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -295,6 +301,15 @@ pub struct Project {
     pub revenue: f64,
     pub status: String,
     pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRevenuePoint {
+    pub id: String,
+    pub project_id: String,
+    pub revenue: f64,
+    pub recorded_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1680,6 +1695,10 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         "INSERT INTO projects (id, name, path, revenue, status, created_at) VALUES (?1, ?2, ?3, 0.0, 'active', ?4)",
         params![id, name, if path.is_empty() { None } else { Some(path) }, now],
     )?;
+    conn.execute(
+        "INSERT INTO project_revenue_history (id, project_id, revenue, recorded_at) VALUES (?1, ?2, ?3, ?4)",
+        params![uid(), id, 0.0, now],
+    )?;
     Ok(Project {
         id,
         name: name.to_string(),
@@ -1709,6 +1728,10 @@ pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -
         "UPDATE projects SET status = ?1, revenue = ?2 WHERE id = ?3",
         params![status, revenue, id],
     )?;
+    conn.execute(
+        "INSERT INTO project_revenue_history (id, project_id, revenue, recorded_at) VALUES (?1, ?2, ?3, ?4)",
+        params![uid(), id, revenue, now_millis()],
+    )?;
     list_projects(conn)?
         .into_iter()
         .find(|p| p.id == id)
@@ -1728,8 +1751,35 @@ pub fn delete_project(conn: &Connection, id: &str) -> Result<()> {
         "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
         params![id],
     )?;
+    conn.execute(
+        "DELETE FROM project_revenue_history WHERE project_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+pub fn list_project_revenue_history(
+    conn: &Connection,
+    project_id: &str,
+    limit: i64,
+) -> Result<Vec<ProjectRevenuePoint>> {
+    let limit = limit.clamp(1, 100);
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, revenue, recorded_at FROM project_revenue_history WHERE project_id = ?1 ORDER BY recorded_at DESC, rowid DESC LIMIT ?2",
+    )?;
+    let mut points = stmt
+        .query_map(params![project_id, limit], |row| {
+            Ok(ProjectRevenuePoint {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                revenue: row.get(2)?,
+                recorded_at: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    points.reverse();
+    Ok(points)
 }
 
 pub fn list_thoughts(conn: &Connection) -> Result<Vec<Thought>> {
@@ -5573,6 +5623,43 @@ mod tests {
         let clamped = update_project(&conn, &project.id, "active", -5.0).unwrap();
         assert_eq!(clamped.status, "active");
         assert_eq!(clamped.revenue, 0.0);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_revenue_history_records_and_limits_points() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-revenue-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let project = create_project(&conn, "Trend Project", "").unwrap();
+        update_project(&conn, &project.id, "active", 100.0).unwrap();
+        update_project(&conn, &project.id, "active", 250.0).unwrap();
+        update_project(&conn, &project.id, "paused", 400.0).unwrap();
+
+        let all = list_project_revenue_history(&conn, &project.id, 100).unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all.first().unwrap().revenue, 0.0);
+        assert_eq!(all.last().unwrap().revenue, 400.0);
+
+        let limited = list_project_revenue_history(&conn, &project.id, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited.first().unwrap().revenue, 250.0);
+        assert_eq!(limited.last().unwrap().revenue, 400.0);
+
+        delete_project(&conn, &project.id).unwrap();
+        assert!(list_project_revenue_history(&conn, &project.id, 100)
+            .unwrap()
+            .is_empty());
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        assert!(list_project_revenue_history(&conn, &project.id, 100)
+            .unwrap()
+            .is_empty());
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

@@ -9,6 +9,7 @@ import {
   Orbit,
   Plus,
   RefreshCw,
+  TrendingUp,
   Trash2,
   Undo2,
 } from 'lucide-react';
@@ -139,6 +140,7 @@ export default function ProjectsView() {
   >({});
   const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
+  const [revenueTrends, setRevenueTrends] = useState<Record<string, db.ProjectRevenuePoint[]>>({});
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join('|');
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -360,6 +362,18 @@ ${trend}
     };
   }, [projectKey, projects]);
 
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all(
+      projects.map(async (p) => [p.id, await db.listProjectRevenueHistory(p.id, 12)] as const),
+    ).then((entries) => {
+      if (!disposed) setRevenueTrends(Object.fromEntries(entries));
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [projectKey, projects]);
+
   const create = async () => {
     if (!name.trim()) return;
     await addProject(name.trim(), path.trim());
@@ -377,6 +391,8 @@ ${trend}
       Number.isFinite(revenue) ? Math.max(0, revenue) : 0,
     );
     setProjectEditResults((prev) => ({ ...prev, [project.id]: 'Saved' }));
+    const next = await db.listProjectRevenueHistory(project.id, 12);
+    setRevenueTrends((prev) => ({ ...prev, [project.id]: next }));
     setProjectEdits((prev) => {
       const next = { ...prev };
       delete next[project.id];
@@ -1036,6 +1052,51 @@ ${trend}
               )}
             </div>
           </div>
+          {revenueTrends[p.id] && revenueTrends[p.id].length > 0 && (
+            <div
+              data-project-revenue-trend={p.id}
+              className="mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5"
+            >
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1 text-[9px] uppercase tracking-normal text-slate-500">
+                  <TrendingUp size={9} /> Revenue trend
+                </span>
+                <span
+                  data-project-revenue-trend-count={revenueTrends[p.id].length}
+                  className="font-mono text-[8px] text-slate-600"
+                >
+                  {revenueTrends[p.id].length} pts
+                </span>
+              </div>
+              <div className="flex h-14 items-end gap-1">
+                {revenueTrends[p.id].map((point) => {
+                  const max = Math.max(
+                    1,
+                    ...revenueTrends[p.id].map((candidate) => candidate.revenue),
+                  );
+                  return (
+                    <div key={point.id} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+                      <span
+                        data-project-revenue-point
+                        data-project-revenue-value={point.revenue}
+                        data-project-revenue-at={point.recordedAt}
+                        className="block w-full rounded-sm bg-emerald-500/30"
+                        style={{
+                          height: `${Math.max(3, Math.round((point.revenue / max) * 36))}px`,
+                        }}
+                      />
+                      <span className="truncate text-[7px] text-slate-600">
+                        {new Date(point.recordedAt).toLocaleDateString('en', {
+                          month: 'numeric',
+                          day: 'numeric',
+                        })}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <p className="mb-3 truncate text-[11px] text-slate-500">{p.path || 'No local path'}</p>
           {gitCtx[p.id] && (
             <div className="project-git-graph mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5">

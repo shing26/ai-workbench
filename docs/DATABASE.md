@@ -536,6 +536,20 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。会话分组是运行时计算：按 `sessions.created_at` 生成 today / yesterday / 7d / older 分组，`pinned` 仍复用既有 `pinned` 列；折叠状态仅保存在前端组件状态，不写入 SQLite。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` 数组，不新增 localStorage key。
 
+## Sprint 129：Projects 收益趋势
+
+```sql
+CREATE TABLE IF NOT EXISTS project_revenue_history (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    revenue REAL NOT NULL,
+    recorded_at INTEGER NOT NULL
+);
+```
+
+- 新库 SCHEMA 直接包含该表，旧库由 `CREATE TABLE IF NOT EXISTS` 幂等补建；`create_project` / `update_project` 在写项目后追加收益快照，`delete_project` 同步删除该项目历史。
+- `list_project_revenue_history(project_id, limit)` 按 `recorded_at DESC, rowid DESC` 取最近 N 条后升序返回；浏览器 fallback 在 `ai-workbench:db:v1` 下新增 `projectRevenueHistory` 数组并维护同一语义。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

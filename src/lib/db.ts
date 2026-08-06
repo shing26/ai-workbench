@@ -36,6 +36,13 @@ export type Project = {
   createdAt: number;
 };
 
+export type ProjectRevenuePoint = {
+  id: string;
+  projectId: string;
+  revenue: number;
+  recordedAt: number;
+};
+
 export type ThoughtType = 'inbox' | 'note' | 'doc';
 
 export type Thought = {
@@ -626,6 +633,7 @@ const DOC_HEALTH_ALERT_DISMISSED_LS_KEY = 'ai-workbench:doc-health-alert-dismiss
 type LocalShape = {
   tasks: Task[];
   projects: Project[];
+  projectRevenueHistory: ProjectRevenuePoint[];
   thoughts: Thought[];
   providers: Provider[];
   departments: Department[];
@@ -659,6 +667,7 @@ function emptyShape(): LocalShape {
   return {
     tasks: [],
     projects: [],
+    projectRevenueHistory: [],
     thoughts: [],
     providers: [],
     departments: [],
@@ -733,6 +742,7 @@ function seedShape(): LocalShape {
         createdAt: now - 172800000,
       },
     ],
+    projectRevenueHistory: [],
     thoughts: [
       {
         id: makeId(),
@@ -1230,15 +1240,23 @@ export async function listProjects(): Promise<Project[]> {
 export async function createProject(name: string, path: string): Promise<Project> {
   if (isTauri()) return invoke<Project>('create_project', { name, path });
   const shape = readLocal();
+  const id = makeId();
+  const now = Date.now();
   const project: Project = {
-    id: makeId(),
+    id,
     name,
     path: path || null,
     revenue: 0,
     status: 'active',
-    createdAt: Date.now(),
+    createdAt: now,
   };
   shape.projects.unshift(project);
+  shape.projectRevenueHistory.push({
+    id: makeId(),
+    projectId: id,
+    revenue: 0,
+    recordedAt: now,
+  });
   writeLocal(shape);
   return project;
 }
@@ -1250,6 +1268,12 @@ export async function updateProject(id: string, status: string, revenue: number)
   if (!project) throw new Error('project not found');
   project.status = status === 'paused' ? 'paused' : 'active';
   project.revenue = Number.isFinite(revenue) && revenue >= 0 ? revenue : 0;
+  shape.projectRevenueHistory.push({
+    id: makeId(),
+    projectId: id,
+    revenue: project.revenue,
+    recordedAt: Date.now(),
+  });
   writeLocal(shape);
   return project;
 }
@@ -1261,10 +1285,27 @@ export async function deleteProject(id: string): Promise<void> {
   }
   const shape = readLocal();
   shape.projects = shape.projects.filter((p) => p.id !== id);
+  shape.projectRevenueHistory = shape.projectRevenueHistory.filter((p) => p.projectId !== id);
   shape.sessions = (shape.sessions ?? []).map((s) =>
     s.projectId === id ? { ...s, projectId: null } : s,
   );
   writeLocal(shape);
+}
+
+export async function listProjectRevenueHistory(
+  projectId: string,
+  limit = 12,
+): Promise<ProjectRevenuePoint[]> {
+  if (isTauri()) {
+    return invoke<ProjectRevenuePoint[]>('list_project_revenue_history', {
+      projectId,
+      limit,
+    });
+  }
+  return readLocal()
+    .projectRevenueHistory.filter((p) => p.projectId === projectId)
+    .sort((a, b) => a.recordedAt - b.recordedAt)
+    .slice(-Math.max(1, Math.min(100, limit)));
 }
 
 export async function listThoughts(): Promise<Thought[]> {
