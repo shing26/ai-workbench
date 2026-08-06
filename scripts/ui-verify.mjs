@@ -1054,6 +1054,142 @@ try {
       `AI recap knowledge visibility assertion failed: ${JSON.stringify(results.aiRecapKnowledgeVisible)}`,
     );
   }
+  results.recapSaveEntries = await evaluate(`(async () => {
+    localStorage.removeItem("ai-workbench:recap-draft:v1");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll('nav button[aria-label]')]
+      .find((b) => b.getAttribute("aria-label") === "AI Studio");
+    if (!dock) return { ok: false, reason: "dock missing" };
+    dock.click();
+    await sleep(300);
+    [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "New chat")
+      ?.click();
+    await sleep(200);
+    const recapBtn = document.querySelector("[data-ai-daily-recap]");
+    if (!recapBtn) return { ok: false, reason: "no recap button" };
+    recapBtn.click();
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map(
+        (n) => n.textContent ?? "",
+      );
+      reply =
+        [...bubbles]
+          .reverse()
+          .find(
+            (t) =>
+              t.includes("Streaming fallback") &&
+              !t.includes("请帮我生成今日复盘"),
+          ) ?? "";
+      if (reply) break;
+      await sleep(100);
+    }
+    if (!reply) return { ok: false, reason: "recap reply missing" };
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let messageSave = null;
+    for (let i = 0; i < 30; i++) {
+      messageSave = document.querySelector("[data-ai-recap-message-save]");
+      if (messageSave && !messageSave.disabled) break;
+      await sleep(100);
+    }
+    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
+    return {
+      ok: idle && !!messageSave && !messageSave.disabled && draft?.saved === false,
+      idle,
+      messageSaveSeen: !!messageSave,
+      messageSaveDisabled: messageSave?.disabled ?? null,
+      draftSaved: draft?.saved ?? null,
+      replyPreview: reply.slice(0, 40),
+    };
+  })()`);
+  if (!results.recapSaveEntries.ok) {
+    throw new Error(
+      `AI recap message entry assertion failed: ${JSON.stringify(results.recapSaveEntries)}`,
+    );
+  }
+  await clickDock('Knowledge');
+  results.recapSaveKnowledge = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let saveBtn = null;
+    for (let i = 0; i < 20; i++) {
+      saveBtn = document.querySelector("[data-knowledge-recap-save]");
+      if (saveBtn) break;
+      await sleep(100);
+    }
+    if (!saveBtn) return { ok: false, reason: "no knowledge recap save" };
+    let enabled = false;
+    for (let i = 0; i < 20; i++) {
+      if (!saveBtn.disabled) {
+        enabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const storedBefore = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const recapCountBefore = (storedBefore.thoughts ?? []).filter((t) =>
+      (t.content ?? "").includes("# 今日复盘"),
+    ).length;
+    saveBtn.click();
+    let status = "";
+    for (let i = 0; i < 30; i++) {
+      status = document.querySelector("[data-knowledge-recap-status]")?.textContent ?? "";
+      if (status.includes("saved")) break;
+      await sleep(100);
+    }
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const recapCountAfter = (storedAfter.thoughts ?? []).filter((t) =>
+      (t.content ?? "").includes("# 今日复盘"),
+    ).length;
+    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
+    const saved = draft?.saved === true && recapCountAfter === recapCountBefore + 1;
+    return {
+      ok: enabled && saved && status.includes("saved"),
+      enabled,
+      status,
+      saved,
+      recapCountBefore,
+      recapCountAfter,
+      draftSaved: draft?.saved ?? null,
+    };
+  })()`);
+  if (!results.recapSaveKnowledge.ok) {
+    throw new Error(
+      `Knowledge recap save assertion failed: ${JSON.stringify(results.recapSaveKnowledge)}`,
+    );
+  }
+  await clickDock('AI Studio');
+  results.recapSaveMessageState = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let btn = null;
+    for (let i = 0; i < 30; i++) {
+      btn = document.querySelector("[data-ai-recap-message-save]");
+      if (btn) break;
+      await sleep(100);
+    }
+    return {
+      ok: !!btn && btn.disabled === true,
+      seen: !!btn,
+      disabled: btn?.disabled ?? null,
+      chip: document.querySelector("[data-ai-recap-save]")?.getAttribute("data-recap-saved") ?? "",
+    };
+  })()`);
+  if (!results.recapSaveMessageState.ok) {
+    throw new Error(
+      `AI recap saved state assertion failed: ${JSON.stringify(results.recapSaveMessageState)}`,
+    );
+  }
   await clickDock('AI Studio');
   await evaluate(
     `[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`,
