@@ -6,7 +6,6 @@
 
 ## 候选池（待开发）
 
-- [ ] Actions：周计划模板（一键把本周计划写入 Focus / Schedule）。
 - [ ] Webhook：复杂触发器条件表达式（cron / 事件匹配）与签名校验收发端 UI。
 - [ ] Webhook：多通道投递（邮件 / 系统通知）与熔断恢复指数退避调度。
 - [ ] 事件总线：持久化 event log、事件 schema 校验与跨设备事件转发。
@@ -25,6 +24,7 @@
 
 ## 已完成（从候选池移除）
 
+- Actions 周计划模板（Sprint 141）。
 - Knowledge 双链补全编辑器提示（Sprint 140）。
 - Webhook 规则执行日志与投递失败告警（Sprint 139）。
 - Webhook 自动熔断（Sprint 138）。

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as db from '../lib/db';
+import type { WeekPlanTemplate } from '../lib/weekPlanTemplates';
 
 export type ViewId = 'ai-studio' | 'projects' | 'knowledge' | 'actions' | 'system';
 export type InspectorSection = { label: string; value: string };
@@ -40,7 +41,12 @@ type WorkbenchState = {
   toggleHabit: (id: string) => Promise<void>;
   updateHabitWeekGoal: (id: string, weekGoal: number) => Promise<void>;
   deleteHabit: (id: string) => Promise<void>;
-  addScheduleEvent: (title: string, startTime: string, tag: string) => Promise<void>;
+  addScheduleEvent: (title: string, startTime: string, tag: string, date: string) => Promise<void>;
+  applyWeekPlan: (
+    template: WeekPlanTemplate,
+    weekDays: string[],
+    todayKey: string,
+  ) => Promise<{ focusCount: number; eventCount: number }>;
   toggleEventDone: (id: string) => Promise<void>;
   refreshSystem: () => Promise<void>;
   reportError: (
@@ -184,9 +190,34 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.deleteHabit(id);
     set({ habits: await db.listHabits() });
   },
-  addScheduleEvent: async (title, startTime, tag) => {
-    await db.createScheduleEvent(title, startTime, tag);
+  addScheduleEvent: async (title, startTime, tag, date) => {
+    await db.createScheduleEvent(title, startTime, tag, date);
     set({ scheduleEvents: await db.listScheduleEvents() });
+  },
+  applyWeekPlan: async (template, weekDays, todayKey) => {
+    let focusCount = 0;
+    let eventCount = 0;
+    for (let i = 0; i < template.days.length && i < weekDays.length; i += 1) {
+      const day = template.days[i];
+      const date = weekDays[i];
+      for (const focus of day.focus) {
+        if (!focus.trim()) continue;
+        const task = await db.createTask(focus.trim(), date === todayKey);
+        if (date !== todayKey) await db.setTaskToday(task.id, false);
+        await db.setTaskDueDate(task.id, date);
+        focusCount += 1;
+      }
+      for (const event of day.events) {
+        if (!event.title.trim()) continue;
+        await db.createScheduleEvent(event.title.trim(), event.time, event.tag, date);
+        eventCount += 1;
+      }
+    }
+    set({
+      tasks: await db.listTasks(),
+      scheduleEvents: await db.listScheduleEvents(),
+    });
+    return { focusCount, eventCount };
   },
   toggleEventDone: async (id) => {
     await db.toggleEventDone(id);

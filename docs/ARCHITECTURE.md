@@ -477,6 +477,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 卡片新增 Run log 区：`data-webhook-rule-runs` 列表、`data-webhook-rule-run-item` 行与 status / http / attempts / message / time 徽标；最近 24h 有失败时展示 `data-webhook-rule-fail-alert` 告警条，Run now / 事件触发 / 删除规则都会即时刷新日志。
 - `db.ts` 新增 `WebhookRuleRun` / `listWebhookRuleRuns`，浏览器 fallback 用 `ai-workbench:webhook-rule-runs:v1` 持久化并在 `runWebhookRule` / `triggerWebhookEvent` 写入同构记录；`verify:ui` / `verify:preview` 新增 `webhookRuleRunLog` lane，Rust 单测增至 144 条。
 
+## Sprint 141：Actions 周计划模板
+
+- `schedule_events` 新增 `date TEXT NOT NULL DEFAULT ''`：新库 SCHEMA 直接建列，旧库 `migrate_schedule_event_date` 幂等补列并加入 `init_connection` 迁移链；Rust `ScheduleEvent` / `list_schedule_events` / `create_schedule_event` 全程携带 date，列表按 `date, start_time` 排序，`create_schedule_event` Tauri 命令新增 `date` 参数。
+- `db.ts` 的 `ScheduleEvent` 新增 `date`，`createScheduleEvent(title, startTime, tag, date)` 与浏览器 fallback 同构持久化；store 新增 `applyWeekPlan`，按周一到周日批量写入 Focus（dueDate / isToday）与 Schedule（date）事件。
+- 新增 `src/lib/weekPlanTemplates.ts`：`WeekPlanTemplate`（id / name / 7 天 focus + events）、内置 Balanced week 模板、`loadWeekPlanTemplates` / `saveWeekPlanTemplates`（localStorage）、`weekPlanTemplateCounts`。
+- ActionsView 新增 Week Plan 卡片：`data-week-plan-template` 模板选择、`data-week-plan-preview` 7 日预览、`data-week-plan-apply` 一键写入、`data-week-plan-result` 汇总；Schedule Timeline 行新增 `data-schedule-event-row` 并展示日期，手动建事件可自选日期。
+- `verify:ui` / `verify:preview` 新增 `weekPlanTemplate` / `weekPlanPersisted` lane；Rust 单测新增 `schedule_event_date_migration_adds_column_and_orders`，`cargo test --lib` 增至 145 条。
+
 ## Sprint 140：Knowledge 双链补全编辑器提示
 
 - `db.ts` 新增 `WikiLinkSuggestion` 与 `suggestWikiLinkTargets`：按首行标题 / 标签过滤，精确 > 前缀 > 包含 > 标签排序，默认返回最多 6 条并排除当前笔记；补全候选为运行时派生数据，不新增持久化字段。

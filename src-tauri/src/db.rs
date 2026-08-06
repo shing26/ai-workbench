@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS schedule_events (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     start_time TEXT NOT NULL,
+    date TEXT NOT NULL DEFAULT '',
     done INTEGER DEFAULT 0,
     tag TEXT DEFAULT 'general',
     created_at INTEGER
@@ -131,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_date ON habit_logs(habit_id, date);
 CREATE INDEX IF NOT EXISTS idx_schedule_events_time ON schedule_events(start_time);
+CREATE INDEX IF NOT EXISTS idx_schedule_events_date_time ON schedule_events(date, start_time);
 CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp ON clipboard_history(timestamp);
 CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp);
 CREATE TABLE IF NOT EXISTS knowledge_files (
@@ -487,6 +489,7 @@ pub struct ScheduleEvent {
     pub id: String,
     pub title: String,
     pub start_time: String,
+    pub date: String,
     pub done: bool,
     pub tag: String,
     pub created_at: i64,
@@ -1517,6 +1520,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
+    migrate_schedule_event_date(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
 }
@@ -1729,6 +1733,15 @@ fn migrate_task_completed_at(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_schedule_event_date(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "schedule_events", "date")? {
+        conn.execute_batch(
+            "ALTER TABLE schedule_events ADD COLUMN date TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
@@ -1842,11 +1855,11 @@ fn seed_events_if_empty(conn: &Connection) -> Result<()> {
     }
     let now = now_millis();
     conn.execute(
-        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, '每日复盘', '09:30', 0, 'routine', ?2)",
+        "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at) VALUES (?1, '每日复盘', '09:30', date('now','localtime'), 0, 'routine', ?2)",
         params![uid(), now],
     )?;
     conn.execute(
-        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, 'Sprint 3 验收', '14:00', 0, 'work', ?2)",
+        "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at) VALUES (?1, 'Sprint 3 验收', '14:00', date('now','localtime'), 0, 'work', ?2)",
         params![uid(), now],
     )?;
     Ok(())
@@ -2757,16 +2770,17 @@ pub fn delete_habit(conn: &Connection, id: &str) -> Result<bool> {
 
 pub fn list_schedule_events(conn: &Connection) -> Result<Vec<ScheduleEvent>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, start_time, done, tag, created_at FROM schedule_events ORDER BY start_time ASC, created_at ASC",
+        "SELECT id, title, start_time, date, done, tag, created_at FROM schedule_events ORDER BY date ASC, start_time ASC, created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ScheduleEvent {
             id: row.get(0)?,
             title: row.get(1)?,
             start_time: row.get(2)?,
-            done: row.get::<_, i64>(3)? != 0,
-            tag: row.get(4)?,
-            created_at: row.get(5)?,
+            date: row.get(3)?,
+            done: row.get::<_, i64>(4)? != 0,
+            tag: row.get(5)?,
+            created_at: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -2776,18 +2790,20 @@ pub fn create_schedule_event(
     conn: &Connection,
     title: &str,
     start_time: &str,
+    date: &str,
     tag: &str,
 ) -> Result<ScheduleEvent> {
     let id = uid();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO schedule_events (id, title, start_time, done, tag, created_at) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-        params![id, title, start_time, tag, now],
+        "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+        params![id, title, start_time, date, tag, now],
     )?;
     Ok(ScheduleEvent {
         id,
         title: title.to_string(),
         start_time: start_time.to_string(),
+        date: date.to_string(),
         done: false,
         tag: tag.to_string(),
         created_at: now,
@@ -6231,8 +6247,10 @@ mod tests {
         assert!(!habit.done_today);
         let toggled = toggle_habit(&conn, &habit.id).unwrap();
         assert!(toggled.done_today);
-        let event = create_schedule_event(&conn, "发布 Sprint 3", "20:00", "work").unwrap();
+        let event =
+            create_schedule_event(&conn, "发布 Sprint 3", "20:00", "2026-08-10", "work").unwrap();
         assert!(!event.done);
+        assert_eq!(event.date, "2026-08-10");
         toggle_event_done(&conn, &event.id).unwrap();
         drop(conn);
 
@@ -6254,6 +6272,7 @@ mod tests {
             .expect("created event should be listed");
         assert!(saved_event.done);
         assert_eq!(saved_event.start_time, "20:00");
+        assert_eq!(saved_event.date, "2026-08-10");
 
         let untoggled = toggle_habit(&conn, &habit.id).unwrap();
         assert!(!untoggled.done_today);
@@ -6261,6 +6280,43 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn schedule_event_date_migration_adds_column_and_orders() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schedule_events (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                done INTEGER DEFAULT 0,
+                tag TEXT DEFAULT 'general',
+                created_at INTEGER
+            );",
+        )
+        .unwrap();
+        migrate_schedule_event_date(&conn).unwrap();
+        migrate_schedule_event_date(&conn).unwrap();
+        assert!(column_exists(&conn, "schedule_events", "date").unwrap());
+        conn.execute(
+            "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at)
+             VALUES ('a', 'A', '10:00', '2026-08-11', 0, 'work', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at)
+             VALUES ('b', 'B', '09:00', '2026-08-10', 0, 'work', 2)",
+            [],
+        )
+        .unwrap();
+        let events = list_schedule_events(&conn).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, "b");
+        assert_eq!(events[0].date, "2026-08-10");
+        assert_eq!(events[1].id, "a");
+        assert_eq!(events[1].date, "2026-08-11");
     }
 
     #[test]
