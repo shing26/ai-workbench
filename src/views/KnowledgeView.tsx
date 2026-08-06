@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Clock,
+  Database,
   FolderOpen,
   Link2,
   Pencil,
@@ -75,6 +76,17 @@ export default function KnowledgeView() {
   const [typeEditResults, setTypeEditResults] = useState<Record<string, string>>({});
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteResults, setDeleteResults] = useState<Record<string, string>>({});
+  const [embeddingConfig, setEmbeddingConfigState] = useState<db.EmbeddingConfig | null>(null);
+  const [embeddingMode, setEmbeddingMode] = useState<db.EmbeddingMode>('local');
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
+  const [embeddingShards, setEmbeddingShards] = useState('8');
+  const [embeddingAuto, setEmbeddingAuto] = useState(true);
+  const [vectorStatus, setVectorStatus] = useState<db.VectorIndexStatus | null>(null);
+  const [vectorRebuildBusy, setVectorRebuildBusy] = useState(false);
+  const [vectorRebuildForce, setVectorRebuildForce] = useState(false);
+  const [vectorMessage, setVectorMessage] = useState('');
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -89,6 +101,57 @@ export default function KnowledgeView() {
     setWatchStatus(await db.getVaultWatchStatus());
     setTargetStats(await db.listVaultTargetStats());
   }, []);
+
+  const loadVectorData = useCallback(async () => {
+    const [config, status] = await Promise.all([
+      db.getEmbeddingConfig(),
+      db.getVectorIndexStatus(),
+    ]);
+    setEmbeddingConfigState(config);
+    setEmbeddingMode(config.mode);
+    setEmbeddingBaseUrl(config.baseUrl);
+    setEmbeddingApiKey(config.apiKey);
+    setEmbeddingModel(config.model);
+    setEmbeddingShards(String(config.shardCount));
+    setEmbeddingAuto(config.autoRebuild);
+    setVectorStatus(status);
+  }, []);
+
+  const saveEmbeddingConfig = async () => {
+    try {
+      const config = await db.setEmbeddingConfig({
+        mode: embeddingMode,
+        providerId: '',
+        baseUrl: embeddingBaseUrl,
+        apiKey: embeddingApiKey,
+        model: embeddingModel,
+        dimension: 256,
+        shardCount: Number(embeddingShards) || 8,
+        autoRebuild: embeddingAuto,
+      });
+      setEmbeddingConfigState(config);
+      setVectorMessage('Embedding config saved');
+      await loadVectorData();
+    } catch (err) {
+      setVectorMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const runVectorRebuild = async () => {
+    if (vectorRebuildBusy) return;
+    setVectorRebuildBusy(true);
+    try {
+      const result = await db.rebuildVectorIndex(vectorRebuildForce);
+      setVectorMessage(
+        `Rebuilt ${result.rebuilt} · failed ${result.failed} · skipped ${result.skipped}`,
+      );
+      await loadVectorData();
+    } catch (err) {
+      setVectorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVectorRebuildBusy(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -117,6 +180,10 @@ export default function KnowledgeView() {
     void loadDocs();
     void loadWatchEvents();
   }, [loadDocs, loadWatchEvents]);
+
+  useEffect(() => {
+    void loadVectorData();
+  }, [loadVectorData]);
 
   useEffect(() => {
     let disposed = false;
@@ -1356,6 +1423,187 @@ export default function KnowledgeView() {
         </div>
       </BentoCard>
 
+      <BentoCard
+        title="Vector index"
+        subtitle="真实 Embedding 模型、增量重建与分片索引"
+        icon={Database}
+        colSpan={12}
+      >
+        <div data-vector-index-status className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="flex flex-col items-center rounded-xl bg-white/[0.03] px-2 py-1.5">
+            <span data-vector-total className="text-sm font-semibold text-slate-300">
+              {vectorStatus?.total ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">total</span>
+          </div>
+          <div className="flex flex-col items-center rounded-xl bg-white/[0.03] px-2 py-1.5">
+            <span data-vector-pending className="text-sm font-semibold text-amber-300">
+              {vectorStatus?.pending ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">pending</span>
+          </div>
+          <div className="flex flex-col items-center rounded-xl bg-white/[0.03] px-2 py-1.5">
+            <span data-vector-indexed className="text-sm font-semibold text-emerald-300">
+              {vectorStatus?.indexed ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">indexed</span>
+          </div>
+          <div className="flex flex-col items-center rounded-xl bg-white/[0.03] px-2 py-1.5">
+            <span data-vector-failed className="text-sm font-semibold text-rose-300">
+              {vectorStatus?.failed ?? 0}
+            </span>
+            <span className="text-[9px] text-slate-500">failed</span>
+          </div>
+          <div className="col-span-2 flex flex-col items-center justify-center rounded-xl bg-white/[0.03] px-2 py-1.5 sm:col-span-1">
+            <span
+              data-vector-model
+              className="max-w-full truncate text-sm font-semibold text-sky-300"
+            >
+              {vectorStatus?.model || 'local'}
+            </span>
+            <span className="text-[9px] text-slate-500">model</span>
+          </div>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          <select
+            value={embeddingMode}
+            onChange={(e) => setEmbeddingMode(e.target.value as db.EmbeddingMode)}
+            data-embedding-mode
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40"
+          >
+            <option value="local">Local baseline</option>
+            <option value="openai">OpenAI compatible</option>
+            <option value="ollama">Ollama</option>
+          </select>
+          <input
+            value={embeddingBaseUrl}
+            onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
+            placeholder="Base URL (e.g. http://localhost:11434)"
+            data-embedding-base-url
+            className="h-9 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3 font-mono text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={embeddingModel}
+            onChange={(e) => setEmbeddingModel(e.target.value)}
+            placeholder="Embedding model (e.g. nomic-embed-text)"
+            data-embedding-model
+            className="h-9 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+        </div>
+
+        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+          <input
+            value={embeddingApiKey}
+            onChange={(e) => setEmbeddingApiKey(e.target.value)}
+            type="password"
+            placeholder="API key (optional)"
+            data-embedding-api-key
+            className="h-8 min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            value={embeddingShards}
+            onChange={(e) => setEmbeddingShards(e.target.value)}
+            type="number"
+            min={1}
+            max={64}
+            aria-label="Vector shard count"
+            data-embedding-shards
+            className="h-8 w-20 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+          />
+          <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
+            <input
+              type="checkbox"
+              data-embedding-auto
+              checked={embeddingAuto}
+              onChange={(e) => setEmbeddingAuto(e.target.checked)}
+              className="accent-emerald-500"
+            />
+            auto rebuild
+          </label>
+          <button
+            type="button"
+            data-embedding-save
+            onClick={() => void saveEmbeddingConfig()}
+            className="flex h-8 items-center justify-center rounded-lg accent-bg-20 px-3 text-[10px] accent-text-strong accent-hover-bg-30"
+          >
+            <Save size={12} className="mr-1.5" />
+            Save config
+          </button>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
+            <input
+              type="checkbox"
+              data-vector-rebuild-force
+              checked={vectorRebuildForce}
+              onChange={(e) => setVectorRebuildForce(e.target.checked)}
+              className="accent-emerald-500"
+            />
+            force
+          </label>
+          <button
+            type="button"
+            data-vector-rebuild
+            onClick={() => void runVectorRebuild()}
+            disabled={vectorRebuildBusy}
+            className="flex h-8 items-center gap-1.5 rounded-lg accent-bg-20 px-3 text-[10px] accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={12} className={vectorRebuildBusy ? 'animate-spin' : ''} />
+            {vectorRebuildBusy ? 'Rebuilding...' : 'Rebuild index'}
+          </button>
+          {vectorMessage && (
+            <span
+              data-vector-rebuild-result
+              className="max-w-full truncate rounded-md bg-white/5 px-2 py-1 text-[10px] text-slate-400"
+            >
+              {vectorMessage}
+            </span>
+          )}
+          {embeddingConfig && (
+            <span className="ml-auto text-[9px] text-slate-600">
+              config {embeddingConfig.mode} · {embeddingConfig.dimension}d ·{' '}
+              {embeddingConfig.shardCount} shards
+            </span>
+          )}
+        </div>
+
+        <div
+          data-vector-shard-list
+          className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8"
+        >
+          {(vectorStatus?.shards ?? []).map((shard) => (
+            <div
+              key={shard.shardId}
+              data-vector-shard-item
+              data-vector-shard-id={shard.shardId}
+              className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[9px] text-slate-400">shard {shard.shardId}</span>
+                <span
+                  data-vector-shard-status
+                  className={`rounded px-1 text-[8px] ${
+                    shard.status === 'ready'
+                      ? 'bg-emerald-500/10 text-emerald-300'
+                      : 'bg-slate-500/10 text-slate-500'
+                  }`}
+                >
+                  {shard.status}
+                </span>
+              </div>
+              <p
+                data-vector-shard-docs={shard.documents}
+                className="mt-1 text-[9px] text-slate-500"
+              >
+                {shard.documents} docs · {shard.dimension}d
+              </p>
+            </div>
+          ))}
+        </div>
+      </BentoCard>
+
       <div className="grid min-h-0 flex-1 grid-cols-12 gap-4">
         <div className="col-span-2 flex min-h-0 flex-col gap-2 overflow-y-auto rounded-2xl border border-white/10 bg-[#18181C] p-3 shadow-xl">
           <button
@@ -1464,6 +1712,10 @@ export default function KnowledgeView() {
                   : ''
               }
               data-rag-file={t.type === 'doc' ? t.id : ''}
+              data-rag-shard={'shardId' in t && t.shardId ? t.shardId : ''}
+              data-rag-embedding-model={
+                'embeddingModel' in t && t.embeddingModel ? t.embeddingModel : ''
+              }
               onClick={() => setSelectedId(t.id)}
               className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
                 selected?.id === t.id

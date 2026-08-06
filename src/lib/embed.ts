@@ -1,4 +1,5 @@
 export const EMBED_DIM = 256;
+export type EmbeddingMode = 'local' | 'openai' | 'ollama';
 
 const FNV_OFFSET = 2166136261;
 const FNV_PRIME = 16777619;
@@ -40,6 +41,11 @@ function extractFeatures(text: string): string[] {
 
 const encoder = new TextEncoder();
 
+export function shardFor(key: string, shardCount: number): string {
+  const count = Math.max(1, Math.min(64, shardCount));
+  return String((fnv1a(encoder.encode(key), FNV_OFFSET) >>> 0) % count);
+}
+
 export function embedText(text: string): number[] {
   const vector = new Array<number>(EMBED_DIM).fill(0);
   for (const feature of extractFeatures(text)) {
@@ -73,4 +79,45 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 export function hybridRagScore(bm25: number, vectorScore: number): number {
   return bm25 + 1.2 * vectorScore;
+}
+
+export async function embedTextRemote(
+  mode: EmbeddingMode,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  text: string,
+): Promise<number[]> {
+  if (mode === 'local') return embedText(text);
+  const base = baseUrl.trim().replace(/\/+$/, '');
+  if (!base) throw new Error('Embedding base URL is empty');
+  const url = mode === 'ollama' ? `${base}/api/embed` : `${base}/embeddings`;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {}),
+      },
+      body: JSON.stringify({ model: model.trim() || 'default', input: text }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Embedding HTTP ${response.status}: ${body.slice(0, 200)}`);
+    }
+    const json = (await response.json()) as {
+      data?: Array<{ embedding?: number[] }>;
+      embeddings?: number[][];
+    };
+    const candidate = mode === 'ollama' ? json.embeddings?.[0] : json.data?.[0]?.embedding;
+    if (!candidate || candidate.length === 0) {
+      throw new Error('Embedding response missing embedding vector');
+    }
+    return candidate;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }

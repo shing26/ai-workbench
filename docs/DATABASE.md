@@ -665,6 +665,46 @@ CREATE TABLE IF NOT EXISTS webhook_channel_config (
 - `record_webhook_rule_outcome` 达到熔断阈值时写 `circuit_opened_at = now`；`list_circuit_open_webhook_rules` 只返回 `enabled=0 AND auto_disable_after>0 AND consecutive_failures>=auto_disable_after AND circuit_opened_at>0` 的规则，`set_webhook_rule_enabled(true)` 同时清零失败计数与 `circuit_opened_at`。
 - 浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1`（规则新增 `channels` / `recoveryBackoffSeconds` / `circuitOpenedAt`，旧数据读取时默认补值）与 `ai-workbench:webhook-deliveries:v1`（投递新增 `channel`，旧数据默认 `http`），通道配置使用新 key `ai-workbench:webhook-channel-config:v1`。
 
+## Sprint 145：真实 Embedding、增量重建与分片索引
+
+```sql
+ALTER TABLE knowledge_files ADD COLUMN shard_id TEXT NOT NULL DEFAULT '0';
+ALTER TABLE knowledge_files ADD COLUMN embedding_model TEXT NOT NULL DEFAULT '';
+ALTER TABLE knowledge_files ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 256;
+ALTER TABLE knowledge_files ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'indexed';
+ALTER TABLE knowledge_files ADD COLUMN embedding_error TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_knowledge_files_shard
+    ON knowledge_files(shard_id, embedding_status);
+
+CREATE TABLE IF NOT EXISTS embedding_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'local',
+    provider_id TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    dimension INTEGER NOT NULL DEFAULT 256,
+    shard_count INTEGER NOT NULL DEFAULT 8,
+    auto_rebuild INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS vector_shards (
+    shard_id TEXT PRIMARY KEY,
+    model TEXT NOT NULL DEFAULT '',
+    dimension INTEGER NOT NULL DEFAULT 256,
+    documents INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'idle',
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- 新库 SCHEMA 的 `knowledge_files` 建表语句直接包含新列与索引，`embedding_config` / `vector_shards` 由 SCHEMA 直接建表；旧库由 `migrate_vector_index` 按列存在性幂等补列并播种分片，已加入 `init_connection` 迁移链。
+- `embedding_config` 是单行配置表（id=1）：`mode` 为 `local` / `openai` / `ollama`，`shard_count` 钳制 1~64，`dimension` 钳制 64~4096；`get_embedding_config` 空行回退默认值，`set_embedding_config` upsert 后重播种分片并刷新统计。
+- `knowledge_files.embedding` 保存 JSON 向量数组，`embedding_status` 为 `indexed` / `pending` / `failed`，`shard_id` 由路径 FNV-1a 哈希对 `shard_count` 取模；`vector_shards.documents` 只统计 `embedding_status = 'indexed'` 的文件，`status` 有文档为 `ready`、否则 `idle`。
+- `rebuild_vector_index` 按 `embedding_status != indexed OR embedding = '' OR embedding_model != target OR force` 选取候选，单批最多 25 个；浏览器 fallback 使用 `ai-workbench:vault:v1` 的扩展字段与 `ai-workbench:embedding-config:v1` / `ai-workbench:vector-shards:v1` 持久化。
+
 ## Sprint 144：事件总线持久化、Schema 校验与跨设备转发
 
 ```sql

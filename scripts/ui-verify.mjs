@@ -4054,6 +4054,269 @@ try {
   }
   results.vectorRagCrossFile = vectorRagCrossFile;
 
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    const vault = [
+      ...JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]"),
+      {
+        path: "C:/vault/Vector Config A.md",
+        title: "Vector Config A",
+        tags: "#work,#vector",
+        content: "# Vector Config A\\n\\nEmbedding model and shard configuration notes for vault indexing.",
+        indexedAt: now - 2000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify(Array.from({ length: 8 }, (_, i) => i + 1)),
+        shardId: "2",
+        embeddingModel: "local",
+        embeddingDim: 8,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/vault/Vector Config B.md",
+        title: "Vector Config B",
+        tags: "#life,#vector",
+        content: "# Vector Config B\\n\\nShard assignment and vector status summaries.",
+        indexedAt: now - 1000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify(Array.from({ length: 8 }, (_, i) => (i + 1) * 2)),
+        shardId: "3",
+        embeddingModel: "local",
+        embeddingDim: 8,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    localStorage.setItem(
+      "ai-workbench:vector-shards:v1",
+      JSON.stringify(
+        Array.from({ length: 4 }, (_, index) => ({
+          shardId: String(index),
+          model: "local",
+          dimension: 256,
+          documents: 0,
+          status: "idle",
+          updatedAt: now,
+          createdAt: now,
+        })),
+      ),
+    );
+    localStorage.setItem(
+      "ai-workbench:embedding-config:v1",
+      JSON.stringify({
+        mode: "local",
+        providerId: "",
+        baseUrl: "",
+        apiKey: "",
+        model: "local",
+        dimension: 256,
+        shardCount: 4,
+        autoRebuild: false,
+        updatedAt: now,
+      }),
+    );
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorConfigAssert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i += 1) {
+      if (document.querySelectorAll("[data-vector-shard-item]").length === 4) break;
+      await sleep(100);
+    }
+    const mode = document.querySelector("[data-embedding-mode]")?.value ?? "";
+    const shardsInput = document.querySelector("[data-embedding-shards]")?.value ?? "";
+    const shardItems = [...document.querySelectorAll("[data-vector-shard-item]")];
+    const shardIds = shardItems.map((el) => el.getAttribute("data-vector-shard-id") ?? "");
+    const total = Number(document.querySelector("[data-vector-total]")?.textContent ?? -1);
+    const indexed = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    if (
+      mode !== "local" ||
+      shardsInput !== "4" ||
+      shardItems.length !== 4 ||
+      total !== 4 ||
+      indexed !== 4
+    ) {
+      return {
+        ok: false,
+        reason: "initial vector state mismatch",
+        mode,
+        shardsInput,
+        shardCount: shardItems.length,
+        shardIds,
+        total,
+        indexed,
+      };
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    const modelInput = document.querySelector("[data-embedding-model]");
+    if (!modelInput) return { ok: false, reason: "no embedding model input" };
+    setter.call(modelInput, "local-verify");
+    modelInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    document.querySelector("[data-embedding-save]")?.click();
+    for (let i = 0; i < 30; i += 1) {
+      const raw = localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}";
+      if ((JSON.parse(raw).model ?? "") === "local-verify") break;
+      await sleep(100);
+    }
+    const saved = JSON.parse(localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}");
+    const savedOk =
+      saved.mode === "local" &&
+      saved.model === "local-verify" &&
+      Number(saved.shardCount) === 4 &&
+      saved.autoRebuild === false;
+    for (let i = 0; i < 30; i += 1) {
+      if (
+        (document.querySelector("[data-embedding-model]")?.value ?? "") === "local-verify"
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const pending = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const modelLabel = document.querySelector("[data-vector-model]")?.textContent ?? "";
+    const modelInputAfter = document.querySelector("[data-embedding-model]")?.value ?? "";
+    return {
+      ok: savedOk && pending === 0 && modelLabel === "local" && modelInputAfter === "local-verify",
+      mode,
+      shardCount: document.querySelectorAll("[data-vector-shard-item]").length,
+      shardIds,
+      total,
+      indexed,
+      pending,
+      modelLabel,
+      modelInputAfter,
+      savedOk,
+    };
+  })()`);
+  if (!vectorConfigAssert.ok) {
+    throw new Error(`Vector index config assertion failed: ${JSON.stringify(vectorConfigAssert)}`);
+  }
+  results.vectorIndexConfig = vectorConfigAssert;
+  laneLog('vectorIndexConfig ok');
+
+  await evaluate(`(() => {
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    if (files.length === 0) return false;
+    files[0].embeddingStatus = "pending";
+    files[0].embedding = "";
+    files[0].embeddingModel = "";
+    files[0].embeddingDim = 0;
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(files));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorIndexRebuild = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i += 1) {
+      if (Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1) >= 1) break;
+      await sleep(100);
+    }
+    const pendingBefore = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const indexedBefore = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    document.querySelector("[data-vector-rebuild]")?.click();
+    for (let i = 0; i < 40; i += 1) {
+      const text = document.querySelector("[data-vector-rebuild-result]")?.textContent ?? "";
+      if (text.includes("Rebuilt")) break;
+      await sleep(100);
+    }
+    const message = document.querySelector("[data-vector-rebuild-result]")?.textContent ?? "";
+    const pendingAfter = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const indexedAfter = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const firstIndexed = stored[0]?.embeddingStatus === "indexed" && (stored[0]?.embedding ?? "").length > 0;
+    return {
+      ok:
+        pendingBefore === 1 &&
+        indexedBefore === 3 &&
+        message.includes("Rebuilt 1") &&
+        pendingAfter === 0 &&
+        indexedAfter === 4 &&
+        firstIndexed,
+      pendingBefore,
+      indexedBefore,
+      message,
+      pendingAfter,
+      indexedAfter,
+      firstIndexed,
+    };
+  })()`);
+  if (!vectorIndexRebuild.ok) {
+    throw new Error(`Vector index rebuild assertion failed: ${JSON.stringify(vectorIndexRebuild)}`);
+  }
+  results.vectorIndexRebuild = vectorIndexRebuild;
+  laneLog('vectorIndexRebuild ok');
+
+  const vectorShardSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    for (let i = 0; i < 30; i += 1) {
+      if (
+        [...document.querySelectorAll("[data-rag-vector-score]")].some(
+          (el) => (el.getAttribute("data-rag-vector-score") ?? "") !== "",
+        )
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const rows = [...document.querySelectorAll("[data-rag-result]")];
+    const docRows = rows.filter((el) => el.getAttribute("data-rag-file"));
+    const withShard = rows.filter(
+      (el) =>
+        el.getAttribute("data-rag-shard") !== "" &&
+        el.getAttribute("data-rag-shard") !== null,
+    );
+    const withModel = rows.filter(
+      (el) =>
+        el.getAttribute("data-rag-embedding-model") !== "" &&
+        el.getAttribute("data-rag-embedding-model") !== null,
+    );
+    return {
+      ok: rows.length > 0 && docRows.length > 0 && withShard.length > 0 && withModel.length > 0,
+      rows: rows.length,
+      docs: docRows.length,
+      withShard: withShard.length,
+      withModel: withModel.length,
+      firstHtml: rows[0] ? rows[0].outerHTML.slice(0, 400) : "",
+      docHtml: docRows[0] ? docRows[0].outerHTML.slice(0, 400) : "",
+      sample: rows[0]
+        ? {
+            file: rows[0].getAttribute("data-rag-file") ?? "",
+            shard: rows[0].getAttribute("data-rag-shard") ?? "",
+            model: rows[0].getAttribute("data-rag-embedding-model") ?? "",
+          }
+        : null,
+    };
+  })()`);
+  if (!vectorShardSearch.ok) {
+    throw new Error(`Vector shard search assertion failed: ${JSON.stringify(vectorShardSearch)}`);
+  }
+  results.vectorShardSearch = vectorShardSearch;
+  laneLog('vectorShardSearch ok');
+
+  await evaluate(`(() => {
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]")
+      .filter((file) => !file.path.includes("Vector Config"))
+      .slice(0, 2);
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(files));
+    return true;
+  })()`);
+
   await evaluate(`(() => {
     const now = Date.now();
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");

@@ -6,7 +6,6 @@
 
 ## 候选池（待开发）
 
-- [ ] Knowledge：真实 Embedding 模型、向量增量后台重建与分片索引。
 - [ ] Knowledge：语义聚类 / 文档去重。
 - [ ] Projects：轮播拖拽排序与速度滑杆。
 - [ ] Projects / Material：逐卡独立配色记忆。
@@ -21,6 +20,7 @@
 
 ## 已完成（从候选池移除）
 
+- Knowledge：真实 Embedding 模型、向量增量后台重建与分片索引（Sprint 145）。
 - 事件总线：持久化 event log、事件 schema 校验与跨设备事件转发（Sprint 144）。
 - Webhook 多通道投递（邮件 / 系统通知）与熔断恢复指数退避调度（Sprint 143）。
 - Webhook 复杂触发器条件表达式（cron / 事件匹配）与签名校验收发端 UI（Sprint 142）。
