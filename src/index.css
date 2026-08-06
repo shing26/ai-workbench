@@ -976,6 +976,23 @@ html[data-theme-resolved='light'] .markdown-body pre {
 .project-carousel-scene[data-carousel-scene-mode='fan'] .project-carousel-card {
   transform-origin: 22% 92%;
 }
+.carousel-material-swatch {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: #22d3ee;
+}
+.carousel-material-swatch-original {
+  background: #ff4aa9;
+}
+.carousel-material-swatch-rain {
+  background: #2e66ff;
+}
+.carousel-material-swatch-chrome {
+  background: #e8f0ed;
+}
 
 /* Sprint 93: material settings drawer */
 .material-overlay {

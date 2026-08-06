@@ -1389,6 +1389,16 @@ fn update_project(
 }
 
 #[tauri::command]
+fn update_project_material(
+    state: State<'_, db::Db>,
+    id: String,
+    material: String,
+) -> Result<db::Project, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_project_material(&conn, &id, &material).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_project(state: State<'_, db::Db>, id: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_project(&conn, &id).map_err(|e| e.to_string())
@@ -6367,6 +6377,7 @@ pub fn run() {
             list_projects,
             create_project,
             update_project,
+            update_project_material,
             delete_project,
             reorder_projects,
             list_project_revenue_history,
@@ -6842,6 +6853,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 1,
                 sort_order: 0,
+                material: String::new(),
             },
             db::Project {
                 id: "p-b".to_string(),
@@ -6851,6 +6863,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 2,
                 sort_order: 1,
+                material: String::new(),
             },
             db::Project {
                 id: "p-c".to_string(),
@@ -6860,6 +6873,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 3,
                 sort_order: 2,
+                material: String::new(),
             },
         ];
         let board = build_git_activity(projects, None, None, None);
@@ -6924,6 +6938,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 1,
                 sort_order: 0,
+                material: String::new(),
             },
             db::Project {
                 id: "p-b".to_string(),
@@ -6933,6 +6948,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 2,
                 sort_order: 1,
+                material: String::new(),
             },
         ];
 

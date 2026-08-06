@@ -43,6 +43,7 @@ export type Project = {
   status: string;
   createdAt: number;
   sortOrder?: number;
+  material?: string;
 };
 
 export type ProjectRevenuePoint = {
@@ -1559,6 +1560,16 @@ export async function updateProject(id: string, status: string, revenue: number)
     revenue: project.revenue,
     recordedAt: Date.now(),
   });
+  writeLocal(shape);
+  return project;
+}
+
+export async function updateProjectMaterial(id: string, material: string): Promise<Project> {
+  if (isTauri()) return invoke<Project>('update_project_material', { id, material });
+  const shape = readLocal();
+  const project = shape.projects.find((p) => p.id === id);
+  if (!project) throw new Error('project not found');
+  project.material = material;
   writeLocal(shape);
   return project;
 }

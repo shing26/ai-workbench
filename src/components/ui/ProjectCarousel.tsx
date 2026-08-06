@@ -5,6 +5,7 @@ import {
   GripVertical,
   Layers,
   Orbit,
+  Palette,
   Pause,
   Play,
 } from 'lucide-react';
@@ -21,9 +22,17 @@ function relativePosition(index: number, position: number, count: number): numbe
   return delta;
 }
 
+function resolveMaterial(material: string | undefined, index: number) {
+  if (material && (CAROUSEL_MATERIALS as readonly string[]).includes(material)) {
+    return material as (typeof CAROUSEL_MATERIALS)[number];
+  }
+  return CAROUSEL_MATERIALS[index % CAROUSEL_MATERIALS.length];
+}
+
 export default function ProjectCarousel() {
   const projects = useWorkbenchStore((s) => s.projects);
   const reorderProjects = useWorkbenchStore((s) => s.reorderProjects);
+  const setProjectMaterial = useWorkbenchStore((s) => s.setProjectMaterial);
   const setProjects = useWorkbenchStore((s) => s.setProjects);
   const [mode, setMode] = useState<'orbit' | 'fan'>('orbit');
   const [playing, setPlaying] = useState(false);
@@ -362,7 +371,8 @@ export default function ProjectCarousel() {
             aria-label={`View project ${project.name}`}
             data-carousel-card
             data-carousel-project={project.name}
-            data-carousel-material={CAROUSEL_MATERIALS[i % CAROUSEL_MATERIALS.length]}
+            data-carousel-material={resolveMaterial(project.material, i)}
+            data-carousel-material-memory={project.material || 'auto'}
             onClick={() => {
               if (dragSuppressClickRef.current) {
                 dragSuppressClickRef.current = false;
@@ -407,6 +417,31 @@ export default function ProjectCarousel() {
             <span className="font-medium text-slate-200">{selected.name}</span>
             <span className="rounded bg-white/[0.04] px-1.5 py-0.5">{selected.status}</span>
             <span className="text-emerald-300">${selected.revenue.toFixed(2)}</span>
+            <span className="flex items-center gap-1" data-carousel-material-controls>
+              <Palette size={10} className="text-slate-500" />
+              <button
+                type="button"
+                data-carousel-material-auto
+                aria-pressed={!selected.material}
+                onClick={() => void setProjectMaterial(selected.id, '')}
+                className="h-5 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[8px] text-slate-400 transition-colors hover:text-slate-200 aria-pressed:border-emerald-500/30 aria-pressed:text-emerald-300"
+              >
+                Auto
+              </button>
+              {CAROUSEL_MATERIALS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  data-carousel-material-option={preset}
+                  aria-label={`Set ${selected.name} material to ${preset}`}
+                  aria-pressed={selected.material === preset}
+                  onClick={() => void setProjectMaterial(selected.id, preset)}
+                  className="flex h-5 w-5 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] transition-colors hover:border-white/25 aria-pressed:border-white/40 aria-pressed:bg-white/[0.08]"
+                >
+                  <span className={`carousel-material-swatch carousel-material-swatch-${preset}`} />
+                </button>
+              ))}
+            </span>
             <span className="max-w-48 truncate text-slate-600">
               {selected.path || 'No local path'}
             </span>
