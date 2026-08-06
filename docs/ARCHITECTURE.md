@@ -357,6 +357,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 保存时按逗号（含中文逗号）拆分、去空白、补 `#` 并去重，空标签不参与拼接；保存后详情徽标、侧栏与 Tag Library 同步刷新。
 - `verify:ui` / `verify:preview` 新增 `thoughtTagEdit` / `thoughtTagEditPersisted` / `thoughtTagEditRestored`：编辑 → reload 持久化 → 恢复原标签；`cargo test --lib` 增至 127 条。
 
+## Sprint 122：Actions 习惯删除与周目标编辑
+
+- Rust 新增 `update_habit_week_goal(id, week_goal)` 与 `delete_habit(id)`：周目标钳制到 1~31，删除时先清理 `habit_logs` 再删 `habits`；`db.ts` / `workbenchStore` 新增同构 `updateHabitWeekGoal` / `deleteHabit`，localStorage fallback 同步清理日志。
+- Actions Habits 卡片每行新增 `data-habit-week-edit` / `data-habit-week-input` / `data-habit-week-save` / `data-habit-week-cancel` / `data-habit-edit-result`，删除采用二次确认（`data-habit-delete` / `data-habit-delete-confirm` / `data-habit-delete-cancel`）。
+- 周目标保存后行内周进度、今日进度汇总与热力条同步；删除后习惯行消失且今日进度汇总同步减少。
+- `verify:ui` / `verify:preview` 新增 `habitManage` / `habitManagePersisted` / `habitManageRestored` / `habitDeleteCheck`：编辑 7 → reload 持久化 → 恢复 5，并创建后删除测试习惯；`cargo test --lib` 增至 128 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

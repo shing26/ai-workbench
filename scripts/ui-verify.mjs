@@ -2528,6 +2528,134 @@ try {
   })()`);
   results.persistence = { created, beforeReload, afterReload, habitPersisted };
 
+  const habitManage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing" };
+    const editBtn = row.querySelector("[data-habit-week-edit]");
+    const weekBadge = row.querySelector("[data-habit-week]");
+    if (!editBtn || !weekBadge) return { ok: false, reason: "habit edit controls missing" };
+    const habitId = editBtn.getAttribute("data-habit-week-edit");
+    const originalGoal = weekBadge.getAttribute("data-habit-week")?.split("/")[1] ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = row.querySelector('[data-habit-week-input="' + habitId + '"]');
+    if (!input) return { ok: false, reason: "habit week input missing", habitId, originalGoal };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "7");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const saveBtn = row.querySelector('[data-habit-week-save="' + habitId + '"]');
+    if (!saveBtn) return { ok: false, reason: "habit week save missing", habitId, originalGoal };
+    saveBtn.click();
+    await sleep(600);
+    const afterWeek = weekBadge.getAttribute("data-habit-week") ?? "";
+    const result = row.querySelector('[data-habit-edit-result="' + habitId + '"]')?.textContent ?? "";
+    const ok = afterWeek.split("/")[1] === "7" && result.includes("Saved");
+    return { ok, habitId, originalGoal, afterWeek, result };
+  })()`);
+  results.habitManage = habitManage;
+  if (!results.habitManage.ok) {
+    throw new Error(`Habit manage assertion failed: ${JSON.stringify(results.habitManage)}`);
+  }
+  const habitManageId = results.habitManage.habitId ?? '';
+  const habitManageOriginal = results.habitManage.originalGoal ?? '';
+  await reloadAndWait();
+  await clickDock('Actions');
+  const habitManagePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(habitManageId)};
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing after reload" };
+    const editBtn = row.querySelector('[data-habit-week-edit="' + id + '"]');
+    const weekBadge = row.querySelector("[data-habit-week]");
+    if (!editBtn || !weekBadge) return { ok: false, reason: "habit controls missing after reload" };
+    const current = weekBadge.getAttribute("data-habit-week") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = row.querySelector('[data-habit-week-input="' + id + '"]');
+    const ok = current.split("/")[1] === "7" && input?.value === "7";
+    return { ok, current, inputValue: input?.value ?? "" };
+  })()`);
+  results.habitManagePersisted = habitManagePersisted;
+  if (!results.habitManagePersisted?.ok) {
+    throw new Error(
+      `Habit manage persistence assertion failed: ${JSON.stringify(results.habitManagePersisted)}`,
+    );
+  }
+  const habitManageRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(habitManageId)};
+    const original = ${JSON.stringify(habitManageOriginal)};
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing for restore" };
+    const input = row.querySelector('[data-habit-week-input="' + id + '"]');
+    const saveBtn = row.querySelector('[data-habit-week-save="' + id + '"]');
+    if (!input || !saveBtn) return { ok: false, reason: "habit editor missing for restore" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, original);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    await sleep(600);
+    const weekBadge = row.querySelector("[data-habit-week]");
+    const current = weekBadge?.getAttribute("data-habit-week") ?? "";
+    return { ok: current.split("/")[1] === original, current, original };
+  })()`);
+  results.habitManageRestored = habitManageRestored;
+  if (!results.habitManageRestored?.ok) {
+    throw new Error(
+      `Habit manage restore assertion failed: ${JSON.stringify(results.habitManageRestored)}`,
+    );
+  }
+  const habitDeleteCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New habit..."]');
+    if (!input) return { ok: false, reason: "no habit input" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "Habit delete check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find(
+      (b) => b.getAttribute("aria-label") === "Add habit",
+    );
+    if (!add) return { ok: false, reason: "no add habit button" };
+    add.click();
+    await sleep(600);
+    const habitsBefore = document.querySelectorAll("[data-habit-recent-days]").length;
+    let toggle = null;
+    for (let i = 0; i < 20; i++) {
+      toggle = [...document.querySelectorAll("[data-habit-toggle]")].find((btn) =>
+        btn.parentElement?.textContent?.includes("Habit delete check"),
+      );
+      if (toggle) break;
+      await sleep(100);
+    }
+    if (!toggle) return { ok: false, reason: "test habit missing", habitsBefore };
+    const habitRow = toggle.parentElement;
+    const deleteBtn = habitRow?.querySelector("[data-habit-delete]");
+    if (!habitRow || !deleteBtn) {
+      return { ok: false, reason: "delete button missing", habitsBefore };
+    }
+    deleteBtn.click();
+    await sleep(150);
+    const confirmBtn = habitRow.querySelector("[data-habit-delete-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing", habitsBefore };
+    confirmBtn.click();
+    await sleep(600);
+    const habitsAfter = document.querySelectorAll("[data-habit-recent-days]").length;
+    const gone = ![...document.querySelectorAll("[data-habit-toggle]")].some((btn) =>
+      btn.parentElement?.textContent?.includes("Habit delete check"),
+    );
+    const daily = document.querySelector("[data-daily-habits]")?.getAttribute("data-daily-habits") ?? "";
+    const ok = habitsBefore === 4 && habitsAfter === 3 && gone && daily.split("/")[1] === "3";
+    return { ok, habitsBefore, habitsAfter, gone, daily };
+  })()`);
+  results.habitDeleteCheck = habitDeleteCheck;
+  if (!results.habitDeleteCheck?.ok) {
+    throw new Error(`Habit delete assertion failed: ${JSON.stringify(results.habitDeleteCheck)}`);
+  }
+
   const focusWeekArchive = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const input = document.querySelector('input[placeholder="New task..."]');

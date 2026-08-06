@@ -161,6 +161,25 @@
 - 保留 `thoughtTagEdit` / `thoughtTagEditPersisted` / `thoughtTagEditRestored` lane，修改标签解析、侧栏过滤或 Knowledge 详情面板时重跑双端验证。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 122
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构新增习惯管理：`update_habit_week_goal` 周目标钳制 1~31，`delete_habit` 删除习惯并清理 `habit_logs`；`db.ts` / `workbenchStore` 与 localStorage fallback 行为一致。
+- Actions Habits 卡片每行新增周目标内联编辑与删除二次确认：编辑保存后周进度、今日进度与热力条同步，删除后习惯行消失且汇总减少。
+- `verify:ui` / `verify:preview` 新增 `habitManage` / `habitManagePersisted` / `habitManageRestored` / `habitDeleteCheck`：编辑 7 → reload 持久化 → 恢复 5，并创建后删除测试习惯；`cargo test --lib` 增至 128 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings`、`cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；双端验证一次全绿，无需重跑。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量测试、AI Studio 会话分组/归档、Projects 项目删除或收益趋势、Knowledge 笔记正文编辑。
+- 保留 `habitManage` / `habitDeleteCheck` lane，修改习惯字段、周目标或删除逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

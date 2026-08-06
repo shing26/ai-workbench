@@ -506,6 +506,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。复用 `thoughts` 既有 `tags` 列：新增 `update_thought_tags` 命令仅更新标签，浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
 
+## Sprint 122：Actions 习惯删除与周目标编辑
+
+无表结构变更。`update_habit_week_goal` 复用 `habits.week_goal`（钳制 1~31）；`delete_habit` 先删除 `habit_logs` 中该习惯日志再删除习惯行，与既有 `ON DELETE CASCADE` 语义一致。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `habits` / `habitLogs`，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

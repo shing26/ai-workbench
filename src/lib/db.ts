@@ -2149,6 +2149,29 @@ export async function toggleHabit(id: string): Promise<Habit> {
   };
 }
 
+export async function updateHabitWeekGoal(id: string, weekGoal: number): Promise<Habit> {
+  if (isTauri()) return invoke<Habit>('update_habit_week_goal', { id, weekGoal });
+  const shape = readLocal();
+  const habit = shape.habits.find((h) => h.id === id);
+  if (!habit) throw new Error('habit not found');
+  habit.weekGoal = Number.isFinite(weekGoal)
+    ? Math.max(1, Math.min(31, Math.round(weekGoal)))
+    : habit.weekGoal;
+  writeLocal(shape);
+  return habit;
+}
+
+export async function deleteHabit(id: string): Promise<boolean> {
+  if (isTauri()) return invoke<boolean>('delete_habit', { id });
+  const shape = readLocal();
+  const index = shape.habits.findIndex((h) => h.id === id);
+  if (index < 0) return false;
+  shape.habits.splice(index, 1);
+  shape.habitLogs = shape.habitLogs.filter((log) => log.habitId !== id);
+  writeLocal(shape);
+  return true;
+}
+
 export async function listScheduleEvents(): Promise<ScheduleEvent[]> {
   return isTauri() ? invoke<ScheduleEvent[]>('list_schedule_events') : readLocal().scheduleEvents;
 }

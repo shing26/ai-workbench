@@ -1675,6 +1675,22 @@ fn toggle_habit(state: State<'_, db::Db>, id: String) -> Result<db::Habit, Strin
 }
 
 #[tauri::command]
+fn update_habit_week_goal(
+    state: State<'_, db::Db>,
+    id: String,
+    week_goal: i64,
+) -> Result<db::Habit, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_habit_week_goal(&conn, &id, week_goal).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_habit(state: State<'_, db::Db>, id: String) -> Result<bool, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_habit(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_schedule_events(state: State<'_, db::Db>) -> Result<Vec<db::ScheduleEvent>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_schedule_events(&conn).map_err(|e| e.to_string())
@@ -5380,6 +5396,8 @@ pub fn run() {
             list_habits,
             create_habit,
             toggle_habit,
+            update_habit_week_goal,
+            delete_habit,
             list_schedule_events,
             create_schedule_event,
             toggle_event_done,
