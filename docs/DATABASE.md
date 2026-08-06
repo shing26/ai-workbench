@@ -486,6 +486,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 `tasks` 表新增 `completed_at INTEGER`：新库 SCHEMA 直接建列，旧库由幂等 `migrate_task_completed_at` 补列。`update_task_status` 在状态变为 `done` 时写入当前毫秒时间戳，非 `done` 清空；`set_task_due_date` 更新既有 `due_date TEXT`（`YYYY-MM-DD`）。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `tasks` 数组，任务对象新增 `completedAt` 字段，不新增 localStorage key。
 
+## Sprint 117：Projects 收益与进度汇总导出
+
+无表结构变更。Portfolio summary 与 Markdown 导出是纯前端计算：从 `projects` 表（`revenue` / `status` / `name` / `path`）与 Git 活动聚合结果读取数据，导出内容不落库；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` 与既有 Git mock，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

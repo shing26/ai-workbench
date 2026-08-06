@@ -321,6 +321,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 完成归档 `data-focus-archive` 展示最近完成项（标题 + 完成时间），`data-focus-archive-restore` 恢复为待办并回到今日焦点。
 - `verify:ui` / `verify:preview` 新增 `focusWeekArchive` / `focusWeekPersisted` lane：创建任务、改派次日、完成、归档、恢复、切换回今天与 reload 持久化。
 
+## Sprint 117：Projects 收益与进度汇总导出
+
+- Projects 视图新增 `data-portfolio-summary` Portfolio summary 卡片：项目总数、总收益、Active / Paused 数、Git 提交总数、Dirty 项目数与 `data-portfolio-week-peak` 周提交峰值。
+- `data-portfolio-export` 一键生成 Markdown 报告：组合统计、项目表（名称 / 状态 / 收益 / 路径）、Git 活动表（提交数 / 分支 / 脏状态 / 最新提交）与提交趋势摘要；`data-portfolio-export-preview` 内联预览，`data-portfolio-copy` 复制到剪贴板（含 legacy execCommand 兜底）。
+- 报告为纯前端计算，复用 `projects` 与 `gitActivity` 现有数据，无新增后端命令或持久化字段。
+- `verify:ui` / `verify:preview` 新增 `portfolioSummaryExport` lane：断言汇总数值、导出预览包含项目名与收益、复制成功状态。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
