@@ -20,6 +20,7 @@ import ModelBadge from '../components/ui/ModelBadge';
 export default function KnowledgeView() {
   const thoughts = useWorkbenchStore((s) => s.thoughts);
   const addThought = useWorkbenchStore((s) => s.addThought);
+  const updateThoughtTags = useWorkbenchStore((s) => s.updateThoughtTags);
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useState('all');
@@ -55,6 +56,9 @@ export default function KnowledgeView() {
   const [indexQueueStatus, setIndexQueueStatus] = useState<db.VaultIndexQueueStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [recapDraft, setRecapDraft] = useState<RecapDraft | null>(() => loadRecapDraft());
+  const [tagEditId, setTagEditId] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagEditResults, setTagEditResults] = useState<Record<string, string>>({});
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -252,6 +256,7 @@ export default function KnowledgeView() {
       : results;
   const visibleThoughts = filteredResults ?? filtered;
   const selected = visibleThoughts.find((t) => t.id === selectedId) ?? visibleThoughts[0] ?? null;
+  const selectedLocal = selected ? (thoughts.find((t) => t.id === selected.id) ?? null) : null;
 
   const add = async () => {
     if (!content.trim()) return;
@@ -267,6 +272,28 @@ export default function KnowledgeView() {
       'note',
     );
     setRecapDraft(markRecapDraftSaved(recapDraft));
+  };
+
+  const startTagEdit = (thought: db.Thought) => {
+    setTagEditId(thought.id);
+    setTagDraft(thought.tags);
+    setTagEditResults((prev) => ({ ...prev, [thought.id]: '' }));
+  };
+
+  const saveTagEdit = async (thought: db.Thought) => {
+    const normalized = Array.from(
+      new Set(
+        tagDraft
+          .split(/[,，]/)
+          .map((tag) => tag.trim().replace(/^#/, ''))
+          .filter(Boolean),
+      ),
+    )
+      .map((tag) => `#${tag}`)
+      .join(',');
+    await updateThoughtTags(thought.id, normalized);
+    setTagEditId(null);
+    setTagEditResults((prev) => ({ ...prev, [thought.id]: 'Saved' }));
   };
 
   const runSearch = async () => {
@@ -1331,10 +1358,67 @@ export default function KnowledgeView() {
         >
           {selected ? (
             <>
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-medium text-slate-200">{selected.type}</span>
-                <ModelBadge label={selected.tags} tone="green" />
+                <div className="flex items-center gap-1.5">
+                  <ModelBadge label={selected.tags} tone="green" />
+                  {selectedLocal && (
+                    <button
+                      type="button"
+                      data-thought-tags-edit={selected.id}
+                      data-thought-tags-current={selected.tags}
+                      onClick={() => startTagEdit(selectedLocal)}
+                      className="flex h-6 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+                    >
+                      <Tags size={10} /> Edit tags
+                    </button>
+                  )}
+                </div>
               </div>
+              {selectedLocal && tagEditId === selectedLocal.id && (
+                <div
+                  data-thought-tags-editor={selectedLocal.id}
+                  className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1.5"
+                >
+                  <input
+                    data-thought-tags-input={selectedLocal.id}
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void saveTagEdit(selectedLocal);
+                      }
+                    }}
+                    placeholder="#work,#life"
+                    className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-black/20 px-2 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+                  />
+                  <button
+                    type="button"
+                    data-thought-tags-save={selectedLocal.id}
+                    onClick={() => void saveTagEdit(selectedLocal)}
+                    className="flex h-7 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+                  >
+                    <Save size={10} /> Save
+                  </button>
+                  <button
+                    type="button"
+                    data-thought-tags-cancel={selectedLocal.id}
+                    onClick={() => setTagEditId(null)}
+                    className="h-7 rounded-md border border-white/10 px-2 text-[10px] text-slate-500 hover:text-slate-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              {selectedLocal && tagEditResults[selectedLocal.id] && (
+                <span
+                  data-thought-tags-result={selectedLocal.id}
+                  className="mb-2 inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                >
+                  {tagEditResults[selectedLocal.id]}
+                </span>
+              )}
               <div className="markdown-body min-h-0 flex-1 overflow-y-auto text-xs leading-relaxed text-slate-300">
                 <ReactMarkdown>{selected.content}</ReactMarkdown>
               </div>

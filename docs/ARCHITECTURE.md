@@ -350,6 +350,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 保存后 Portfolio summary、项目卡片 StatPill 与 Project carousel 详情同步显示新状态 / 收益。
 - `verify:ui` / `verify:preview` 新增 `projectEdit` / `projectEditPersisted` / `projectEditRestored`：编辑 1234.56 / paused → reload 持久化 → 恢复 active / 0；`cargo test --lib` 增至 126 条。
 
+## Sprint 121：Knowledge 笔记标签编辑
+
+- Rust 新增 `update_thought_tags(id, tags)`：仅更新 `thoughts.tags`，返回最新 Thought，已注册 Tauri 命令；`src/lib/db.ts` 新增同构 `updateThoughtTags`，localStorage fallback 直接写回 `thoughts`。
+- `workbenchStore` 新增 `updateThoughtTags`，保存后刷新 `thoughts`；Knowledge 详情面板新增 `data-thought-tags-edit` / `data-thought-tags-input` / `data-thought-tags-save` / `data-thought-tags-cancel` / `data-thought-tags-result`，仅对本地 thoughts 渲染。
+- 保存时按逗号（含中文逗号）拆分、去空白、补 `#` 并去重，空标签不参与拼接；保存后详情徽标、侧栏与 Tag Library 同步刷新。
+- `verify:ui` / `verify:preview` 新增 `thoughtTagEdit` / `thoughtTagEditPersisted` / `thoughtTagEditRestored`：编辑 → reload 持久化 → 恢复原标签；`cargo test --lib` 增至 127 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

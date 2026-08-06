@@ -1737,6 +1737,17 @@ pub fn create_thought(conn: &Connection, content: &str, tags: &str, kind: &str) 
     })
 }
 
+pub fn update_thought_tags(conn: &Connection, id: &str, tags: &str) -> Result<Thought> {
+    conn.execute(
+        "UPDATE thoughts SET tags = ?1 WHERE id = ?2",
+        params![tags, id],
+    )?;
+    list_thoughts(conn)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
 pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
     let mut stmt = conn.prepare(
         "SELECT id, label, category, text, custom, sort_order, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
@@ -5408,6 +5419,33 @@ mod tests {
         let clamped = update_project(&conn, &project.id, "active", -5.0).unwrap();
         assert_eq!(clamped.status, "active");
         assert_eq!(clamped.revenue, 0.0);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn thought_tags_update_persist() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-thought-tags-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let thought = create_thought(&conn, "daily note", "#work", "note").unwrap();
+        let updated = update_thought_tags(&conn, &thought.id, "#work,#life").unwrap();
+        assert_eq!(updated.tags, "#work,#life");
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let saved = list_thoughts(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == thought.id)
+            .expect("updated thought should be listed");
+        assert_eq!(saved.tags, "#work,#life");
+
+        let missing = update_thought_tags(&conn, "missing-thought", "#life");
+        assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

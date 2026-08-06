@@ -142,6 +142,25 @@
 - 保留 `projectEdit` / `projectEditPersisted` / `projectEditRestored` lane，修改项目字段、设置区或 Portfolio 汇总时重跑双端验证。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 121
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构新增笔记标签更新：`update_thought_tags(id, tags)` 仅更新 `thoughts.tags` 并返回最新 Thought；`db.ts` / `workbenchStore` 与 localStorage fallback 行为一致。
+- Knowledge 详情面板新增标签编辑控件：`data-thought-tags-edit` 打开内联输入，保存时按逗号拆分、去空白、补 `#` 并去重，保存后详情徽标、侧栏与 Tag Library 同步刷新。
+- `verify:ui` / `verify:preview` 新增 `thoughtTagEdit` / `thoughtTagEditPersisted` / `thoughtTagEditRestored`：编辑 #work,#review → reload 持久化 → 恢复 #work,#life；`cargo test --lib` 增至 127 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings`、`cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；双端验证一次全绿，无需重跑。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量测试、AI Studio 会话分组/归档、Actions 习惯删除/周目标编辑、Projects 项目删除或收益趋势。
+- 保留 `thoughtTagEdit` / `thoughtTagEditPersisted` / `thoughtTagEditRestored` lane，修改标签解析、侧栏过滤或 Knowledge 详情面板时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

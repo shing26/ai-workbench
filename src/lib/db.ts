@@ -1269,6 +1269,16 @@ export async function createThought(
   return thought;
 }
 
+export async function updateThoughtTags(id: string, tags: string): Promise<Thought> {
+  if (isTauri()) return invoke<Thought>('update_thought_tags', { id, tags });
+  const shape = readLocal();
+  const thought = shape.thoughts.find((t) => t.id === id);
+  if (!thought) throw new Error('thought not found');
+  thought.tags = tags;
+  writeLocal(shape);
+  return thought;
+}
+
 export async function listProviders(): Promise<Provider[]> {
   if (isTauri()) return invoke<Provider[]>('list_providers');
   return (readLocal().providers ?? [])
