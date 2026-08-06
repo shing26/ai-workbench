@@ -1758,6 +1758,17 @@ pub fn update_thought_tags(conn: &Connection, id: &str, tags: &str) -> Result<Th
         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
+pub fn update_thought_content(conn: &Connection, id: &str, content: &str) -> Result<Thought> {
+    conn.execute(
+        "UPDATE thoughts SET content = ?1 WHERE id = ?2",
+        params![content, id],
+    )?;
+    list_thoughts(conn)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
 pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
     let mut stmt = conn.prepare(
         "SELECT id, label, category, text, custom, sort_order, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
@@ -5547,6 +5558,34 @@ mod tests {
         assert_eq!(saved.tags, "#work,#life");
 
         let missing = update_thought_tags(&conn, "missing-thought", "#life");
+        assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn thought_body_update_persists_and_missing_id_errors() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-thought-body-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let thought = create_thought(&conn, "old markdown body", "#work", "note").unwrap();
+        let updated =
+            update_thought_content(&conn, &thought.id, "# New body\n\nupdated content").unwrap();
+        assert_eq!(updated.content, "# New body\n\nupdated content");
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let saved = list_thoughts(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == thought.id)
+            .expect("updated thought should be listed");
+        assert_eq!(saved.content, "# New body\n\nupdated content");
+
+        let missing = update_thought_content(&conn, "missing-thought", "nope");
         assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
         drop(conn);
 

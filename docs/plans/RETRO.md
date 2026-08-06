@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 124
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构支持笔记正文编辑：新增 `update_thought_content` 命令返回最新 Thought，`db.ts` / `workbenchStore` 同步写回 `thoughts`，RAG 搜索实时反映正文变更。
+- Knowledge 详情面板新增 Edit body / Preview 切换与内联 Markdown 编辑器，切换编辑/预览不丢草稿，保存后 Markdown 预览、列表与本地存储同步刷新。
+- `verify:ui` / `verify:preview` 新增 `thoughtBodyEdit` / `thoughtBodyEditPersisted` / `thoughtBodyEditRestored`，覆盖编辑 → reload 持久化 → 恢复原文全链路；`cargo test --lib` 增至 131 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 的 `thoughtBodyEdit` 表达式因外层模板字符串把 `\n` 转成真实换行导致 JS 语法错误；改为 `\\n` 后一次通过。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话分组、Projects 项目删除或收益趋势、System Provider 批量测试、Knowledge 笔记删除/类型转换。
+- 保留 `thoughtBodyEdit` / `thoughtBodyEditPersisted` / `thoughtBodyEditRestored` lane，修改笔记模型、详情面板或 Markdown 渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 123
 
 ### What went well?

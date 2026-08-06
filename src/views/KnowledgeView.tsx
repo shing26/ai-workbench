@@ -2,6 +2,7 @@ import {
   BookOpen,
   Clock,
   FolderOpen,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -21,6 +22,7 @@ export default function KnowledgeView() {
   const thoughts = useWorkbenchStore((s) => s.thoughts);
   const addThought = useWorkbenchStore((s) => s.addThought);
   const updateThoughtTags = useWorkbenchStore((s) => s.updateThoughtTags);
+  const updateThoughtContent = useWorkbenchStore((s) => s.updateThoughtContent);
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useState('all');
@@ -59,6 +61,10 @@ export default function KnowledgeView() {
   const [tagEditId, setTagEditId] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState('');
   const [tagEditResults, setTagEditResults] = useState<Record<string, string>>({});
+  const [bodyEditId, setBodyEditId] = useState<string | null>(null);
+  const [bodyDraft, setBodyDraft] = useState('');
+  const [bodyPreview, setBodyPreview] = useState(false);
+  const [bodyEditResults, setBodyEditResults] = useState<Record<string, string>>({});
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -294,6 +300,29 @@ export default function KnowledgeView() {
     await updateThoughtTags(thought.id, normalized);
     setTagEditId(null);
     setTagEditResults((prev) => ({ ...prev, [thought.id]: 'Saved' }));
+  };
+
+  const startBodyEdit = (thought: db.Thought) => {
+    setBodyEditId(thought.id);
+    setBodyDraft(thought.content);
+    setBodyPreview(false);
+    setBodyEditResults((prev) => ({ ...prev, [thought.id]: '' }));
+  };
+
+  const saveBodyEdit = async (thought: db.Thought) => {
+    const next = bodyDraft.trim();
+    if (!next) return;
+    await updateThoughtContent(thought.id, next);
+    setBodyEditId(null);
+    setBodyDraft('');
+    setBodyPreview(false);
+    setBodyEditResults((prev) => ({ ...prev, [thought.id]: 'Saved' }));
+  };
+
+  const cancelBodyEdit = () => {
+    setBodyEditId(null);
+    setBodyDraft('');
+    setBodyPreview(false);
   };
 
   const runSearch = async () => {
@@ -1373,6 +1402,17 @@ export default function KnowledgeView() {
                       <Tags size={10} /> Edit tags
                     </button>
                   )}
+                  {selectedLocal && (
+                    <button
+                      type="button"
+                      data-thought-body-edit={selected.id}
+                      data-thought-body-current={selected.content}
+                      onClick={() => startBodyEdit(selectedLocal)}
+                      className="flex h-6 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+                    >
+                      <Pencil size={10} /> Edit body
+                    </button>
+                  )}
                 </div>
               </div>
               {selectedLocal && tagEditId === selectedLocal.id && (
@@ -1419,9 +1459,93 @@ export default function KnowledgeView() {
                   {tagEditResults[selectedLocal.id]}
                 </span>
               )}
-              <div className="markdown-body min-h-0 flex-1 overflow-y-auto text-xs leading-relaxed text-slate-300">
-                <ReactMarkdown>{selected.content}</ReactMarkdown>
-              </div>
+              {selectedLocal && bodyEditId === selectedLocal.id ? (
+                <div
+                  data-thought-body-editor={selectedLocal.id}
+                  className="mb-2 flex min-h-0 flex-1 flex-col gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1.5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex h-6 shrink-0 items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+                      <button
+                        type="button"
+                        data-thought-body-mode="edit"
+                        onClick={() => setBodyPreview(false)}
+                        className={`h-5 rounded px-2 text-[9px] transition-colors ${
+                          !bodyPreview
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'text-slate-500 hover:text-slate-300'
+                        }`}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        data-thought-body-mode="preview"
+                        onClick={() => setBodyPreview(true)}
+                        className={`h-5 rounded px-2 text-[9px] transition-colors ${
+                          bodyPreview
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'text-slate-500 hover:text-slate-300'
+                        }`}
+                      >
+                        Preview
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-thought-body-save={selectedLocal.id}
+                        onClick={() => void saveBodyEdit(selectedLocal)}
+                        className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+                      >
+                        <Save size={10} /> Save
+                      </button>
+                      <button
+                        type="button"
+                        data-thought-body-cancel={selectedLocal.id}
+                        onClick={cancelBodyEdit}
+                        className="h-6 rounded-md border border-white/10 px-2 text-[10px] text-slate-500 hover:text-slate-300"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                  {bodyPreview ? (
+                    <div
+                      data-thought-body-preview={selectedLocal.id}
+                      className="markdown-body min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/10 bg-black/20 p-2 text-xs leading-relaxed text-slate-300"
+                    >
+                      <ReactMarkdown>{bodyDraft || '*Empty*'}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <textarea
+                      data-thought-body-input={selectedLocal.id}
+                      value={bodyDraft}
+                      onChange={(e) => setBodyDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                          e.preventDefault();
+                          void saveBodyEdit(selectedLocal);
+                        }
+                      }}
+                      placeholder="Write markdown..."
+                      className="min-h-40 flex-1 resize-none rounded-lg border border-white/10 bg-black/20 p-2 text-[11px] leading-relaxed text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="markdown-body min-h-0 flex-1 overflow-y-auto text-xs leading-relaxed text-slate-300">
+                  <ReactMarkdown>{selected.content}</ReactMarkdown>
+                </div>
+              )}
+              {selectedLocal && bodyEditResults[selectedLocal.id] && (
+                <span
+                  data-thought-body-result={selectedLocal.id}
+                  className="mt-2 inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                >
+                  {bodyEditResults[selectedLocal.id]}
+                </span>
+              )}
             </>
           ) : (
             <div className="py-10 text-center text-xs text-slate-600">Select a thought</div>

@@ -372,6 +372,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 会话侧栏新增 Active / Archived 切换（`data-session-archive-tab`）与归档/恢复行操作（`data-session-archive` / `data-session-restore`）；归档当前会话自动切到下一个 active，恢复后回到 active tab，搜索与选中逻辑跟随当前 tab。
 - `verify:ui` / `verify:preview` 新增 `sessionArchive` / `sessionArchivePersisted` / `sessionArchiveRestored`：归档 → reload 持久化 → 恢复；`cargo test --lib` 增至 130 条。
 
+## Sprint 124：Knowledge 笔记正文编辑
+
+- Rust 新增 `update_thought_content(id, content)` 命令：仅更新 `thoughts.content`，返回最新 Thought；`db.ts` / `workbenchStore` 新增同构 `updateThoughtContent`，localStorage fallback 同步写回 `thoughts`。
+- Knowledge 详情面板新增 `data-thought-body-edit` / `data-thought-body-input` / `data-thought-body-save` / `data-thought-body-cancel` / `data-thought-body-result` / `data-thought-body-preview`，支持 Edit / Preview 切换且切换不丢草稿。
+- 保存后 Markdown 预览、笔记列表与 RAG 搜索内容同步更新（thoughts 向量在 `search_thoughts` 查询时实时计算）。
+- `verify:ui` / `verify:preview` 新增 `thoughtBodyEdit` / `thoughtBodyEditPersisted` / `thoughtBodyEditRestored`：编辑 → reload 持久化 → 恢复原文；`cargo test --lib` 增至 131 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
