@@ -455,6 +455,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `navigateToThought` 点击双链时清空 RAG 结果、跨文件过滤与标签过滤，再切换到目标笔记；链接解析同时覆盖编辑器预览，正文编辑后立即重新计算。
 - `verify:ui` / `verify:preview` 新增 `knowledgeBacklinks` lane：覆盖出链、回链、缺失统计与双向跳转；纯前端改动，无新增 Rust 命令与表结构。
 
+## Sprint 136：Projects 收益端聚合展示
+
+- ProjectsView 新增 `revenueAggregate`：latestTotal（每项目最新趋势点合计，无历史回退当前 revenue）、trendTotal（全项目趋势点数）、delta7d / delta30d（以窗口内最后一个历史点为基线）、byStatus（状态 → 项目数 + 收益合计）。
+- Portfolio summary 新增 `data-project-revenue-summary` 聚合区：`data-project-revenue-latest` / `data-project-revenue-points` / `data-project-revenue-delta7d` / `data-project-revenue-delta30d` 四格，以及 `data-project-revenue-status` 状态 chips。
+- Portfolio export 报告 Overview 新增 Latest revenue / Revenue points / 7d delta / 30d delta 四行；聚合全部为运行时派生，无新增表结构。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueSummary` lane：种子两个项目与 4 个趋势点后断言聚合数值与状态拆分，并在 lane 结束后恢复原始 projects / history 以保护后续 Git 与编辑 lane。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

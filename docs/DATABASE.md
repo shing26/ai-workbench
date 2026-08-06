@@ -591,6 +591,10 @@ CREATE TABLE IF NOT EXISTS webhook_retention_config (
 
 无表结构变更。双链图是运行时派生数据：`db.ts` 从 `thoughts` 的 `content` 中解析 `[[...]]`，按首行标题匹配生成 outgoing / incoming，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
 
+## Sprint 136：Projects 收益端聚合展示
+
+无表结构变更。收益聚合是运行时派生数据：ProjectsView 复用 `projects.revenue` 与 `project_revenue_history`（前端 `projectRevenueHistory`）计算最新值、趋势点数、7d / 30d 变化与状态拆分，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `projectRevenueHistory`，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

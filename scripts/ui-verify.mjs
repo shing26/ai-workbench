@@ -1688,6 +1688,115 @@ try {
     );
   }
   results.projectRevenueExport = projectRevenueExport;
+
+  const projectRevenueSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const original = {
+      projects: shape.projects ?? [],
+      history: shape.projectRevenueHistory ?? [],
+    };
+    shape.projects = [
+      {
+        id: "pa",
+        name: "Alpha Income",
+        path: null,
+        revenue: 40,
+        status: "active",
+        createdAt: now - 1000,
+      },
+      {
+        id: "pb",
+        name: "Beta Stash",
+        path: null,
+        revenue: 0,
+        status: "paused",
+        createdAt: now - 500,
+      },
+    ];
+    shape.projectRevenueHistory = [
+      { id: "pa1", projectId: "pa", revenue: 10, recordedAt: now - 60 * day },
+      { id: "pa2", projectId: "pa", revenue: 20, recordedAt: now - 20 * day },
+      { id: "pa3", projectId: "pa", revenue: 30, recordedAt: now - 3 * day },
+      { id: "pa4", projectId: "pa", revenue: 40, recordedAt: now },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return original;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+
+  const projectRevenueSummary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? "";
+    const statusChips = () => [...document.querySelectorAll("[data-project-revenue-status]")];
+    let latest = "";
+    let points = "";
+    let delta7d = "";
+    let delta30d = "";
+    let chips = [];
+    for (let i = 0; i < 40; i++) {
+      latest = text("[data-project-revenue-latest]");
+      points = text("[data-project-revenue-points]");
+      delta7d = text("[data-project-revenue-delta7d]");
+      delta30d = text("[data-project-revenue-delta30d]");
+      chips = statusChips();
+      if (
+        latest.includes("40.00") &&
+        points === "4" &&
+        delta7d.includes("20.00") &&
+        delta30d.includes("30.00") &&
+        chips.length >= 2
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const active = chips.find((el) => el.getAttribute("data-project-revenue-status") === "active");
+    const paused = chips.find((el) => el.getAttribute("data-project-revenue-status") === "paused");
+    const activeText = active?.textContent ?? "";
+    const pausedText = paused?.textContent ?? "";
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const ok =
+      latest.includes("40.00") &&
+      points === "4" &&
+      delta7d.includes("+20.00") &&
+      delta30d.includes("+30.00") &&
+      activeText.includes("40.00") &&
+      activeText.includes("1") &&
+      pausedText.includes("0.00") &&
+      pausedText.includes("1") &&
+      summary.includes("$40.00");
+    return {
+      ok,
+      latest,
+      points,
+      delta7d,
+      delta30d,
+      activeText,
+      pausedText,
+      chips: chips.map((el) => el.textContent),
+    };
+  })()`);
+  if (!projectRevenueSummary.ok) {
+    throw new Error(
+      `Project revenue summary assertion failed: ${JSON.stringify(projectRevenueSummary)}`,
+    );
+  }
+  results.projectRevenueSummary = projectRevenueSummary;
+  laneLog('projectRevenueSummary ok');
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = ${JSON.stringify(projectRevenueSeed.projects)};
+    shape.projectRevenueHistory = ${JSON.stringify(projectRevenueSeed.history)};
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+
   const projectEdit = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const edit = document.querySelector("[data-project-edit]");
