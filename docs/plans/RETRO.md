@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 125
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构支持项目删除：`delete_project` 先解除关联 `sessions.project_id` 再删除项目，缺失 id 返回明确错误，localStorage fallback 行为一致。
+- Projects 项目设置区新增删除二次确认与取消控件，删除后项目卡片、Portfolio summary 与 Project carousel 同步刷新。
+- `verify:ui` / `verify:preview` 新增 `projectDelete` / `projectDeletePersisted` / `projectDeleteCancel`，覆盖删除 → reload 持久化 → 取消不删除全链路；`cargo test --lib` 增至 132 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；双端验证一次全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话分组、Projects 收益趋势、System Provider 批量测试、Knowledge 笔记删除/类型转换。
+- 保留 `projectDelete` / `projectDeletePersisted` / `projectDeleteCancel` lane，修改项目模型、卡片设置区或 Portfolio 汇总时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 124
 
 ### What went well?

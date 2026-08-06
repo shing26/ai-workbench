@@ -379,6 +379,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 保存后 Markdown 预览、笔记列表与 RAG 搜索内容同步更新（thoughts 向量在 `search_thoughts` 查询时实时计算）。
 - `verify:ui` / `verify:preview` 新增 `thoughtBodyEdit` / `thoughtBodyEditPersisted` / `thoughtBodyEditRestored`：编辑 → reload 持久化 → 恢复原文；`cargo test --lib` 增至 131 条。
 
+## Sprint 125：Projects 项目删除
+
+- Rust 新增 `delete_project(id)`：删除前将关联 `sessions.project_id` 置空，再删除项目，缺失 id 返回 `QueryReturnedNoRows`；`db.ts` / `workbenchStore` 新增同构 `deleteProject`，localStorage fallback 同步清理项目并解除会话关联。
+- Projects 项目设置区新增 `data-project-delete` / `data-project-delete-confirm` / `data-project-delete-cancel`，删除采用二次确认，取消不触发删除。
+- 删除后项目卡片、Portfolio summary 与 Project carousel 同步刷新，reload 后保持删除结果。
+- `verify:ui` / `verify:preview` 新增 `projectDelete` / `projectDeletePersisted` / `projectDeleteCancel`：删除 → reload 持久化 → 取消不删除；`cargo test --lib` 增至 132 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

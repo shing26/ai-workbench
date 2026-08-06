@@ -1746,6 +1746,149 @@ try {
     return { ok, status: status.value, revenue: revenue.value };
   })()`);
   results.projectEditRestored = projectEditRestored;
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = (shape.projects ?? []).filter((p) => p.id !== "delete-me");
+    shape.projects.push({
+      id: "delete-me",
+      name: "Temporary Delete",
+      path: null,
+      revenue: 42,
+      status: "paused",
+      createdAt: now - 5000,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDelete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = () => document.querySelector('[data-project-edit="delete-me"]');
+    const ready = await waitFor(() => !!edit());
+    if (!ready) return { ok: false, reason: "delete-me project missing" };
+    const deleteBtn = edit()?.querySelector('[data-project-delete="delete-me"]');
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    const confirmShown = await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-me"]'),
+    );
+    if (!confirmShown) return { ok: false, reason: "delete confirm missing" };
+    edit()?.querySelector('[data-project-delete-confirm="delete-me"]')?.click();
+    const deleted = await waitFor(() => !edit());
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-me");
+    return {
+      ok: deleted && !summary.includes("Temporary Delete") && storedGone,
+      deleted,
+      summaryClean: !summary.includes("Temporary Delete"),
+      storedGone,
+    };
+  })()`);
+  results.projectDelete = projectDelete;
+  if (!results.projectDelete.ok) {
+    throw new Error(`Project delete assertion failed: ${JSON.stringify(results.projectDelete)}`);
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDeletePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const loaded = await waitFor(
+      () => document.querySelectorAll("[data-project-edit]").length >= 2,
+    );
+    const gone = !document.querySelector('[data-project-edit="delete-me"]');
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-me");
+    return { ok: loaded && gone && storedGone, loaded, gone, storedGone };
+  })()`);
+  results.projectDeletePersisted = projectDeletePersisted;
+  if (!results.projectDeletePersisted.ok) {
+    throw new Error(
+      `Project delete persistence assertion failed: ${JSON.stringify(
+        results.projectDeletePersisted,
+      )}`,
+    );
+  }
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = (shape.projects ?? []).filter((p) => p.id !== "delete-cancel");
+    shape.projects.push({
+      id: "delete-cancel",
+      name: "Cancel Delete Project",
+      path: null,
+      revenue: 7,
+      status: "active",
+      createdAt: now - 4000,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDeleteCancel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = () => document.querySelector('[data-project-edit="delete-cancel"]');
+    const ready = await waitFor(() => !!edit());
+    if (!ready) return { ok: false, reason: "delete-cancel project missing" };
+    edit()?.querySelector('[data-project-delete="delete-cancel"]')?.click();
+    const confirmShown = await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    edit()?.querySelector('[data-project-delete-cancel="delete-cancel"]')?.click();
+    const cancelClosed = await waitFor(
+      () => !edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    const stillVisible = !!edit();
+    edit()?.querySelector('[data-project-delete="delete-cancel"]')?.click();
+    await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]')?.click();
+    const deleted = await waitFor(() => !edit());
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-cancel");
+    return {
+      ok: confirmShown && cancelClosed && stillVisible && deleted && storedGone,
+      confirmShown,
+      cancelClosed,
+      stillVisible,
+      deleted,
+      storedGone,
+    };
+  })()`);
+  results.projectDeleteCancel = projectDeleteCancel;
+  if (!results.projectDeleteCancel.ok) {
+    throw new Error(
+      `Project delete cancel assertion failed: ${JSON.stringify(results.projectDeleteCancel)}`,
+    );
+  }
   results.gitActivityFilters = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const board = () => document.querySelector("[data-git-activity]");

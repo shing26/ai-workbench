@@ -520,6 +520,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。`update_thought_content` 复用 `thoughts.content` 既有列，仅更新正文并返回最新 Thought；RAG 搜索在 `search_thoughts` 查询时对 `thoughts.content` 实时生成向量，正文修改后无需额外重建索引。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
 
+## Sprint 125：Projects 项目删除
+
+无表结构变更。`delete_project` 复用 `projects` 既有表：删除前将 `sessions.project_id` 置空以解除会话关联，再删除项目行；缺失 id 返回 `QueryReturnedNoRows`。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `sessions` 数组，删除时同步清理项目并解除会话关联，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

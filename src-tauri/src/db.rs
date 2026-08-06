@@ -1715,6 +1715,23 @@ pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -
         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
+pub fn delete_project(conn: &Connection, id: &str) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    conn.execute(
+        "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+        params![id],
+    )?;
+    conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn list_thoughts(conn: &Connection) -> Result<Vec<Thought>> {
     let mut stmt = conn.prepare(
         "SELECT id, content, tags, type, created_at FROM thoughts ORDER BY created_at DESC",
@@ -5532,6 +5549,46 @@ mod tests {
         let clamped = update_project(&conn, &project.id, "active", -5.0).unwrap();
         assert_eq!(clamped.status, "active");
         assert_eq!(clamped.revenue, 0.0);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_delete_unlinks_sessions_and_persists() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-delete-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let project = create_project(&conn, "Disposable Project", "").unwrap();
+        let session = create_session(&conn, "Project chat", "openai").unwrap();
+        conn.execute(
+            "UPDATE sessions SET project_id = ?1 WHERE id = ?2",
+            params![project.id, session.id],
+        )
+        .unwrap();
+
+        delete_project(&conn, &project.id).unwrap();
+        assert!(list_projects(&conn)
+            .unwrap()
+            .iter()
+            .all(|p| p.id != project.id));
+        let sessions = list_sessions(&conn).unwrap();
+        let session = sessions.iter().find(|s| s.id == session.id).unwrap();
+        assert!(session.project_id.is_none());
+
+        assert!(matches!(
+            delete_project(&conn, "missing-project"),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        assert!(list_projects(&conn)
+            .unwrap()
+            .iter()
+            .all(|p| p.id != project.id));
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

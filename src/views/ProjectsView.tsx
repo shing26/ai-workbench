@@ -9,6 +9,7 @@ import {
   Orbit,
   Plus,
   RefreshCw,
+  Trash2,
   Undo2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -100,6 +101,7 @@ export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const addProject = useWorkbenchStore((s) => s.addProject);
   const updateProject = useWorkbenchStore((s) => s.updateProject);
+  const deleteProject = useWorkbenchStore((s) => s.deleteProject);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -136,6 +138,7 @@ export default function ProjectsView() {
     Record<string, { status: string; revenue: string }>
   >({});
   const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
+  const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const projectKey = projects.map((p) => `${p.id}:${p.path}`).join('|');
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
@@ -375,6 +378,21 @@ ${trend}
     );
     setProjectEditResults((prev) => ({ ...prev, [project.id]: 'Saved' }));
     setProjectEdits((prev) => {
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
+  };
+
+  const deleteProjectRow = async (project: db.Project) => {
+    await deleteProject(project.id);
+    setConfirmDeleteProjectId(null);
+    setProjectEdits((prev) => {
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
+    setProjectEditResults((prev) => {
       const next = { ...prev };
       delete next[project.id];
       return next;
@@ -986,6 +1004,35 @@ ${trend}
                 >
                   {projectEditResults[p.id]}
                 </span>
+              )}
+              {confirmDeleteProjectId === p.id ? (
+                <span className="flex items-center gap-1 rounded-lg border border-rose-500/20 bg-rose-500/10 px-1 py-0.5">
+                  <button
+                    type="button"
+                    data-project-delete-confirm={p.id}
+                    onClick={() => void deleteProjectRow(p)}
+                    className="h-6 rounded-md bg-rose-500/25 px-2 text-[9px] text-rose-200 hover:bg-rose-500/35"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    data-project-delete-cancel={p.id}
+                    onClick={() => setConfirmDeleteProjectId(null)}
+                    className="h-6 rounded-md border border-white/10 px-2 text-[9px] text-slate-500 hover:text-slate-300"
+                  >
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-project-delete={p.id}
+                  onClick={() => setConfirmDeleteProjectId(p.id)}
+                  className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-400 hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300"
+                >
+                  <Trash2 size={11} /> Delete
+                </button>
               )}
             </div>
           </div>
