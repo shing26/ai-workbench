@@ -42,6 +42,7 @@ export type Project = {
   revenue: number;
   status: string;
   createdAt: number;
+  sortOrder?: number;
 };
 
 export type ProjectRevenuePoint = {
@@ -996,6 +997,7 @@ function seedShape(): LocalShape {
         revenue: 0,
         status: 'active',
         createdAt: now - 86400000,
+        sortOrder: 0,
       },
       {
         id: makeId(),
@@ -1004,6 +1006,7 @@ function seedShape(): LocalShape {
         revenue: 0,
         status: 'paused',
         createdAt: now - 172800000,
+        sortOrder: 1,
       },
     ],
     projectRevenueHistory: [],
@@ -1501,6 +1504,22 @@ export async function setTaskDueDate(id: string, dueDate: string | null): Promis
 
 export async function listProjects(): Promise<Project[]> {
   return isTauri() ? invoke<Project[]>('list_projects') : readLocal().projects;
+}
+
+export async function reorderProjects(ids: string[]): Promise<void> {
+  if (isTauri()) {
+    await invoke('reorder_projects', { ids });
+    return;
+  }
+  const shape = readLocal();
+  const byId = new Map(shape.projects.map((project) => [project.id, project]));
+  const ordered: Project[] = [];
+  ids.forEach((id, index) => {
+    const project = byId.get(id);
+    if (project) ordered.push({ ...project, sortOrder: index });
+  });
+  shape.projects = ordered;
+  writeLocal(shape);
 }
 
 export async function createProject(name: string, path: string): Promise<Project> {

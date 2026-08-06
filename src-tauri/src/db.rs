@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS projects (
     path TEXT,
     revenue REAL DEFAULT 0.0,
     status TEXT DEFAULT 'active',
-    created_at INTEGER
+    created_at INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS project_revenue_history (
     id TEXT PRIMARY KEY,
@@ -445,6 +446,7 @@ pub struct Project {
     pub revenue: f64,
     pub status: String,
     pub created_at: i64,
+    pub sort_order: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -2569,6 +2571,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
     migrate_updated_at(&conn)?;
+    migrate_project_sort_order(&conn)?;
     migrate_error_log_device(&conn)?;
     migrate_version_parent(&conn)?;
     migrate_vault_watch_targets(&conn)?;
@@ -2847,6 +2850,22 @@ fn migrate_updated_at(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE error_logs ADD COLUMN updated_at INTEGER DEFAULT 0;
              UPDATE error_logs SET updated_at = timestamp WHERE updated_at = 0;",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_project_sort_order(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "projects", "sort_order")? {
+        conn.execute_batch(
+            "ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        conn.execute_batch(
+            "UPDATE projects SET sort_order = (
+                SELECT COUNT(*) FROM projects p2
+                WHERE p2.created_at > projects.created_at
+                   OR (p2.created_at = projects.created_at AND p2.rowid > projects.rowid)
+            );",
         )?;
     }
     Ok(())
@@ -3193,7 +3212,8 @@ pub fn set_task_due_date(conn: &Connection, id: &str, due_date: Option<&str>) ->
 
 pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, path, revenue, status, created_at FROM projects ORDER BY created_at DESC",
+        "SELECT id, name, path, revenue, status, created_at, sort_order
+         FROM projects ORDER BY sort_order ASC, created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Project {
@@ -3203,6 +3223,7 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
             revenue: row.get(3)?,
             status: row.get(4)?,
             created_at: row.get(5)?,
+            sort_order: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -3211,9 +3232,21 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
 pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Project> {
     let id = uid();
     let now = now_millis();
+    let sort_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects",
+        [],
+        |row| row.get(0),
+    )?;
     conn.execute(
-        "INSERT INTO projects (id, name, path, revenue, status, created_at) VALUES (?1, ?2, ?3, 0.0, 'active', ?4)",
-        params![id, name, if path.is_empty() { None } else { Some(path) }, now],
+        "INSERT INTO projects (id, name, path, revenue, status, created_at, sort_order)
+         VALUES (?1, ?2, ?3, 0.0, 'active', ?4, ?5)",
+        params![
+            id,
+            name,
+            if path.is_empty() { None } else { Some(path) },
+            now,
+            sort_order
+        ],
     )?;
     conn.execute(
         "INSERT INTO project_revenue_history (id, project_id, revenue, recorded_at) VALUES (?1, ?2, ?3, ?4)",
@@ -3230,7 +3263,18 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         revenue: 0.0,
         status: "active".to_string(),
         created_at: now,
+        sort_order,
     })
+}
+
+pub fn reorder_projects(conn: &Connection, ids: &[String]) -> Result<()> {
+    for (index, id) in ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE projects SET sort_order = ?1 WHERE id = ?2",
+            params![index as i64, id],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -> Result<Project> {
@@ -7937,6 +7981,69 @@ mod tests {
         assert_eq!(clamped.revenue, 0.0);
         drop(conn);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_sort_order_migrates_and_reorders() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-order-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT,
+                    revenue REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'active',
+                    created_at INTEGER
+                );
+                CREATE TABLE project_revenue_history (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    revenue REAL NOT NULL,
+                    recorded_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+                params!["a", "Alpha", 1000],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+                params!["b", "Beta", 2000],
+            )
+            .unwrap();
+            migrate_project_sort_order(&conn).unwrap();
+            let order: Vec<(String, i64)> = conn
+                .prepare("SELECT id, sort_order FROM projects ORDER BY sort_order ASC")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(order[0], ("b".to_string(), 0));
+            assert_eq!(order[1], ("a".to_string(), 1));
+            reorder_projects(&conn, &["a".to_string(), "b".to_string()]).unwrap();
+            let first: String = conn
+                .query_row(
+                    "SELECT id FROM projects ORDER BY sort_order ASC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(first, "a");
+            let created = create_project(&conn, "Gamma", "").unwrap();
+            assert_eq!(created.sort_order, 2);
+            let all = list_projects(&conn).unwrap();
+            assert_eq!(all[0].name, "Alpha");
+            assert_eq!(all[1].name, "Beta");
+            assert_eq!(all[2].name, "Gamma");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

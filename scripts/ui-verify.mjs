@@ -1554,6 +1554,162 @@ try {
     );
   }
 
+  await reloadAndWait();
+  await clickDock('Projects');
+  const carouselReorderBefore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const scene = document.querySelector("[data-carousel-scene]");
+    const handles = [...document.querySelectorAll("[data-carousel-drag-handle]")];
+    const speed = document.querySelector("[data-carousel-speed]");
+    if (!scene || handles.length < 2 || !speed) {
+      return { ok: false, reason: "carousel drag controls missing", handles: handles.length };
+    }
+    const initialOrder = scene.getAttribute("data-carousel-order") ?? "";
+    const initialSpeed = Number(speed.value ?? 4);
+    const firstCard = handles[0].closest("[data-carousel-card]");
+    const rect = firstCard.getBoundingClientRect();
+    handles[0].dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      clientX: rect.left + 10,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(60);
+    scene.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      clientX: rect.left + 10 + rect.width * 1.2,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(120);
+    scene.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      clientX: rect.left + 10 + rect.width * 1.2,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(400);
+    const orderAfterDrag = scene.getAttribute("data-carousel-order") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedOrder = (stored.projects ?? []).map((project) => project.name).join(",");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(speed, "8");
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    const storedSpeed = Number(localStorage.getItem("ai-workbench:carousel-speed:v1") ?? 0);
+    return { initialOrder, initialSpeed, orderAfterDrag, storedOrder, storedSpeed };
+  })()`);
+  if (
+    !carouselReorderBefore.initialOrder ||
+    !carouselReorderBefore.orderAfterDrag ||
+    carouselReorderBefore.initialOrder === carouselReorderBefore.orderAfterDrag ||
+    carouselReorderBefore.orderAfterDrag !== carouselReorderBefore.storedOrder ||
+    carouselReorderBefore.storedSpeed !== 8
+  ) {
+    throw new Error(`Carousel reorder assertion failed: ${JSON.stringify(carouselReorderBefore)}`);
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  await delay(200);
+  const carouselReorderAfter = await evaluate(`(() => {
+    const restoredSpeed = Number(
+      document.querySelector("[data-carousel-speed]")?.value ?? 0,
+    );
+    const restoredOrder =
+      document.querySelector("[data-carousel-scene]")?.getAttribute("data-carousel-order") ?? "";
+    return { restoredSpeed, restoredOrder };
+  })()`);
+  if (
+    carouselReorderAfter.restoredSpeed !== 8 ||
+    carouselReorderAfter.restoredOrder !== carouselReorderBefore.storedOrder
+  ) {
+    throw new Error(
+      `Carousel restore assertion failed: ${JSON.stringify({
+        before: carouselReorderBefore,
+        after: carouselReorderAfter,
+      })}`,
+    );
+  }
+  const carouselReorderRestore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const scene = document.querySelector("[data-carousel-scene]");
+    const handles = [...document.querySelectorAll("[data-carousel-drag-handle]")];
+    const speed = document.querySelector("[data-carousel-speed]");
+    const targetOrder = ${JSON.stringify(carouselReorderBefore.initialOrder)};
+    if (!scene || !speed || handles.length < 2) {
+      return { ok: false, reason: "carousel controls missing on restore" };
+    }
+    const currentOrder = scene.getAttribute("data-carousel-order") ?? "";
+    if (currentOrder !== targetOrder) {
+      const targetName = ${JSON.stringify(carouselReorderBefore.initialOrder.split(',')[0])};
+      const handle = handles.find(
+        (candidate) =>
+          candidate.closest("[data-carousel-card]")?.getAttribute("data-carousel-project") ===
+          targetName,
+      );
+      if (!handle) {
+        return { ok: false, reason: "moved card handle missing on restore", currentOrder };
+      }
+      const card = handle.closest("[data-carousel-card]");
+      const rect = card.getBoundingClientRect();
+      handle.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        clientX: rect.left + 10,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(60);
+      scene.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true,
+        clientX: rect.left + 10 - rect.width * 1.2,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(120);
+      scene.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        clientX: rect.left + 10 - rect.width * 1.2,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(400);
+    }
+    const restoredOrder = scene.getAttribute("data-carousel-order") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedOrder = (stored.projects ?? []).map((project) => project.name).join(",");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(speed, String(${JSON.stringify(carouselReorderBefore.initialSpeed)}));
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    return {
+      ok: restoredOrder === targetOrder && storedOrder === restoredOrder,
+      restoredOrder,
+      storedOrder,
+    };
+  })()`);
+  if (!carouselReorderRestore.ok) {
+    throw new Error(
+      `Carousel restore rollback assertion failed: ${JSON.stringify({
+        before: carouselReorderBefore,
+        restore: carouselReorderRestore,
+      })}`,
+    );
+  }
+  const carouselReorder = {
+    ...carouselReorderBefore,
+    ...carouselReorderAfter,
+    ...carouselReorderRestore,
+    ok: true,
+  };
+  results.carouselReorder = carouselReorder;
+  laneLog('carouselReorder ok');
+
   const gitGraph = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {

@@ -1395,6 +1395,12 @@ fn delete_project(state: State<'_, db::Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reorder_projects(state: State<'_, db::Db>, ids: Vec<String>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::reorder_projects(&conn, &ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_project_revenue_history(
     state: State<'_, db::Db>,
     project_id: String,
@@ -6362,6 +6368,7 @@ pub fn run() {
             create_project,
             update_project,
             delete_project,
+            reorder_projects,
             list_project_revenue_history,
             list_thoughts,
             create_thought,
@@ -6834,6 +6841,7 @@ mod tests {
                 revenue: 0.0,
                 status: "active".to_string(),
                 created_at: 1,
+                sort_order: 0,
             },
             db::Project {
                 id: "p-b".to_string(),
@@ -6842,6 +6850,7 @@ mod tests {
                 revenue: 0.0,
                 status: "active".to_string(),
                 created_at: 2,
+                sort_order: 1,
             },
             db::Project {
                 id: "p-c".to_string(),
@@ -6850,6 +6859,7 @@ mod tests {
                 revenue: 0.0,
                 status: "active".to_string(),
                 created_at: 3,
+                sort_order: 2,
             },
         ];
         let board = build_git_activity(projects, None, None, None);
@@ -6913,6 +6923,7 @@ mod tests {
                 revenue: 0.0,
                 status: "active".to_string(),
                 created_at: 1,
+                sort_order: 0,
             },
             db::Project {
                 id: "p-b".to_string(),
@@ -6921,6 +6932,7 @@ mod tests {
                 revenue: 0.0,
                 status: "active".to_string(),
                 created_at: 2,
+                sort_order: 1,
             },
         ];
 

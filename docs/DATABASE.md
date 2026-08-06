@@ -1132,3 +1132,13 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rul
 ## Sprint 110：跨流 Token 预算
 
 无表结构变更。预算配置保存在前端 `ai-workbench:token-budget:v1`（含 `monthlyLimit / monthKey / usedTokens / autoDegrade`），不写入 SQLite；浏览器 fallback 与 Tauri 共用同一 localStorage 模型，月度 key 变化自动清零。
+
+## Sprint 147：Projects 轮播排序
+
+```sql
+ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+```
+
+- 新库 SCHEMA 的 `projects` 建表语句已直接包含 `sort_order INTEGER NOT NULL DEFAULT 0`；旧库由幂等 `migrate_project_sort_order` 补列并按 `created_at` 倒序回填（最新项目 sort_order=0），已加入 `init_connection` 迁移链。
+- `list_projects` 按 `sort_order ASC, created_at DESC` 返回；`create_project` 以 `MAX(sort_order)+1` 追加到末尾；`reorder_projects(ids)` 按传入 id 顺序把 sort_order 重编号为 0..n-1。
+- 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `projects` 数组，项目对象新增可选 `sortOrder`，reorder 时按传入 id 顺序重排并写回；速度偏好单独存 `ai-workbench:carousel-speed:v1`，不写入 SQLite。
