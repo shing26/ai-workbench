@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 155
+
+### What went well?
+
+- 新增 SQLite `message_aux` 辅助上下文表：`message_id` 主键 + `payload` JSON + `updated_at`，`save_message_aux` / `list_message_aux` Tauri 命令与浏览器 fallback（`ai-workbench:db:v1` 的 `messageAux` 数组）同构；payload 必须是 JSON 对象，非法值拒绝。
+- `duplicate_session` 重写为按消息 ID 复制：`chat_messages` 生成新 ID，`message_versions` 保留创建时间并重映射 `parent_version_id` 血缘，`message_aux` 携带 RAG / Inspector Trace 上下文一并复制；浏览器 `duplicateSession` 同构实现。
+- AI Studio 每次发送完成把 `{ rag, trace }` 写到用户消息的 aux：普通 / MOA / Team 链路都覆盖；`buildSessionMarkdown` 新增 `auxByMessageId` 参数，导出 Markdown 内嵌 `### RAG context` 与 `### Inspector Trace` 区块。
+- `delete_session` / `truncate_chat_messages` 同步清理 aux 与版本记录，避免残留孤立数据。
+- `verify:ui` / `verify:preview` 新增 `sessionAuxContext` lane：种子带 2 个版本与 aux 的会话，复制后断言版本血缘与 aux 跟随，再断言导出预览包含 RAG 与 Trace；Rust 单测增至 201 条。
+
+### What went wrong?
+
+- 首次 `verify:ui` 全量运行时 `providerModelCatalog` 偶发早退返回无 `options`，重跑后全绿，判断为加载时序偶发而非本次改动引入。
+- `duplicate_session_copies_message_versions_and_aux` 初版断言把“当前内容”也当作版本，实际版本表只存历史内容；改为两次编辑后断言两条历史版本并验证父版本映射。
+
+### Action Items
+
+- 下一个 Sprint 候选：Knowledge 向量分片 / 近似索引。
+- 保留 `sessionAuxContext` lane，修改版本血缘、aux 协议或导出格式时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 154
 
 ### What went well?

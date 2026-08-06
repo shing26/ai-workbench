@@ -253,6 +253,13 @@ CREATE TABLE IF NOT EXISTS message_versions (
     FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_message_versions_message ON message_versions(message_id, created_at);
+CREATE TABLE IF NOT EXISTS message_aux (
+    message_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_message_aux_message ON message_aux(message_id);
 CREATE TABLE IF NOT EXISTS sync_conflicts (
     id TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -610,6 +617,14 @@ pub struct MessageVersion {
     pub content: String,
     pub created_at: i64,
     pub parent_version_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAux {
+    pub message_id: String,
+    pub payload: String,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -8168,16 +8183,16 @@ pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String>
         params![new_id, source.1, title, source.3, now],
     )
     .map_err(|e| e.to_string())?;
-    let messages: Vec<(String, String, i64)> = {
+    let messages: Vec<(String, String, String, i64)> = {
         let mut stmt = conn
             .prepare(
-                "SELECT role, content, created_at FROM chat_messages
+                "SELECT id, role, content, created_at FROM chat_messages
                  WHERE session_id = ?1 ORDER BY created_at ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
@@ -8186,13 +8201,64 @@ pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String>
         }
         out
     };
-    for (role, content, created_at) in &messages {
+    let mut message_ids = HashMap::new();
+    for (message_id, role, content, created_at) in &messages {
+        let new_message_id = uid();
+        message_ids.insert(message_id.clone(), new_message_id.clone());
         conn.execute(
             "INSERT INTO chat_messages (id, session_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![uid(), new_id, role, content, created_at],
+            params![new_message_id, new_id, role, content, created_at],
         )
         .map_err(|e| e.to_string())?;
+    }
+    let mut version_ids = HashMap::new();
+    for (message_id, _, _, _) in &messages {
+        let versions: Vec<(String, String, i64, Option<String>)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, created_at, parent_version_id FROM message_versions
+                     WHERE message_id = ?1 ORDER BY created_at ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![message_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| e.to_string())?);
+            }
+            out
+        };
+        for (version_id, content, created_at, parent) in &versions {
+            let new_version_id = uid();
+            version_ids.insert(version_id.clone(), new_version_id.clone());
+            let new_parent = parent.as_deref().and_then(|p| version_ids.get(p).cloned());
+            conn.execute(
+                "INSERT INTO message_versions (id, message_id, content, created_at, parent_version_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![new_version_id, message_ids[message_id], content, created_at, new_parent],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let aux: Option<String> = conn
+            .query_row(
+                "SELECT payload FROM message_aux WHERE message_id = ?1",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(payload) = aux {
+            conn.execute(
+                "INSERT INTO message_aux (message_id, payload, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![message_ids[message_id], payload, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     Ok(Session {
         id: new_id,
@@ -8207,6 +8273,18 @@ pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String>
 }
 
 pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM message_aux WHERE message_id IN (SELECT id FROM chat_messages WHERE session_id = ?1)",
+        params![id],
+    )?;
+    conn.execute(
+        "DELETE FROM message_versions WHERE message_id IN (SELECT id FROM chat_messages WHERE session_id = ?1)",
+        params![id],
+    )?;
+    conn.execute(
+        "DELETE FROM chat_messages WHERE session_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -8308,6 +8386,56 @@ pub fn list_message_versions(conn: &Connection, message_id: &str) -> Result<Vec<
     rows.collect()
 }
 
+pub fn save_message_aux(
+    conn: &Connection,
+    message_id: &str,
+    payload: &str,
+) -> Result<MessageAux, String> {
+    let parsed: Value =
+        serde_json::from_str(payload).map_err(|e| format!("invalid aux payload: {e}"))?;
+    if !parsed.is_object() {
+        return Err("aux payload must be a JSON object".to_string());
+    }
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO message_aux (message_id, payload, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(message_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+        params![message_id, payload, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(MessageAux {
+        message_id: message_id.to_string(),
+        payload: payload.to_string(),
+        updated_at: now,
+    })
+}
+
+pub fn list_message_aux(conn: &Connection, session_id: &str) -> Result<Vec<MessageAux>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT aux.message_id, aux.payload, aux.updated_at
+             FROM message_aux aux
+             JOIN chat_messages m ON m.id = aux.message_id
+             WHERE m.session_id = ?1
+             ORDER BY m.created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_id], |row| {
+            Ok(MessageAux {
+                message_id: row.get(0)?,
+                payload: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 pub fn restore_message_version(
     conn: &Connection,
     message_id: &str,
@@ -8381,6 +8509,30 @@ pub fn truncate_chat_messages(
         |row| row.get(0),
     )?;
     if let Some(created_at) = keep_created_at {
+        let removed: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM chat_messages
+                 WHERE session_id = ?1 AND created_at > ?2 AND id <> ?3",
+            )?;
+            let rows = stmt.query_map(params![session_id, created_at, keep_message_id], |row| {
+                row.get(0)
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+        for message_id in &removed {
+            conn.execute(
+                "DELETE FROM message_aux WHERE message_id = ?1",
+                params![message_id],
+            )?;
+            conn.execute(
+                "DELETE FROM message_versions WHERE message_id = ?1",
+                params![message_id],
+            )?;
+        }
         conn.execute(
             "DELETE FROM chat_messages
              WHERE session_id = ?1 AND created_at > ?2 AND id <> ?3",
@@ -8910,6 +9062,81 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn message_aux_lifecycle_and_invalid_payload() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let session = create_session(&conn, "Aux test", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "question", None).unwrap();
+
+        let saved = save_message_aux(&conn, &user.id, r#"{"rag":[],"trace":null}"#).unwrap();
+        assert_eq!(saved.message_id, user.id);
+        let list = list_message_aux(&conn, &session.id).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].payload, r#"{"rag":[],"trace":null}"#);
+
+        save_message_aux(&conn, &user.id, r#"{"rag":[{"id":"r1","content":"hit"}]}"#).unwrap();
+        let list = list_message_aux(&conn, &session.id).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].payload.contains("r1"));
+
+        assert!(save_message_aux(&conn, &user.id, "not-json").is_err());
+        assert!(save_message_aux(&conn, &user.id, "[1,2]").is_err());
+        drop(conn);
+    }
+
+    #[test]
+    fn duplicate_session_copies_message_versions_and_aux() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let session = create_session(&conn, "Copy me", "openai").unwrap();
+        let user = save_chat_message(&conn, &session.id, "user", "v1 question", None).unwrap();
+        let assistant = save_chat_message(&conn, &session.id, "assistant", "answer", None).unwrap();
+        update_chat_message(&conn, &user.id, "v2 question").unwrap();
+        update_chat_message(&conn, &user.id, "v3 question").unwrap();
+        save_message_aux(
+            &conn,
+            &user.id,
+            r#"{"rag":[{"id":"r1","content":"hit"}],"trace":{"title":"RAG Context","sections":[]}}"#,
+        )
+        .unwrap();
+        save_message_aux(
+            &conn,
+            &assistant.id,
+            r#"{"trace":{"title":"Agent Trace","sections":[{"label":"Agent","value":"UI Designer"}]}}"#,
+        )
+        .unwrap();
+
+        let copy = duplicate_session(&conn, &session.id).unwrap();
+        assert_eq!(copy.message_count, 2);
+        let copy_messages = list_chat_messages(&conn, &copy.id).unwrap();
+        assert_eq!(copy_messages.len(), 2);
+
+        let versions = list_message_versions(&conn, &copy_messages[0].id).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].content, "v1 question");
+        assert_eq!(versions[1].content, "v2 question");
+        assert!(versions[0].parent_version_id.is_none());
+        assert_eq!(
+            versions[1].parent_version_id.as_deref(),
+            Some(versions[0].id.as_str())
+        );
+
+        let aux = list_message_aux(&conn, &copy.id).unwrap();
+        assert_eq!(aux.len(), 2);
+        let user_aux = aux
+            .iter()
+            .find(|a| a.message_id == copy_messages[0].id)
+            .unwrap();
+        assert!(user_aux.payload.contains("r1"));
+        let assistant_aux = aux
+            .iter()
+            .find(|a| a.message_id == copy_messages[1].id)
+            .unwrap();
+        assert!(assistant_aux.payload.contains("UI Designer"));
+        drop(conn);
     }
 
     #[test]

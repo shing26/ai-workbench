@@ -145,6 +145,17 @@ export type MessageDiff = {
   removed: string[];
 };
 
+export type MessageAux = {
+  messageId: string;
+  payload: string;
+  updatedAt: number;
+};
+
+export type MessageTrace = {
+  title: string;
+  sections: { label: string; value: string }[];
+};
+
 export type Provider = {
   id: string;
   name: string;
@@ -1013,6 +1024,7 @@ type LocalShape = {
   sessions: Session[];
   chatMessages: ChatMessage[];
   messageVersions: MessageVersion[];
+  messageAux: MessageAux[];
   habits: Habit[];
   habitLogs: HabitLog[];
   scheduleEvents: ScheduleEvent[];
@@ -1061,6 +1073,7 @@ function emptyShape(): LocalShape {
     sessions: [],
     chatMessages: [],
     messageVersions: [],
+    messageAux: [],
     habits: [],
     habitLogs: [],
     scheduleEvents: [],
@@ -1396,6 +1409,7 @@ function seedShape(): LocalShape {
     ],
     chatMessages: [],
     messageVersions: [],
+    messageAux: [],
     habits: [
       {
         id: makeId(),
@@ -2722,15 +2736,39 @@ export async function duplicateSession(id: string): Promise<Session> {
     createdAt: now,
   };
   shape.sessions.unshift(copy);
+  const idMap = new Map<string, string>();
   shape.chatMessages
     .filter((m) => m.sessionId === id)
     .forEach((m) => {
+      const newId = makeId();
+      idMap.set(m.id, newId);
       shape.chatMessages.push({
-        id: makeId(),
+        id: newId,
         sessionId: copy.id,
         role: m.role,
         content: m.content,
         createdAt: m.createdAt,
+      });
+    });
+  shape.messageVersions = shape.messageVersions ?? [];
+  const oldVersions = shape.messageVersions.filter((v) => idMap.has(v.messageId));
+  const versionIdMap = new Map(oldVersions.map((v) => [v.id, makeId()]));
+  oldVersions.forEach((v) => {
+    shape.messageVersions.push({
+      ...v,
+      id: versionIdMap.get(v.id) as string,
+      messageId: idMap.get(v.messageId) as string,
+      parentVersionId: v.parentVersionId ? (versionIdMap.get(v.parentVersionId) ?? null) : null,
+    });
+  });
+  shape.messageAux = shape.messageAux ?? [];
+  shape.messageAux
+    .filter((a) => idMap.has(a.messageId))
+    .forEach((a) => {
+      shape.messageAux.push({
+        ...a,
+        messageId: idMap.get(a.messageId) as string,
+        updatedAt: now,
       });
     });
   writeLocal(shape);
@@ -2847,7 +2885,29 @@ export function buildSessionSummary(messages: ChatMessage[], limit = 5): Session
   return { questionCount: userMessages.length, keywords, points };
 }
 
-export function buildSessionMarkdown(session: Session, messages: ChatMessage[]): string {
+export function parseMessageAuxPayload(payload: string): {
+  rag?: RagSearchResult[];
+  trace?: MessageTrace | null;
+} {
+  try {
+    const parsed = JSON.parse(payload || '{}') as {
+      rag?: RagSearchResult[];
+      trace?: MessageTrace | null;
+    };
+    return {
+      rag: Array.isArray(parsed.rag) ? parsed.rag : undefined,
+      trace: parsed.trace && typeof parsed.trace === 'object' ? parsed.trace : null,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function buildSessionMarkdown(
+  session: Session,
+  messages: ChatMessage[],
+  auxByMessageId?: Map<string, MessageAux>,
+): string {
   const lines: string[] = [
     `# ${session.title}`,
     '',
@@ -2864,6 +2924,29 @@ export function buildSessionMarkdown(session: Session, messages: ChatMessage[]):
   lines.push('');
   for (const message of messages) {
     lines.push(`## ${message.role === 'user' ? 'User' : 'Assistant'}`, '', message.content, '');
+    if (message.role === 'user') {
+      const aux = auxByMessageId?.get(message.id);
+      const parsed = aux ? parseMessageAuxPayload(aux.payload) : {};
+      if (parsed.rag && parsed.rag.length > 0) {
+        lines.push('### RAG context', '');
+        parsed.rag.slice(0, 10).forEach((hit, index) => {
+          const source = hit.sourceFile
+            ? `${hit.sourceKind === 'file' ? 'file' : 'thought'}: ${hit.sourceFile}`
+            : hit.sourceKind === 'file'
+              ? 'file'
+              : 'thought';
+          lines.push(`${index + 1}. [${source}] ${hit.content.replace(/\s+/g, ' ').slice(0, 160)}`);
+        });
+        lines.push('');
+      }
+      if (parsed.trace) {
+        lines.push('### Inspector Trace', '', `**${parsed.trace.title}**`, '');
+        parsed.trace.sections.forEach((section) => {
+          lines.push(`- ${section.label}: ${section.value}`);
+        });
+        lines.push('');
+      }
+    }
   }
   return lines.join('\n').trimEnd() + '\n';
 }
@@ -2880,6 +2963,7 @@ export async function deleteSession(id: string): Promise<void> {
   shape.messageVersions = (shape.messageVersions ?? []).filter((v) =>
     remainingMessageIds.has(v.messageId),
   );
+  shape.messageAux = (shape.messageAux ?? []).filter((a) => remainingMessageIds.has(a.messageId));
   writeLocal(shape);
 }
 
@@ -2954,6 +3038,7 @@ export async function truncateChatMessages(
     shape.messageVersions = (shape.messageVersions ?? []).filter((v) =>
       remainingMessageIds.has(v.messageId),
     );
+    shape.messageAux = (shape.messageAux ?? []).filter((a) => remainingMessageIds.has(a.messageId));
   }
   writeLocal(shape);
 }
@@ -2982,6 +3067,25 @@ export async function listMessageVersions(messageId: string): Promise<MessageVer
   return (readLocal().messageVersions ?? [])
     .filter((v) => v.messageId === messageId)
     .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function saveMessageAux(messageId: string, payload: string): Promise<MessageAux> {
+  if (isTauri()) return invoke<MessageAux>('save_message_aux', { messageId, payload });
+  const shape = readLocal();
+  shape.messageAux = shape.messageAux ?? [];
+  const aux: MessageAux = { messageId, payload, updatedAt: Date.now() };
+  const index = shape.messageAux.findIndex((a) => a.messageId === messageId);
+  if (index >= 0) shape.messageAux[index] = aux;
+  else shape.messageAux.push(aux);
+  writeLocal(shape);
+  return aux;
+}
+
+export async function listMessageAux(sessionId: string): Promise<MessageAux[]> {
+  if (isTauri()) return invoke<MessageAux[]>('list_message_aux', { sessionId });
+  const shape = readLocal();
+  const ids = new Set(shape.chatMessages.filter((m) => m.sessionId === sessionId).map((m) => m.id));
+  return (shape.messageAux ?? []).filter((a) => ids.has(a.messageId));
 }
 
 export async function restoreMessageVersion(messageId: string, versionId: string): Promise<string> {

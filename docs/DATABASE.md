@@ -1264,3 +1264,19 @@ CREATE INDEX IF NOT EXISTS idx_webhook_template_versions_rule
 - 新库 `webhook_rules` 建表语句已直接包含 `template_version INTEGER NOT NULL DEFAULT 1`；旧库由幂等 `migrate_webhook_template_version` 补列并回写 NULL，已加入 `init_connection` 迁移链。
 - `create_webhook_rule` 自动写入 v1 版本记录；`next_webhook_template_version` 按规则取 `MAX(version)+1`，`save_webhook_template_version` 同时更新 `webhook_rules.payload / template_version`，`list_webhook_template_versions` 按版本倒序返回，`restore_webhook_template_version` 回滚 payload 与 `template_version`。
 - 浏览器 fallback 使用 `ai-workbench:webhook-template-versions:v1` 保存同构版本列表，不写入 SQLite；`readWebhookRules` 自动补 `templateVersion ?? 1`。
+
+## Sprint 155：会话消息辅助上下文（RAG / Inspector Trace）
+
+```sql
+CREATE TABLE IF NOT EXISTS message_aux (
+    message_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_message_aux_message ON message_aux(message_id);
+```
+
+- 新表由 SCHEMA 的 `CREATE TABLE IF NOT EXISTS` 自动补齐，无需 ALTER 迁移；`payload` 必须是 JSON 对象，`save_message_aux` 校验后 upsert，`list_message_aux` 按会话 JOIN `chat_messages` 返回。
+- `duplicate_session` 复制消息时同步复制 `message_versions`（重映射新消息 ID 与 `parent_version_id`）和 `message_aux`；`delete_session` / `truncate_chat_messages` 显式清理对应 aux 与版本记录。
+- 浏览器 fallback 不新增独立 localStorage key，继续使用 `ai-workbench:db:v1` 的 `messageAux` 数组（`messageId / payload / updatedAt`），复制 / 删除 / 截断逻辑与 Tauri 链路同构。
