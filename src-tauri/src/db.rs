@@ -305,6 +305,49 @@ CREATE TABLE IF NOT EXISTS webhook_channel_config (
     notification_title TEXT NOT NULL DEFAULT 'AI Workbench webhook',
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS event_logs (
+    id TEXT PRIMARY KEY,
+    event TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'workbench',
+    device_id TEXT NOT NULL DEFAULT '',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'accepted',
+    rejected_reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_logs_event_created ON event_logs(event, created_at DESC);
+CREATE TABLE IF NOT EXISTS event_schemas (
+    event TEXT PRIMARY KEY,
+    schema TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS event_forwards (
+    id TEXT PRIMARY KEY,
+    event_log_id TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    target_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_forwards_due ON event_forwards(status, next_attempt_at);
+CREATE TABLE IF NOT EXISTS event_bus_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    forward_enabled INTEGER NOT NULL DEFAULT 0,
+    forward_url TEXT NOT NULL DEFAULT '',
+    forward_token TEXT NOT NULL DEFAULT '',
+    retention_days INTEGER NOT NULL DEFAULT 30,
+    max_logs INTEGER NOT NULL DEFAULT 500,
+    schema_strict INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS quick_prompts (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
@@ -893,6 +936,79 @@ pub struct WebhookDeliveryStats {
     pub success: i64,
     pub dead: i64,
     pub failed: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventLogRecord {
+    pub id: String,
+    pub event: String,
+    pub context: String,
+    pub source: String,
+    pub device_id: String,
+    pub schema_version: i64,
+    pub status: String,
+    pub rejected_reason: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSchema {
+    pub event: String,
+    pub schema: String,
+    pub enabled: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventForwardRecord {
+    pub id: String,
+    pub event_log_id: String,
+    pub target_url: String,
+    pub target_token: String,
+    pub status: String,
+    pub attempts: i64,
+    pub next_attempt_at: i64,
+    pub last_status: i64,
+    pub last_message: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBusConfig {
+    pub forward_enabled: bool,
+    pub forward_url: String,
+    pub forward_token: String,
+    pub retention_days: i64,
+    pub max_logs: i64,
+    pub schema_strict: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBusStats {
+    pub total: i64,
+    pub accepted: i64,
+    pub rejected: i64,
+    pub forwarded: i64,
+    pub pending: i64,
+    pub failed: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventEmitResult {
+    pub event: String,
+    pub recorded: bool,
+    pub validated: bool,
+    pub rejected_reason: String,
+    pub forwarded: i64,
+    pub webhook_deliveries: i64,
 }
 
 fn now_millis() -> i64 {
@@ -1739,6 +1855,548 @@ pub fn prune_webhook_deliveries(
         removed_by_age,
         removed_by_count,
         total_removed: removed_by_age + removed_by_count,
+    })
+}
+
+fn event_schema_validates(schema: &str, context: &Value) -> Result<(), String> {
+    let schema: Value =
+        serde_json::from_str(schema).map_err(|e| format!("Invalid schema JSON: {}", e))?;
+    let obj = schema
+        .as_object()
+        .ok_or_else(|| "Event schema must be a JSON object".to_string())?;
+    let context_obj = context
+        .as_object()
+        .ok_or_else(|| "Event context must be a JSON object".to_string())?;
+    if let Some(required) = obj.get("required").and_then(|value| value.as_array()) {
+        for field in required {
+            let name = field
+                .as_str()
+                .ok_or_else(|| "required entries must be strings".to_string())?;
+            if !context_obj.contains_key(name) {
+                return Err(format!("Missing required field '{}'", name));
+            }
+        }
+    }
+    if let Some(properties) = obj.get("properties").and_then(|value| value.as_object()) {
+        for (name, spec) in properties {
+            let expected = spec
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if let Some(value) = context_obj.get(name) {
+                let matches = match expected {
+                    "string" => value.is_string(),
+                    "number" => value.is_number(),
+                    "boolean" => value.is_boolean(),
+                    "object" => value.is_object(),
+                    "array" => value.is_array(),
+                    "null" => value.is_null(),
+                    "" => true,
+                    _ => {
+                        return Err(format!(
+                            "Unsupported type '{}' for field '{}'",
+                            expected, name
+                        ))
+                    }
+                };
+                if !matches {
+                    return Err(format!("Field '{}' must be {}", name, expected));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_event_context(
+    conn: &Connection,
+    event: &str,
+    context: &Value,
+) -> Result<(bool, String, i64), String> {
+    let schema = get_event_schema(conn, event).map_err(|e| e.to_string())?;
+    match schema {
+        Some(schema) if schema.enabled => match event_schema_validates(&schema.schema, context) {
+            Ok(()) => Ok((true, String::new(), schema.updated_at.max(1))),
+            Err(reason) => Ok((false, reason, schema.updated_at.max(1))),
+        },
+        Some(schema) => Ok((true, String::new(), schema.updated_at.max(1))),
+        None => Ok((true, String::new(), 1)),
+    }
+}
+
+pub fn get_event_schema(conn: &Connection, event: &str) -> Result<Option<EventSchema>> {
+    conn.query_row(
+        "SELECT event, schema, enabled, updated_at FROM event_schemas WHERE event = ?1",
+        params![event],
+        |row| {
+            Ok(EventSchema {
+                event: row.get(0)?,
+                schema: row.get(1)?,
+                enabled: row.get::<_, i64>(2)? != 0,
+                updated_at: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn list_event_schemas(conn: &Connection) -> Result<Vec<EventSchema>> {
+    let mut stmt = conn.prepare(
+        "SELECT event, schema, enabled, updated_at FROM event_schemas ORDER BY event ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(EventSchema {
+            event: row.get(0)?,
+            schema: row.get(1)?,
+            enabled: row.get::<_, i64>(2)? != 0,
+            updated_at: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn set_event_schema(
+    conn: &Connection,
+    event: &str,
+    schema: &str,
+    enabled: bool,
+) -> Result<EventSchema> {
+    let parsed: Value = serde_json::from_str(schema)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+    if !parsed.is_object() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Event schema must be a JSON object".to_string(),
+        ));
+    }
+    conn.execute(
+        "INSERT INTO event_schemas (event, schema, enabled, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(event) DO UPDATE SET
+           schema = excluded.schema,
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at",
+        params![event, schema, enabled as i64, now_millis()],
+    )?;
+    get_event_schema(conn, event)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn get_event_bus_config(conn: &Connection) -> Result<EventBusConfig> {
+    let row = conn.query_row(
+        "SELECT forward_enabled, forward_url, forward_token, retention_days, max_logs,
+                schema_strict, updated_at
+         FROM event_bus_config WHERE id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        },
+    );
+    match row {
+        Ok((
+            forward_enabled,
+            forward_url,
+            forward_token,
+            retention_days,
+            max_logs,
+            schema_strict,
+            updated_at,
+        )) => Ok(EventBusConfig {
+            forward_enabled: forward_enabled != 0,
+            forward_url,
+            forward_token,
+            retention_days,
+            max_logs,
+            schema_strict: schema_strict != 0,
+            updated_at,
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(EventBusConfig {
+            forward_enabled: false,
+            forward_url: String::new(),
+            forward_token: String::new(),
+            retention_days: 30,
+            max_logs: 500,
+            schema_strict: true,
+            updated_at: 0,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn set_event_bus_config(
+    conn: &Connection,
+    forward_enabled: bool,
+    forward_url: &str,
+    forward_token: &str,
+    retention_days: i64,
+    max_logs: i64,
+    schema_strict: bool,
+) -> Result<EventBusConfig> {
+    let days = retention_days.clamp(1, 3650);
+    let max_logs = max_logs.clamp(10, 100_000);
+    conn.execute(
+        "INSERT INTO event_bus_config
+           (id, forward_enabled, forward_url, forward_token, retention_days, max_logs,
+            schema_strict, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+           forward_enabled = excluded.forward_enabled,
+           forward_url = excluded.forward_url,
+           forward_token = excluded.forward_token,
+           retention_days = excluded.retention_days,
+           max_logs = excluded.max_logs,
+           schema_strict = excluded.schema_strict,
+           updated_at = excluded.updated_at",
+        params![
+            forward_enabled as i64,
+            forward_url.trim(),
+            forward_token,
+            days,
+            max_logs,
+            schema_strict as i64,
+            now_millis(),
+        ],
+    )?;
+    get_event_bus_config(conn)
+}
+
+fn map_event_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventLogRecord> {
+    Ok(EventLogRecord {
+        id: row.get(0)?,
+        event: row.get(1)?,
+        context: row.get(2)?,
+        source: row.get(3)?,
+        device_id: row.get(4)?,
+        schema_version: row.get(5)?,
+        status: row.get(6)?,
+        rejected_reason: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+const EVENT_LOG_COLUMNS: &str =
+    "id, event, context, source, device_id, schema_version, status, rejected_reason, created_at";
+
+pub fn get_event_log(conn: &Connection, id: &str) -> Result<Option<EventLogRecord>> {
+    conn.query_row(
+        &format!("SELECT {} FROM event_logs WHERE id = ?1", EVENT_LOG_COLUMNS),
+        params![id],
+        map_event_log,
+    )
+    .optional()
+}
+
+pub fn record_event_log(
+    conn: &Connection,
+    event: &str,
+    context: &Value,
+    source: &str,
+    device_id: &str,
+) -> Result<EventLogRecord> {
+    let context_json = serde_json::to_string(context).unwrap_or_else(|_| "{}".to_string());
+    let (validated, reason, version) = validate_event_context(conn, event, context)
+        .map_err(rusqlite::Error::InvalidParameterName)?;
+    let status = if validated { "accepted" } else { "rejected" };
+    let now = now_millis();
+    let id = uid();
+    conn.execute(
+        "INSERT INTO event_logs
+           (id, event, context, source, device_id, schema_version, status, rejected_reason, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            id,
+            event,
+            context_json,
+            source,
+            device_id,
+            version,
+            status,
+            reason,
+            now
+        ],
+    )?;
+    if let Ok(config) = get_event_bus_config(conn) {
+        let _ = prune_event_logs(conn, config.retention_days, config.max_logs);
+    }
+    get_event_log(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn prune_event_logs(
+    conn: &Connection,
+    retention_days: i64,
+    max_logs: i64,
+) -> Result<(i64, i64)> {
+    let now = now_millis();
+    let mut removed_by_age = 0_i64;
+    if retention_days > 0 {
+        let cutoff = now.saturating_sub(retention_days.saturating_mul(86_400_000));
+        removed_by_age = conn.execute(
+            "DELETE FROM event_logs WHERE created_at < ?1",
+            params![cutoff],
+        )? as i64;
+    }
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM event_logs", [], |row| row.get(0))?;
+    let excess = total.saturating_sub(max_logs.max(0));
+    let mut removed_by_count = 0_i64;
+    if excess > 0 {
+        let mut stmt =
+            conn.prepare("SELECT id FROM event_logs ORDER BY created_at ASC, rowid ASC LIMIT ?1")?;
+        let ids: Vec<String> = stmt
+            .query_map(params![excess], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            removed_by_count +=
+                conn.execute("DELETE FROM event_logs WHERE id = ?1", params![id])? as i64;
+        }
+    }
+    Ok((removed_by_age, removed_by_count))
+}
+
+pub fn list_event_logs(
+    conn: &Connection,
+    limit: i64,
+    event_filter: &str,
+) -> Result<Vec<EventLogRecord>> {
+    let limit = limit.clamp(1, 500);
+    let event_filter = event_filter.trim();
+    let mut stmt = if event_filter.is_empty() {
+        conn.prepare(&format!(
+            "SELECT {} FROM event_logs ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+            EVENT_LOG_COLUMNS
+        ))?
+    } else {
+        conn.prepare(&format!(
+            "SELECT {} FROM event_logs WHERE event = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+            EVENT_LOG_COLUMNS
+        ))?
+    };
+    let rows = if event_filter.is_empty() {
+        stmt.query_map(params![limit], map_event_log)?
+    } else {
+        stmt.query_map(params![event_filter, limit], map_event_log)?
+    };
+    rows.collect()
+}
+
+pub fn clear_event_logs(conn: &Connection, status_filter: &str) -> Result<i64> {
+    let removed = if status_filter.trim().is_empty() {
+        conn.execute("DELETE FROM event_logs", [])?
+    } else {
+        conn.execute(
+            "DELETE FROM event_logs WHERE status = ?1",
+            params![status_filter.trim()],
+        )?
+    };
+    Ok(removed as i64)
+}
+
+fn map_event_forward(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventForwardRecord> {
+    Ok(EventForwardRecord {
+        id: row.get(0)?,
+        event_log_id: row.get(1)?,
+        target_url: row.get(2)?,
+        target_token: row.get(3)?,
+        status: row.get(4)?,
+        attempts: row.get(5)?,
+        next_attempt_at: row.get(6)?,
+        last_status: row.get(7)?,
+        last_message: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+const EVENT_FORWARD_COLUMNS: &str =
+    "id, event_log_id, target_url, target_token, status, attempts, next_attempt_at, \
+     last_status, last_message, created_at, updated_at";
+
+pub fn get_event_forward(conn: &Connection, id: &str) -> Result<Option<EventForwardRecord>> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM event_forwards WHERE id = ?1",
+            EVENT_FORWARD_COLUMNS
+        ),
+        params![id],
+        map_event_forward,
+    )
+    .optional()
+}
+
+pub fn enqueue_event_forward(
+    conn: &Connection,
+    event_log_id: &str,
+    target_url: &str,
+    target_token: &str,
+) -> Result<EventForwardRecord> {
+    let now = now_millis();
+    let id = uid();
+    conn.execute(
+        "INSERT INTO event_forwards
+           (id, event_log_id, target_url, target_token, status, attempts, next_attempt_at,
+            last_status, last_message, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'queued', 0, ?5, 0, '', ?5, ?5)",
+        params![id, event_log_id, target_url, target_token, now],
+    )?;
+    get_event_forward(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn claim_due_event_forwards(
+    conn: &Connection,
+    now_ms: i64,
+    limit: i64,
+) -> Result<Vec<EventForwardRecord>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM event_forwards
+         WHERE status = 'queued' AND next_attempt_at <= ?1
+         ORDER BY next_attempt_at ASC, created_at ASC
+         LIMIT ?2",
+        EVENT_FORWARD_COLUMNS
+    ))?;
+    let rows = stmt.query_map(params![now_ms, limit], map_event_forward)?;
+    let ids: Vec<String> = rows.filter_map(Result::ok).map(|f| f.id).collect();
+    for id in &ids {
+        conn.execute(
+            "UPDATE event_forwards SET status = 'delivering', updated_at = ?1 WHERE id = ?2",
+            params![now_millis(), id],
+        )?;
+    }
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| get_event_forward(conn, &id).ok().flatten())
+        .collect())
+}
+
+pub fn complete_event_forward(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    last_status: i64,
+    message: &str,
+    attempts: i64,
+    next_attempt_at: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE event_forwards
+         SET status = ?1, last_status = ?2, last_message = ?3, attempts = ?4,
+             next_attempt_at = ?5, updated_at = ?6
+         WHERE id = ?7",
+        params![
+            status,
+            last_status,
+            message,
+            attempts,
+            next_attempt_at,
+            now_millis(),
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn retry_event_forward(conn: &Connection, id: &str) -> Result<EventForwardRecord> {
+    let updated = conn.execute(
+        "UPDATE event_forwards
+         SET attempts = 0, status = 'queued', last_message = '', next_attempt_at = ?1, updated_at = ?1
+         WHERE id = ?2",
+        params![now_millis(), id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_event_forward(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn list_event_forwards(
+    conn: &Connection,
+    limit: i64,
+    status_filter: &str,
+) -> Result<Vec<EventForwardRecord>> {
+    let limit = limit.clamp(1, 200);
+    let status_filter = status_filter.trim();
+    let mut stmt = if status_filter.is_empty() {
+        conn.prepare(&format!(
+            "SELECT {} FROM event_forwards ORDER BY created_at DESC LIMIT ?1",
+            EVENT_FORWARD_COLUMNS
+        ))?
+    } else {
+        conn.prepare(&format!(
+            "SELECT {} FROM event_forwards WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
+            EVENT_FORWARD_COLUMNS
+        ))?
+    };
+    let rows = if status_filter.is_empty() {
+        stmt.query_map(params![limit], map_event_forward)?
+    } else {
+        stmt.query_map(params![status_filter, limit], map_event_forward)?
+    };
+    rows.collect()
+}
+
+pub fn delete_event_forward(conn: &Connection, id: &str) -> Result<()> {
+    let removed = conn.execute("DELETE FROM event_forwards WHERE id = ?1", params![id])?;
+    if removed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+pub fn clear_event_forwards(conn: &Connection, status_filter: &str) -> Result<i64> {
+    let removed = if status_filter.trim().is_empty() {
+        conn.execute("DELETE FROM event_forwards", [])?
+    } else {
+        conn.execute(
+            "DELETE FROM event_forwards WHERE status = ?1",
+            params![status_filter.trim()],
+        )?
+    };
+    Ok(removed as i64)
+}
+
+pub fn get_event_bus_stats(conn: &Connection) -> Result<EventBusStats> {
+    let mut logs = conn.prepare("SELECT status, COUNT(*) FROM event_logs GROUP BY status")?;
+    let mut total = 0_i64;
+    let mut accepted = 0_i64;
+    let mut rejected = 0_i64;
+    for row in logs.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (status, count) = row?;
+        total += count;
+        match status.as_str() {
+            "accepted" => accepted = count,
+            "rejected" => rejected = count,
+            _ => {}
+        }
+    }
+    let mut forwards =
+        conn.prepare("SELECT status, COUNT(*) FROM event_forwards GROUP BY status")?;
+    let mut forwarded = 0_i64;
+    let mut pending = 0_i64;
+    let mut failed = 0_i64;
+    for row in forwards.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (status, count) = row?;
+        match status.as_str() {
+            "success" => forwarded = count,
+            "queued" | "delivering" => pending += count,
+            "dead" | "failed" => failed += count,
+            _ => {}
+        }
+    }
+    Ok(EventBusStats {
+        total,
+        accepted,
+        rejected,
+        forwarded,
+        pending,
+        failed,
     })
 }
 
@@ -9324,5 +9982,165 @@ mod tests {
         assert_eq!(restored.circuit_opened_at, 0);
         assert_eq!(restored.consecutive_failures, 0);
         assert!(list_circuit_open_webhook_rules(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn event_log_records_validates_and_lists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        set_event_schema(
+            &conn,
+            "note.created",
+            r#"{"required":["note"],"properties":{"note":{"type":"string"},"count":{"type":"number"}}}"#,
+            true,
+        )
+        .unwrap();
+        let accepted = record_event_log(
+            &conn,
+            "note.created",
+            &serde_json::json!({"note": "hello", "count": 3}),
+            "test",
+            "device-a",
+        )
+        .unwrap();
+        assert_eq!(accepted.status, "accepted");
+        assert!(accepted.schema_version > 0);
+        assert_eq!(accepted.event, "note.created");
+
+        let rejected = record_event_log(
+            &conn,
+            "note.created",
+            &serde_json::json!({"note": 42}),
+            "test",
+            "device-a",
+        )
+        .unwrap();
+        assert_eq!(rejected.status, "rejected");
+        assert!(
+            rejected.rejected_reason.contains("must be string"),
+            "{}",
+            rejected.rejected_reason
+        );
+
+        let missing = record_event_log(
+            &conn,
+            "note.created",
+            &serde_json::json!({"count": 1}),
+            "test",
+            "device-a",
+        )
+        .unwrap();
+        assert_eq!(missing.status, "rejected");
+        assert!(
+            missing
+                .rejected_reason
+                .contains("Missing required field 'note'"),
+            "{}",
+            missing.rejected_reason
+        );
+
+        let all = list_event_logs(&conn, 100, "").unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            list_event_logs(&conn, 100, "note.created").unwrap().len(),
+            3
+        );
+        let stats = get_event_bus_stats(&conn).unwrap();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.accepted, 1);
+        assert_eq!(stats.rejected, 2);
+    }
+
+    #[test]
+    fn event_bus_config_defaults_roundtrip_and_clamp() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let defaults = get_event_bus_config(&conn).unwrap();
+        assert!(!defaults.forward_enabled);
+        assert_eq!(defaults.retention_days, 30);
+        assert_eq!(defaults.max_logs, 500);
+        assert!(defaults.schema_strict);
+
+        let saved = set_event_bus_config(
+            &conn,
+            true,
+            "https://events.example.test/ingest",
+            "evt-token",
+            0,
+            100_001,
+            false,
+        )
+        .unwrap();
+        assert!(saved.forward_enabled);
+        assert_eq!(saved.forward_url, "https://events.example.test/ingest");
+        assert_eq!(saved.forward_token, "evt-token");
+        assert_eq!(saved.retention_days, 1);
+        assert_eq!(saved.max_logs, 100_000);
+        assert!(!saved.schema_strict);
+        assert!(saved.updated_at > 0);
+        let roundtrip = get_event_bus_config(&conn).unwrap();
+        assert_eq!(roundtrip.forward_url, "https://events.example.test/ingest");
+        assert_eq!(roundtrip.max_logs, 100_000);
+    }
+
+    #[test]
+    fn event_forward_queue_lifecycle() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let log = record_event_log(
+            &conn,
+            "sync.completed",
+            &serde_json::json!({"ok": true}),
+            "test",
+            "device-a",
+        )
+        .unwrap();
+        let forward = enqueue_event_forward(
+            &conn,
+            &log.id,
+            "https://peer.example.test/events",
+            "peer-token",
+        )
+        .unwrap();
+        assert_eq!(forward.status, "queued");
+        assert_eq!(forward.attempts, 0);
+        assert_eq!(forward.target_token, "peer-token");
+        assert!(forward.next_attempt_at <= now_millis() + 1);
+
+        let now = now_millis();
+        let claimed = claim_due_event_forwards(&conn, now, 8).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, "delivering");
+        complete_event_forward(
+            &conn,
+            &forward.id,
+            "success",
+            200,
+            "HTTP 200 delivered",
+            1,
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            get_event_forward(&conn, &forward.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "success"
+        );
+
+        let retried = retry_event_forward(&conn, &forward.id).unwrap();
+        assert_eq!(retried.status, "queued");
+        assert_eq!(retried.attempts, 0);
+        let stats = get_event_bus_stats(&conn).unwrap();
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.accepted, 1);
+        assert_eq!(stats.pending, 1);
+        assert_eq!(stats.forwarded, 0);
+
+        delete_event_forward(&conn, &forward.id).unwrap();
+        assert!(get_event_forward(&conn, &forward.id).unwrap().is_none());
+        let cleared = clear_event_logs(&conn, "").unwrap();
+        assert_eq!(cleared, 1);
     }
 }

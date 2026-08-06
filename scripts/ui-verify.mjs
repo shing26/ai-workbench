@@ -25,6 +25,7 @@ const edge = spawn(
   [
     '--headless=new',
     '--disable-gpu',
+    '--disable-extensions',
     '--no-first-run',
     '--no-default-browser-check',
     '--remote-debugging-port=0',
@@ -127,6 +128,19 @@ async function connect(port) {
   });
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
+    if (msg.method === 'Runtime.exceptionThrown') {
+      const details = msg.params?.exceptionDetails;
+      const description = details?.exception?.description ?? details?.text ?? 'unknown exception';
+      console.error(`[browser exception] ${description}`);
+    } else if (msg.method === 'Runtime.consoleAPICalled') {
+      const type = msg.params?.type ?? 'log';
+      const text = (msg.params?.args ?? [])
+        .map((arg) => arg.value ?? arg.description ?? '')
+        .join(' ');
+      if (type === 'error' || type === 'warning') {
+        console.error(`[browser console.${type}] ${text}`);
+      }
+    }
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject, timer } = pending.get(msg.id);
       clearTimeout(timer);
@@ -10331,6 +10345,309 @@ try {
   }
   results.webhookSystemEvents = webhookSystemEvents;
   laneLog('webhookSystemEvents ok');
+
+  const eventBusSeed = await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    localStorage.removeItem("ai-workbench:event-schemas:v1");
+    localStorage.setItem(
+      "ai-workbench:event-bus-config:v1",
+      JSON.stringify({
+        forwardEnabled: false,
+        forwardUrl: "",
+        forwardToken: "",
+        retentionDays: 30,
+        maxLogs: 500,
+        schemaStrict: true,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  if (!eventBusSeed) {
+    throw new Error('Event bus seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const eventBusLogging = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const statsMap = () => {
+      const spans = [...document.querySelectorAll("[data-event-bus-stats] span")];
+      const map = {};
+      for (let i = 0; i + 1 < spans.length; i += 2) {
+        map[spans[i + 1].textContent ?? ""] = Number(spans[i].textContent ?? 0);
+      }
+      return map;
+    };
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (!eventInput || !contextInput || !emitBtn) {
+      return { ok: false, reason: "event bus controls missing" };
+    }
+    setValue(eventInput, "verify.logged");
+    setValue(contextInput, '{"note":"logging lane"}');
+    emitBtn.click();
+    let item = null;
+    let stats = {};
+    for (let i = 0; i < 50; i += 1) {
+      item = [...document.querySelectorAll("[data-event-log-item]")].find((el) =>
+        el.textContent.includes("verify.logged"),
+      );
+      stats = statsMap();
+      if (item && stats.total >= 1 && stats.accepted >= 1) break;
+      await sleep(100);
+    }
+    const status = item?.querySelector("[data-event-log-status]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedOk = stored.some(
+      (log) => log.event === "verify.logged" && log.status === "accepted",
+    );
+    return {
+      ok: !!item && status.includes("accepted") && stats.accepted >= 1 && storedOk,
+      itemRendered: !!item,
+      status,
+      stats,
+      storedOk,
+      stored: stored.slice(0, 3),
+    };
+  })()`);
+  if (!eventBusLogging.ok) {
+    throw new Error(`Event bus logging assertion failed: ${JSON.stringify(eventBusLogging)}`);
+  }
+  results.eventBusLogging = eventBusLogging;
+  laneLog('eventBusLogging ok');
+
+  const eventBusSchema = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const schemaEvent = document.querySelector("[data-event-schema-event]");
+    const schemaJson = document.querySelector("[data-event-schema-json]");
+    const schemaEnabled = document.querySelector("[data-event-schema-enabled]");
+    const schemaSave = document.querySelector("[data-event-schema-save]");
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (
+      !schemaEvent ||
+      !schemaJson ||
+      !schemaEnabled ||
+      !schemaSave ||
+      !eventInput ||
+      !contextInput ||
+      !emitBtn
+    ) {
+      return { ok: false, reason: "event bus schema controls missing" };
+    }
+    setValue(schemaEvent, "verify.schema");
+    setValue(schemaJson, '{"required":["note"],"properties":{"note":{"type":"string"}}}');
+    if (!schemaEnabled.checked) schemaEnabled.click();
+    schemaSave.click();
+    let schemaItem = null;
+    for (let i = 0; i < 40; i += 1) {
+      schemaItem = [...document.querySelectorAll("[data-event-schema-item]")].find((el) =>
+        el.textContent.includes("verify.schema"),
+      );
+      if (schemaItem) break;
+      await sleep(100);
+    }
+    if (!schemaItem) return { ok: false, reason: "schema item not rendered" };
+
+    setValue(eventInput, "verify.schema");
+    setValue(contextInput, '{"note":"from verify","count":7}');
+    emitBtn.click();
+    let acceptedItem = null;
+    let rejectedItem = null;
+    for (let i = 0; i < 60; i += 1) {
+      const items = [...document.querySelectorAll("[data-event-log-item]")];
+      acceptedItem =
+        items.find(
+          (el) =>
+            el.textContent.includes("verify.schema") &&
+            (el.querySelector("[data-event-log-status]")?.textContent ?? "").includes(
+              "accepted",
+            ),
+        ) ?? acceptedItem;
+      rejectedItem =
+        items.find(
+          (el) =>
+            el.textContent.includes("verify.schema") &&
+            (el.querySelector("[data-event-log-status]")?.textContent ?? "").includes(
+              "rejected",
+            ),
+        ) ?? rejectedItem;
+      if (acceptedItem && rejectedItem) break;
+      if (i === 20) {
+        setValue(contextInput, '{"count":7}');
+        emitBtn.click();
+      }
+      await sleep(100);
+    }
+    const reason = rejectedItem?.querySelector("[data-event-log-reason]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedValid = stored.find(
+      (log) => log.event === "verify.schema" && log.status === "accepted",
+    );
+    const storedInvalid = stored.find(
+      (log) => log.event === "verify.schema" && log.status === "rejected",
+    );
+    const ok =
+      !!acceptedItem &&
+      !!rejectedItem &&
+      reason.includes("note") &&
+      !!storedValid &&
+      !!storedInvalid &&
+      (storedInvalid.rejectedReason ?? "").includes("note");
+    return {
+      ok,
+      acceptedRendered: !!acceptedItem,
+      rejectedRendered: !!rejectedItem,
+      reason,
+      storedValid: !!storedValid,
+      storedInvalid: !!storedInvalid,
+      rejectedReason: storedInvalid?.rejectedReason ?? "",
+    };
+  })()`);
+  if (!eventBusSchema.ok) {
+    throw new Error(`Event bus schema assertion failed: ${JSON.stringify(eventBusSchema)}`);
+  }
+  results.eventBusSchema = eventBusSchema;
+  laneLog('eventBusSchema ok');
+
+  const eventBusForwardSeed = await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    localStorage.removeItem("ai-workbench:event-schemas:v1");
+    localStorage.setItem(
+      "ai-workbench:event-bus-config:v1",
+      JSON.stringify({
+        forwardEnabled: false,
+        forwardUrl: "",
+        forwardToken: "",
+        retentionDays: 30,
+        maxLogs: 500,
+        schemaStrict: true,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  if (!eventBusForwardSeed) {
+    throw new Error('Event bus forward seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const eventBusForward = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const enabled = document.querySelector("[data-event-bus-forward-enabled]");
+    const url = document.querySelector("[data-event-bus-forward-url]");
+    const token = document.querySelector("[data-event-bus-forward-token]");
+    const retention = document.querySelector("[data-event-bus-forward-retention]");
+    const max = document.querySelector("[data-event-bus-forward-max]");
+    const strict = document.querySelector("[data-event-bus-forward-strict]");
+    const save = document.querySelector("[data-event-bus-forward-save]");
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (
+      !enabled ||
+      !url ||
+      !token ||
+      !retention ||
+      !max ||
+      !strict ||
+      !save ||
+      !eventInput ||
+      !contextInput ||
+      !emitBtn
+    ) {
+      return { ok: false, reason: "event bus forward controls missing" };
+    }
+    if (!enabled.checked) enabled.click();
+    setValue(url, "https://forward.example.test/hook");
+    setValue(token, "verify-token");
+    setValue(retention, "30");
+    setValue(max, "500");
+    if (!strict.checked) strict.click();
+    save.click();
+    await sleep(200);
+    setValue(eventInput, "verify.forward");
+    setValue(contextInput, '{"note":"forward lane"}');
+    emitBtn.click();
+    let forwardItem = null;
+    let logItem = null;
+    for (let i = 0; i < 50; i += 1) {
+      forwardItem = [...document.querySelectorAll("[data-event-forward-item]")].find((el) =>
+        el.textContent.includes("forward.example.test"),
+      );
+      logItem = [...document.querySelectorAll("[data-event-log-item]")].find((el) =>
+        el.textContent.includes("verify.forward"),
+      );
+      if (forwardItem && logItem) break;
+      await sleep(100);
+    }
+    const forwardStatus =
+      forwardItem?.querySelector("[data-event-forward-status]")?.textContent ?? "";
+    const storedForwards = JSON.parse(
+      localStorage.getItem("ai-workbench:event-forwards:v1") ?? "[]",
+    );
+    const storedLogs = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedForward = storedForwards.find((item) =>
+      item.targetUrl.includes("forward.example.test"),
+    );
+    const storedLog = storedLogs.find((log) => log.event === "verify.forward");
+    const ok =
+      !!forwardItem &&
+      forwardStatus.includes("success") &&
+      !!logItem &&
+      !!storedForward &&
+      storedForward.status === "success" &&
+      storedForward.targetToken === "verify-token" &&
+      !!storedLog &&
+      storedLog.status === "accepted";
+    return {
+      ok,
+      forwardRendered: !!forwardItem,
+      forwardStatus,
+      logRendered: !!logItem,
+      storedForward: storedForward ?? null,
+      storedLog: storedLog ?? null,
+    };
+  })()`);
+  if (!eventBusForward.ok) {
+    throw new Error(`Event bus forward assertion failed: ${JSON.stringify(eventBusForward)}`);
+  }
+  results.eventBusForward = eventBusForward;
+  laneLog('eventBusForward ok');
 
   const circuitSeed = await evaluate(`(() => {
     const now = Date.now();

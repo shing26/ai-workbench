@@ -495,6 +495,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 卡片新增通道多选与恢复退避输入（`data-webhook-rule-channel` / `data-webhook-rule-backoff`）、规则行通道 / 退避徽标（`data-webhook-rule-channels` / `data-webhook-rule-backoff`）、投递行通道徽标（`data-webhook-delivery-channel`）、Channel settings 面板（SMTP / 收件人 / 通知标题 / 保存 / 测试）与 `data-webhook-recovery-probe` 按钮。
 - `verify:ui` / `verify:preview` 新增 `webhookMultiChannel` / `webhookRecoveryBackoff` lane；Rust 单测覆盖迁移幂等、通道配置默认 / 钳制、多通道创建与入队、熔断开启列表与恢复重置、SMTP mock 发信、通知事件载荷与退避公式，`cargo test --lib` 增至 161 条。
 
+## Sprint 144：事件总线持久化、Schema 校验与跨设备转发
+
+- 新增 `event_logs`（id / event / context / source / device_id / schema_version / status / rejected_reason / created_at，含 `(created_at DESC)` 与 `(event, created_at DESC)` 索引）、`event_schemas`（event PK / schema / enabled / updated_at）、`event_forwards`（event_log_id / target_url / target_token / status / attempts / next_attempt_at / last_status / last_message，含 due 索引）与 `event_bus_config` 单行表；新库 SCHEMA 直接建表，旧库打开同样走 SCHEMA，无需迁移函数。
+- `emit_event_bus_event` 成为统一事件入口：落库 → schema 校验（`required` + `properties.<field>.type`，支持 string / number / boolean / object / array / null）→ `accepted` / `rejected`（保留 rejected_reason）→ 配置开启时入队转发 → 复用 `trigger_webhook_event` 触发 Webhook；浏览器 fallback 使用 `ai-workbench:event-logs:v1` / `ai-workbench:event-schemas:v1` / `ai-workbench:event-forwards:v1` / `ai-workbench:event-bus-config:v1` 同构持久化。
+- `spawn_event_forward_worker` 每 2s 认领最多 8 条到期转发，POST JSON（可选 Bearer token），失败按 `1000ms << attempts` 退避并封顶 5 次后标记失败，`retry_event_forward` 可手动重试；新增 13 个 Tauri 命令覆盖 emit / logs / schemas / config / forwards / stats。
+- `db.ts` 的 `emitWorkbenchEvent` 改为复用 `emitEventBusEvent` 并派发 `workbench:event-bus-updated`；SystemView 新增 Event bus 卡片（统计条、事件输入、日志 / Schema / 转发队列、保留策略与清理按钮）。
+- `verify:ui` / `verify:preview` 新增 `eventBusLogging` / `eventBusSchema` / `eventBusForward` lane；验证脚本 Edge 启动参数补 `--disable-extensions` 并增加浏览器 console.error / exception 监听，解决本机扩展刷屏导致的 CDP 超时；Rust 单测增至 165 条。
+
 ## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
 
 - 新增 `src-tauri/src/webhook_condition.rs`：`validate_condition` 校验、`matches_condition(condition, event, context, now)` 求值；DSL 支持 `event == / !=`、`context.field == / != / > / < / >= / <=`、`true / false / null`、`and / or / not / 括号`、裸事件名简写与 `cron(...)`。

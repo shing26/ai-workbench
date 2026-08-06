@@ -665,6 +665,61 @@ CREATE TABLE IF NOT EXISTS webhook_channel_config (
 - `record_webhook_rule_outcome` 达到熔断阈值时写 `circuit_opened_at = now`；`list_circuit_open_webhook_rules` 只返回 `enabled=0 AND auto_disable_after>0 AND consecutive_failures>=auto_disable_after AND circuit_opened_at>0` 的规则，`set_webhook_rule_enabled(true)` 同时清零失败计数与 `circuit_opened_at`。
 - 浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1`（规则新增 `channels` / `recoveryBackoffSeconds` / `circuitOpenedAt`，旧数据读取时默认补值）与 `ai-workbench:webhook-deliveries:v1`（投递新增 `channel`，旧数据默认 `http`），通道配置使用新 key `ai-workbench:webhook-channel-config:v1`。
 
+## Sprint 144：事件总线持久化、Schema 校验与跨设备转发
+
+```sql
+CREATE TABLE IF NOT EXISTS event_logs (
+    id TEXT PRIMARY KEY,
+    event TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'workbench',
+    device_id TEXT NOT NULL DEFAULT '',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'accepted',
+    rejected_reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_logs_event_created ON event_logs(event, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS event_schemas (
+    event TEXT PRIMARY KEY,
+    schema TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS event_forwards (
+    id TEXT PRIMARY KEY,
+    event_log_id TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    target_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_forwards_due ON event_forwards(status, next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS event_bus_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    forward_enabled INTEGER NOT NULL DEFAULT 0,
+    forward_url TEXT NOT NULL DEFAULT '',
+    forward_token TEXT NOT NULL DEFAULT '',
+    retention_days INTEGER NOT NULL DEFAULT 30,
+    max_logs INTEGER NOT NULL DEFAULT 500,
+    schema_strict INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- 四张表由新库 SCHEMA 直接创建，旧库打开时同样走 SCHEMA 建表，因此不需要 ALTER 迁移函数。
+- `event_logs.status` 取值 `accepted / rejected`，`rejected_reason` 保留校验失败原文；`event_forwards.status` 取值 `queued / delivering / success / failed / dead`，`next_attempt_at` 与 due 索引供 worker 认领。
+- 浏览器 fallback 使用 `ai-workbench:event-logs:v1` / `ai-workbench:event-schemas:v1` / `ai-workbench:event-forwards:v1` / `ai-workbench:event-bus-config:v1` 持久化同一模型，写入时按 `retention_days` / `max_logs` 修剪。
+
 ## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
 
 ```sql

@@ -5450,6 +5450,302 @@ fn probe_webhook_recovery(state: State<'_, db::Db>) -> Result<WebhookRecoveryRes
     Ok(result)
 }
 
+fn build_event_forward_payload(log: &db::EventLogRecord) -> String {
+    let context = serde_json::from_str::<Value>(&log.context)
+        .unwrap_or_else(|_| Value::Object(Default::default()));
+    serde_json::json!({
+        "id": log.id,
+        "event": log.event,
+        "context": context,
+        "source": log.source,
+        "deviceId": log.device_id,
+        "schemaVersion": log.schema_version,
+        "status": log.status,
+        "rejectedReason": log.rejected_reason,
+        "createdAt": log.created_at,
+    })
+    .to_string()
+}
+
+fn spawn_event_forward_worker(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(2));
+        let Some(state) = app.try_state::<db::Db>() else {
+            continue;
+        };
+        let now = now_millis();
+        let claimed = {
+            let Ok(conn) = state.0.lock() else {
+                continue;
+            };
+            if let Ok(config) = db::get_event_bus_config(&conn) {
+                if config.forward_enabled {
+                    let _ = db::prune_event_logs(&conn, config.retention_days, config.max_logs);
+                }
+            }
+            let Ok(claimed) = db::claim_due_event_forwards(&conn, now, 8) else {
+                continue;
+            };
+            claimed
+        };
+        for forward in claimed {
+            let log = state.0.lock().ok().and_then(|conn| {
+                db::get_event_log(&conn, &forward.event_log_id)
+                    .ok()
+                    .flatten()
+            });
+            let Some(log) = log else {
+                let Ok(conn) = state.0.lock() else {
+                    continue;
+                };
+                let _ = db::complete_event_forward(
+                    &conn,
+                    &forward.id,
+                    "dead",
+                    0,
+                    "Event log not found",
+                    forward.attempts + 1,
+                    now,
+                );
+                continue;
+            };
+            let payload = build_event_forward_payload(&log);
+            let token = if forward.target_token.trim().is_empty() {
+                None
+            } else {
+                Some(forward.target_token.as_str())
+            };
+            let outcome =
+                deliver_webhook_http(&forward.target_url, &payload, "POST", token, None, 0);
+            let (ok, status, message) = match outcome {
+                Ok(result) => (true, result.status as i64, result.message),
+                Err(err) => (false, 0, format!("Event forward failed: {}", err)),
+            };
+            let attempts = forward.attempts + 1;
+            let dead = !ok && attempts >= 5;
+            let next_attempt_at = if ok || dead {
+                now
+            } else {
+                now + 1000 * (1_i64 << attempts.min(6))
+            };
+            let forward_status = if dead {
+                "dead"
+            } else if ok {
+                "success"
+            } else {
+                "queued"
+            };
+            let Ok(conn) = state.0.lock() else {
+                continue;
+            };
+            let _ = db::complete_event_forward(
+                &conn,
+                &forward.id,
+                forward_status,
+                status,
+                &message,
+                attempts,
+                next_attempt_at,
+            );
+        }
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventEmitRequest {
+    event: String,
+    context: Option<Value>,
+    source: Option<String>,
+    device_id: Option<String>,
+}
+
+#[tauri::command]
+fn emit_event_bus_event(
+    state: State<'_, db::Db>,
+    request: EventEmitRequest,
+) -> Result<db::EventEmitResult, String> {
+    let event = request.event.trim().to_string();
+    if event.is_empty() {
+        return Err("Event name is required".to_string());
+    }
+    let context = request
+        .context
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let (recorded, validated, rejected_reason, forwarded) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let log = db::record_event_log(
+            &conn,
+            &event,
+            &context,
+            request.source.as_deref().unwrap_or("workbench"),
+            request.device_id.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| e.to_string())?;
+        let validated = log.status == "accepted";
+        let config = db::get_event_bus_config(&conn).map_err(|e| e.to_string())?;
+        let forwarded =
+            if validated && config.forward_enabled && !config.forward_url.trim().is_empty() {
+                let _ = db::enqueue_event_forward(
+                    &conn,
+                    &log.id,
+                    &config.forward_url,
+                    &config.forward_token,
+                )
+                .map_err(|e| e.to_string())?;
+                1
+            } else {
+                0
+            };
+        (true, validated, log.rejected_reason.clone(), forwarded)
+    };
+    let webhook_deliveries =
+        trigger_webhook_event(state, event.clone(), Some(context)).unwrap_or(0);
+    Ok(db::EventEmitResult {
+        event,
+        recorded,
+        validated,
+        rejected_reason,
+        forwarded,
+        webhook_deliveries,
+    })
+}
+
+#[tauri::command]
+fn list_event_logs(
+    state: State<'_, db::Db>,
+    limit: Option<i64>,
+    event: Option<String>,
+) -> Result<Vec<db::EventLogRecord>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_event_logs(&conn, limit.unwrap_or(50), &event.unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_event_logs(state: State<'_, db::Db>, status: Option<String>) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::clear_event_logs(&conn, &status.unwrap_or_default()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_event_schema(
+    state: State<'_, db::Db>,
+    event: String,
+) -> Result<Option<db::EventSchema>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_event_schema(&conn, &event).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventSchemaRequest {
+    event: String,
+    schema: String,
+    enabled: bool,
+}
+
+#[tauri::command]
+fn set_event_schema(
+    state: State<'_, db::Db>,
+    request: EventSchemaRequest,
+) -> Result<db::EventSchema, String> {
+    if request.event.trim().is_empty() {
+        return Err("Event name is required".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_event_schema(
+        &conn,
+        request.event.trim(),
+        &request.schema,
+        request.enabled,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_event_schemas(state: State<'_, db::Db>) -> Result<Vec<db::EventSchema>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_event_schemas(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_event_bus_config(state: State<'_, db::Db>) -> Result<db::EventBusConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_event_bus_config(&conn).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventBusConfigRequest {
+    forward_enabled: bool,
+    forward_url: String,
+    forward_token: String,
+    retention_days: i64,
+    max_logs: i64,
+    schema_strict: bool,
+}
+
+#[tauri::command]
+fn set_event_bus_config(
+    state: State<'_, db::Db>,
+    request: EventBusConfigRequest,
+) -> Result<db::EventBusConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_event_bus_config(
+        &conn,
+        request.forward_enabled,
+        &request.forward_url,
+        &request.forward_token,
+        request.retention_days,
+        request.max_logs,
+        request.schema_strict,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_event_forwards(
+    state: State<'_, db::Db>,
+    limit: Option<i64>,
+    status: Option<String>,
+) -> Result<Vec<db::EventForwardRecord>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_event_forwards(&conn, limit.unwrap_or(50), &status.unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn retry_event_forward(
+    state: State<'_, db::Db>,
+    id: String,
+) -> Result<db::EventForwardRecord, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::retry_event_forward(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_event_forward(state: State<'_, db::Db>, id: String) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_event_forward(&conn, &id).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Deleted event forward {}",
+        id.chars().take(8).collect::<String>()
+    ))
+}
+
+#[tauri::command]
+fn clear_event_forwards(state: State<'_, db::Db>, status: Option<String>) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::clear_event_forwards(&conn, &status.unwrap_or_default()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_event_bus_stats(state: State<'_, db::Db>) -> Result<db::EventBusStats, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_event_bus_stats(&conn).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn push_sync_snapshot(
     state: State<'_, db::Db>,
@@ -5955,6 +6251,7 @@ pub fn run() {
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
             spawn_webhook_delivery_worker(app.handle().clone());
+            spawn_event_forward_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -6118,6 +6415,19 @@ pub fn run() {
             test_webhook_notification,
             test_webhook_email,
             probe_webhook_recovery,
+            emit_event_bus_event,
+            list_event_logs,
+            clear_event_logs,
+            get_event_schema,
+            set_event_schema,
+            list_event_schemas,
+            get_event_bus_config,
+            set_event_bus_config,
+            list_event_forwards,
+            retry_event_forward,
+            delete_event_forward,
+            clear_event_forwards,
+            get_event_bus_stats,
             run_provider_stream_smoke_test,
             run_provider_e2e_stream
         ])
@@ -8177,5 +8487,27 @@ mod tests {
         assert_eq!(value["channel"], "notification");
         assert_eq!(value["ruleId"], "rule-1");
         assert_eq!(value["title"], "Title");
+    }
+
+    #[test]
+    fn event_forward_payload_includes_context_and_device() {
+        let log = db::EventLogRecord {
+            id: "evt-1".to_string(),
+            event: "sync.completed".to_string(),
+            context: r#"{"ok":true}"#.to_string(),
+            source: "workbench".to_string(),
+            device_id: "device-a".to_string(),
+            schema_version: 3,
+            status: "accepted".to_string(),
+            rejected_reason: String::new(),
+            created_at: 1234,
+        };
+        let payload = build_event_forward_payload(&log);
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["event"], "sync.completed");
+        assert_eq!(value["deviceId"], "device-a");
+        assert_eq!(value["context"]["ok"], true);
+        assert_eq!(value["schemaVersion"], 3);
+        assert_eq!(value["createdAt"], 1234);
     }
 }
