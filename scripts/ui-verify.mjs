@@ -4853,6 +4853,29 @@ try {
   }
   results.providerE2EStream = providerE2EStream;
 
+  const providerBatchE2E = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-provider-batch-test]');
+    if (!btn) return { ok: false, reason: "no provider batch e2e button" };
+    btn.click();
+    let text = "";
+    for (let i = 0; i < 30; i++) {
+      text = document.querySelector('[data-provider-batch-result]')?.textContent ?? "";
+      if (text) break;
+      await sleep(100);
+    }
+    const cardResults = document.querySelectorAll('[data-provider-e2e-result]').length;
+    return {
+      ok: text.includes("2/2 ok") && cardResults >= 2,
+      text,
+      cardResults,
+    };
+  })()`);
+  if (!providerBatchE2E.ok) {
+    throw new Error(`Provider batch E2E assertion failed: ${JSON.stringify(providerBatchE2E)}`);
+  }
+  results.providerBatchE2E = providerBatchE2E;
+
   const webhookDelivery = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const urlInput = document.querySelector('input[placeholder="Webhook URL"]');

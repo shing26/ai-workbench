@@ -524,6 +524,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。`delete_project` 复用 `projects` 既有表：删除前将 `sessions.project_id` 置空以解除会话关联，再删除项目行；缺失 id 返回 `QueryReturnedNoRows`。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `sessions` 数组，删除时同步清理项目并解除会话关联，不新增 localStorage key。
 
+## Sprint 126：System Provider 批量 E2E 测试
+
+无表结构变更。批量 E2E 是运行时链路：`runProviderE2EStream` 复用既有 Provider 配置与 `stream_ai_message` 冒烟路径，汇总结果仅保存在前端状态，reload 后按各卡片既有 E2E 结果恢复；浏览器 fallback 不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

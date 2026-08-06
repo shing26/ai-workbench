@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 126
+
+### What went well?
+
+- SystemView 新增 `runAllProviderE2E()`：对全部 active Provider 并行执行 `runProviderE2EStream`，单卡异常捕获为 `ok=false` 不中断整批；操作区新增 `data-provider-batch-test` / `data-provider-batch-result`，结果同步写入各 Provider 卡片。
+- `verify:ui` / `verify:preview` 新增 `providerBatchE2E` lane，断言 `2/2 ok` 与卡片结果数；`cargo test --lib` 保持 132 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:preview` 的既有 `syncAudit` lane 偶发时序失败，重跑一次后全绿，判定为既有 lane 抖动，与本 Sprint 改动无关。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话分组、Projects 收益趋势、Knowledge 笔记删除/类型转换。
+- 保留 `providerBatchE2E` lane，修改 Provider 模型、卡片操作区或 E2E 汇总时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 125
 
 ### What went well?
