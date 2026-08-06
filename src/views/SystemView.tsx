@@ -999,6 +999,24 @@ export default function SystemView() {
         : logDevice === errorDeviceFilter;
     });
   const errorLogPeak = deriveErrorLogPeak(errorLogSummary?.buckets);
+  const auditBuckets = auditSummary?.buckets ?? [];
+  const auditMergeTotal = auditBuckets.reduce((sum, bucket) => sum + bucket.merge, 0);
+  const auditResolveTotal = auditBuckets.reduce((sum, bucket) => sum + bucket.resolve, 0);
+  const auditOtherTotal = auditBuckets.reduce((sum, bucket) => sum + bucket.other, 0);
+  const auditCumulative = auditBuckets.map((_, index) =>
+    auditBuckets.slice(0, index + 1).reduce((sum, bucket) => sum + bucket.count, 0),
+  );
+  const auditMaxCumulative = Math.max(1, ...auditCumulative);
+  const auditTrendPoints =
+    auditBuckets.length > 1
+      ? auditCumulative
+          .map((cumulative, index) => {
+            const x = (index / (auditBuckets.length - 1)) * 100;
+            const y = 22 - (cumulative / auditMaxCumulative) * 18;
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          })
+          .join(' ')
+      : '';
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
@@ -1604,9 +1622,8 @@ export default function SystemView() {
               {(auditSummary?.buckets.length ?? 0) === 0 && (
                 <div className="py-4 text-[9px] text-slate-600">No activity</div>
               )}
-              {(auditSummary?.buckets ?? []).map((bucket) => {
-                const max = Math.max(1, ...(auditSummary?.buckets ?? []).map((b) => b.count));
-                const height = Math.max(4, Math.round((bucket.count / max) * 42));
+              {auditBuckets.map((bucket) => {
+                const max = Math.max(1, ...auditBuckets.map((b) => b.count));
                 return (
                   <div
                     key={bucket.bucket}
@@ -1617,9 +1634,33 @@ export default function SystemView() {
                       data-audit-bucket={bucket.bucket}
                       data-audit-count={bucket.count}
                       title={`${bucket.bucket}: ${bucket.count}`}
-                      className="w-full rounded-t-sm accent-bg-20"
-                      style={{ height }}
-                    />
+                      className="flex h-14 w-full flex-col justify-end gap-px overflow-hidden rounded-t-sm"
+                    >
+                      {bucket.count === 0 && <div className="h-1 w-full rounded-t-sm bg-white/5" />}
+                      {(['merge', 'resolve', 'other'] as const).map((kind) => {
+                        const count = bucket[kind];
+                        if (count <= 0) return null;
+                        const heightPct = (count / max) * 100;
+                        return (
+                          <div
+                            key={kind}
+                            data-sync-audit-segment
+                            data-audit-kind={kind}
+                            data-audit-count={count}
+                            data-audit-bucket={bucket.bucket}
+                            title={`${bucket.bucket} · ${kind} ${count}`}
+                            className={`w-full rounded-t-sm ${
+                              kind === 'merge'
+                                ? 'bg-emerald-500/70'
+                                : kind === 'resolve'
+                                  ? 'bg-violet-500/70'
+                                  : 'bg-slate-500/60'
+                            }`}
+                            style={{ height: `${Math.max(0.5, heightPct)}%` }}
+                          />
+                        );
+                      })}
+                    </div>
                     <span className="max-w-full truncate text-[7px] text-slate-600">
                       {bucket.bucket.slice(5)}
                     </span>
@@ -1627,6 +1668,50 @@ export default function SystemView() {
                 );
               })}
             </div>
+            <div
+              data-sync-audit-legend
+              className="mt-1.5 flex flex-wrap items-center gap-3 border-t border-white/5 pt-1.5 text-[8px] text-slate-500"
+            >
+              <span data-sync-audit-legend-item="merge" className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                merge {auditMergeTotal}
+              </span>
+              <span
+                data-sync-audit-legend-item="resolve"
+                className="inline-flex items-center gap-1"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-500/70" />
+                resolve {auditResolveTotal}
+              </span>
+              <span data-sync-audit-legend-item="other" className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-slate-500/60" />
+                other {auditOtherTotal}
+              </span>
+              {auditBuckets.length > 1 && (
+                <span className="ml-auto inline-flex items-center gap-1">
+                  <span className="h-px w-3 bg-emerald-400/70" />
+                  cumulative
+                </span>
+              )}
+            </div>
+            {auditBuckets.length > 1 && (
+              <svg
+                data-sync-audit-trend
+                className="mt-1 h-6 w-full overflow-visible text-emerald-400/70"
+                viewBox="0 0 100 24"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <polyline
+                  data-sync-audit-trend-line
+                  points={auditTrendPoints}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            )}
           </div>
           {auditExportMessage && (
             <div

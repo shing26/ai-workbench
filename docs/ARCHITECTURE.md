@@ -121,6 +121,8 @@ Sprint 111 扩展 `get_error_log_summary`：新增 hour 粒度与 `since_ms` / `
 
 Sprint 112 扩展 `stream_ai_message`：新增 `moa_chain` 链式路由，前 3 个启用 Provider 按优先级串行执行，后续请求携带上一路输出作为上下文；AI Studio 新增 Parallel / Chain 切换与链式徽标。
 
+Sprint 113 升级 System Sync audit Activity 图：merge / resolve / other 分层堆叠 + 累计趋势线，图例与过滤条件联动。
+
 Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
 
 Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`，磁盘文件缺失或索引后过期会在 Document status 面板显示徽标。
@@ -288,6 +290,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `src/lib/db.ts` 新增 `appendMoaChainContext`，`sendAiMessageStream` 的 `moaChain` 分支串行消费真实 SSE / NDJSON；取消语义与并行 MOA 一致，最终统一 emit `done`。
 - AI Studio MOA 新增 `data-moa-chain-mode` Parallel / Chain 切换；Chain 时头部展示 `data-moa-chain-badge`（`Alpha AI → Beta AI → Gamma AI`），MOA badge 状态显示 chain，Inspector 展示 Chain / Final。
 - `verify:ui` / `verify:preview` 新增 `moaChain` lane：断言请求顺序、`maxActive <= 1`、上下文传递与链式徽标。
+
+## Sprint 113：审计跨时间轴图
+
+- Sync audit Activity 图每个日 / 周 bucket 按 merge / resolve / other 三色堆叠，`data-sync-audit-segment` 带 `data-audit-kind` / `data-audit-count`；保留 `data-sync-audit-bar` 桶总数锚点。
+- 图例 `data-sync-audit-legend` 展示三类合计；桶数 > 1 时 `data-sync-audit-trend-line` 累计折线叠加在时间轴上方，Day / Week 与过滤条件联动不变。
+- `verify:ui` / `verify:preview` 的 `syncAuditChart` lane 新增分段 / 图例合计与趋势线存在性断言。
 
 ## Sprint 63：RAG 文档状态面板
 
