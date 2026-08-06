@@ -665,6 +665,53 @@ CREATE TABLE IF NOT EXISTS webhook_channel_config (
 - `record_webhook_rule_outcome` 达到熔断阈值时写 `circuit_opened_at = now`；`list_circuit_open_webhook_rules` 只返回 `enabled=0 AND auto_disable_after>0 AND consecutive_failures>=auto_disable_after AND circuit_opened_at>0` 的规则，`set_webhook_rule_enabled(true)` 同时清零失败计数与 `circuit_opened_at`。
 - 浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1`（规则新增 `channels` / `recoveryBackoffSeconds` / `circuitOpenedAt`，旧数据读取时默认补值）与 `ai-workbench:webhook-deliveries:v1`（投递新增 `channel`，旧数据默认 `http`），通道配置使用新 key `ai-workbench:webhook-channel-config:v1`。
 
+## Sprint 146：语义聚类与文档去重
+
+```sql
+CREATE TABLE IF NOT EXISTS knowledge_clusters (
+    id TEXT PRIMARY KEY,
+    centroid TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'local',
+    representative TEXT NOT NULL DEFAULT '',
+    documents INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_cluster_members (
+    cluster_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    similarity REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (cluster_id, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_cluster_members_doc
+    ON knowledge_cluster_members(doc_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_cluster_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cluster_threshold REAL NOT NULL DEFAULT 0.62,
+    dedup_threshold REAL NOT NULL DEFAULT 0.92,
+    last_recomputed_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_dedup_candidates (
+    id TEXT PRIMARY KEY,
+    doc_a TEXT NOT NULL,
+    doc_b TEXT NOT NULL,
+    similarity REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_dedup_status
+    ON knowledge_dedup_candidates(status);
+```
+
+- 新库 SCHEMA 直接建表；旧库 `migrate_knowledge_clusters` 只播种 `knowledge_cluster_config` 默认值（cluster 0.62 / dedup 0.92），无需 ALTER。
+- `knowledge_clusters.centroid` 保存归一化质心 JSON，`representative` 保存簇内最长文档前 500 字符；`knowledge_cluster_members.similarity` 是文档与簇质心的余弦相似度。
+- `knowledge_dedup_candidates.doc_a / doc_b` 存知识文件 id，`status` 为 `open` / `dismissed` / `merged`；合并时删除 `doc_b` 对应文件并刷新分片统计，推荐保留 `doc_a`。
+- 浏览器 fallback 使用 `ai-workbench:knowledge-clusters:v1` / `ai-workbench:knowledge-cluster-config:v1` / `ai-workbench:knowledge-dedup:v1` 持久化同一模型，不写入 SQLite。
+
 ## Sprint 145：真实 Embedding、增量重建与分片索引
 
 ```sql

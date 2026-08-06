@@ -495,6 +495,15 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 卡片新增通道多选与恢复退避输入（`data-webhook-rule-channel` / `data-webhook-rule-backoff`）、规则行通道 / 退避徽标（`data-webhook-rule-channels` / `data-webhook-rule-backoff`）、投递行通道徽标（`data-webhook-delivery-channel`）、Channel settings 面板（SMTP / 收件人 / 通知标题 / 保存 / 测试）与 `data-webhook-recovery-probe` 按钮。
 - `verify:ui` / `verify:preview` 新增 `webhookMultiChannel` / `webhookRecoveryBackoff` lane；Rust 单测覆盖迁移幂等、通道配置默认 / 钳制、多通道创建与入队、熔断开启列表与恢复重置、SMTP mock 发信、通知事件载荷与退避公式，`cargo test --lib` 增至 161 条。
 
+## Sprint 146：语义聚类与文档去重
+
+- 新增 `knowledge_clusters` / `knowledge_cluster_members` / `knowledge_cluster_config` / `knowledge_dedup_candidates` 四张表及 `idx_knowledge_dedup_status` 索引；新库 SCHEMA 直接建表，旧库 `migrate_knowledge_clusters` 幂等播种默认阈值（cluster 0.62 / dedup 0.92），已加入 `init_connection` 迁移链。
+- `recompute_knowledge_clusters` 读取 indexed 知识文件向量，按余弦相似度贪心聚类：超过 cluster_threshold 加入最佳簇并更新质心，否则新建簇；持久化簇代表文本、质心与成员相似度，并按 dedup_threshold 计算高相似候选对。
+- `refresh_knowledge_dedup_candidates` 跳过已 dismiss / merged 组合，文件被删除后自动将 open 转 merged；`dismiss_knowledge_duplicate` / `merge_knowledge_duplicate` 分别标记忽略与删除重复文件，merge 同时刷新分片统计。
+- 新增 Tauri 命令 `get_knowledge_cluster_status` / `recompute_knowledge_clusters` / `dismiss_knowledge_duplicate` / `merge_knowledge_duplicate`；`db.ts` 浏览器 fallback 使用 `ai-workbench:knowledge-clusters:v1` / `ai-workbench:knowledge-cluster-config:v1` / `ai-workbench:knowledge-dedup:v1` 同构持久化。
+- KnowledgeView 新增 Semantic clusters 卡片：cluster / dedup 阈值输入、Recompute 按钮、可展开簇成员列表（`data-cluster-*`）与去重候选 Dismiss / Merge 操作（`data-dedup-*`）。
+- `verify:ui` / `verify:preview` 新增 `knowledgeClusters` / `knowledgeDedupActions` lane；Rust 单测覆盖迁移、聚类分组与去重 dismiss / merge 生命周期，`cargo test --lib` 增至 175 条。
+
 ## Sprint 145：真实 Embedding、增量重建与分片索引
 
 - `knowledge_files` 新增 `shard_id` / `embedding_model` / `embedding_dim` / `embedding_status` / `embedding_error`，新增 `embedding_config` 单行表与 `vector_shards` 分片表及 `idx_knowledge_files_shard` 索引；新库 SCHEMA 直接建列建表，旧库 `migrate_vector_index` 幂等补列并播种分片，已加入 `init_connection` 迁移链。

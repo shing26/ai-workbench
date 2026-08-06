@@ -4310,6 +4310,173 @@ try {
   laneLog('vectorShardSearch ok');
 
   await evaluate(`(() => {
+    const now = Date.now();
+    const existing = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const vault = [
+      ...existing,
+      {
+        path: "C:/clusters/graph-a.md",
+        title: "Graph A",
+        tags: "#work,#clusters",
+        content: "# Graph A\\n\\nKnowledge graph vector search embedding cluster.",
+        indexedAt: now - 3000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+        shardId: "1",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/graph-b.md",
+        title: "Graph B",
+        tags: "#work,#clusters",
+        content: "# Graph B\\n\\nKnowledge graph vector search embedding cluster notes.",
+        indexedAt: now - 2000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+        shardId: "2",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/weather-c.md",
+        title: "Weather C",
+        tags: "#life,#clusters",
+        content: "# Weather C\\n\\nWeekend weather forecast running plan.",
+        indexedAt: now - 1000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([2, 4, 6, 8, 10, 12, 14, 16, 18, 20]),
+        shardId: "3",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/copy-x.md",
+        title: "Copy X",
+        tags: "#work,#clusters",
+        content: "# Copy X\\n\\nExact duplicate document body with identical embedding.",
+        indexedAt: now,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        shardId: "4",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/copy-y.md",
+        title: "Copy Y",
+        tags: "#work,#clusters",
+        content: "# Copy X\\n\\nExact duplicate document body with identical embedding.",
+        indexedAt: now,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        shardId: "5",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const knowledgeClusters = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const recompute = document.querySelector("[data-cluster-recompute]");
+    if (!recompute) return { ok: false, reason: "no cluster recompute button" };
+    recompute.click();
+    for (let i = 0; i < 40; i += 1) {
+      const message = document.querySelector("[data-cluster-message]")?.textContent ?? "";
+      if (message.includes("Recomputed")) break;
+      await sleep(100);
+    }
+    const items = [...document.querySelectorAll("[data-cluster-item]")];
+    const docsPerCluster = items.map((el) =>
+      Number(el.getAttribute("data-cluster-docs") ?? 0),
+    );
+    const multi = items.filter((el) => Number(el.getAttribute("data-cluster-docs") ?? 0) > 1);
+    const single = items.filter((el) => Number(el.getAttribute("data-cluster-docs") ?? 0) === 1);
+    const dupes = [...document.querySelectorAll("[data-dedup-item]")];
+    const dupSimilarity = Number(
+      document.querySelector("[data-dedup-similarity]")?.getAttribute("data-dedup-similarity") ?? 0,
+    );
+    return {
+      ok: items.length >= 3 && multi.length >= 1 && single.length >= 1 && dupes.length >= 1 && dupSimilarity > 0.9,
+      items: items.length,
+      docsPerCluster,
+      multi: multi.length,
+      single: single.length,
+      dupes: dupes.length,
+      dupSimilarity,
+    };
+  })()`);
+  if (!knowledgeClusters.ok) {
+    throw new Error(`Knowledge clusters assertion failed: ${JSON.stringify(knowledgeClusters)}`);
+  }
+  results.knowledgeClusters = knowledgeClusters;
+  laneLog('knowledgeClusters ok');
+
+  const knowledgeDedupActions = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dismissBtn = document.querySelector("[data-dedup-dismiss]");
+    if (!dismissBtn) return { ok: false, reason: "no dismiss button" };
+    const openBefore = [...document.querySelectorAll("[data-dedup-item]")].length;
+    dismissBtn.click();
+    await sleep(300);
+    const openAfterDismiss = [...document.querySelectorAll("[data-dedup-item]")].length;
+    const mergeBtn = document.querySelector("[data-dedup-merge]");
+    if (!mergeBtn) return { ok: false, reason: "no merge button" };
+    const mergeId = mergeBtn.getAttribute("data-dedup-id") ?? "";
+    const storedBefore = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+    const pair = storedBefore.find((item) => item.id === mergeId) ?? { docA: "", docB: "" };
+    mergeBtn.click();
+    for (let i = 0; i < 40; i += 1) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+      if (stored.some((item) => item.id === mergeId && item.status === "merged")) break;
+      await sleep(100);
+    }
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+    const filePaths = new Set(files.map((file) => file.path));
+    return {
+      ok:
+        openBefore > 0 &&
+        openAfterDismiss < openBefore &&
+        filePaths.has(pair.docA) &&
+        !filePaths.has(pair.docB),
+      openBefore,
+      openAfterDismiss,
+      mergeId,
+      pairDocA: pair.docA,
+      pairDocB: pair.docB,
+      mergeStored: stored.find((item) => item.id === mergeId)?.status ?? "",
+      fileCount: files.length,
+    };
+  })()`);
+  if (!knowledgeDedupActions.ok) {
+    throw new Error(
+      `Knowledge dedup actions assertion failed: ${JSON.stringify(knowledgeDedupActions)}`,
+    );
+  }
+  results.knowledgeDedupActions = knowledgeDedupActions;
+  laneLog('knowledgeDedupActions ok');
+
+  await evaluate(`(() => {
     const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]")
       .filter((file) => !file.path.includes("Vector Config"))
       .slice(0, 2);

@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 146
+
+### What went well?
+
+- Knowledge 新增语义聚类与文档去重：`knowledge_clusters` / `knowledge_cluster_members` / `knowledge_cluster_config` / `knowledge_dedup_candidates` 四张表，`recompute_knowledge_clusters` 按余弦相似度贪心聚类并持久化代表文本、质心与成员相似度；`refresh_knowledge_dedup_candidates` 计算高相似对，文件消失后自动转 merged。
+- 去重操作完整闭环：dismiss 标记忽略且不重复弹出，merge 删除重复文件并刷新分片统计；新增 4 个 Tauri 命令，浏览器 fallback 使用 `ai-workbench:knowledge-clusters:v1` / `ai-workbench:knowledge-cluster-config:v1` / `ai-workbench:knowledge-dedup:v1` 同构持久化。
+- Knowledge 新增 Semantic clusters 卡片（阈值输入、Recompute、可展开簇列表、Dismiss / Merge 去重候选）；Rust 单测增至 175 条，`verify:ui` / `verify:preview` 新增 `knowledgeClusters` / `knowledgeDedupActions` 两条 lane，双端全绿。
+
+### What went wrong?
+
+- 首轮 dedup lane 假设只有一对重复，实际聚类种子在同一向量空间下产生多对高相似组合，`openAfterDismiss === 0` 断言过强；改为记录 dismiss 前后数量递减，并按被合并候选的实际 docA / docB 校验文件删除结果。
+- `list_knowledge_dedup_rows` 在合并删除文件后 LEFT JOIN 得到 NULL 标题，rusqlite 按 `String` 读取报 InvalidColumnType；用 `CAST(COALESCE(title, path, 'Deleted document') AS TEXT)` 兜底后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 轮播拖拽排序与速度滑杆。
+- 保留 `knowledgeClusters` / `knowledgeDedupActions` lane，修改聚类阈值、去重操作或向量模型时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 145
 
 ### What went well?

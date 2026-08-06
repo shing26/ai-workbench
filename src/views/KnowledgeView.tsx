@@ -3,6 +3,7 @@ import {
   Clock,
   Database,
   FolderOpen,
+  Layers,
   Link2,
   Pencil,
   Plus,
@@ -87,6 +88,12 @@ export default function KnowledgeView() {
   const [vectorRebuildBusy, setVectorRebuildBusy] = useState(false);
   const [vectorRebuildForce, setVectorRebuildForce] = useState(false);
   const [vectorMessage, setVectorMessage] = useState('');
+  const [clusterStatus, setClusterStatus] = useState<db.KnowledgeClusterStatus | null>(null);
+  const [clusterThreshold, setClusterThreshold] = useState('0.62');
+  const [dedupThreshold, setDedupThreshold] = useState('0.92');
+  const [clusterBusy, setClusterBusy] = useState(false);
+  const [clusterMessage, setClusterMessage] = useState('');
+  const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -116,6 +123,43 @@ export default function KnowledgeView() {
     setEmbeddingAuto(config.autoRebuild);
     setVectorStatus(status);
   }, []);
+
+  const loadClusterData = useCallback(async () => {
+    const status = await db.getKnowledgeClusterStatus();
+    setClusterStatus(status);
+    setClusterThreshold(String(status.clusterThreshold));
+    setDedupThreshold(String(status.dedupThreshold));
+  }, []);
+
+  const runClusterRecompute = async () => {
+    if (clusterBusy) return;
+    setClusterBusy(true);
+    try {
+      const status = await db.recomputeKnowledgeClusters(
+        Number(clusterThreshold) || undefined,
+        Number(dedupThreshold) || undefined,
+      );
+      setClusterStatus(status);
+      setClusterThreshold(String(status.clusterThreshold));
+      setDedupThreshold(String(status.dedupThreshold));
+      setClusterMessage(`Recomputed ${status.clusters.length} cluster(s)`);
+    } catch (err) {
+      setClusterMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClusterBusy(false);
+    }
+  };
+
+  const dismissDedup = async (id: string) => {
+    await db.dismissKnowledgeDuplicate(id);
+    setClusterStatus(await db.getKnowledgeClusterStatus());
+  };
+
+  const mergeDedup = async (id: string) => {
+    await db.mergeKnowledgeDuplicate(id);
+    await loadDocs();
+    setClusterStatus(await db.getKnowledgeClusterStatus());
+  };
 
   const saveEmbeddingConfig = async () => {
     try {
@@ -184,6 +228,10 @@ export default function KnowledgeView() {
   useEffect(() => {
     void loadVectorData();
   }, [loadVectorData]);
+
+  useEffect(() => {
+    void loadClusterData();
+  }, [loadClusterData]);
 
   useEffect(() => {
     let disposed = false;
@@ -1601,6 +1649,157 @@ export default function KnowledgeView() {
               </p>
             </div>
           ))}
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Semantic clusters" subtitle="语义聚类与文档去重" icon={Layers} colSpan={12}>
+        <div className="mb-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto]">
+          <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
+            <span className="shrink-0">cluster</span>
+            <input
+              value={clusterThreshold}
+              onChange={(e) => setClusterThreshold(e.target.value)}
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              data-cluster-threshold
+              className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-transparent px-2 font-mono text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+            />
+          </label>
+          <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
+            <span className="shrink-0">dedup</span>
+            <input
+              value={dedupThreshold}
+              onChange={(e) => setDedupThreshold(e.target.value)}
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              data-dedup-threshold
+              className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-transparent px-2 font-mono text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+            />
+          </label>
+          <button
+            type="button"
+            data-cluster-recompute
+            onClick={() => void runClusterRecompute()}
+            disabled={clusterBusy}
+            className="flex h-8 items-center justify-center gap-1.5 rounded-lg accent-bg-20 px-3 text-[10px] accent-text-strong accent-hover-bg-30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={12} className={clusterBusy ? 'animate-spin' : ''} />
+            {clusterBusy ? 'Recomputing...' : 'Recompute'}
+          </button>
+          <span
+            data-cluster-message
+            className="flex h-8 items-center rounded-md bg-white/5 px-2 text-[10px] text-slate-500"
+          >
+            {clusterMessage ||
+              `${clusterStatus?.clusters.length ?? 0} clusters 路 ${clusterStatus?.dedup.filter((c) => c.status === 'open').length ?? 0} dupes`}
+          </span>
+        </div>
+
+        <div className="grid gap-2 lg:grid-cols-2">
+          <div
+            data-cluster-list
+            className="grid max-h-64 gap-1.5 overflow-y-auto rounded-xl border border-white/10 bg-white/[0.02] p-2"
+          >
+            {(clusterStatus?.clusters ?? []).map((cluster) => (
+              <div
+                key={cluster.id}
+                data-cluster-item
+                data-cluster-docs={cluster.documents}
+                className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+              >
+                <button
+                  type="button"
+                  data-cluster-toggle
+                  onClick={() =>
+                    setExpandedCluster((current) => (current === cluster.id ? null : cluster.id))
+                  }
+                  className="flex w-full items-center gap-2 text-left"
+                >
+                  <span data-cluster-id className="text-[9px] text-slate-500">
+                    {cluster.id}
+                  </span>
+                  <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300">
+                    {cluster.documents} docs
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
+                    {cluster.representative.split('\n')[0] || 'Untitled'}
+                  </span>
+                </button>
+                {expandedCluster === cluster.id && (
+                  <div className="mt-1.5 flex flex-col gap-1 border-t border-white/5 pt-1.5">
+                    {cluster.members.map((member) => (
+                      <div
+                        key={member.id}
+                        data-cluster-member
+                        className="flex items-center gap-2 text-[9px] text-slate-500"
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {member.title || member.path}
+                        </span>
+                        <span data-cluster-member-similarity className="font-mono text-slate-600">
+                          {member.similarity.toFixed(3)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {(clusterStatus?.clusters ?? []).length === 0 && (
+              <div className="py-6 text-center text-[10px] text-slate-600">No clusters yet</div>
+            )}
+          </div>
+
+          <div
+            data-dedup-list
+            className="grid max-h-64 gap-1.5 overflow-y-auto rounded-xl border border-white/10 bg-white/[0.02] p-2"
+          >
+            {(clusterStatus?.dedup ?? [])
+              .filter((candidate) => candidate.status === 'open')
+              .map((candidate) => (
+                <div
+                  key={candidate.id}
+                  data-dedup-item
+                  data-dedup-similarity={candidate.similarity.toFixed(3)}
+                  className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[9px] text-slate-300">
+                      {candidate.titleA} ↔ {candidate.titleB}
+                    </span>
+                    <span className="block text-[8px] text-slate-600">
+                      similarity {candidate.similarity.toFixed(3)}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    data-dedup-dismiss
+                    data-dedup-id={candidate.id}
+                    onClick={() => void dismissDedup(candidate.id)}
+                    className="rounded-md bg-white/[0.06] px-2 py-1 text-[9px] text-slate-400 hover:bg-white/[0.1]"
+                  >
+                    Dismiss
+                  </button>
+                  <button
+                    type="button"
+                    data-dedup-merge
+                    data-dedup-id={candidate.id}
+                    onClick={() => void mergeDedup(candidate.id)}
+                    className="rounded-md bg-amber-500/15 px-2 py-1 text-[9px] text-amber-300 hover:bg-amber-500/25"
+                  >
+                    Merge
+                  </button>
+                </div>
+              ))}
+            {(clusterStatus?.dedup ?? []).filter((candidate) => candidate.status === 'open')
+              .length === 0 && (
+              <div className="py-6 text-center text-[10px] text-slate-600">No duplicates found</div>
+            )}
+          </div>
         </div>
       </BentoCard>
 
