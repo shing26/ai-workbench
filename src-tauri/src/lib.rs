@@ -1390,6 +1390,16 @@ fn delete_project(state: State<'_, db::Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_project_revenue_history(
+    state: State<'_, db::Db>,
+    project_id: String,
+    limit: i64,
+) -> Result<Vec<db::ProjectRevenuePoint>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_project_revenue_history(&conn, &project_id, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_thoughts(state: State<'_, db::Db>) -> Result<Vec<db::Thought>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_thoughts(&conn).map_err(|e| e.to_string())
@@ -5416,6 +5426,7 @@ pub fn run() {
             create_project,
             update_project,
             delete_project,
+            list_project_revenue_history,
             list_thoughts,
             create_thought,
             update_thought_tags,

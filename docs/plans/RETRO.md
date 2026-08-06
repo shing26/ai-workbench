@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 129
+
+### What went well?
+
+- SQLite 新增 `project_revenue_history`（id / project_id / revenue / recorded_at），`create_project` / `update_project` 自动写收益快照，`delete_project` 同步清理历史；Rust 与浏览器 fallback 同构支持 `listProjectRevenueHistory`，localStorage 复用 `ai-workbench:db:v1`。
+- Projects 项目卡片设置区下方新增 `data-project-revenue-trend` 条形趋势，每个点携带 `data-project-revenue-point` / `data-project-revenue-value` / `data-project-revenue-at`，reload 后按历史恢复。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueTrend` / `projectRevenueTrendPersisted` 两条 lane，覆盖保存后点数增加、末点为最新值、reload 后保持；`cargo test --lib` 增至 135 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 持久化断言期待 4 个点，实际种子 project 只有初始 0 快照 + 编辑快照 + trend 快照 = 3 个，放宽为 `points.length >= 2 && points.length === storedCount`。
+- 第二次修复 `storedCount` 引用未在 evaluate 内定义的问题，改为显式 `const storedCount = storedPoints.length`。
+
+### Action Items
+
+- 下一 Sprint 候选：Actions 周目标统计 / 快速归档、System 自动化规则补强、AI Studio 会话与知识库深度能力。
+- 保留 `projectRevenueTrend` / `projectRevenueTrendPersisted` lane，修改项目模型、收益编辑或卡片渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 128
 
 ### What went well?
