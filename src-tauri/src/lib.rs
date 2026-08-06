@@ -1373,6 +1373,17 @@ fn create_project(
 }
 
 #[tauri::command]
+fn update_project(
+    state: State<'_, db::Db>,
+    id: String,
+    status: String,
+    revenue: f64,
+) -> Result<db::Project, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_project(&conn, &id, &status, revenue).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_thoughts(state: State<'_, db::Db>) -> Result<Vec<db::Thought>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_thoughts(&conn).map_err(|e| e.to_string())
@@ -5332,6 +5343,7 @@ pub fn run() {
             set_task_due_date,
             list_projects,
             create_project,
+            update_project,
             list_thoughts,
             create_thought,
             list_quick_prompts,

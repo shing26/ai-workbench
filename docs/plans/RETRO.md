@@ -123,6 +123,25 @@
 - 保留 habit lane 与 `focusWeekArchive` / `focusWeekPersisted` / `focusWeekRestored` 断言，修改习惯打卡、Focus 周视图或归档逻辑时重跑双端验证。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 120
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构新增项目状态 / 收益编辑：`update_project(id, status, revenue)` 状态仅接受 active / paused、收益非负钳制，保存后返回最新 Project；`db.ts` / `workbenchStore` 与 localStorage fallback 行为一致。
+- 每个项目卡片新增 `data-project-edit` 设置区：状态下拉、收益数字输入、保存按钮与 `Saved` 结果徽标，保存后 Portfolio summary、StatPill 与 Project carousel 同步刷新。
+- `verify:ui` / `verify:preview` 新增 `projectEdit` / `projectEditPersisted` / `projectEditRestored`：编辑 1234.56 / paused → reload 持久化 → 恢复 active / 0；`cargo test --lib` 增至 126 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings`、`cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；双端验证一次全绿，无需重跑。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量测试、AI Studio 会话分组/归档、Knowledge 笔记标签编辑、Actions 习惯删除/周目标编辑、Projects 项目删除或收益趋势。
+- 保留 `projectEdit` / `projectEditPersisted` / `projectEditRestored` lane，修改项目字段、设置区或 Portfolio 汇总时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

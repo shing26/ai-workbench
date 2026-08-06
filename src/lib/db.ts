@@ -1241,6 +1241,17 @@ export async function createProject(name: string, path: string): Promise<Project
   return project;
 }
 
+export async function updateProject(id: string, status: string, revenue: number): Promise<Project> {
+  if (isTauri()) return invoke<Project>('update_project', { id, status, revenue });
+  const shape = readLocal();
+  const project = shape.projects.find((p) => p.id === id);
+  if (!project) throw new Error('project not found');
+  project.status = status === 'paused' ? 'paused' : 'active';
+  project.revenue = Number.isFinite(revenue) && revenue >= 0 ? revenue : 0;
+  writeLocal(shape);
+  return project;
+}
+
 export async function listThoughts(): Promise<Thought[]> {
   return isTauri() ? invoke<Thought[]>('list_thoughts') : readLocal().thoughts;
 }

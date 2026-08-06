@@ -1646,6 +1646,106 @@ try {
     };
   })()`);
   results.portfolioSummaryExport = portfolioSummaryExport;
+  const projectEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const edit = document.querySelector("[data-project-edit]");
+    if (!edit) return { ok: false, reason: "project edit missing" };
+    const projectId = edit.getAttribute("data-project-edit");
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!status || !revenue || !save) {
+      return { ok: false, reason: "project controls missing", projectId };
+    }
+    const setSelect = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    setSelect.call(status, "paused");
+    status.dispatchEvent(new Event("change", { bubbles: true }));
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "1234.56");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    await sleep(600);
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const cardText = edit.closest("section")?.textContent ?? "";
+    const resultText = edit.querySelector("[data-project-edit-result]")?.textContent ?? "";
+    const ok =
+      status.value === "paused" &&
+      revenue.value === "1234.56" &&
+      resultText.includes("Saved") &&
+      cardText.includes("$1234.56") &&
+      cardText.includes("paused") &&
+      summary.includes("$1234.56");
+    return {
+      ok,
+      projectId,
+      status: status.value,
+      revenue: revenue.value,
+      resultText,
+      cardHasRevenue: cardText.includes("$1234.56"),
+      summaryHasRevenue: summary.includes("$1234.56"),
+    };
+  })()`);
+  results.projectEdit = projectEdit;
+  if (!results.projectEdit.ok) {
+    throw new Error(`Project edit assertion failed: ${JSON.stringify(results.projectEdit)}`);
+  }
+  const projectEditId = results.projectEdit.projectId ?? '';
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(projectEditId)};
+    let edit = null;
+    for (let i = 0; i < 20; i++) {
+      edit = document.querySelector('[data-project-edit="' + id + '"]');
+      if (edit) break;
+      await sleep(100);
+    }
+    if (!edit) return { ok: false, reason: "project edit missing after reload" };
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const ok =
+      status?.value === "paused" &&
+      revenue?.value === "1234.56" &&
+      summary.includes("$1234.56");
+    return {
+      ok,
+      status: status?.value,
+      revenue: revenue?.value,
+      summaryHasRevenue: summary.includes("$1234.56"),
+    };
+  })()`);
+  results.projectEditPersisted = projectEditPersisted;
+  const projectEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(projectEditId)};
+    const edit = document.querySelector('[data-project-edit="' + id + '"]');
+    if (!edit) return { ok: false, reason: "project edit missing for restore" };
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!status || !revenue || !save) return { ok: false, reason: "project controls missing" };
+    const setSelect = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    setSelect.call(status, "active");
+    status.dispatchEvent(new Event("change", { bubbles: true }));
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "0");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    await sleep(600);
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const cardText = edit.closest("section")?.textContent ?? "";
+    const ok =
+      status.value === "active" &&
+      revenue.value === "0" &&
+      summary.includes("$0.00") &&
+      !cardText.includes("$1234.56");
+    return { ok, status: status.value, revenue: revenue.value };
+  })()`);
+  results.projectEditRestored = projectEditRestored;
   results.gitActivityFilters = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const board = () => document.querySelector("[data-git-activity]");
@@ -1698,6 +1798,16 @@ try {
   if (!results.gitActivityFilters.ok) {
     throw new Error(
       `Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`,
+    );
+  }
+  if (!results.projectEditPersisted?.ok) {
+    throw new Error(
+      `Project edit persistence assertion failed: ${JSON.stringify(results.projectEditPersisted)}`,
+    );
+  }
+  if (!results.projectEditRestored?.ok) {
+    throw new Error(
+      `Project edit restore assertion failed: ${JSON.stringify(results.projectEditRestored)}`,
     );
   }
   results.gitDirtyPreview = await evaluate(`(async () => {

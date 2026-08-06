@@ -1684,6 +1684,27 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
     })
 }
 
+pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -> Result<Project> {
+    let status = if status == "paused" {
+        "paused"
+    } else {
+        "active"
+    };
+    let revenue = if revenue.is_finite() && revenue >= 0.0 {
+        revenue
+    } else {
+        0.0
+    };
+    conn.execute(
+        "UPDATE projects SET status = ?1, revenue = ?2 WHERE id = ?3",
+        params![status, revenue, id],
+    )?;
+    list_projects(conn)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
 pub fn list_thoughts(conn: &Connection) -> Result<Vec<Thought>> {
     let mut stmt = conn.prepare(
         "SELECT id, content, tags, type, created_at FROM thoughts ORDER BY created_at DESC",
@@ -5357,6 +5378,36 @@ mod tests {
         let same = diff_message_version_with_current(&conn, &user.id, &versions[1].id).unwrap();
         assert!(same.added.is_empty());
         assert!(same.removed.is_empty());
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_status_and_revenue_update_persist() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-update-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let project = create_project(&conn, "Side Project", "").unwrap();
+        let updated = update_project(&conn, &project.id, "paused", 1234.56).unwrap();
+        assert_eq!(updated.status, "paused");
+        assert_eq!(updated.revenue, 1234.56);
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let saved = list_projects(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == project.id)
+            .expect("updated project should be listed");
+        assert_eq!(saved.status, "paused");
+        assert_eq!(saved.revenue, 1234.56);
+
+        let clamped = update_project(&conn, &project.id, "active", -5.0).unwrap();
+        assert_eq!(clamped.status, "active");
+        assert_eq!(clamped.revenue, 0.0);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

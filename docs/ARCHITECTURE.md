@@ -343,6 +343,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 习惯按钮新增 `data-habit-toggle` 锚点，验证不再误选任务行 Toggle。
 - `verify:ui` / `verify:preview` 的 habit lane 新增种子 3/2/5 连续天数、14 天热力条、打卡后连续天数 +1、今日点亮、周进度与 reload 持久化断言；`focusWeekArchive` 验证顺序修正为 reload 后先验归档持久化，再恢复任务。
 
+## Sprint 120：Projects 项目状态与收益编辑
+
+- Rust 新增 `update_project(id, status, revenue)`：状态仅接受 active / paused，收益非负钳制，更新后返回最新 Project，已注册 Tauri 命令；`src/lib/db.ts` 新增同构 `updateProject`，localStorage fallback 同样钳制。
+- `workbenchStore` 新增 `updateProject`，保存后刷新 `projects`；每个项目卡片新增 `data-project-edit` 设置区（`data-project-status` / `data-project-revenue` / `data-project-save` / `data-project-edit-result`）。
+- 保存后 Portfolio summary、项目卡片 StatPill 与 Project carousel 详情同步显示新状态 / 收益。
+- `verify:ui` / `verify:preview` 新增 `projectEdit` / `projectEditPersisted` / `projectEditRestored`：编辑 1234.56 / paused → reload 持久化 → 恢复 active / 0；`cargo test --lib` 增至 126 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
