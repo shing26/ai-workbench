@@ -7400,6 +7400,88 @@ try {
   results.sessionWorkspace = sessionWorkspace;
   laneLog('sessionWorkspace ok');
 
+  // Depends on sessionWorkspace leaving Workspace Beta + messages in localStorage.
+  const sessionSaveKnowledge = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find(
+        (el) =>
+          el?.textContent?.includes("Workspace Beta") && !el?.textContent?.includes("(copy)"),
+      );
+    if (!row) return { ok: false, reason: "beta session row missing" };
+    row.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("# Workspace Beta")) break;
+      await sleep(100);
+    }
+    const saveBtn = document.querySelector("[data-session-export-knowledge]");
+    if (!saveBtn) return { ok: false, reason: "save knowledge button missing" };
+    saveBtn.click();
+    let result = "";
+    for (let i = 0; i < 30; i++) {
+      result =
+        document.querySelector("[data-session-export-knowledge-result]")?.textContent ?? "";
+      if (result.includes("Saved")) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const thought = (shape.thoughts ?? []).find((t) => t.content.startsWith("# Workspace Beta"));
+    const ok =
+      preview.includes("## User") &&
+      preview.includes("beta question") &&
+      result.includes("Saved") &&
+      thought?.tags === "#chat,#session" &&
+      thought?.type === "note";
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    return {
+      ok,
+      previewHasTitle: preview.includes("# Workspace Beta"),
+      previewHasUser: preview.includes("## User"),
+      result,
+      thoughtTags: thought?.tags,
+      thoughtType: thought?.type,
+    };
+  })()`);
+  if (!sessionSaveKnowledge.ok) {
+    throw new Error(
+      `AI Studio session save knowledge assertion failed: ${JSON.stringify(sessionSaveKnowledge)}`,
+    );
+  }
+  results.sessionSaveKnowledge = sessionSaveKnowledge;
+  laneLog('sessionSaveKnowledge ok');
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const sessionSaveKnowledgePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let found = false;
+    for (let i = 0; i < 30; i++) {
+      found = [...document.querySelectorAll("main button")]
+        .some((b) => (b.textContent || "").startsWith("# Workspace Beta"));
+      if (found) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stored = (shape.thoughts ?? []).some(
+      (t) => t.content.startsWith("# Workspace Beta") && t.tags === "#chat,#session",
+    );
+    return { ok: found && stored, found, stored };
+  })()`);
+  if (!sessionSaveKnowledgePersisted?.ok) {
+    throw new Error(
+      `AI Studio session save knowledge persistence assertion failed: ${JSON.stringify(
+        sessionSaveKnowledgePersisted,
+      )}`,
+    );
+  }
+  results.sessionSaveKnowledgePersisted = sessionSaveKnowledgePersisted;
+  laneLog('sessionSaveKnowledgePersisted ok');
+
+  await clickDock('AI Studio');
   await evaluate(`(() => {
     const now = Date.now();
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");

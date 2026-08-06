@@ -427,6 +427,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - System 规则编辑区新增 `data-webhook-rule-cooldown` 输入，事件规则列表展示 `data-webhook-rule-cooldown-badge`（`cooldown Ns`）；浏览器 fallback 在 `triggerWebhookEvent` 中按 `lastRunAt` 过滤并写回规则，`readWebhookRules` 对旧数据默认补 0。
 - `verify:ui` / `verify:preview` 新增 `webhookRuleCooldown` lane；Rust 新增 `webhook_cooldown_migration_adds_column` / `webhook_event_cooldown_suppresses_repeat_triggers` 单测，`cargo test --lib` 增至 137 条。
 
+## Sprint 132：AI Studio 会话导出到知识库
+
+- 会话导出面板新增 `data-session-export-knowledge` 按钮：点击后调用 `addThought(buildSessionMarkdown(...), '#chat,#session', 'note')`，成功显示 `Saved to Knowledge`，保存中禁用防重复提交，结果写入 `data-session-export-knowledge-result`。
+- 打开 / 关闭导出面板时清空保存状态与结果，避免旧状态残留；浏览器 fallback 与 Tauri 共用 `createThought` 链路，无需新增命令。
+- `verify:ui` / `verify:preview` 新增 `sessionSaveKnowledge` / `sessionSaveKnowledgePersisted` 两条 lane；纯前端改动，无新增表结构。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
