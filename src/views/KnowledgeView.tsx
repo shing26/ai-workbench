@@ -68,6 +68,10 @@ export default function KnowledgeView() {
   const [bodyDraft, setBodyDraft] = useState('');
   const [bodyPreview, setBodyPreview] = useState(false);
   const [bodyEditResults, setBodyEditResults] = useState<Record<string, string>>({});
+  const [wikiSuggestions, setWikiSuggestions] = useState<db.WikiLinkSuggestion[]>([]);
+  const [wikiActiveIndex, setWikiActiveIndex] = useState(0);
+  const [wikiLinkStart, setWikiLinkStart] = useState(0);
+  const [wikiLinkEnd, setWikiLinkEnd] = useState(0);
   const [typeEditResults, setTypeEditResults] = useState<Record<string, string>>({});
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteResults, setDeleteResults] = useState<Record<string, string>>({});
@@ -293,6 +297,7 @@ export default function KnowledgeView() {
     setSelectedTag('all');
     setBodyEditId(null);
     setTagEditId(null);
+    closeWikiSuggestions();
     setSelectedId(id);
   };
 
@@ -339,6 +344,47 @@ export default function KnowledgeView() {
     setBodyDraft(thought.content);
     setBodyPreview(false);
     setBodyEditResults((prev) => ({ ...prev, [thought.id]: '' }));
+    closeWikiSuggestions();
+  };
+
+  const closeWikiSuggestions = () => {
+    setWikiSuggestions([]);
+    setWikiActiveIndex(0);
+  };
+
+  const handleBodyDraftChange = (value: string, caret: number) => {
+    setBodyDraft(value);
+    const before = value.slice(0, caret);
+    const match = before.match(/\[\[([^\]\n]*)$/);
+    if (!match) {
+      closeWikiSuggestions();
+      return;
+    }
+    const query = (match[1] ?? '').trim();
+    setWikiLinkStart(caret - match[0].length);
+    setWikiLinkEnd(caret);
+    if (!query) {
+      closeWikiSuggestions();
+      return;
+    }
+    setWikiSuggestions(db.suggestWikiLinkTargets(thoughts, query, 6, selectedLocal?.id));
+    setWikiActiveIndex(0);
+  };
+
+  const insertWikiSuggestion = (title: string) => {
+    const next = `${bodyDraft.slice(0, wikiLinkStart)}[[${title}]]${bodyDraft.slice(wikiLinkEnd)}`;
+    setBodyDraft(next);
+    closeWikiSuggestions();
+    requestAnimationFrame(() => {
+      const editor = document.querySelector<HTMLTextAreaElement>(
+        `[data-thought-body-input="${selectedLocal?.id ?? ''}"]`,
+      );
+      if (editor) {
+        const position = wikiLinkStart + title.length + 4;
+        editor.setSelectionRange(position, position);
+        editor.focus();
+      }
+    });
   };
 
   const saveBodyEdit = async (thought: db.Thought) => {
@@ -349,12 +395,14 @@ export default function KnowledgeView() {
     setBodyDraft('');
     setBodyPreview(false);
     setBodyEditResults((prev) => ({ ...prev, [thought.id]: 'Saved' }));
+    closeWikiSuggestions();
   };
 
   const cancelBodyEdit = () => {
     setBodyEditId(null);
     setBodyDraft('');
     setBodyPreview(false);
+    closeWikiSuggestions();
   };
 
   const convertType = async (thought: db.Thought, type: db.ThoughtType) => {
@@ -1592,7 +1640,7 @@ export default function KnowledgeView() {
               {selectedLocal && bodyEditId === selectedLocal.id ? (
                 <div
                   data-thought-body-editor={selectedLocal.id}
-                  className="mb-2 flex min-h-0 flex-1 flex-col gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1.5"
+                  className="relative mb-2 flex min-h-0 flex-1 flex-col gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1.5"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
                     <div className="flex h-6 shrink-0 items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.03] p-0.5">
@@ -1611,7 +1659,10 @@ export default function KnowledgeView() {
                       <button
                         type="button"
                         data-thought-body-mode="preview"
-                        onClick={() => setBodyPreview(true)}
+                        onClick={() => {
+                          closeWikiSuggestions();
+                          setBodyPreview(true);
+                        }}
                         className={`h-5 rounded px-2 text-[9px] transition-colors ${
                           bodyPreview
                             ? 'bg-emerald-500/20 text-emerald-300'
@@ -1640,6 +1691,36 @@ export default function KnowledgeView() {
                       </button>
                     </div>
                   </div>
+                  {!bodyPreview && wikiSuggestions.length > 0 && (
+                    <div
+                      data-wiki-link-suggestions
+                      className="absolute left-1.5 right-1.5 top-9 z-20 max-h-40 overflow-y-auto rounded-lg border border-white/10 bg-[#202024] p-1 shadow-xl"
+                    >
+                      {wikiSuggestions.map((suggestion, index) => (
+                        <button
+                          key={suggestion.id}
+                          type="button"
+                          data-wiki-link-suggestion={suggestion.title}
+                          data-wiki-link-active={index === wikiActiveIndex ? 'true' : 'false'}
+                          onMouseEnter={() => setWikiActiveIndex(index)}
+                          onClick={() => insertWikiSuggestion(suggestion.title)}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] transition-colors ${
+                            index === wikiActiveIndex
+                              ? 'bg-emerald-500/15 text-emerald-200'
+                              : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
+                          }`}
+                        >
+                          <span className="truncate">{suggestion.title}</span>
+                          <span className="ml-auto shrink-0 rounded bg-white/5 px-1 py-0.5 font-mono text-[8px] text-slate-500">
+                            {suggestion.tags.split(',')[0]?.trim() || 'untagged'}
+                          </span>
+                          <span className="shrink-0 rounded bg-white/5 px-1 py-0.5 font-mono text-[8px] text-slate-600">
+                            {suggestion.type}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {bodyPreview ? (
                     <div
                       data-thought-body-preview={selectedLocal.id}
@@ -1651,8 +1732,35 @@ export default function KnowledgeView() {
                     <textarea
                       data-thought-body-input={selectedLocal.id}
                       value={bodyDraft}
-                      onChange={(e) => setBodyDraft(e.target.value)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        const caret = e.target.selectionStart ?? value.length;
+                        handleBodyDraftChange(value, caret);
+                      }}
                       onKeyDown={(e) => {
+                        if (wikiSuggestions.length > 0 && e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setWikiActiveIndex((prev) => (prev + 1) % wikiSuggestions.length);
+                          return;
+                        }
+                        if (wikiSuggestions.length > 0 && e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setWikiActiveIndex(
+                            (prev) => (prev - 1 + wikiSuggestions.length) % wikiSuggestions.length,
+                          );
+                          return;
+                        }
+                        if (wikiSuggestions.length > 0 && e.key === 'Escape') {
+                          e.preventDefault();
+                          closeWikiSuggestions();
+                          return;
+                        }
+                        if (wikiSuggestions.length > 0 && (e.key === 'Enter' || e.key === 'Tab')) {
+                          e.preventDefault();
+                          const suggestion = wikiSuggestions[wikiActiveIndex];
+                          if (suggestion) insertWikiSuggestion(suggestion.title);
+                          return;
+                        }
                         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                           e.preventDefault();
                           void saveBodyEdit(selectedLocal);

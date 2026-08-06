@@ -4044,6 +4044,221 @@ try {
   results.knowledgeBacklinks = knowledgeBacklinks;
   laneLog('knowledgeBacklinks ok');
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.thoughts = [
+      {
+        id: "wl-alpha",
+        content: "# Alpha\\n\\nDraft body",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 5000,
+      },
+      {
+        id: "wl-beta",
+        content: "# Beta\\n\\nBeta detail",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 4000,
+      },
+      {
+        id: "wl-begin",
+        content: "# Beginner\\n\\nBeginner detail",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 3000,
+      },
+      {
+        id: "wl-gamma",
+        content: "# Gamma\\n\\nGamma detail",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 2000,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+
+  const wikiLinkAutocomplete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = () => document.querySelector('[data-thought-body-input="wl-alpha"]');
+    const suggestions = () => [...document.querySelectorAll("[data-wiki-link-suggestion]")];
+    const suggestionTitles = () =>
+      suggestions().map((el) => el.getAttribute("data-wiki-link-suggestion") ?? "");
+    const activeIndex = () =>
+      suggestions().findIndex((el) => el.getAttribute("data-wiki-link-active") === "true");
+    const waitFor = async (fn) => {
+      for (let i = 0; i < 40; i += 1) {
+        if (fn()) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const typeText = async (text) => {
+      const el = input();
+      if (!el) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, text);
+      el.setSelectionRange(text.length, text.length);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    };
+    const press = (key) => {
+      input()?.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+    };
+    document.querySelector('[data-rag-result="wl-alpha"]')?.click();
+    if (
+      !(await waitFor(() => document.querySelector('[data-thought-body-edit="wl-alpha"]')))
+    ) {
+      return { ok: false, reason: "alpha detail not rendered" };
+    }
+    document.querySelector('[data-thought-body-edit="wl-alpha"]')?.click();
+    if (!(await waitFor(() => input()))) {
+      return { ok: false, reason: "editor not opened" };
+    }
+
+    await typeText("# Alpha\\n\\nSee [[Be");
+    const clickCandidates = await waitFor(
+      () =>
+        suggestions().length >= 2 &&
+        suggestionTitles().includes("Beta") &&
+        suggestionTitles().includes("Beginner"),
+    );
+    const beforeArrow = activeIndex();
+    press("ArrowDown");
+    await sleep(80);
+    const afterArrow = activeIndex();
+    suggestions()
+      .find((el) => el.getAttribute("data-wiki-link-suggestion") === "Beta")
+      ?.click();
+    const clickInserted = await waitFor(() =>
+      (input()?.value ?? "").includes("[[Beta]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Gam");
+    const enterCandidates = await waitFor(() =>
+      suggestionTitles().includes("Gamma"),
+    );
+    press("Enter");
+    const enterInserted = await waitFor(() =>
+      (input()?.value ?? "").includes("[[Gamma]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Be");
+    const tabCandidates = await waitFor(() => suggestions().length >= 2);
+    const tabTarget = suggestionTitles()[0] ?? "";
+    press("Tab");
+    const tabInserted = await waitFor(() =>
+      tabTarget.length > 0 && (input()?.value ?? "").includes("[[" + tabTarget + "]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Ga");
+    const escCandidates = await waitFor(() => suggestions().length >= 1);
+    press("Escape");
+    const closed = await waitFor(
+      () => !document.querySelector("[data-wiki-link-suggestions]"),
+    );
+    const afterEsc = input()?.value ?? "";
+
+    await typeText("# Alpha\\n\\nSee [[Beta]] and [[Gamma]]");
+    document.querySelector('[data-thought-body-save="wl-alpha"]')?.click();
+    const saved = await waitFor(
+      () =>
+        (document.querySelector('[data-thought-body-result="wl-alpha"]')?.textContent ?? "").includes(
+          "Saved",
+        ),
+    );
+    return {
+      ok:
+        clickCandidates &&
+        enterCandidates &&
+        tabCandidates &&
+        escCandidates &&
+        clickInserted &&
+        enterInserted &&
+        tabInserted &&
+        closed &&
+        saved &&
+        afterArrow === 1,
+      clickCandidates,
+      enterCandidates,
+      tabCandidates,
+      escCandidates,
+      beforeArrow,
+      afterArrow,
+      clickInserted,
+      enterInserted,
+      tabInserted,
+      tabTarget,
+      closed,
+      afterEsc,
+      saved,
+    };
+  })()`);
+  if (!wikiLinkAutocomplete.ok) {
+    throw new Error(
+      `Wiki link autocomplete assertion failed: ${JSON.stringify(wikiLinkAutocomplete)}`,
+    );
+  }
+  results.wikiLinkAutocomplete = wikiLinkAutocomplete;
+  laneLog('wikiLinkAutocomplete ok');
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const wikiLinkPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let clicked = false;
+    let ragIds = [];
+    for (let i = 0; i < 40; i += 1) {
+      const alpha = document.querySelector('[data-rag-result="wl-alpha"]');
+      ragIds = [...document.querySelectorAll("[data-rag-result]")].map((el) =>
+        el.getAttribute("data-rag-result"),
+      );
+      if (alpha) {
+        alpha.click();
+        clicked = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let current = "";
+    let currentAttrs = [];
+    for (let i = 0; i < 60; i += 1) {
+      currentAttrs = [...document.querySelectorAll("[data-thought-body-current]")].map((el) =>
+        el.getAttribute("data-thought-body-current"),
+      );
+      current =
+        document.querySelector('[data-thought-body-edit="wl-alpha"]')?.getAttribute(
+          "data-thought-body-current",
+        ) ?? "";
+      if (current.includes("[[Beta]]") && current.includes("[[Gamma]]")) {
+        return { ok: true, current };
+      }
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedAlpha = stored.thoughts?.find((t) => t.id === "wl-alpha");
+    return {
+      ok: false,
+      current,
+      currentAttrs,
+      clicked,
+      ragIds,
+      storedContent: storedAlpha?.content ?? "",
+    };
+  })()`);
+  if (!wikiLinkPersisted.ok) {
+    throw new Error(`Wiki link persistence assertion failed: ${JSON.stringify(wikiLinkPersisted)}`);
+  }
+  results.wikiLinkPersisted = wikiLinkPersisted;
+  laneLog('wikiLinkPersisted ok');
+
   const concurrencyAuto = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const autoBtn = document.querySelector("[data-index-concurrency-auto]");

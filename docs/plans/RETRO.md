@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 140
+
+### What went well?
+
+- `db.ts` 新增 `WikiLinkSuggestion` 与 `suggestWikiLinkTargets`：按首行标题 / 标签过滤，精确 > 前缀 > 包含 > 标签排序，默认最多 6 条并排除当前笔记。
+- Knowledge 正文编辑器输入未闭合 `[[...` 时弹出 `data-wiki-link-suggestions`：支持点击、ArrowUp / ArrowDown 高亮、Enter / Tab 插入与 Esc 关闭；保存 / 取消 / Preview / 跳转笔记时清理联想状态，插入后光标落在 `[[Title]]` 末尾。
+- `verify:ui` / `verify:preview` 新增 `wikiLinkAutocomplete` / `wikiLinkPersisted` lane：种子 4 条笔记，覆盖候选排序、方向键高亮、点击 / Enter / Tab / Esc 与保存重载持久化；纯前端改动，无新增 Rust 命令与表结构，`cargo test --lib` 仍为 144 条全绿。
+
+### What went wrong?
+
+- 持久化 lane 首版用 `[data-thought-body-current="wl-alpha"]` 查询，误把内容属性当 id 选择器，实际内容已落库但断言拿不到元素；改为从 `[data-thought-body-edit="wl-alpha"]` 读取 `data-thought-body-current` 后双端通过。
+- verify lane 在外层模板字符串里嵌套了 `` `[[${tabTarget}]]` ``，导致脚本语法错误；改成字符串拼接后 lint / prettier 通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Actions 周计划模板（一键把本周计划写入 Focus / Schedule）。
+- 保留 `wikiLinkAutocomplete` / `wikiLinkPersisted` lane，后续修改双链解析、插入逻辑或正文编辑器时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 139
 
 ### What went well?
