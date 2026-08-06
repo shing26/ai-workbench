@@ -502,6 +502,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。复用 `projects` 既有 `status` / `revenue` 列：新增 `update_project` 命令仅接受 active / paused 状态并对负收益钳制为 0；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` 数组，不新增 localStorage key。
 
+## Sprint 121：Knowledge 笔记标签编辑
+
+无表结构变更。复用 `thoughts` 既有 `tags` 列：新增 `update_thought_tags` 命令仅更新标签，浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

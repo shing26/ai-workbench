@@ -2731,6 +2731,94 @@ try {
     };
   })()`);
   results.knowledgeTagLibrary = knowledgeTagLibrary;
+  const thoughtTagEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing" };
+    noteBtn.click();
+    await sleep(300);
+    const editBtn = document.querySelector("[data-thought-tags-edit]");
+    if (!editBtn) return { ok: false, reason: "tag edit button missing" };
+    const thoughtId = editBtn.getAttribute("data-thought-tags-edit");
+    const originalTags = editBtn.getAttribute("data-thought-tags-current") || "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-tags-input="' + thoughtId + '"]');
+    if (!input) return { ok: false, reason: "tag input missing", thoughtId, originalTags };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "#work,#review");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const saveBtn = document.querySelector('[data-thought-tags-save="' + thoughtId + '"]');
+    if (!saveBtn) return { ok: false, reason: "tag save missing", thoughtId, originalTags };
+    saveBtn.click();
+    await sleep(600);
+    const badge = document.querySelector('[data-thought-tags-edit="' + thoughtId + '"]');
+    const result = document.querySelector('[data-thought-tags-result="' + thoughtId + '"]')?.textContent ?? "";
+    const current = badge?.getAttribute("data-thought-tags-current") ?? "";
+    const ok = current === "#work,#review" && result.includes("Saved");
+    return { ok, thoughtId, originalTags, current, result };
+  })()`);
+  results.thoughtTagEdit = thoughtTagEdit;
+  if (!results.thoughtTagEdit.ok) {
+    throw new Error(`Thought tag edit assertion failed: ${JSON.stringify(results.thoughtTagEdit)}`);
+  }
+  const thoughtTagEditId = results.thoughtTagEdit.thoughtId ?? '';
+  const thoughtTagOriginal = results.thoughtTagEdit.originalTags ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtTagEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTagEditId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let editBtn = null;
+    for (let i = 0; i < 20; i++) {
+      editBtn = document.querySelector('[data-thought-tags-edit="' + id + '"]');
+      if (editBtn) break;
+      await sleep(100);
+    }
+    if (!editBtn) return { ok: false, reason: "tag edit missing after reload" };
+    const current = editBtn.getAttribute("data-thought-tags-current") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-tags-input="' + id + '"]');
+    const ok = current === "#work,#review" && input?.value === "#work,#review";
+    return { ok, current, inputValue: input?.value ?? "" };
+  })()`);
+  results.thoughtTagEditPersisted = thoughtTagEditPersisted;
+  if (!results.thoughtTagEditPersisted?.ok) {
+    throw new Error(
+      `Thought tag edit persistence assertion failed: ${JSON.stringify(results.thoughtTagEditPersisted)}`,
+    );
+  }
+  const thoughtTagEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTagEditId)};
+    const original = ${JSON.stringify(thoughtTagOriginal)};
+    const input = document.querySelector('[data-thought-tags-input="' + id + '"]');
+    const saveBtn = document.querySelector('[data-thought-tags-save="' + id + '"]');
+    if (!input || !saveBtn) return { ok: false, reason: "tag editor missing for restore" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, original);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    await sleep(600);
+    const badge = document.querySelector('[data-thought-tags-edit="' + id + '"]');
+    const current = badge?.getAttribute("data-thought-tags-current") ?? "";
+    return { ok: current === original, current, original };
+  })()`);
+  results.thoughtTagEditRestored = thoughtTagEditRestored;
+  if (!results.thoughtTagEditRestored?.ok) {
+    throw new Error(
+      `Thought tag edit restore assertion failed: ${JSON.stringify(results.thoughtTagEditRestored)}`,
+    );
+  }
   const ragSearch = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="RAG search..."]');
     if (!input) return { ok: false, reason: "no rag input" };
