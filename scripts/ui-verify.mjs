@@ -10449,6 +10449,461 @@ try {
   results.providerPriority = providerPriority;
   laneLog('providerPriority ok');
 
+  let providerIoServer = null;
+  try {
+    let retryAttempts = 0;
+    const retryFailures = new Map();
+    let slowRequests = 0;
+    providerIoServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const url = req.url ?? '';
+      if (url.endsWith('/retry/chat/completions')) {
+        retryAttempts += 1;
+        const failKey = req.headers.authorization ?? '';
+        const failureCount = retryFailures.get(failKey) ?? 0;
+        retryFailures.set(failKey, failureCount + 1);
+        if (failureCount === 0) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end('{"error":"transient failure"}');
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"retry recovery ok"}}]}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+      if (url.endsWith('/slow/chat/completions')) {
+        slowRequests += 1;
+        const timer = setTimeout(() => {
+          try {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } catch {
+            /* client already aborted */
+          }
+        }, 60_000);
+        req.on('close', () => clearTimeout(timer));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => providerIoServer.listen(0, '127.0.0.1', resolve));
+    const ioPort = providerIoServer.address().port;
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "slow-provider",
+        name: "Slow Mock",
+        baseUrl: "http://127.0.0.1:${ioPort}/v1/slow",
+        apiKey: "sk-slow-secret",
+        model: "slow-model",
+        priority: 5,
+        isActive: true,
+        timeoutSecs: 1,
+        retryCount: 0,
+        retryDelaySecs: 0,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerTimeout = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for timeout" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for timeout" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider timeout check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let timeoutSeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        const text = document.body.innerText;
+        timeoutSeen = text.includes("Request timeout") || text.includes("provider did not respond in time");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (timeoutSeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: timeoutSeen && idle, timeoutSeen, idle };
+    })()`);
+    if (!providerTimeout.ok || slowRequests !== 1) {
+      throw new Error(
+        `Provider timeout assertion failed: ${JSON.stringify({
+          providerTimeout,
+          slowRequests,
+        })}`,
+      );
+    }
+    results.providerTimeout = providerTimeout;
+    laneLog('providerTimeout ok');
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "retry-provider",
+        name: "Retry Mock",
+        baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+        apiKey: "sk-retry-secret",
+        model: "retry-model",
+        priority: 5,
+        isActive: true,
+        timeoutSecs: 5,
+        retryCount: 2,
+        retryDelaySecs: 0,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerRetry = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for retry" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for retry" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let replySeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        replySeen = document.body.innerText.includes("retry recovery ok");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (replySeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: replySeen && idle, replySeen, idle };
+    })()`);
+    if (!providerRetry.ok || retryAttempts !== 2) {
+      throw new Error(
+        `Provider retry assertion failed: ${JSON.stringify({
+          providerRetry,
+          retryAttempts,
+        })}`,
+      );
+    }
+    results.providerRetry = providerRetry;
+    laneLog('providerRetry ok');
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "retry-provider",
+          name: "Retry Mock",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+          apiKey: "sk-retry-secret",
+          model: "retry-model",
+          priority: 5,
+          isActive: true,
+          timeoutSecs: 30,
+          retryCount: 1,
+          retryDelaySecs: 1,
+        },
+        {
+          id: "slow-provider",
+          name: "Slow Mock",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/slow",
+          apiKey: "sk-slow-secret",
+          model: "slow-model",
+          priority: 1,
+          isActive: true,
+          timeoutSecs: 30,
+          retryCount: 1,
+          retryDelaySecs: 1,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerConfigEdit = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const waitFor = async (fn, timeout = 5000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          if (fn()) return true;
+          await sleep(80);
+        }
+        return false;
+      };
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "system dock missing for config edit" };
+      dock.click();
+      await sleep(300);
+      const readInputs = () => ({
+        timeout: document.querySelector('[data-provider-timeout="retry-provider"]'),
+        retry: document.querySelector('[data-provider-retry="retry-provider"]'),
+        delay: document.querySelector('[data-provider-delay="retry-provider"]'),
+      });
+      let inputs = readInputs();
+      const timeoutInput = inputs.timeout;
+      const retryInput = inputs.retry;
+      const delayInput = inputs.delay;
+      if (!timeoutInput || !retryInput || !delayInput) {
+        return { ok: false, reason: "stream config inputs missing" };
+      }
+      const setInput = async (el, value) => {
+        const attr = el.hasAttribute("data-provider-timeout")
+          ? "data-provider-timeout"
+          : el.hasAttribute("data-provider-retry")
+            ? "data-provider-retry"
+            : "data-provider-delay";
+        const id = el.getAttribute(attr);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const target = document.querySelector("[" + attr + '="' + id + '"]');
+          if (!target) return false;
+          target.focus();
+          target.select();
+          const inserted = document.execCommand("insertText", false, String(value));
+          if (!inserted) {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(
+              target,
+              value,
+            );
+            target.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          for (let i = 0; i < 20; i += 1) {
+            await sleep(50);
+            const fresh = document.querySelector("[" + attr + '="' + id + '"]');
+            if (fresh?.value === String(value)) return true;
+          }
+        }
+        return false;
+      };
+      const timeoutSet = await setInput(timeoutInput, "8");
+      inputs = readInputs();
+      const retrySet = await setInput(inputs.retry, "3");
+      inputs = readInputs();
+      const delaySet = await setInput(inputs.delay, "2");
+      inputs.delay.blur();
+      await sleep(80);
+      const persisted = await waitFor(() => {
+        const provider = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+          .providers.find((p) => p.id === "retry-provider");
+        return (
+          provider?.timeoutSecs === 8 &&
+          provider?.retryCount === 3 &&
+          provider?.retryDelaySecs === 2
+        );
+      });
+      const provider = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+        .providers.find((p) => p.id === "retry-provider");
+      const finalInputs = readInputs();
+      return {
+        ok: persisted,
+        timeoutSet,
+        retrySet,
+        delaySet,
+        timeoutValue: finalInputs.timeout?.value ?? "",
+        retryValue: finalInputs.retry?.value ?? "",
+        delayValue: finalInputs.delay?.value ?? "",
+        persisted: provider
+          ? [provider.timeoutSecs, provider.retryCount, provider.retryDelaySecs]
+          : [],
+      };
+    })()`);
+    if (!providerConfigEdit.ok) {
+      throw new Error(
+        `Provider config edit assertion failed: ${JSON.stringify(providerConfigEdit)}`,
+      );
+    }
+    results.providerConfigEdit = providerConfigEdit;
+    laneLog('providerConfigEdit ok');
+
+    const providerExport = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      window.__exportText = "";
+      try {
+        Object.defineProperty(navigator, "clipboard", {
+          value: { writeText: async (text) => { window.__exportText = text; } },
+          configurable: true,
+        });
+      } catch {
+        /* clipboard may be read-only in headless mode */
+      }
+      const exportBtn = document.querySelector("[data-provider-export]");
+      if (!exportBtn) return { ok: false, reason: "export button missing" };
+      exportBtn.click();
+      for (let i = 0; i < 30; i++) {
+        if (document.querySelector("[data-provider-export-result]")) break;
+        await sleep(100);
+      }
+      const result = document.querySelector("[data-provider-export-result]")?.textContent?.trim() ?? "";
+      const exported = window.__exportText ? JSON.parse(window.__exportText) : null;
+      const providers = exported?.providers ?? [];
+      const retry = providers.find((p) => p.name === "Retry Mock");
+      const slow = providers.find((p) => p.name === "Slow Mock");
+      return {
+        ok:
+          result.includes("Exported 2 provider(s)") &&
+          !!exported &&
+          retry?.apiKey === "sk-retry-secret" &&
+          retry?.timeoutSecs === 8 &&
+          retry?.retryCount === 3 &&
+          retry?.retryDelaySecs === 2 &&
+          slow?.apiKey === "sk-slow-secret",
+        result,
+        hasClipboard: !!exported,
+        keys: providers.map((p) => p.name),
+      };
+    })()`);
+    if (!providerExport.ok) {
+      throw new Error(`Provider export assertion failed: ${JSON.stringify(providerExport)}`);
+    }
+    results.providerExport = providerExport;
+    laneLog('providerExport ok');
+
+    const providerImport = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const importToggle = document.querySelector("[data-provider-import]");
+      if (!importToggle) return { ok: false, reason: "import toggle missing" };
+      importToggle.click();
+      await sleep(120);
+      const textarea = document.querySelector("[data-provider-import-text]");
+      if (!textarea) return { ok: false, reason: "import textarea missing" };
+      const payload = JSON.stringify({
+        version: 1,
+        providers: [{
+          name: "Imported A",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+          apiKey: "sk-imported-secret",
+          model: "retry-model",
+          isActive: true,
+          priority: 5,
+          timeoutSecs: 12,
+          retryCount: 2,
+          retryDelaySecs: 0,
+        }],
+      });
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(
+        textarea,
+        payload,
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector("[data-provider-import-apply]")?.click();
+      let result = "";
+      let persisted = null;
+      for (let i = 0; i < 30; i++) {
+        result = document.querySelector("[data-provider-import-result]")?.textContent?.trim() ?? "";
+        persisted = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").providers;
+        if (result.includes("Imported 1 provider(s)") && persisted?.length === 1) break;
+        await sleep(100);
+      }
+      const imported = persisted?.[0];
+      const cardVisible = [...document.querySelectorAll("[data-provider-id]")].some(
+        (el) => el.textContent?.includes("Imported A"),
+      );
+      return {
+        ok:
+          result.includes("Imported 1 provider(s)") &&
+          imported?.name === "Imported A" &&
+          imported?.apiKey === "sk-imported-secret" &&
+          imported?.timeoutSecs === 12 &&
+          imported?.retryCount === 2 &&
+          imported?.retryDelaySecs === 0 &&
+          cardVisible,
+        result,
+        count: persisted?.length ?? 0,
+        imported: imported
+          ? {
+              name: imported.name,
+              apiKey: imported.apiKey,
+              timeoutSecs: imported.timeoutSecs,
+              retryCount: imported.retryCount,
+              retryDelaySecs: imported.retryDelaySecs,
+            }
+          : null,
+        cardVisible,
+      };
+    })()`);
+    if (!providerImport.ok) {
+      throw new Error(`Provider import assertion failed: ${JSON.stringify(providerImport)}`);
+    }
+    results.providerImport = providerImport;
+    laneLog('providerImport ok');
+
+    const importedRetry = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for imported retry" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for imported retry" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider import retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let replySeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        replySeen = document.body.innerText.includes("retry recovery ok");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (replySeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: replySeen && idle, replySeen, idle };
+    })()`);
+    if (!importedRetry.ok || retryAttempts !== 4) {
+      throw new Error(
+        `Imported provider retry assertion failed: ${JSON.stringify({
+          importedRetry,
+          retryAttempts,
+        })}`,
+      );
+    }
+    results.importedRetry = importedRetry;
+    laneLog('importedRetry ok');
+  } finally {
+    if (providerIoServer) {
+      providerIoServer.close();
+      providerIoServer.closeAllConnections?.();
+    }
+  }
+
   let moaServer = null;
   try {
     let active = 0;
@@ -10886,6 +11341,8 @@ try {
           model: "alpha-model",
           priority: 3,
           isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
         },
         {
           id: "lane-b",
@@ -10895,6 +11352,8 @@ try {
           model: "beta-model",
           priority: 2,
           isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
         },
         {
           id: "lane-c",
@@ -10904,6 +11363,8 @@ try {
           model: "gamma-model",
           priority: 1,
           isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
         },
       ];
       localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));

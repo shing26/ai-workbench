@@ -40,6 +40,14 @@ type WorkbenchState = {
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
   setProviderModel: (id: string, model: string) => Promise<void>;
   setProviderPriority: (id: string, priority: number) => Promise<void>;
+  setProviderStreamConfig: (
+    id: string,
+    timeoutSecs: number,
+    retryCount: number,
+    retryDelaySecs: number,
+  ) => Promise<void>;
+  exportProviders: () => Promise<string>;
+  importProviders: (payload: string) => Promise<number>;
   addHabit: (name: string, weekGoal: number, color: db.Habit['color']) => Promise<void>;
   toggleHabit: (id: string) => Promise<void>;
   updateHabitWeekGoal: (id: string, weekGoal: number) => Promise<void>;
@@ -185,6 +193,16 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   setProviderPriority: async (id, priority) => {
     await db.setProviderPriority(id, priority);
     set({ providers: await db.listProviders() });
+  },
+  setProviderStreamConfig: async (id, timeoutSecs, retryCount, retryDelaySecs) => {
+    await db.updateProviderStreamConfig(id, timeoutSecs, retryCount, retryDelaySecs);
+    set({ providers: await db.listProviders() });
+  },
+  exportProviders: () => db.exportProviders(),
+  importProviders: async (payload) => {
+    const count = await db.importProviders(payload);
+    set({ providers: await db.listProviders() });
+    return count;
   },
   addHabit: async (name, weekGoal, color) => {
     await db.createHabit(name, weekGoal, color);

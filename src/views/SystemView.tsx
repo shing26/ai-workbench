@@ -108,6 +108,9 @@ export default function SystemView() {
   const toggleProvider = useWorkbenchStore((s) => s.toggleProvider);
   const setProviderModel = useWorkbenchStore((s) => s.setProviderModel);
   const setProviderPriority = useWorkbenchStore((s) => s.setProviderPriority);
+  const setProviderStreamConfig = useWorkbenchStore((s) => s.setProviderStreamConfig);
+  const exportProviders = useWorkbenchStore((s) => s.exportProviders);
+  const importProviders = useWorkbenchStore((s) => s.importProviders);
   const clipboard = useWorkbenchStore((s) => s.clipboard);
   const logs = useWorkbenchStore((s) => s.logs);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
@@ -128,6 +131,13 @@ export default function SystemView() {
   const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
   const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [streamDrafts, setStreamDrafts] = useState<
+    Record<string, { timeoutSecs: number; retryCount: number; retryDelaySecs: number }>
+  >({});
+  const [providerImportOpen, setProviderImportOpen] = useState(false);
+  const [providerImportText, setProviderImportText] = useState('');
+  const [providerImportResult, setProviderImportResult] = useState('');
+  const [providerExportResult, setProviderExportResult] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookPayload, setWebhookPayload] = useState(
     '{"event":"daily.summary","source":"ai-workbench"}',
@@ -1395,6 +1405,44 @@ export default function SystemView() {
     await saveProviderModel(id, modelId);
   };
 
+  const saveProviderStreamConfig = async (
+    id: string,
+    patch: Partial<{ timeoutSecs: number; retryCount: number; retryDelaySecs: number }>,
+  ) => {
+    const provider = providers.find((p) => p.id === id);
+    const current = streamDrafts[id] ?? {
+      timeoutSecs: provider?.timeoutSecs ?? 30,
+      retryCount: provider?.retryCount ?? 1,
+      retryDelaySecs: provider?.retryDelaySecs ?? 1,
+    };
+    const next = { ...current, ...patch };
+    await setProviderStreamConfig(id, next.timeoutSecs, next.retryCount, next.retryDelaySecs);
+    setStreamDrafts((prev) => {
+      const copy = { ...prev };
+      delete copy[id];
+      return copy;
+    });
+  };
+
+  const handleProviderExport = async () => {
+    const text = await exportProviders();
+    const parsed = JSON.parse(text) as { providers?: unknown[] };
+    const count = Array.isArray(parsed.providers) ? parsed.providers.length : 0;
+    setProviderExportResult(`Exported ${count} provider(s)`);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* clipboard is optional in headless verification */
+    }
+  };
+
+  const handleProviderImport = async () => {
+    const count = await importProviders(providerImportText);
+    setProviderImportResult(`Imported ${count} provider(s)`);
+    setProviderImportText('');
+    setProviderImportOpen(false);
+  };
+
   const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
   const errorDevices = Array.from(new Set(logs.map((log) => log.deviceId || 'unknown'))).sort();
   const errorLogWindow = resolveErrorLogRange(errorLogRange);
@@ -1595,6 +1643,58 @@ export default function SystemView() {
                     <ChevronUp size={11} />
                   </button>
                 </div>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      ['timeout', 'Timeout', 'timeoutSecs'],
+                      ['retry', 'Retries', 'retryCount'],
+                      ['delay', 'Delay', 'retryDelaySecs'],
+                    ] as const
+                  ).map(([key, label, field]) => {
+                    const draft = streamDrafts[p.id] ?? {
+                      timeoutSecs: p.timeoutSecs ?? 30,
+                      retryCount: p.retryCount ?? 1,
+                      retryDelaySecs: p.retryDelaySecs ?? 1,
+                    };
+                    return (
+                      <label
+                        key={key}
+                        className="flex items-center gap-1 text-[9px] text-slate-500"
+                      >
+                        <span className="shrink-0">{label}</span>
+                        <input
+                          type="number"
+                          {...{ [`data-provider-${key}`]: p.id }}
+                          value={draft[field]}
+                          min={key === 'timeout' ? 1 : 0}
+                          max={key === 'timeout' ? 300 : key === 'retry' ? 5 : 30}
+                          onChange={(e) =>
+                            setStreamDrafts((prev) => ({
+                              ...prev,
+                              [p.id]: {
+                                ...(prev[p.id] ?? {
+                                  timeoutSecs: p.timeoutSecs ?? 30,
+                                  retryCount: p.retryCount ?? 1,
+                                  retryDelaySecs: p.retryDelaySecs ?? 1,
+                                }),
+                                [field]: Number(e.target.value),
+                              },
+                            }))
+                          }
+                          onBlur={(e) =>
+                            void saveProviderStreamConfig(p.id, {
+                              [field]: Number(e.target.value),
+                            })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                          }}
+                          className="h-5 w-full min-w-0 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
@@ -1705,6 +1805,58 @@ export default function SystemView() {
               {e2eBatch.some((entry) => !entry.result.ok)
                 ? ` · ${e2eBatch.filter((entry) => !entry.result.ok).length} failed`
                 : ''}
+            </span>
+          )}
+          <button
+            type="button"
+            data-provider-export
+            onClick={() => void handleProviderExport()}
+            className="flex h-9 items-center gap-1 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30"
+          >
+            <Download size={14} /> Export
+          </button>
+          {providerExportResult && (
+            <span
+              data-provider-export-result
+              className="flex h-9 items-center rounded-xl bg-emerald-500/10 px-3 text-xs text-emerald-300"
+            >
+              {providerExportResult}
+            </span>
+          )}
+          <button
+            type="button"
+            data-provider-import
+            onClick={() => setProviderImportOpen((open) => !open)}
+            className="flex h-9 items-center gap-1 rounded-xl accent-bg-20 px-3 text-xs accent-text-strong accent-hover-bg-30"
+          >
+            <Upload size={14} /> Import
+          </button>
+          {providerImportOpen && (
+            <div className="flex w-full flex-wrap items-center gap-2">
+              <textarea
+                data-provider-import-text
+                value={providerImportText}
+                onChange={(e) => setProviderImportText(e.target.value)}
+                rows={4}
+                placeholder='{"version":1,"providers":[]}'
+                className="min-h-20 flex-1 resize-y rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <button
+                type="button"
+                data-provider-import-apply
+                onClick={() => void handleProviderImport()}
+                className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/15 px-3 text-xs text-emerald-300 hover:bg-emerald-500/25"
+              >
+                Apply import
+              </button>
+            </div>
+          )}
+          {providerImportResult && (
+            <span
+              data-provider-import-result
+              className="flex h-9 items-center rounded-xl bg-emerald-500/10 px-3 text-xs text-emerald-300"
+            >
+              {providerImportResult}
             </span>
           )}
           <button

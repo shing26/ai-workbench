@@ -58,7 +58,11 @@ CREATE TABLE IF NOT EXISTS providers (
     api_key TEXT,
     model TEXT DEFAULT '',
     priority INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER DEFAULT 1
+    is_active INTEGER DEFAULT 1,
+    api_key_encrypted INTEGER NOT NULL DEFAULT 0,
+    timeout_secs INTEGER NOT NULL DEFAULT 30,
+    retry_count INTEGER NOT NULL DEFAULT 1,
+    retry_delay_secs INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS departments (
     id TEXT PRIMARY KEY,
@@ -547,7 +551,7 @@ pub struct MessageDiff {
     pub removed: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {
     pub id: String,
@@ -557,6 +561,10 @@ pub struct Provider {
     pub model: String,
     pub priority: i64,
     pub is_active: bool,
+    pub api_key_encrypted: bool,
+    pub timeout_secs: i64,
+    pub retry_count: i64,
+    pub retry_delay_secs: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -2585,6 +2593,8 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_knowledge_clusters(&conn)?;
     migrate_provider_model(&conn)?;
     migrate_provider_priority(&conn)?;
+    migrate_provider_stream_config(&conn)?;
+    migrate_provider_api_key_encryption(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
@@ -2715,6 +2725,30 @@ fn migrate_provider_priority(conn: &Connection) -> Result<()> {
     }
     conn.execute(
         "UPDATE providers SET priority = 0 WHERE priority IS NULL",
+        [],
+    )?;
+    Ok(())
+}
+
+fn migrate_provider_stream_config(conn: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("timeout_secs", "INTEGER NOT NULL DEFAULT 30"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("retry_delay_secs", "INTEGER NOT NULL DEFAULT 1"),
+        ("api_key_encrypted", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(conn, "providers", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE providers ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_provider_api_key_encryption(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET api_key_encrypted = 0 WHERE api_key_encrypted IS NULL",
         [],
     )?;
     Ok(())
@@ -3605,7 +3639,8 @@ pub fn record_quick_prompt_usage(conn: &Connection, id: &str) -> Result<i64> {
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, priority, is_active
+        "SELECT id, name, base_url, api_key, model, priority, is_active,
+                api_key_encrypted, timeout_secs, retry_count, retry_delay_secs
          FROM providers ORDER BY priority DESC, rowid ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -3617,6 +3652,10 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
             model: row.get(4)?,
             priority: row.get(5)?,
             is_active: row.get::<_, i64>(6)? != 0,
+            api_key_encrypted: row.get::<_, i64>(7)? != 0,
+            timeout_secs: row.get(8)?,
+            retry_count: row.get(9)?,
+            retry_delay_secs: row.get(10)?,
         })
     })?;
     rows.collect()
@@ -3624,7 +3663,8 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
 
 pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, priority, is_active
+        "SELECT id, name, base_url, api_key, model, priority, is_active,
+                api_key_encrypted, timeout_secs, retry_count, retry_delay_secs
          FROM providers WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
@@ -3636,11 +3676,16 @@ pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
             model: row.get(4)?,
             priority: row.get(5)?,
             is_active: row.get::<_, i64>(6)? != 0,
+            api_key_encrypted: row.get::<_, i64>(7)? != 0,
+            timeout_secs: row.get(8)?,
+            retry_count: row.get(9)?,
+            retry_delay_secs: row.get(10)?,
         })
     })?;
     rows.next().transpose()
 }
 
+#[allow(dead_code)]
 pub fn create_provider(
     conn: &Connection,
     name: &str,
@@ -3661,7 +3706,111 @@ pub fn create_provider(
         model: model.to_string(),
         priority: 0,
         is_active: false,
+        api_key_encrypted: false,
+        timeout_secs: 30,
+        retry_count: 1,
+        retry_delay_secs: 1,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_provider_with_options(
+    conn: &Connection,
+    name: &str,
+    base_url: &str,
+    stored_api_key: &str,
+    model: &str,
+    api_key_encrypted: bool,
+    timeout_secs: i64,
+    retry_count: i64,
+    retry_delay_secs: i64,
+) -> Result<Provider> {
+    let id = uid();
+    conn.execute(
+        "INSERT INTO providers (id, name, base_url, api_key, model, is_active,
+                api_key_encrypted, timeout_secs, retry_count, retry_delay_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+        params![
+            id,
+            name,
+            base_url,
+            stored_api_key,
+            model,
+            api_key_encrypted as i64,
+            timeout_secs,
+            retry_count,
+            retry_delay_secs
+        ],
+    )?;
+    Ok(Provider {
+        id,
+        name: name.to_string(),
+        base_url: base_url.to_string(),
+        api_key: stored_api_key.to_string(),
+        model: model.to_string(),
+        priority: 0,
+        is_active: false,
+        api_key_encrypted,
+        timeout_secs,
+        retry_count,
+        retry_delay_secs,
+    })
+}
+
+#[allow(dead_code)]
+pub fn update_provider_api_key(
+    conn: &Connection,
+    id: &str,
+    stored_api_key: &str,
+    encrypted: bool,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET api_key = ?1, api_key_encrypted = ?2 WHERE id = ?3",
+        params![stored_api_key, encrypted as i64, id],
+    )?;
+    Ok(())
+}
+
+pub fn update_provider_stream_config(
+    conn: &Connection,
+    id: &str,
+    timeout_secs: i64,
+    retry_count: i64,
+    retry_delay_secs: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET timeout_secs = ?1, retry_count = ?2, retry_delay_secs = ?3 WHERE id = ?4",
+        params![timeout_secs, retry_count, retry_delay_secs, id],
+    )?;
+    Ok(())
+}
+
+pub fn replace_providers(conn: &Connection, providers: &[Provider]) -> Result<usize> {
+    conn.execute("DELETE FROM providers", [])?;
+    let mut inserted = 0;
+    for provider in providers {
+        let id = uid();
+        conn.execute(
+            "INSERT INTO providers (id, name, base_url, api_key, model, priority, is_active,
+                    api_key_encrypted, timeout_secs, retry_count, retry_delay_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id,
+                provider.name,
+                provider.base_url,
+                provider.api_key,
+                provider.model,
+                provider.priority.max(0),
+                provider.is_active as i64,
+                provider.api_key_encrypted as i64,
+                provider.timeout_secs.clamp(1, 300),
+                provider.retry_count.clamp(0, 5),
+                provider.retry_delay_secs.clamp(0, 30),
+            ],
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
 }
 
 pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Result<()> {
@@ -10590,6 +10739,8 @@ mod tests {
         .unwrap();
         migrate_provider_model(&conn).unwrap();
         migrate_provider_priority(&conn).unwrap();
+        migrate_provider_stream_config(&conn).unwrap();
+        migrate_provider_api_key_encryption(&conn).unwrap();
         assert!(column_exists(&conn, "providers", "model").unwrap());
         let provider =
             create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
@@ -10614,6 +10765,8 @@ mod tests {
         )
         .unwrap();
         migrate_provider_priority(&conn).unwrap();
+        migrate_provider_stream_config(&conn).unwrap();
+        migrate_provider_api_key_encryption(&conn).unwrap();
         assert!(column_exists(&conn, "providers", "priority").unwrap());
         let provider =
             create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
@@ -10626,6 +10779,109 @@ mod tests {
             get_provider(&conn, &provider.id).unwrap().unwrap().priority,
             0
         );
+    }
+
+    #[test]
+    fn provider_stream_config_migration_adds_columns_and_persists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                model TEXT DEFAULT '',
+                priority INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1
+            );",
+        )
+        .unwrap();
+        migrate_provider_stream_config(&conn).unwrap();
+        migrate_provider_api_key_encryption(&conn).unwrap();
+        for column in [
+            "api_key_encrypted",
+            "timeout_secs",
+            "retry_count",
+            "retry_delay_secs",
+        ] {
+            assert!(column_exists(&conn, "providers", column).unwrap());
+        }
+        let provider = create_provider_with_options(
+            &conn,
+            "Stream Mock",
+            "https://example.test/v1",
+            "enc:v1:stored",
+            "mock-model",
+            true,
+            15,
+            2,
+            3,
+        )
+        .unwrap();
+        assert!(provider.api_key_encrypted);
+        assert_eq!(provider.timeout_secs, 15);
+        assert_eq!(provider.retry_count, 2);
+        assert_eq!(provider.retry_delay_secs, 3);
+
+        update_provider_stream_config(&conn, &provider.id, 60, 4, 5).unwrap();
+        let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
+        assert_eq!(updated.timeout_secs, 60);
+        assert_eq!(updated.retry_count, 4);
+        assert_eq!(updated.retry_delay_secs, 5);
+        assert!(updated.api_key_encrypted);
+    }
+
+    #[test]
+    fn replace_providers_replaces_all_and_clamps_stream_config() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        create_provider_with_options(
+            &conn,
+            "Old A",
+            "https://a.test/v1",
+            "key-a",
+            "model-a",
+            false,
+            30,
+            1,
+            1,
+        )
+        .unwrap();
+        create_provider_with_options(
+            &conn,
+            "Old B",
+            "https://b.test/v1",
+            "key-b",
+            "model-b",
+            false,
+            30,
+            1,
+            1,
+        )
+        .unwrap();
+        let replacement = vec![Provider {
+            id: String::new(),
+            name: "Imported".to_string(),
+            base_url: "https://c.test/v1".to_string(),
+            api_key: "enc:v1:key-c".to_string(),
+            model: "model-c".to_string(),
+            priority: 900,
+            is_active: true,
+            api_key_encrypted: true,
+            timeout_secs: 999,
+            retry_count: 99,
+            retry_delay_secs: -5,
+        }];
+        let inserted = replace_providers(&conn, &replacement).unwrap();
+        assert_eq!(inserted, 1);
+        let providers = list_providers(&conn).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "Imported");
+        assert_eq!(providers[0].priority, 900);
+        assert_eq!(providers[0].timeout_secs, 300);
+        assert_eq!(providers[0].retry_count, 5);
+        assert_eq!(providers[0].retry_delay_secs, 0);
+        assert!(providers[0].api_key_encrypted);
     }
 
     #[test]
