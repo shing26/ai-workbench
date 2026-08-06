@@ -16,7 +16,9 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
@@ -375,12 +377,11 @@ fn clear_vault_index_cancel(app: &tauri::AppHandle, run_id: &str) {
 }
 
 const STREAM_CONNECT_TIMEOUT_SECS: u64 = 8;
-const STREAM_TOTAL_TIMEOUT_SECS: u64 = 30;
 
-fn stream_client() -> reqwest::blocking::Client {
+fn stream_client(timeout_secs: u64) -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(STREAM_TOTAL_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(timeout_secs.clamp(1, 300)))
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new())
 }
@@ -437,18 +438,20 @@ fn chat_openai(messages_json: &str) -> Result<String, String> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_openai_compatible_with(
     run_id: &str,
     base_url: &str,
     api_key: &str,
     messages_json: &str,
     model: &str,
+    timeout_secs: u64,
     is_cancelled: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&StreamChunk),
 ) -> Result<String, String> {
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = stream_client();
+    let client = stream_client(timeout_secs);
     let resp = client
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -512,42 +515,17 @@ fn stream_openai_compatible_with(
     Ok(collected)
 }
 
-fn stream_openai_compatible(
-    app: &tauri::AppHandle,
-    run_id: &str,
-    base_url: &str,
-    api_key: &str,
-    messages_json: &str,
-    model: &str,
-) -> Result<String, String> {
-    let app = app.clone();
-    let run_id_owned = run_id.to_string();
-    let app_for_cancel = app.clone();
-    let is_cancelled = move || is_stream_cancelled(&app_for_cancel, &run_id_owned);
-    let mut emit = |chunk: &StreamChunk| {
-        let _ = app.emit("stream-chunk", chunk.clone());
-    };
-    stream_openai_compatible_with(
-        run_id,
-        base_url,
-        api_key,
-        messages_json,
-        model,
-        &is_cancelled,
-        &mut emit,
-    )
-}
-
 fn stream_ollama_with(
     run_id: &str,
     base_url: &str,
     messages_json: &str,
     model_name: &str,
+    timeout_secs: u64,
     is_cancelled: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&StreamChunk),
 ) -> Result<String, String> {
     let messages: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
-    let client = stream_client();
+    let client = stream_client(timeout_secs);
     let endpoint = format!("{}/api/chat", base_url.trim_end_matches('/'));
     let resp = client
         .post(&endpoint)
@@ -606,30 +584,6 @@ fn stream_ollama_with(
         return Err("Ollama stream ended without done: true".into());
     }
     Ok(collected)
-}
-
-fn stream_ollama(
-    app: &tauri::AppHandle,
-    run_id: &str,
-    base_url: &str,
-    messages_json: &str,
-    model_name: &str,
-) -> Result<String, String> {
-    let app = app.clone();
-    let run_id_owned = run_id.to_string();
-    let app_for_cancel = app.clone();
-    let is_cancelled = move || is_stream_cancelled(&app_for_cancel, &run_id_owned);
-    let mut emit = |chunk: &StreamChunk| {
-        let _ = app.emit("stream-chunk", chunk.clone());
-    };
-    stream_ollama_with(
-        run_id,
-        base_url,
-        messages_json,
-        model_name,
-        &is_cancelled,
-        &mut emit,
-    )
 }
 
 fn chat_openai_compatible(
@@ -721,12 +675,7 @@ fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String,
         };
         chat_ollama(&provider.base_url, messages_json, model)
     } else {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        let api_key = get_api_key(key_ref)?;
+        let api_key = resolve_provider_api_key(provider)?;
         let model = if provider.model.is_empty() {
             "gpt-4o-mini"
         } else {
@@ -742,34 +691,76 @@ fn stream_provider(
     provider: &db::Provider,
     messages_json: &str,
 ) -> Result<String, String> {
-    if is_ollama_provider(&provider.name, &provider.base_url) {
-        let model = if provider.model.is_empty() {
+    let is_ollama = is_ollama_provider(&provider.name, &provider.base_url);
+    let model = if is_ollama {
+        if provider.model.is_empty() {
             "qwen2.5:3b"
         } else {
             &provider.model
-        };
-        stream_ollama(app, run_id, &provider.base_url, messages_json, model)
+        }
     } else {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        let api_key = get_api_key(key_ref)?;
-        let model = if provider.model.is_empty() {
+        if provider.model.is_empty() {
             "gpt-4o-mini"
         } else {
             &provider.model
+        }
+    };
+    let api_key = if is_ollama {
+        String::new()
+    } else {
+        resolve_provider_api_key(provider)?
+    };
+    let timeout_secs = provider.timeout_secs.clamp(1, 300) as u64;
+    let retries = provider.retry_count.clamp(0, 5) as usize;
+    let delay_secs = provider.retry_delay_secs.clamp(0, 30) as u64;
+    let mut last_error = "Provider stream failed".to_string();
+    for attempt in 0..=retries {
+        let emitted_any = std::sync::Arc::new(AtomicBool::new(false));
+        let emitted_flag = emitted_any.clone();
+        let app_for_cancel = app.clone();
+        let run_id_owned = run_id.to_string();
+        let is_cancelled = move || is_stream_cancelled(&app_for_cancel, &run_id_owned);
+        let app_emit = app.clone();
+        let mut emit = move |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                emitted_flag.store(true, Ordering::Relaxed);
+            }
+            let _ = app_emit.emit("stream-chunk", chunk.clone());
         };
-        stream_openai_compatible(
-            app,
-            run_id,
-            &provider.base_url,
-            &api_key,
-            messages_json,
-            model,
-        )
+        let result = if is_ollama {
+            stream_ollama_with(
+                run_id,
+                &provider.base_url,
+                messages_json,
+                model,
+                timeout_secs,
+                &is_cancelled,
+                &mut emit,
+            )
+        } else {
+            stream_openai_compatible_with(
+                run_id,
+                &provider.base_url,
+                &api_key,
+                messages_json,
+                model,
+                timeout_secs,
+                &is_cancelled,
+                &mut emit,
+            )
+        };
+        match result {
+            Ok(text) => return Ok(text),
+            Err(err) => {
+                if emitted_any.load(Ordering::Relaxed) || attempt == retries {
+                    return Err(err);
+                }
+                last_error = err;
+                thread::sleep(Duration::from_secs(delay_secs));
+            }
+        }
     }
+    Err(last_error)
 }
 
 fn append_moa_chain_context(
@@ -1555,7 +1546,7 @@ fn record_quick_prompt_usage(state: State<'_, db::Db>, id: String) -> Result<i64
 #[tauri::command]
 fn list_providers(state: State<'_, db::Db>) -> Result<Vec<db::Provider>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_providers(&conn).map_err(|e| e.to_string())
+    decrypt_providers(db::list_providers(&conn).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
@@ -1567,14 +1558,130 @@ fn create_provider(
     model: Option<String>,
 ) -> Result<db::Provider, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_provider(
+    let secret = provider_secret()?;
+    let (stored_key, encrypted) = if api_key.trim().is_empty() {
+        (String::new(), false)
+    } else {
+        (encrypt_provider_api_key(&api_key, secret)?, true)
+    };
+    let provider = db::create_provider_with_options(
         &conn,
         &name,
         &base_url,
-        &api_key,
+        &stored_key,
         &model.unwrap_or_default(),
+        encrypted,
+        30,
+        1,
+        1,
+    )
+    .map_err(|e| e.to_string())?;
+    decrypt_provider(provider)
+}
+
+#[tauri::command]
+fn update_provider_stream_config(
+    state: State<'_, db::Db>,
+    id: String,
+    timeout_secs: i64,
+    retry_count: i64,
+    retry_delay_secs: i64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_provider_stream_config(
+        &conn,
+        &id,
+        timeout_secs.clamp(1, 300),
+        retry_count.clamp(0, 5),
+        retry_delay_secs.clamp(0, 30),
     )
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_providers(state: State<'_, db::Db>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let providers = decrypt_providers(db::list_providers(&conn).map_err(|e| e.to_string())?)?;
+    let payload = serde_json::json!({
+        "version": 1,
+        "exportedAt": now_millis(),
+        "providers": providers,
+    });
+    serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_providers(state: State<'_, db::Db>, payload: String) -> Result<usize, String> {
+    let value: Value =
+        serde_json::from_str(&payload).map_err(|e| format!("Invalid provider JSON: {}", e))?;
+    let items = match value.as_array() {
+        Some(items) => items.clone(),
+        None => value
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .ok_or_else(|| "Provider JSON must be an array or {providers: [...]}".to_string())?,
+    };
+    let secret = provider_secret()?;
+    let mut providers = Vec::with_capacity(items.len());
+    for item in items {
+        let api_key = item
+            .get("apiKey")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let (stored_key, encrypted) = if api_key.trim().is_empty() {
+            (String::new(), false)
+        } else {
+            (encrypt_provider_api_key(&api_key, secret)?, true)
+        };
+        providers.push(db::Provider {
+            id: String::new(),
+            name: item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            base_url: item
+                .get("baseUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            api_key: stored_key,
+            model: item
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            priority: item
+                .get("priority")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0),
+            is_active: item
+                .get("isActive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            api_key_encrypted: encrypted,
+            timeout_secs: item
+                .get("timeoutSecs")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(30)
+                .clamp(1, 300),
+            retry_count: item
+                .get("retryCount")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1)
+                .clamp(0, 5),
+            retry_delay_secs: item
+                .get("retryDelaySecs")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1)
+                .clamp(0, 30),
+        });
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::replace_providers(&conn, &providers).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1616,6 +1723,7 @@ fn list_provider_models(
     let provider = db::get_provider(&conn, &provider_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
+    let provider = decrypt_provider(provider)?;
     drop(conn);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -1629,12 +1737,7 @@ fn list_provider_models(
     };
     let mut request = client.get(&endpoint);
     if !is_ollama {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        let api_key = get_api_key(key_ref)?;
+        let api_key = resolve_provider_api_key(&provider)?;
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
     let response = request.send().map_err(|e| e.to_string())?;
@@ -2771,6 +2874,9 @@ fn spawn_provider_heartbeat_monitor(app: tauri::AppHandle) {
         let Ok(all) = db::list_providers(&conn) else {
             continue;
         };
+        let Ok(all) = decrypt_providers(all) else {
+            continue;
+        };
         drop(conn);
         let Some(heartbeat_state) = app.try_state::<ProviderHeartbeat>() else {
             continue;
@@ -3311,6 +3417,120 @@ fn decrypt_sync_payload(envelope: &str, passphrase: &str) -> Result<String, Stri
         .map_err(|_| "Decrypted payload is not valid UTF-8".to_string())
 }
 
+static PROVIDER_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
+const PROVIDER_KEY_NONCE_LEN: usize = 12;
+
+fn provider_secret() -> Result<&'static [u8; 32], String> {
+    PROVIDER_SECRET
+        .get()
+        .ok_or_else(|| "Provider encryption key is not initialized".to_string())
+}
+
+fn set_provider_secret(key: [u8; 32]) {
+    let _ = PROVIDER_SECRET.set(key);
+}
+
+fn load_or_create_provider_secret(dir: &Path) -> Result<[u8; 32], String> {
+    let path = dir.join("provider.key");
+    if let Ok(hex) = fs::read_to_string(&path) {
+        let decoded = hex.trim();
+        if decoded.len() == 64 {
+            let mut key = [0u8; 32];
+            for (index, byte) in decoded.as_bytes().chunks(2).enumerate() {
+                key[index] =
+                    u8::from_str_radix(std::str::from_utf8(byte).map_err(|e| e.to_string())?, 16)
+                        .map_err(|e| e.to_string())?;
+            }
+            return Ok(key);
+        }
+    }
+    let rng = SystemRandom::new();
+    let mut key = [0u8; 32];
+    rng.fill(&mut key)
+        .map_err(|e| format!("Failed to generate provider key: {}", e))?;
+    let hex = key
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<String>();
+    fs::write(&path, hex).map_err(|e| format!("Failed to write provider key: {}", e))?;
+    Ok(key)
+}
+
+fn encrypt_provider_api_key(plain: &str, secret: &[u8; 32]) -> Result<String, String> {
+    let rng = SystemRandom::new();
+    let mut nonce_bytes = [0u8; PROVIDER_KEY_NONCE_LEN];
+    rng.fill(&mut nonce_bytes)
+        .map_err(|e| format!("Random nonce failed: {}", e))?;
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, secret).map_err(|e| format!("Key setup failed: {}", e))?;
+    let sealing_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut in_out = plain.as_bytes().to_vec();
+    sealing_key
+        .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    let mut payload = Vec::with_capacity(nonce_bytes.len() + in_out.len());
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&in_out);
+    Ok(format!("enc:v1:{}", BASE64.encode(payload)))
+}
+
+fn decrypt_provider_api_key(envelope: &str, secret: &[u8; 32]) -> Result<String, String> {
+    let stored = envelope
+        .strip_prefix("enc:v1:")
+        .ok_or_else(|| "Invalid encrypted provider key".to_string())?;
+    let decoded = BASE64
+        .decode(stored)
+        .map_err(|_| "Invalid encrypted provider key".to_string())?;
+    if decoded.len() <= PROVIDER_KEY_NONCE_LEN {
+        return Err("Invalid encrypted provider key".to_string());
+    }
+    let nonce_bytes: [u8; PROVIDER_KEY_NONCE_LEN] = decoded[..PROVIDER_KEY_NONCE_LEN]
+        .try_into()
+        .map_err(|_| "Invalid encrypted provider key".to_string())?;
+    let mut ciphertext = decoded[PROVIDER_KEY_NONCE_LEN..].to_vec();
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, secret).map_err(|e| format!("Key setup failed: {}", e))?;
+    let opening_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let plaintext = opening_key
+        .open_in_place(nonce, Aad::empty(), &mut ciphertext)
+        .map_err(|_| "Provider key decryption failed".to_string())?;
+    String::from_utf8(plaintext.to_vec()).map_err(|_| "Provider key is not valid UTF-8".to_string())
+}
+
+fn decrypt_provider(mut provider: db::Provider) -> Result<db::Provider, String> {
+    if provider.api_key_encrypted {
+        let secret = provider_secret()?;
+        provider.api_key = decrypt_provider_api_key(&provider.api_key, secret)?;
+        provider.api_key_encrypted = false;
+    }
+    Ok(provider)
+}
+
+fn decrypt_providers(providers: Vec<db::Provider>) -> Result<Vec<db::Provider>, String> {
+    providers.into_iter().map(decrypt_provider).collect()
+}
+
+fn looks_like_keyring_ref(key: &str) -> bool {
+    let trimmed = key.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn resolve_provider_api_key(provider: &db::Provider) -> Result<String, String> {
+    if provider.api_key.is_empty() {
+        return get_api_key("OPENAI_API_KEY");
+    }
+    if looks_like_keyring_ref(&provider.api_key) {
+        return get_api_key(provider.api_key.trim());
+    }
+    Ok(provider.api_key.clone())
+}
+
 #[tauri::command]
 fn cancel_ai_stream(state: State<'_, StreamCancellation>, run_id: String) -> Result<(), String> {
     state.mark(&run_id);
@@ -3381,12 +3601,7 @@ fn check_provider_health_state(provider: &db::Provider) -> ProviderHealth {
     let result = if is_ollama_provider(&provider.name, &provider.base_url) {
         client.get(&endpoint).send()
     } else {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        match get_api_key(key_ref) {
+        match resolve_provider_api_key(provider) {
             Ok(key) => client
                 .get(&endpoint)
                 .header("Authorization", format!("Bearer {}", key))
@@ -3428,6 +3643,7 @@ fn check_provider_health(
     let provider = db::get_provider(&conn, &provider_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
+    let provider = decrypt_provider(provider)?;
     Ok(check_provider_health_state(&provider))
 }
 
@@ -3439,7 +3655,7 @@ fn run_provider_heartbeat(
     provider_ids: Option<Vec<String>>,
 ) -> Result<ProviderHeartbeatSnapshot, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let all = db::list_providers(&conn).map_err(|e| e.to_string())?;
+    let all = decrypt_providers(db::list_providers(&conn).map_err(|e| e.to_string())?)?;
     drop(conn);
     let targets: Vec<db::Provider> = match provider_ids {
         Some(ids) => all
@@ -3467,10 +3683,12 @@ fn run_provider_stream_smoke_test(
     let provider = db::get_provider(&conn, &provider_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
+    let provider = decrypt_provider(provider)?;
     drop(conn);
     let messages_json = serde_json::json!([{ "role": "user", "content": "ping" }]).to_string();
     let mut chunks = 0usize;
     let is_cancelled = || false;
+    let timeout_secs = provider.timeout_secs.clamp(1, 300) as u64;
     let result = if is_ollama_provider(&provider.name, &provider.base_url) {
         let model = if provider.model.is_empty() {
             "qwen2.5:3b"
@@ -3487,16 +3705,12 @@ fn run_provider_stream_smoke_test(
             &provider.base_url,
             &messages_json,
             model,
+            timeout_secs,
             &is_cancelled,
             &mut emit,
         )
     } else {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        let api_key = get_api_key(key_ref)?;
+        let api_key = resolve_provider_api_key(&provider)?;
         let mut emit = |chunk: &StreamChunk| {
             if !chunk.delta.is_empty() {
                 chunks += 1;
@@ -3513,6 +3727,7 @@ fn run_provider_stream_smoke_test(
             &api_key,
             &messages_json,
             model,
+            timeout_secs,
             &is_cancelled,
             &mut emit,
         )
@@ -3540,6 +3755,7 @@ fn run_provider_e2e_stream(
     let provider = db::get_provider(&conn, &provider_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
+    let provider = decrypt_provider(provider)?;
     drop(conn);
     let messages_json =
         serde_json::json!([{ "role": "user", "content": "Ping stream e2e" }]).to_string();
@@ -3547,6 +3763,7 @@ fn run_provider_e2e_stream(
     let mut chars = 0usize;
     let started = std::time::Instant::now();
     let is_cancelled = || false;
+    let timeout_secs = provider.timeout_secs.clamp(1, 300) as u64;
     let result = if is_ollama_provider(&provider.name, &provider.base_url) {
         let model = if provider.model.is_empty() {
             "qwen2.5:3b"
@@ -3564,16 +3781,12 @@ fn run_provider_e2e_stream(
             &provider.base_url,
             &messages_json,
             model,
+            timeout_secs,
             &is_cancelled,
             &mut emit,
         )
     } else {
-        let key_ref = if provider.api_key.is_empty() {
-            "OPENAI_API_KEY"
-        } else {
-            &provider.api_key
-        };
-        let api_key = get_api_key(key_ref)?;
+        let api_key = resolve_provider_api_key(&provider)?;
         let mut emit = |chunk: &StreamChunk| {
             if !chunk.delta.is_empty() {
                 chunks += 1;
@@ -3591,6 +3804,7 @@ fn run_provider_e2e_stream(
             &api_key,
             &messages_json,
             model,
+            timeout_secs,
             &is_cancelled,
             &mut emit,
         )
@@ -3631,7 +3845,7 @@ async fn stream_ai_message(
         let mut selected = Vec::new();
         for id in provider_ids {
             if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
-                selected.push(p);
+                selected.push(decrypt_provider(p)?);
             }
         }
         selected
@@ -6383,7 +6597,7 @@ async fn send_ai_message(
         let mut selected = Vec::new();
         for id in provider_ids {
             if let Some(p) = db::get_provider(&conn, &id).map_err(|e| e.to_string())? {
-                selected.push(p);
+                selected.push(decrypt_provider(p)?);
             }
         }
         selected
@@ -6432,6 +6646,9 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).expect("create app data dir");
+            let provider_key =
+                load_or_create_provider_secret(&dir).expect("load provider encryption key");
+            set_provider_secret(provider_key);
             let conn = db::init_connection(&dir.join("workbench.db")).expect("init db");
             app.manage(db::Db(std::sync::Mutex::new(conn)));
             app.manage(StreamCancellation::default());
@@ -6489,6 +6706,9 @@ pub fn run() {
             set_provider_active,
             set_provider_priority,
             update_provider_model,
+            update_provider_stream_config,
+            export_providers,
+            import_providers,
             list_provider_models,
             list_departments,
             list_agents,
@@ -7146,6 +7366,10 @@ mod tests {
             model: String::new(),
             priority: 0,
             is_active: true,
+            api_key_encrypted: false,
+            timeout_secs: 30,
+            retry_count: 1,
+            retry_delay_secs: 1,
         };
         heartbeat.record(
             "p1",
@@ -8049,6 +8273,7 @@ mod tests {
             "dummy-key",
             &messages,
             "mock-gpt",
+            30,
             &is_cancelled,
             &mut emit,
         );
@@ -8097,6 +8322,7 @@ mod tests {
             "dummy-key",
             &messages,
             "gpt-4o-mini",
+            30,
             &is_cancelled,
             &mut emit,
         );
@@ -8730,5 +8956,51 @@ mod tests {
         assert_eq!(value["context"]["ok"], true);
         assert_eq!(value["schemaVersion"], 3);
         assert_eq!(value["createdAt"], 1234);
+    }
+
+    #[test]
+    fn provider_api_key_encryption_roundtrip_and_wrong_key() {
+        let key = [7u8; 32];
+        set_provider_secret(key);
+        let other = [9u8; 32];
+        let envelope = encrypt_provider_api_key("sk-live-secret-123", &key).unwrap();
+        assert!(envelope.starts_with("enc:v1:"));
+        assert_eq!(
+            decrypt_provider_api_key(&envelope, &key).unwrap(),
+            "sk-live-secret-123"
+        );
+        assert!(decrypt_provider_api_key(&envelope, &other).is_err());
+        assert!(decrypt_provider_api_key("not-an-envelope", &key).is_err());
+
+        let mut provider = db::Provider {
+            id: "p1".to_string(),
+            name: "Encrypted".to_string(),
+            base_url: "https://example.test/v1".to_string(),
+            api_key: envelope,
+            model: "mock".to_string(),
+            priority: 0,
+            is_active: true,
+            api_key_encrypted: true,
+            timeout_secs: 30,
+            retry_count: 1,
+            retry_delay_secs: 1,
+        };
+        let decrypted = decrypt_provider(provider.clone()).unwrap();
+        assert_eq!(decrypted.api_key, "sk-live-secret-123");
+        assert!(!decrypted.api_key_encrypted);
+
+        provider.api_key_encrypted = false;
+        provider.api_key = "plain-key".to_string();
+        assert_eq!(decrypt_provider(provider).unwrap().api_key, "plain-key");
+    }
+
+    #[test]
+    fn keyring_ref_detection_keeps_plaintext_keys_readable() {
+        assert!(looks_like_keyring_ref("OPENAI_API_KEY"));
+        assert!(looks_like_keyring_ref("ANTHROPIC_API_KEY_2"));
+        assert!(!looks_like_keyring_ref("sk-ant-abc123"));
+        assert!(!looks_like_keyring_ref(""));
+        assert!(!looks_like_keyring_ref("lower_case"));
+        assert!(!looks_like_keyring_ref(&"K".repeat(65)));
     }
 }

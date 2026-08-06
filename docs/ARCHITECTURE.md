@@ -891,3 +891,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 为每个 MOA 子流维护独立 runsRef / meta / results：流卡片 streaming 时提供 `data-moa-lane-stop`，失败或停止后提供 `data-moa-lane-retry`；单路重试通过 `truncateChatMessages` 重建该用户消息之后的会话并只重跑目标 Provider，再调用 `buildMoaConsensus` 刷新摘要。
 - Chain 单路重试只重跑目标步骤并截断其后旧步骤，避免保留伪造的链式结果；Parallel 单路重试则保留其它路并重算 Consensus。
 - 浏览器 fallback 用 `localStreamControllers` 注册每条真实流的 `AbortController`，`cancelAiStream` 同时登记标记并 abort；非 MOA 单 Provider 请求严格按 `providerIds[0]` 路由，保证重试精确命中。
+
+## Sprint 150：Provider 导入导出 / API Key 加密 / 流式超时与自动重试
+
+- `providers` 新增 `api_key_encrypted / timeout_secs / retry_count / retry_delay_secs`；app setup 时在 app data dir 生成 / 读取 `provider.key`（32 字节 hex 密钥），`create_provider` / `import_providers` 对非空 API Key 用 AES-256-GCM 加密为 `enc:v1:<base64>`，`list/get/stream` 命令通过 `decrypt_provider(s)` 统一解密后使用。
+- `export_providers` 解密整批 Provider 并返回 `{version:1, exportedAt, providers}` 明文 JSON，System 工具栏复制到剪贴板；`import_providers` 接受数组或 `{providers:[]}`，字段钳制、id 重建、API Key 重新加密后由 `replace_providers` 整体替换。
+- `update_provider_stream_config(id, timeoutSecs, retryCount, retryDelaySecs)` 按 1~300 / 0~5 / 0~30 钳制持久化；System Provider 卡片新增 Timeout / Retries / Delay 三个输入，blur / Enter 保存。
+- Rust `stream_ai_message` / `call_provider` 与浏览器 `streamProviderLive` / `streamProviderWithRetry` 同构实现超时与重试：超时后回显 `Request timeout: provider did not respond in time`；仅在未 emit 任何 delta 前按 `retry_count` 重试，间隔 `retry_delay_secs`，已开始输出则直接失败。
+- 浏览器 fallback 的 `exportProviders` / `importProviders` 同构：导入把 `apiKeyEncrypted` 强制为 false，配置字段按相同范围钳制后写回 `ai-workbench:db:v1`；不新增 localStorage key。
+- `verify:ui` / `verify:preview` 新增 `providerTimeout` / `providerRetry` / `providerConfigEdit` / `providerExport` / `providerImport` / `importedRetry` lanes；Sprint 149 lane seeding 显式补 `retryCount:0` 保持手动重试语义。

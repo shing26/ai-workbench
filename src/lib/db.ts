@@ -153,6 +153,10 @@ export type Provider = {
   model: string;
   priority?: number;
   isActive: boolean;
+  apiKeyEncrypted?: boolean;
+  timeoutSecs?: number;
+  retryCount?: number;
+  retryDelaySecs?: number;
 };
 
 export type ProviderModel = {
@@ -1772,7 +1776,13 @@ export function buildThoughtLinkGraph(thoughts: Thought[]): ThoughtBacklinkGraph
 export async function listProviders(): Promise<Provider[]> {
   if (isTauri()) return invoke<Provider[]>('list_providers');
   return (readLocal().providers ?? [])
-    .map((p) => ({ ...p, priority: p.priority ?? 0 }))
+    .map((p) => ({
+      ...p,
+      priority: p.priority ?? 0,
+      timeoutSecs: p.timeoutSecs ?? 30,
+      retryCount: p.retryCount ?? 1,
+      retryDelaySecs: p.retryDelaySecs ?? 1,
+    }))
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 }
 
@@ -1792,6 +1802,10 @@ export async function createProvider(
     model,
     priority: 0,
     isActive: false,
+    apiKeyEncrypted: false,
+    timeoutSecs: 30,
+    retryCount: 1,
+    retryDelaySecs: 1,
   };
   shape.providers.unshift(provider);
   writeLocal(shape);
@@ -1829,6 +1843,70 @@ export async function updateProviderModel(id: string, model: string): Promise<vo
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.model = model;
   writeLocal(shape);
+}
+
+export async function updateProviderStreamConfig(
+  id: string,
+  timeoutSecs: number,
+  retryCount: number,
+  retryDelaySecs: number,
+): Promise<void> {
+  if (isTauri()) {
+    await invoke('update_provider_stream_config', {
+      id,
+      timeoutSecs,
+      retryCount,
+      retryDelaySecs,
+    });
+    return;
+  }
+  const shape = readLocal();
+  const provider = shape.providers.find((p) => p.id === id);
+  if (provider) {
+    provider.timeoutSecs = Math.max(1, Math.min(300, Math.round(timeoutSecs)));
+    provider.retryCount = Math.max(0, Math.min(5, Math.round(retryCount)));
+    provider.retryDelaySecs = Math.max(0, Math.min(30, Math.round(retryDelaySecs)));
+  }
+  writeLocal(shape);
+}
+
+export async function exportProviders(): Promise<string> {
+  if (isTauri()) return invoke<string>('export_providers');
+  const providers = await listProviders();
+  return JSON.stringify(
+    {
+      version: 1,
+      exportedAt: Date.now(),
+      providers,
+    },
+    null,
+    2,
+  );
+}
+
+export async function importProviders(payload: string): Promise<number> {
+  if (isTauri()) return invoke<number>('import_providers', { payload });
+  const value = JSON.parse(payload) as
+    Array<Record<string, unknown>> | { providers?: Array<Record<string, unknown>> };
+  const items = Array.isArray(value) ? value : value.providers;
+  if (!Array.isArray(items))
+    throw new Error('Provider JSON must be an array or {providers: [...]}');
+  const shape = readLocal();
+  shape.providers = items.map((item) => ({
+    id: makeId(),
+    name: String(item.name ?? ''),
+    baseUrl: String(item.baseUrl ?? ''),
+    apiKey: String(item.apiKey ?? ''),
+    model: String(item.model ?? ''),
+    priority: Math.max(0, Math.round(Number(item.priority ?? 0))),
+    isActive: Boolean(item.isActive),
+    apiKeyEncrypted: false,
+    timeoutSecs: Math.max(1, Math.min(300, Math.round(Number(item.timeoutSecs ?? 30)))),
+    retryCount: Math.max(0, Math.min(5, Math.round(Number(item.retryCount ?? 1)))),
+    retryDelaySecs: Math.max(0, Math.min(30, Math.round(Number(item.retryDelaySecs ?? 1)))),
+  }));
+  writeLocal(shape);
+  return shape.providers.length;
 }
 
 export async function listProviderModels(provider: Provider): Promise<ProviderModel[]> {
@@ -5614,6 +5692,8 @@ async function streamProviderLive(
 ): Promise<string> {
   const final = opts.final !== false;
   const manageCancel = opts.manageCancel !== false;
+  const timeoutMs = Math.max(100, (provider.timeoutSecs ?? 30) * 1000);
+  let timedOut = false;
   const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
   const base = provider.baseUrl.replace(/\/+$/, '');
   const endpoint = isOllama ? `${base}/api/chat` : `${base}/chat/completions`;
@@ -5622,67 +5702,71 @@ async function streamProviderLive(
     headers.Authorization = `Bearer ${provider.apiKey.trim()}`;
   }
   const controller = new AbortController();
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: provider.model.trim(),
-      messages: args.messages,
-      stream: true,
-    }),
-    signal: controller.signal,
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Provider ${response.status}: ${body.slice(0, 200) || response.statusText}`);
-  }
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error('Provider response has no body');
-  const decoder = new TextDecoder();
   let buffer = '';
   let finished = false;
   let collected = '';
-  const flush = async (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    if (isOllama) {
-      const json = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
-      if (json.message?.content) {
-        collected += json.message.content;
+  const timeoutTimer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  localStreamControllers.set(args.runId, controller);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: provider.model.trim(),
+        messages: args.messages,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Provider ${response.status}: ${body.slice(0, 200) || response.statusText}`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('Provider response has no body');
+    const decoder = new TextDecoder();
+    const flush = async (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (isOllama) {
+        const json = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
+        if (json.message?.content) {
+          collected += json.message.content;
+          emitLocalStreamChunk({
+            id: args.runId,
+            delta: json.message.content,
+            done: false,
+            error: null,
+            cancelled: false,
+          });
+          opts.onChunk?.(json.message.content);
+        }
+        if (json.done === true) finished = true;
+        return;
+      }
+      if (!trimmed.startsWith('data:')) return;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') {
+        finished = true;
+        return;
+      }
+      const json = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
+      const delta = json.choices?.[0]?.delta?.content ?? '';
+      if (delta) {
+        collected += delta;
         emitLocalStreamChunk({
           id: args.runId,
-          delta: json.message.content,
+          delta,
           done: false,
           error: null,
           cancelled: false,
         });
-        opts.onChunk?.(json.message.content);
+        opts.onChunk?.(delta);
       }
-      if (json.done === true) finished = true;
-      return;
-    }
-    if (!trimmed.startsWith('data:')) return;
-    const data = trimmed.slice(5).trim();
-    if (data === '[DONE]') {
-      finished = true;
-      return;
-    }
-    const json = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
-    const delta = json.choices?.[0]?.delta?.content ?? '';
-    if (delta) {
-      collected += delta;
-      emitLocalStreamChunk({
-        id: args.runId,
-        delta,
-        done: false,
-        error: null,
-        cancelled: false,
-      });
-      opts.onChunk?.(delta);
-    }
-  };
-  localStreamControllers.set(args.runId, controller);
-  try {
+    };
     for (;;) {
       if (localCancelledRuns.has(args.runId)) {
         controller.abort();
@@ -5698,6 +5782,7 @@ async function streamProviderLive(
     }
     if (buffer.trim()) await flush(buffer);
   } catch (err) {
+    window.clearTimeout(timeoutTimer);
     if (localCancelledRuns.has(args.runId)) {
       if (manageCancel) localCancelledRuns.delete(args.runId);
       localStreamControllers.delete(args.runId);
@@ -5712,9 +5797,16 @@ async function streamProviderLive(
       }
       return collected;
     }
+    if (timedOut) {
+      localStreamControllers.delete(args.runId);
+      const timeoutError = new Error('Request timeout: provider did not respond in time');
+      (timeoutError as Error & { cause?: unknown }).cause = err;
+      throw timeoutError;
+    }
     localStreamControllers.delete(args.runId);
     throw err;
   }
+  window.clearTimeout(timeoutTimer);
   const wasCancelled = localCancelledRuns.has(args.runId);
   if (manageCancel) localCancelledRuns.delete(args.runId);
   localStreamControllers.delete(args.runId);
@@ -5745,6 +5837,42 @@ async function streamProviderLive(
     });
   }
   return collected;
+}
+
+async function streamProviderWithRetry(
+  provider: Provider,
+  args: {
+    providerIds: string[];
+    messages: { role: string; content: string }[];
+    moa: boolean;
+    runId: string;
+  },
+  opts: {
+    final?: boolean;
+    manageCancel?: boolean;
+    onChunk?: (delta: string) => void;
+  } = {},
+): Promise<string> {
+  const retries = Math.max(0, Math.min(5, Math.round(provider.retryCount ?? 1)));
+  const delayMs = Math.max(0, Math.min(30000, (provider.retryDelaySecs ?? 1) * 1000));
+  let lastError: unknown = new Error('Provider stream failed');
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    let emittedAny = false;
+    try {
+      return await streamProviderLive(provider, args, {
+        ...opts,
+        onChunk: (delta) => {
+          if (delta) emittedAny = true;
+          opts.onChunk?.(delta);
+        },
+      });
+    } catch (err) {
+      if (emittedAny || attempt === retries) throw err;
+      lastError = err;
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
 }
 
 export function appendMoaChainContext(
@@ -5831,7 +5959,7 @@ export async function sendAiMessageStream(args: {
             ? appendMoaChainContext(args.messages, previousName, previousOutput)
             : args.messages;
         try {
-          previousOutput = await streamProviderLive(
+          previousOutput = await streamProviderWithRetry(
             provider,
             { ...args, runId: subRunId, providerIds: [provider.id], messages: stepMessages },
             { final: false, manageCancel: false },
@@ -5898,7 +6026,7 @@ export async function sendAiMessageStream(args: {
           cancelled: false,
         });
         try {
-          const output = await streamProviderLive(
+          const output = await streamProviderWithRetry(
             provider,
             { ...args, runId: subRunId, providerIds: [provider.id] },
             { final: false, manageCancel: false },
@@ -5960,7 +6088,7 @@ export async function sendAiMessageStream(args: {
   const provider = realProviders[0] ?? null;
   if (provider && canRealStream(provider)) {
     try {
-      await streamProviderLive(provider, args);
+      await streamProviderWithRetry(provider, args);
     } catch (err) {
       if (args.autoFallback && realProviders.length > 1) {
         let lastError = err instanceof Error ? err.message : String(err);
@@ -5976,7 +6104,7 @@ export async function sendAiMessageStream(args: {
           });
           emitLocalStreamFallback({ id: args.runId, from: provider.name, to: next.name });
           try {
-            await streamProviderLive(next, args);
+            await streamProviderWithRetry(next, args);
             return;
           } catch (nextErr) {
             lastError = nextErr instanceof Error ? nextErr.message : String(nextErr);
@@ -7944,7 +8072,7 @@ export async function runProviderE2EStream(providerId: string): Promise<Provider
   let chunks = 0;
   const started = performance.now();
   try {
-    const collected = await streamProviderLive(
+    const collected = await streamProviderWithRetry(
       provider,
       {
         providerIds: [provider.id],

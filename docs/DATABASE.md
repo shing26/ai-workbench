@@ -70,11 +70,15 @@ CREATE TABLE IF NOT EXISTS providers (
     api_key TEXT,
     model TEXT DEFAULT '',
     priority INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER DEFAULT 1
+    is_active INTEGER DEFAULT 1,
+    api_key_encrypted INTEGER NOT NULL DEFAULT 0,
+    timeout_secs INTEGER NOT NULL DEFAULT 30,
+    retry_count INTEGER NOT NULL DEFAULT 1,
+    retry_delay_secs INTEGER NOT NULL DEFAULT 1
 );
 ```
 
-`api_key` 仅保存 OS Keyring 引用名，不保存明文密钥。
+`api_key` 优先保存 AES-256-GCM 密文（`enc:v1:` 前缀），`api_key_encrypted=1` 表示加密；旧库明文 / Keyring 引用继续兼容，读取时统一解密或原样使用。
 
 ## Sprint 106：Provider 优先级
 
@@ -1152,3 +1156,17 @@ ALTER TABLE projects ADD COLUMN material TEXT NOT NULL DEFAULT '';
 - 新库 SCHEMA 的 `projects` 建表语句已直接包含 `material TEXT NOT NULL DEFAULT ''`；旧库由幂等 `migrate_project_material` 补列，已加入 `init_connection` 迁移链。
 - `update_project_material(id, material)` 只接受 cyan / original / rain / chrome，其余值统一写空串；空串表示卡片回到按索引循环的默认材质，显式值表示逐卡记忆。
 - 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `projects` 数组，项目对象新增可选 `material`，`updateProjectMaterial` 同构写回；不新增 localStorage key。
+
+## Sprint 150：Provider API Key 加密与流式配置
+
+```sql
+ALTER TABLE providers ADD COLUMN api_key_encrypted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE providers ADD COLUMN timeout_secs INTEGER NOT NULL DEFAULT 30;
+ALTER TABLE providers ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE providers ADD COLUMN retry_delay_secs INTEGER NOT NULL DEFAULT 1;
+```
+
+- 新库 SCHEMA 的 `providers` 建表语句已直接包含上述四列；旧库由幂等 `migrate_provider_stream_config` 补列，并把 `api_key_encrypted IS NULL` 回写为 0，已加入 `init_connection` 迁移链。
+- 32 字节 AES-256 密钥保存在 app data dir 的 `provider.key`（hex，不在 SQLite 内）；`api_key` 存 `enc:v1:<base64(nonce+ciphertext+tag)>`，`api_key_encrypted` 标记是否密文。`list_providers / get_provider / create_provider / import_providers` 均读写这些字段，读取链路在 Rust 侧统一解密。
+- `update_provider_stream_config(id, timeoutSecs, retryCount, retryDelaySecs)` 按 1~300 / 0~5 / 0~30 钳制后写库；导入导出走 `export_providers`（解密明文 JSON）与 `import_providers`（重新加密后 `replace_providers` 整体替换）。
+- 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` 数组，Provider 对象新增可选 `apiKeyEncrypted / timeoutSecs / retryCount / retryDelaySecs`；`exportProviders` / `importProviders` 同构，不新增 localStorage key。

@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 150
+
+### What went well?
+
+- `providers` 新增 `api_key_encrypted / timeout_secs / retry_count / retry_delay_secs`：新库 SCHEMA 直接建列，旧库由 `migrate_provider_stream_config` 幂等补列；Provider 启动时生成 / 读取 32 字节 AES-256 密钥，API Key 以 `enc:v1:` AES-256-GCM 密文落库，列表 / 详情 / 流式读取时统一解密。
+- `export_providers` / `import_providers` 实现整批 Provider 迁移：导出为 `{version, exportedAt, providers}` 明文 JSON 并复制到剪贴板，导入接受数组或 `{providers:[]}`，字段钳制、id 重建、API Key 重新加密后整体替换；浏览器 fallback 同构读写 localStorage。
+- Rust 与浏览器流式链路都接入 `timeoutSecs / retryCount / retryDelaySecs`：超时用 reqwest timeout 与 AbortController；重试只在未输出任何 chunk 前按次数与间隔执行；System Provider 卡片新增三个数值输入并持久化。
+- `verify:ui` / `verify:preview` 新增六条 lane：`providerTimeout` / `providerRetry` / `providerConfigEdit` / `providerExport` / `providerImport` / `importedRetry`；Sprint 149 lane seeding 补 `retryCount:0` 后双端全绿。Rust 单测增至 182 条。
+
+### What went wrong?
+
+- Sprint 150 的默认 `retryCount:1` 会让 Sprint 149 的 lane-b 首次 500 被自动重试吞掉，`streamLaneCancelRetry` 的手动 Retry 按钮不再出现；修复方式是在 lane 的 `lane-a / lane-b / lane-c` Provider 显式补 `retryCount:0`，保留“失败后手动重试”语义。
+- 浏览器导入 Provider 时曾需要额外处理 `apiKeyEncrypted` 字段，避免把导出 JSON 中的布尔值误当配置项；导入统一强制 `apiKeyEncrypted:false` 并重新加密。
+
+### Action Items
+
+- 下一 Sprint 候选：System 模型能力元数据（context window / 价格 / 速率）、模型收藏与最近使用排序、`/models` 缓存与自动刷新。
+- 保留六条 Provider lane 与 `streamLaneCancelRetry`，修改 Provider 持久化、流式超时或重试策略时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 149
 
 ### What went well?
