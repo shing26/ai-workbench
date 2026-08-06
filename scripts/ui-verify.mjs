@@ -9888,6 +9888,203 @@ try {
   results.webhookRuleCircuitBreaker = webhookRuleCircuitBreaker;
   laneLog('webhookRuleCircuitBreaker ok');
 
+  const runLogSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const ruleBase = {
+      url: "https://hooks.example.test/ok",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      enabled: true,
+      lastRunAt: now,
+      lastStatus: 200,
+      lastMessage: "HTTP 200 delivered",
+      createdAt: now,
+      updatedAt: now,
+      consecutiveFailures: 0,
+      autoDisableAfter: 3,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        { ...ruleBase, id: "rl-ok", name: "Log success hook" },
+        {
+          ...ruleBase,
+          id: "rl-fail",
+          name: "Log fail hook",
+          url: "https://hooks.example.test/fail",
+          lastStatus: 500,
+          lastMessage: "HTTP 500 simulated failure",
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "ai-workbench:webhook-rule-runs:v1",
+      JSON.stringify([
+        {
+          id: "run-1",
+          ruleId: "rl-ok",
+          kind: "scheduled",
+          status: "success",
+          httpStatus: 200,
+          attempts: 1,
+          message: "HTTP 200 delivered",
+          createdAt: now - day,
+        },
+        {
+          id: "run-2",
+          ruleId: "rl-ok",
+          kind: "manual",
+          status: "success",
+          httpStatus: 200,
+          attempts: 1,
+          message: "HTTP 200 delivered",
+          createdAt: now - 3_600_000,
+        },
+        {
+          id: "run-3",
+          ruleId: "rl-fail",
+          kind: "event",
+          status: "failed",
+          httpStatus: 500,
+          attempts: 2,
+          message: "HTTP 500 simulated failure",
+          createdAt: now - 600_000,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    return true;
+  })()`);
+  if (!runLogSeed) {
+    throw new Error('Webhook run log seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRuleRunLog = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const RULES_KEY = "ai-workbench:webhook-rules:v1";
+    const RUNS_KEY = "ai-workbench:webhook-rule-runs:v1";
+    const DELIVERY_KEY = "ai-workbench:webhook-deliveries:v1";
+    const priorRules = localStorage.getItem(RULES_KEY);
+    const priorRuns = localStorage.getItem(RUNS_KEY);
+    const priorDeliveries = localStorage.getItem(DELIVERY_KEY);
+    const storedRuns = () => JSON.parse(localStorage.getItem(RUNS_KEY) || "[]");
+    const findItem = (name) =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes(name),
+      );
+    const runItems = () =>
+      [...document.querySelectorAll("[data-webhook-rule-run-item]")].map((el) => ({
+        text: el.textContent ?? "",
+        status: el.querySelector("[data-webhook-rule-run-status]")?.textContent ?? "",
+        http: el.querySelector("[data-webhook-rule-run-http]")?.textContent ?? "",
+        message: el.querySelector("[data-webhook-rule-run-message]")?.textContent ?? "",
+      }));
+    const waitForRuns = async (count, tries = 50) => {
+      for (let i = 0; i < tries; i += 1) {
+        if (runItems().length >= count) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const clickRun = async (name) => {
+      for (let i = 0; i < 30; i += 1) {
+        const item = findItem(name);
+        if (item && item.querySelector("[data-webhook-rule-run]")) {
+          item.querySelector("[data-webhook-rule-run]")?.click();
+          return true;
+        }
+        await sleep(100);
+      }
+      return false;
+    };
+
+    let ready = false;
+    for (let i = 0; i < 50; i += 1) {
+      if (runItems().length >= 3 && document.querySelector("[data-webhook-rule-fail-alert]")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) return { ok: false, reason: "run log not rendered" };
+    const initialItems = runItems();
+    const initialOk =
+      initialItems.length === 3 &&
+      initialItems.some((item) => item.status.includes("failed")) &&
+      initialItems.some((item) => item.status.includes("success")) &&
+      (document.querySelector("[data-webhook-rule-fail-alert]")?.textContent ?? "").includes(
+        "1 failed run(s) in 24h",
+      );
+
+    const okClicked = await clickRun("Log success hook");
+    const okAppended = await waitForRuns(4);
+    await sleep(250);
+    const afterOk = runItems();
+    const okFresh = afterOk.some(
+      (item) => item.status.includes("manual") && item.status.includes("success"),
+    );
+
+    const failClicked = await clickRun("Log fail hook");
+    const failAppended = await waitForRuns(5);
+    await sleep(250);
+    const afterFail = runItems();
+    const failAlert =
+      document.querySelector("[data-webhook-rule-fail-alert]")?.textContent ?? "";
+    const failFresh = afterFail.some(
+      (item) => item.status.includes("manual") && item.status.includes("failed"),
+    );
+    const storedAfter = storedRuns();
+    const persisted = storedAfter.length === 5 && storedAfter[0].kind === "manual";
+    const ok =
+      initialOk &&
+      okClicked &&
+      okAppended &&
+      okFresh &&
+      failClicked &&
+      failAppended &&
+      failFresh &&
+      failAlert.includes("2 failed run(s) in 24h") &&
+      persisted;
+
+    localStorage.setItem(RULES_KEY, priorRules ?? "[]");
+    if (priorRuns === null) localStorage.removeItem(RUNS_KEY);
+    else localStorage.setItem(RUNS_KEY, priorRuns);
+    localStorage.setItem(DELIVERY_KEY, priorDeliveries ?? "[]");
+    return {
+      ok,
+      initialOk,
+      okClicked,
+      okAppended,
+      okFresh,
+      failClicked,
+      failAppended,
+      failFresh,
+      failAlert,
+      persisted,
+      counts: {
+        initial: initialItems.length,
+        afterOk: afterOk.length,
+        afterFail: afterFail.length,
+        stored: storedAfter.length,
+      },
+      latest: storedAfter[0] ?? null,
+    };
+  })()`);
+  if (!webhookRuleRunLog.ok) {
+    throw new Error(`Webhook run log assertion failed: ${JSON.stringify(webhookRuleRunLog)}`);
+  }
+  results.webhookRuleRunLog = webhookRuleRunLog;
+  laneLog('webhookRuleRunLog ok');
+
   let budgetServer = null;
   try {
     budgetServer = http.createServer((req, res) => {

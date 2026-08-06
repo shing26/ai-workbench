@@ -470,6 +470,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 表单新增 `data-webhook-rule-auto-disable` 输入，规则行新增 `data-webhook-rule-failures`（连续失败徽标）与 `data-webhook-rule-auto-disable`（熔断阈值徽标）；`db.ts` 的 `WebhookRule` / `createWebhookRule` / fallback 与 Rust 同构，fallback 按 URL 含 `/fail` 模拟失败并执行相同累计 / 清零 / 停用语义。
 - `verify:ui` / `verify:preview` 新增 `webhookRuleCircuitBreaker` lane；Rust 新增迁移、累计、自动停用、零阈值不熔断与重新启用重置单测，`cargo test --lib` 增至 143 条。
 
+## Sprint 139：Webhook 规则执行日志与失败告警
+
+- 新增 `webhook_rule_runs` 表（id / rule_id / kind / status / http_status / attempts / message / created_at）与 `(rule_id, created_at DESC)` 索引，SCHEMA 自动建表；`record_webhook_rule_run` 写入后按规则裁剪保留最近 50 条。
+- `run_webhook_rule_inner` 记录 `manual` 成功 / 失败；delivery worker 的 success / dead 终态记录 `scheduled` / `event` 运行，含 http_status、attempts 与 message；新增 Tauri 命令 `list_webhook_rule_runs(rule_id?, limit?)`。
+- SystemView Webhook 卡片新增 Run log 区：`data-webhook-rule-runs` 列表、`data-webhook-rule-run-item` 行与 status / http / attempts / message / time 徽标；最近 24h 有失败时展示 `data-webhook-rule-fail-alert` 告警条，Run now / 事件触发 / 删除规则都会即时刷新日志。
+- `db.ts` 新增 `WebhookRuleRun` / `listWebhookRuleRuns`，浏览器 fallback 用 `ai-workbench:webhook-rule-runs:v1` 持久化并在 `runWebhookRule` / `triggerWebhookEvent` 写入同构记录；`verify:ui` / `verify:preview` 新增 `webhookRuleRunLog` lane，Rust 单测增至 144 条。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 - `db.ts` 新增 `buildSessionSummary`：questionCount、keywords（中文 2-3 字 n-gram + 英文词，过滤停用词，top 6）、points（user 消息配对下一条 assistant 回复，各取首行截断），纯运行时派生。

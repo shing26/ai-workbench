@@ -135,6 +135,7 @@ export default function SystemView() {
   const [webhookResult, setWebhookResult] = useState<db.WebhookDeliveryResult | null>(null);
   const [webhookBusy, setWebhookBusy] = useState(false);
   const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
+  const [webhookRuleRuns, setWebhookRuleRuns] = useState<db.WebhookRuleRun[]>([]);
   const [webhookRuleName, setWebhookRuleName] = useState('');
   const [webhookRuleInterval, setWebhookRuleInterval] = useState('60');
   const [webhookRuleCooldown, setWebhookRuleCooldown] = useState('0');
@@ -835,6 +836,10 @@ export default function SystemView() {
     setWebhookRules(await db.listWebhookRules());
   };
 
+  const loadWebhookRuleRuns = async () => {
+    setWebhookRuleRuns(await db.listWebhookRuleRuns());
+  };
+
   const saveWebhookRule = async () => {
     if (!webhookRuleName.trim() || !webhookUrl.trim()) {
       setWebhookResult({
@@ -862,6 +867,7 @@ export default function SystemView() {
     );
     await loadWebhookRules();
     await loadWebhookDeliveries();
+    await loadWebhookRuleRuns();
     setWebhookRuleName('');
     setWebhookRuleCooldown('0');
     setWebhookRuleAutoDisable('3');
@@ -877,12 +883,14 @@ export default function SystemView() {
     const result = await db.runWebhookRule(id);
     setWebhookResult(result);
     await loadWebhookRules();
+    await loadWebhookRuleRuns();
   };
 
   const deleteWebhookRule = async (id: string) => {
     await db.deleteWebhookRule(id);
     await loadWebhookRules();
     await loadWebhookDeliveries();
+    await loadWebhookRuleRuns();
   };
 
   const loadWebhookDeliveries = async () => {
@@ -917,6 +925,7 @@ export default function SystemView() {
       message: `Queued ${count} delivery(ies) for ${event}`,
     });
     await loadWebhookDeliveries();
+    await loadWebhookRuleRuns();
   };
 
   const previewWebhookPayload = () => {
@@ -996,12 +1005,14 @@ export default function SystemView() {
   useEffect(() => {
     void loadWebhookRules();
     void loadWebhookDeliveries();
+    void loadWebhookRuleRuns();
     void loadWebhookRetention();
     const onWebhooksUpdated = () => void loadWebhookDeliveries();
     window.addEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
     const timer = window.setInterval(() => {
       void loadWebhookRules();
       void loadWebhookDeliveries();
+      void loadWebhookRuleRuns();
     }, 5000);
     return () => {
       window.clearInterval(timer);
@@ -2201,6 +2212,72 @@ export default function SystemView() {
                 </button>
               </div>
             ))}
+          </div>
+          <div className="mt-2 border-t border-white/5 pt-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                Run log
+              </span>
+              {webhookRuleRuns.filter(
+                (run) => run.status === 'failed' && Date.now() - run.createdAt <= 86_400_000,
+              ).length > 0 && (
+                <span
+                  data-webhook-rule-fail-alert
+                  className="rounded-md bg-rose-500/15 px-1.5 py-0.5 text-[9px] text-rose-300"
+                >
+                  {
+                    webhookRuleRuns.filter(
+                      (run) => run.status === 'failed' && Date.now() - run.createdAt <= 86_400_000,
+                    ).length
+                  }{' '}
+                  failed run(s) in 24h
+                </span>
+              )}
+            </div>
+            <div data-webhook-rule-runs className="space-y-1">
+              {webhookRuleRuns.length === 0 && (
+                <div className="text-[10px] text-slate-600">No runs yet</div>
+              )}
+              {webhookRuleRuns.slice(0, 8).map((run) => {
+                const ruleName =
+                  webhookRules.find((rule) => rule.id === run.ruleId)?.name ?? 'Unknown rule';
+                return (
+                  <div
+                    key={run.id}
+                    data-webhook-rule-run-item
+                    className="flex flex-wrap items-center gap-1.5 rounded-md bg-white/[0.03] px-1.5 py-1"
+                  >
+                    <span className="max-w-32 truncate text-[9px] text-slate-300">{ruleName}</span>
+                    <span
+                      data-webhook-rule-run-status
+                      className={`rounded-md px-1.5 py-0.5 text-[8px] ${
+                        run.status === 'success'
+                          ? 'bg-emerald-500/10 text-emerald-300'
+                          : 'bg-rose-500/10 text-rose-300'
+                      }`}
+                    >
+                      {run.kind} · {run.status}
+                    </span>
+                    <span
+                      data-webhook-rule-run-http
+                      className="rounded-md bg-white/5 px-1.5 py-0.5 text-[8px] text-slate-400"
+                    >
+                      HTTP {run.httpStatus || '-'}
+                    </span>
+                    <span className="text-[8px] text-slate-500">{run.attempts} attempt(s)</span>
+                    <span
+                      data-webhook-rule-run-message
+                      className="max-w-40 truncate text-[8px] text-slate-500"
+                    >
+                      {run.message}
+                    </span>
+                    <span data-webhook-rule-run-time className="ml-auto text-[8px] text-slate-600">
+                      {formatTime(run.createdAt)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
             <span className="text-[9px] text-slate-500">Event triggers</span>

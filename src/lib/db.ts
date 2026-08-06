@@ -492,6 +492,17 @@ export type WebhookRule = {
   autoDisableAfter: number;
 };
 
+export type WebhookRuleRun = {
+  id: string;
+  ruleId: string;
+  kind: 'manual' | 'scheduled' | 'event';
+  status: 'success' | 'failed' | 'queued';
+  httpStatus: number;
+  attempts: number;
+  message: string;
+  createdAt: number;
+};
+
 export type WebhookDeliveryStatus = 'queued' | 'delivering' | 'success' | 'failed' | 'dead';
 
 export type WebhookDelivery = {
@@ -714,6 +725,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 const makeId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`;
 const WEBHOOK_RULES_LS_KEY = 'ai-workbench:webhook-rules:v1';
+const WEBHOOK_RULE_RUNS_LS_KEY = 'ai-workbench:webhook-rule-runs:v1';
 const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
 const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
 
@@ -5524,6 +5536,67 @@ function writeWebhookRules(rules: WebhookRule[]) {
   localStorage.setItem(WEBHOOK_RULES_LS_KEY, JSON.stringify(rules));
 }
 
+function readWebhookRuleRuns(): WebhookRuleRun[] {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_RULE_RUNS_LS_KEY);
+    return raw ? (JSON.parse(raw) as WebhookRuleRun[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWebhookRuleRuns(runs: WebhookRuleRun[]) {
+  localStorage.setItem(WEBHOOK_RULE_RUNS_LS_KEY, JSON.stringify(runs));
+}
+
+function pruneWebhookRuleRuns(runs: WebhookRuleRun[], keep = 50): WebhookRuleRun[] {
+  const byRule = new Map<string, WebhookRuleRun[]>();
+  for (const run of runs) {
+    const list = byRule.get(run.ruleId) ?? [];
+    list.push(run);
+    byRule.set(run.ruleId, list);
+  }
+  const pruned: WebhookRuleRun[] = [];
+  for (const list of byRule.values()) {
+    list.sort((a, b) => b.createdAt - a.createdAt);
+    pruned.push(...list.slice(0, keep));
+  }
+  return pruned.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function appendWebhookRuleRun(
+  ruleId: string,
+  kind: WebhookRuleRun['kind'],
+  status: WebhookRuleRun['status'],
+  httpStatus: number,
+  attempts: number,
+  message: string,
+): void {
+  const run: WebhookRuleRun = {
+    id: makeId(),
+    ruleId,
+    kind,
+    status,
+    httpStatus,
+    attempts: Math.max(1, attempts),
+    message,
+    createdAt: Date.now(),
+  };
+  writeWebhookRuleRuns(pruneWebhookRuleRuns([run, ...readWebhookRuleRuns()]));
+}
+
+export async function listWebhookRuleRuns(ruleId?: string, limit = 50): Promise<WebhookRuleRun[]> {
+  if (isTauri()) {
+    return invoke<WebhookRuleRun[]>('list_webhook_rule_runs', {
+      ruleId: ruleId?.trim() ? ruleId.trim() : null,
+      limit,
+    });
+  }
+  const all = pruneWebhookRuleRuns(readWebhookRuleRuns());
+  const filtered = ruleId?.trim() ? all.filter((run) => run.ruleId === ruleId.trim()) : all;
+  return filtered.slice(0, Math.min(Math.max(1, limit), 200));
+}
+
 export async function listWebhookRules(): Promise<WebhookRule[]> {
   if (isTauri()) return invoke<WebhookRule[]>('list_webhook_rules');
   return readWebhookRules();
@@ -5638,6 +5711,14 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
   }
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
+  appendWebhookRuleRun(
+    rule.id,
+    'manual',
+    result.ok ? 'success' : 'failed',
+    result.status,
+    result.attempts,
+    rule.lastMessage,
+  );
   return result;
 }
 
@@ -5727,6 +5808,16 @@ export async function triggerWebhookEvent(
       if (fired.has(rule.id)) rule.lastRunAt = now;
     }
     writeWebhookRules(storedRules);
+    for (const rule of rules) {
+      appendWebhookRuleRun(
+        rule.id,
+        'event',
+        'success',
+        200,
+        1,
+        `HTTP 200 delivered (event: ${event})`,
+      );
+    }
   }
   let next = [...readWebhookDeliveries(), ...deliveries];
   const retention = readWebhookRetentionConfig();
