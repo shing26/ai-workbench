@@ -10,9 +10,11 @@ import {
   Target,
   TrendingUp,
   Trash2,
+  Wand2,
 } from 'lucide-react';
 import { useState } from 'react';
 import * as db from '../lib/db';
+import { loadWeekPlanTemplates, weekPlanTemplateCounts } from '../lib/weekPlanTemplates';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import BentoCard from '../components/ui/BentoCard';
 import StatPill from '../components/ui/StatPill';
@@ -79,6 +81,7 @@ export default function ActionsView() {
   const updateHabitWeekGoal = useWorkbenchStore((s) => s.updateHabitWeekGoal);
   const deleteHabit = useWorkbenchStore((s) => s.deleteHabit);
   const addScheduleEvent = useWorkbenchStore((s) => s.addScheduleEvent);
+  const applyWeekPlan = useWorkbenchStore((s) => s.applyWeekPlan);
   const toggleEventDone = useWorkbenchStore((s) => s.toggleEventDone);
 
   const [title, setTitle] = useState('');
@@ -89,6 +92,12 @@ export default function ActionsView() {
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('12:00');
   const [eventTag, setEventTag] = useState('work');
+  const [eventDate, setEventDate] = useState(dayKey(new Date()));
+  const [weekPlanTemplates] = useState(() => loadWeekPlanTemplates());
+  const [weekPlanTemplateId, setWeekPlanTemplateId] = useState(
+    () => loadWeekPlanTemplates()[0]?.id ?? 'balanced-week',
+  );
+  const [weekPlanResult, setWeekPlanResult] = useState('');
   const [selectedDay, setSelectedDay] = useState(dayKey(new Date()));
   const [habitGoalEdits, setHabitGoalEdits] = useState<Record<string, string>>({});
   const [habitEditId, setHabitEditId] = useState<string | null>(null);
@@ -112,6 +121,13 @@ export default function ActionsView() {
     return dayKey(d);
   });
   const todayKey = dayKey(now);
+  const selectedWeekPlan =
+    weekPlanTemplates.find((template) => template.id === weekPlanTemplateId) ??
+    weekPlanTemplates[0] ??
+    null;
+  const weekPlanCounts = selectedWeekPlan
+    ? weekPlanTemplateCounts(selectedWeekPlan)
+    : { focusCount: 0, eventCount: 0 };
   const weekTasks = tasks.filter((t) => (t.dueDate ? weekDays.includes(t.dueDate) : t.isToday));
   const weekDone = weekTasks.filter((t) => t.status === 'done').length;
   const weekProgress = weekTasks.length > 0 ? weekDone / weekTasks.length : 0;
@@ -197,8 +213,15 @@ export default function ActionsView() {
 
   const addEventItem = async () => {
     if (!eventTitle.trim()) return;
-    await addScheduleEvent(eventTitle.trim(), eventTime, eventTag);
+    await addScheduleEvent(eventTitle.trim(), eventTime, eventTag, eventDate);
     setEventTitle('');
+  };
+
+  const applyWeekPlanTemplate = async () => {
+    if (!selectedWeekPlan) return;
+    setWeekPlanResult('Applying...');
+    const result = await applyWeekPlan(selectedWeekPlan, weekDays, todayKey);
+    setWeekPlanResult(`Applied ${result.focusCount} focus + ${result.eventCount} events`);
   };
 
   const archiveWeekDone = async () => {
@@ -711,6 +734,12 @@ export default function ActionsView() {
               className="h-8 min-w-0 flex-[2] rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
             />
             <input
+              type="date"
+              value={eventDate}
+              onChange={(e) => setEventDate(e.target.value)}
+              className="h-8 w-32 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none [color-scheme:dark]"
+            />
+            <input
               type="time"
               value={eventTime}
               onChange={(e) => setEventTime(e.target.value)}
@@ -738,10 +767,12 @@ export default function ActionsView() {
             {scheduleEvents.map((ev) => (
               <div
                 key={ev.id}
+                data-schedule-event-row
                 className="message-in flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
               >
-                <div className="w-10 shrink-0 text-right font-mono text-[10px] text-slate-500">
-                  {ev.startTime}
+                <div className="w-20 shrink-0 text-right font-mono text-[10px] leading-tight text-slate-500">
+                  <span className="block">{ev.date ? formatDayLabel(ev.date) : '—'}</span>
+                  <span className="block">{ev.startTime}</span>
                 </div>
                 <div className="h-4 w-px bg-white/10" />
                 <button
@@ -769,6 +800,84 @@ export default function ActionsView() {
             {scheduleEvents.length === 0 && (
               <div className="py-8 text-center text-xs text-slate-600">No events</div>
             )}
+          </div>
+        </BentoCard>
+
+        <BentoCard title="Week Plan" subtitle="Focus · Schedule" icon={Wand2} colSpan={12}>
+          <div data-week-plan className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                data-week-plan-template
+                value={weekPlanTemplateId}
+                onChange={(e) => setWeekPlanTemplateId(e.target.value)}
+                className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
+              >
+                {weekPlanTemplates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+              <span
+                data-week-plan-counts
+                className="rounded-md bg-white/5 px-2 py-1 font-mono text-[10px] text-slate-500"
+              >
+                {weekPlanCounts.focusCount} focus · {weekPlanCounts.eventCount} events
+              </span>
+              <button
+                type="button"
+                data-week-plan-apply
+                onClick={() => void applyWeekPlanTemplate()}
+                className="ml-auto flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+              >
+                <Wand2 size={12} /> Apply to week
+              </button>
+              <span data-week-plan-result className="text-[11px] text-slate-400">
+                {weekPlanResult}
+              </span>
+            </div>
+            <div data-week-plan-preview className="grid grid-cols-2 gap-1.5 md:grid-cols-7">
+              {weekDays.map((key, i) => {
+                const day = selectedWeekPlan?.days[i];
+                return (
+                  <div
+                    key={key}
+                    data-week-plan-day={key}
+                    className={`rounded-lg border p-2 ${
+                      key === todayKey
+                        ? 'border-emerald-500/30 bg-emerald-500/[0.06]'
+                        : 'border-white/10 bg-white/[0.02]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[10px] text-slate-400">{WEEKDAY_LABELS[i]}</span>
+                      <span className="font-mono text-[9px] text-slate-600">
+                        {formatDayLabel(key)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 space-y-1">
+                      {(day?.focus ?? []).slice(0, 2).map((item, index) => (
+                        <div
+                          key={`${item}-${index}`}
+                          className="truncate rounded bg-white/[0.04] px-1.5 py-1 text-[9px] text-slate-400"
+                        >
+                          {item}
+                        </div>
+                      ))}
+                      {(day?.events ?? []).slice(0, 2).map((event, index) => (
+                        <div
+                          key={`${event.title}-${index}`}
+                          className="flex items-center gap-1 rounded bg-emerald-500/[0.06] px-1.5 py-1 text-[9px] text-emerald-300/80"
+                        >
+                          <span className="font-mono">{event.time}</span>
+                          <span className="truncate">{event.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </BentoCard>
 

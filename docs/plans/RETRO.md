@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 141
+
+### What went well?
+
+- `schedule_events` 新增 `date` 列：新库 SCHEMA 直接建列，旧库 `migrate_schedule_event_date` 幂等补列；Rust / Tauri / TS 三层同构，列表按 `date, start_time` 排序。
+- 新增 `weekPlanTemplates.ts` 与 store `applyWeekPlan`：Balanced week 默认模板一次写入 9 条 Focus（含 dueDate）与 8 条 Schedule（含 date），ActionsView 新增 Week Plan 卡片与 Schedule 日期展示 / 手动选择。
+- `verify:ui` / `verify:preview` 新增 `weekPlanTemplate` / `weekPlanPersisted` lane：断言 7 日预览、9 focus + 8 events 落库、重载持久化；Rust 单测新增迁移与排序覆盖，`cargo test --lib` 增至 145 条，全部门禁全绿。
+
+### What went wrong?
+
+- `cargo fmt --check` 首轮报 `migrate_schedule_event_date` 里 `execute_batch` 单行过长，执行 `cargo fmt` 后通过；后续新增 SQL 迁移函数都按 rustfmt 格式书写。
+
+### Action Items
+
+- 下一 Sprint 候选：Webhook 复杂触发器条件表达式（cron / 事件匹配）与签名校验收发端 UI。
+- 保留 `weekPlanTemplate` / `weekPlanPersisted` lane，修改任务创建、事件创建或日期排序逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 140
 
 ### What went well?

@@ -3299,6 +3299,116 @@ try {
     );
   }
 
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.tasks = [];
+    shape.scheduleEvents = [];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Actions');
+
+  const weekPlanTemplate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn) => {
+      for (let i = 0; i < 80; i += 1) {
+        if (fn()) return true;
+        await sleep(150);
+      }
+      return false;
+    };
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const mondayOffset = (now.getDay() + 6) % 7;
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
+    const weekDays = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+      return (
+        d.getFullYear() +
+        "-" +
+        String(d.getMonth() + 1).padStart(2, "0") +
+        "-" +
+        String(d.getDate()).padStart(2, "0")
+      );
+    });
+    const card = document.querySelector("[data-week-plan]");
+    const select = document.querySelector("[data-week-plan-template]");
+    const apply = document.querySelector("[data-week-plan-apply]");
+    const previewDays = document.querySelectorAll("[data-week-plan-day]");
+    const counts = document.querySelector("[data-week-plan-counts]")?.textContent ?? "";
+    if (!card || !select || !apply || previewDays.length !== 7) {
+      return { ok: false, reason: "week plan card incomplete" };
+    }
+    apply.click();
+    const applied = await waitFor(() =>
+      (document.querySelector("[data-week-plan-result]")?.textContent ?? "").includes("Applied"),
+    );
+    const resultText = document.querySelector("[data-week-plan-result]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const tasks = stored.tasks ?? [];
+    const events = stored.scheduleEvents ?? [];
+    const taskDatesOk = tasks.length === 9 && tasks.every((t) => weekDays.includes(t.dueDate));
+    const eventDatesOk = events.length === 8 && events.every((e) => weekDays.includes(e.date));
+    const domRows = document.querySelectorAll(
+      "[data-task-row], [data-schedule-event-row]",
+    ).length;
+    const ok =
+      applied &&
+      resultText.includes("9 focus") &&
+      resultText.includes("8 events") &&
+      counts.includes("9 focus") &&
+      taskDatesOk &&
+      eventDatesOk;
+    return {
+      ok,
+      applied,
+      resultText,
+      counts,
+      previewDays: previewDays.length,
+      taskCount: tasks.length,
+      eventCount: events.length,
+      taskDatesOk,
+      eventDatesOk,
+      taskTitles: tasks.map((t) => t.title),
+      eventTitles: events.map((e) => e.title),
+    };
+  })()`);
+  if (!weekPlanTemplate.ok) {
+    throw new Error(`Week plan template assertion failed: ${JSON.stringify(weekPlanTemplate)}`);
+  }
+  results.weekPlanTemplate = weekPlanTemplate;
+  laneLog('weekPlanTemplate ok');
+
+  await reloadAndWait();
+  await clickDock('Actions');
+  const weekPlanPersisted = await evaluate(`(() => {
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const tasks = stored.tasks ?? [];
+    const events = stored.scheduleEvents ?? [];
+    const card = !!document.querySelector("[data-week-plan]");
+    const scheduleRows = document.querySelectorAll(
+      "[data-schedule-event-row]",
+    ).length;
+    return {
+      ok: card && tasks.length === 9 && events.length === 8 && scheduleRows === 8,
+      card,
+      taskCount: tasks.length,
+      eventCount: events.length,
+      scheduleRows,
+    };
+  })()`);
+  if (!weekPlanPersisted.ok) {
+    throw new Error(`Week plan persistence assertion failed: ${JSON.stringify(weekPlanPersisted)}`);
+  }
+  results.weekPlanPersisted = weekPlanPersisted;
+  laneLog('weekPlanPersisted ok');
+
   await clickDock('Knowledge');
   const selectedMarkdownThought = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")]

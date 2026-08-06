@@ -626,6 +626,16 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rule_runs_rule_created
 - 新表由 SCHEMA 自动创建，无旧库迁移；`record_webhook_rule_run` 写入后按 `rule_id` 裁剪保留最近 50 条，`list_webhook_rule_runs` 按 `created_at DESC` 返回。
 - `run_webhook_rule_inner` 写 `manual` 运行，delivery worker 终态写 `scheduled` / `event` 运行；浏览器 fallback 使用 `ai-workbench:webhook-rule-runs:v1` 保存同一模型，不写入 SQLite。
 
+## Sprint 141：Actions 周计划模板
+
+```sql
+ALTER TABLE schedule_events ADD COLUMN date TEXT NOT NULL DEFAULT '';
+```
+
+- 新库 SCHEMA 的 `schedule_events` 建表语句直接包含 `date` 列，旧库由 `migrate_schedule_event_date` 按列存在性幂等补列并加入 `init_connection` 迁移链。
+- `create_schedule_event` / `list_schedule_events` 全程携带 `date`，列表按 `date ASC, start_time ASC` 排序；浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `scheduleEvents` 数组，新增事件写入 `date` 字段，旧数据缺省视为空日期。
+- 周计划模板本身只保存在 `ai-workbench:week-plan-templates:v1`，不写入 SQLite。
+
 ## Sprint 140：Knowledge 双链补全编辑器提示
 
 无表结构变更。双链补全候选由 `db.ts` 从 `thoughts` 的 `content` 首行标题与 `tags` 运行时派生，不新增 SQLite 表、索引或字段；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。

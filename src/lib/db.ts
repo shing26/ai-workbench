@@ -224,6 +224,7 @@ export type ScheduleEvent = {
   id: string;
   title: string;
   startTime: string;
+  date: string;
   done: boolean;
   tag: string;
   createdAt: number;
@@ -1118,6 +1119,7 @@ function seedShape(): LocalShape {
         id: makeId(),
         title: '每日复盘',
         startTime: '09:30',
+        date: '',
         done: false,
         tag: 'routine',
         createdAt: now - 3600000,
@@ -1126,6 +1128,7 @@ function seedShape(): LocalShape {
         id: makeId(),
         title: 'Sprint 3 验收',
         startTime: '14:00',
+        date: '',
         done: false,
         tag: 'work',
         createdAt: now - 1800000,
@@ -2576,20 +2579,32 @@ export async function deleteHabit(id: string): Promise<boolean> {
 }
 
 export async function listScheduleEvents(): Promise<ScheduleEvent[]> {
-  return isTauri() ? invoke<ScheduleEvent[]>('list_schedule_events') : readLocal().scheduleEvents;
+  if (isTauri()) return invoke<ScheduleEvent[]>('list_schedule_events');
+  return readLocal()
+    .scheduleEvents.slice()
+    .sort(
+      (a, b) =>
+        a.date.localeCompare(b.date) ||
+        a.startTime.localeCompare(b.startTime) ||
+        a.createdAt - b.createdAt,
+    );
 }
 
 export async function createScheduleEvent(
   title: string,
   startTime: string,
   tag: string,
+  date = '',
 ): Promise<ScheduleEvent> {
-  if (isTauri()) return invoke<ScheduleEvent>('create_schedule_event', { title, startTime, tag });
+  if (isTauri()) {
+    return invoke<ScheduleEvent>('create_schedule_event', { title, startTime, date, tag });
+  }
   const shape = readLocal();
   const event: ScheduleEvent = {
     id: makeId(),
     title,
     startTime,
+    date,
     done: false,
     tag,
     createdAt: Date.now(),

@@ -1746,10 +1746,11 @@ fn create_schedule_event(
     state: State<'_, db::Db>,
     title: String,
     start_time: String,
+    date: String,
     tag: String,
 ) -> Result<db::ScheduleEvent, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_schedule_event(&conn, &title, &start_time, &tag).map_err(|e| e.to_string())
+    db::create_schedule_event(&conn, &title, &start_time, &date, &tag).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
