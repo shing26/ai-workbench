@@ -2658,6 +2658,25 @@ fn iso_date_from_epoch_ms(epoch_ms: i64) -> String {
     format!("{:04}-{:02}-{:02}", year, month, day)
 }
 
+fn error_bucket_label(start_at: i64, granularity: &str) -> String {
+    let date = iso_date_from_epoch_ms(start_at);
+    if granularity != "hour" {
+        return date;
+    }
+    let hour = (start_at / 3_600_000i64).rem_euclid(24);
+    format!("{date} {hour:02}:00")
+}
+
+fn error_bucket_step(granularity: &str, day_ms: i64, week_ms: i64, hour_ms: i64) -> i64 {
+    if granularity == "hour" {
+        hour_ms
+    } else if granularity == "week" {
+        week_ms
+    } else {
+        day_ms
+    }
+}
+
 pub fn sync_audit_summary_range(
     conn: &Connection,
     granularity: &str,
@@ -2756,30 +2775,38 @@ pub fn error_log_summary(
     source: Option<&str>,
     severity: Option<&str>,
     device_id: Option<&str>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
 ) -> Result<ErrorLogSummary, String> {
     let day_ms = 86_400_000i64;
     let week_ms = day_ms * 7;
-    if granularity != "day" && granularity != "week" {
-        return Err("unsupported error log granularity; use day or week".to_string());
+    let hour_ms = 3_600_000i64;
+    if granularity != "hour" && granularity != "day" && granularity != "week" {
+        return Err("unsupported error log granularity; use hour, day or week".to_string());
     }
     let mut stmt = conn
         .prepare(
             "SELECT severity, updated_at FROM error_logs
              WHERE (?1 IS NULL OR source = ?1)
                AND (?2 IS NULL OR severity = ?2)
-               AND (?3 IS NULL OR device_id = ?3)",
+               AND (?3 IS NULL OR device_id = ?3)
+               AND (?4 IS NULL OR updated_at >= ?4)
+               AND (?5 IS NULL OR updated_at <= ?5)",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![source, severity, device_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
+        .query_map(
+            params![source, severity, device_id, since_ms, until_ms],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
         .map_err(|e| e.to_string())?;
     let mut grouped: HashMap<i64, (i64, i64, i64)> = HashMap::new();
     let mut total = 0i64;
     for row in rows {
         let (severity_name, updated_at) = row.map_err(|e| e.to_string())?;
-        let start_at = if granularity == "week" {
+        let start_at = if granularity == "hour" {
+            updated_at.div_euclid(hour_ms) * hour_ms
+        } else if granularity == "week" {
             let days = updated_at.div_euclid(day_ms);
             let week_index = (days + 3).div_euclid(7);
             (week_index * 7 - 3) * day_ms
@@ -2797,7 +2824,7 @@ pub fn error_log_summary(
     let mut buckets: Vec<ErrorLogBucket> = grouped
         .iter()
         .map(|(&start_at, &(error, warning, info))| ErrorLogBucket {
-            bucket: iso_date_from_epoch_ms(start_at),
+            bucket: error_bucket_label(start_at, granularity),
             start_at,
             count: error + warning + info,
             error,
@@ -2807,17 +2834,13 @@ pub fn error_log_summary(
         .collect();
     buckets.sort_by_key(|bucket| bucket.start_at);
     if !buckets.is_empty() && buckets.len() <= 62 {
-        let step = if granularity == "week" {
-            week_ms
-        } else {
-            day_ms
-        };
+        let step = error_bucket_step(granularity, day_ms, week_ms, hour_ms);
         let mut filled = Vec::new();
         let mut cursor = buckets[0].start_at;
         for bucket in buckets {
             while cursor < bucket.start_at {
                 filled.push(ErrorLogBucket {
-                    bucket: iso_date_from_epoch_ms(cursor),
+                    bucket: error_bucket_label(cursor, granularity),
                     start_at: cursor,
                     count: 0,
                     error: 0,
@@ -5978,45 +6001,148 @@ mod tests {
             params![uid(), monday + day_ms * 2],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO error_logs (id, source, message, stack, severity, timestamp, updated_at, device_id)
+             VALUES (?1, 'frontend', 'old boom', NULL, 'error', ?2, ?2, 'device-a')",
+            params![uid(), monday - day_ms * 45],
+        )
+        .unwrap();
 
-        let daily = error_log_summary(&conn, "day", None, None, None).unwrap();
-        assert_eq!(daily.total, 4);
-        assert_eq!(daily.buckets.len(), 3);
-        assert_eq!(daily.buckets[0].bucket, "2026-08-03");
-        assert_eq!(daily.buckets[0].count, 2);
-        assert_eq!(daily.buckets[0].error, 1);
-        assert_eq!(daily.buckets[0].warning, 1);
-        assert_eq!(daily.buckets[0].info, 0);
-        assert_eq!(daily.buckets[1].info, 1);
-        assert_eq!(daily.buckets[2].error, 1);
+        let daily = error_log_summary(&conn, "day", None, None, None, None, None).unwrap();
+        assert_eq!(daily.total, 5);
+        assert_eq!(daily.buckets.len(), 48);
+        assert_eq!(daily.buckets[0].bucket, "2026-06-19");
+        assert_eq!(daily.buckets[47].bucket, "2026-08-05");
+        assert_eq!(daily.buckets[47].error, 1);
+        let non_empty_buckets: Vec<&ErrorLogBucket> = daily
+            .buckets
+            .iter()
+            .filter(|bucket| bucket.count > 0)
+            .collect();
+        assert_eq!(non_empty_buckets.len(), 4);
+        assert_eq!(non_empty_buckets[0].bucket, "2026-06-19");
+        assert_eq!(non_empty_buckets[0].count, 1);
+        assert_eq!(non_empty_buckets[1].bucket, "2026-08-03");
+        assert_eq!(non_empty_buckets[1].count, 2);
+        assert_eq!(non_empty_buckets[2].bucket, "2026-08-04");
+        assert_eq!(non_empty_buckets[2].count, 1);
+        assert_eq!(non_empty_buckets[2].info, 1);
+        assert_eq!(non_empty_buckets[2].warning, 0);
+        assert_eq!(non_empty_buckets[3].bucket, "2026-08-05");
+        assert_eq!(non_empty_buckets[3].count, 1);
+        assert_eq!(non_empty_buckets[3].error, 1);
 
-        let weekly = error_log_summary(&conn, "week", None, None, None).unwrap();
-        assert_eq!(weekly.total, 4);
-        assert_eq!(weekly.buckets.len(), 1);
-        assert_eq!(weekly.buckets[0].bucket, "2026-08-03");
-        assert_eq!(weekly.buckets[0].count, 4);
-        assert_eq!(weekly.buckets[0].error, 2);
-        assert_eq!(weekly.buckets[0].warning, 1);
-        assert_eq!(weekly.buckets[0].info, 1);
+        let weekly = error_log_summary(&conn, "week", None, None, None, None, None).unwrap();
+        assert_eq!(weekly.total, 5);
+        assert_eq!(weekly.buckets.len(), 8);
+        assert_eq!(weekly.buckets[0].bucket, "2026-06-15");
+        assert_eq!(weekly.buckets[0].count, 1);
+        assert_eq!(weekly.buckets[0].error, 1);
+        assert_eq!(weekly.buckets[7].bucket, "2026-08-03");
+        assert_eq!(weekly.buckets[7].count, 4);
+        assert_eq!(weekly.buckets[7].error, 2);
+        assert_eq!(weekly.buckets[7].warning, 1);
+        assert_eq!(weekly.buckets[7].info, 1);
 
-        let errors_only = error_log_summary(&conn, "day", None, Some("error"), None).unwrap();
-        assert_eq!(errors_only.total, 2);
+        let errors_only =
+            error_log_summary(&conn, "day", None, Some("error"), None, None, None).unwrap();
+        assert_eq!(errors_only.total, 3);
         assert!(errors_only
             .buckets
             .iter()
             .all(|bucket| bucket.warning == 0 && bucket.info == 0));
 
-        let frontend_only = error_log_summary(&conn, "day", Some("frontend"), None, None).unwrap();
-        assert_eq!(frontend_only.total, 2);
+        let frontend_only =
+            error_log_summary(&conn, "day", Some("frontend"), None, None, None, None).unwrap();
+        assert_eq!(frontend_only.total, 3);
 
-        let device_a = error_log_summary(&conn, "day", None, None, Some("device-a")).unwrap();
-        assert_eq!(device_a.total, 2);
+        let device_a =
+            error_log_summary(&conn, "day", None, None, Some("device-a"), None, None).unwrap();
+        assert_eq!(device_a.total, 3);
 
-        let combo =
-            error_log_summary(&conn, "day", Some("frontend"), None, Some("device-a")).unwrap();
-        assert_eq!(combo.total, 2);
+        let combo = error_log_summary(
+            &conn,
+            "day",
+            Some("frontend"),
+            None,
+            Some("device-a"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(combo.total, 3);
 
-        assert!(error_log_summary(&conn, "month", None, None, None).is_err());
+        let recent = error_log_summary(
+            &conn,
+            "day",
+            None,
+            None,
+            None,
+            Some(monday - day_ms * 1),
+            None,
+        )
+        .unwrap();
+        assert_eq!(recent.total, 4);
+        assert_eq!(recent.buckets.len(), 3);
+        assert_eq!(recent.buckets[0].bucket, "2026-08-03");
+        assert_eq!(recent.buckets[2].bucket, "2026-08-05");
+
+        let last_thirty_days = error_log_summary(
+            &conn,
+            "day",
+            None,
+            None,
+            None,
+            Some(monday - day_ms * 30),
+            None,
+        )
+        .unwrap();
+        assert_eq!(last_thirty_days.total, 4);
+        assert_eq!(last_thirty_days.buckets.len(), 3);
+        assert_eq!(last_thirty_days.buckets[2].bucket, "2026-08-05");
+
+        let bounded = error_log_summary(
+            &conn,
+            "day",
+            None,
+            None,
+            None,
+            Some(monday),
+            Some(monday + day_ms),
+        )
+        .unwrap();
+        assert_eq!(bounded.total, 3);
+        assert_eq!(bounded.buckets.len(), 2);
+        assert_eq!(bounded.buckets[0].bucket, "2026-08-03");
+        assert_eq!(bounded.buckets[1].bucket, "2026-08-04");
+        assert_eq!(bounded.buckets[0].count, 2);
+        assert_eq!(bounded.buckets[1].count, 1);
+
+        let hourly = error_log_summary(&conn, "hour", None, None, None, None, None).unwrap();
+        assert_eq!(hourly.total, 5);
+        assert_eq!(hourly.buckets.len(), 1129);
+        assert_eq!(hourly.buckets[0].bucket, "2026-06-19 00:00");
+        assert_eq!(hourly.buckets[1128].bucket, "2026-08-05 00:00");
+        assert!(hourly
+            .buckets
+            .iter()
+            .all(|bucket| bucket.bucket.ends_with(":00")));
+        let same_hour = error_log_summary(
+            &conn,
+            "hour",
+            None,
+            None,
+            None,
+            Some(monday),
+            Some(monday + 999),
+        )
+        .unwrap();
+        assert_eq!(same_hour.total, 1);
+        assert_eq!(same_hour.buckets.len(), 1);
+        assert_eq!(same_hour.buckets[0].error, 1);
+        assert_eq!(same_hour.buckets[0].warning, 0);
+
+        assert!(error_log_summary(&conn, "month", None, None, None, None, None).is_err());
 
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();

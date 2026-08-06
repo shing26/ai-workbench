@@ -1777,6 +1777,8 @@ fn get_error_log_summary(
     source: Option<String>,
     severity: Option<String>,
     device_id: Option<String>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
 ) -> Result<db::ErrorLogSummary, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::error_log_summary(
@@ -1785,6 +1787,8 @@ fn get_error_log_summary(
         source.as_deref(),
         severity.as_deref(),
         device_id.as_deref(),
+        since_ms,
+        until_ms,
     )
     .map_err(|e| e.to_string())
 }

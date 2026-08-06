@@ -117,6 +117,8 @@ Sprint 61 新增命令：`list_vault_watch_events` / `clear_vault_watch_events`�
 
 Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周聚合 error / warning / info，System 错误日志卡片新增趋势图与严重度过滤。
 
+Sprint 111 扩展 `get_error_log_summary`：新增 hour 粒度与 `since_ms` / `until_ms` 时间范围过滤；System Error logs 卡片升级为 24h / 7d / 30d 范围切换，并新增峰值告警徽标。
+
 Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
 
 Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`，磁盘文件缺失或索引后过期会在 Document status 面板显示徽标。
@@ -271,6 +273,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `error_log_summary` 聚合：按 `updated_at` 的 UTC 日 / 周分组 `error_logs`，支持可选 source / severity 过滤，bucket 内拆分 error / warning / info，缺失区间补零。
 - 新增 Tauri 命令 `get_error_log_summary(granularity, source?, severity?)`，返回 `ErrorLogSummary { granularity, total, buckets }`。
 - System Error logs 卡片新增 Day / Week 分段切换、严重度下拉与分层柱状图；浏览器 fallback 用 `summarizeErrorLogs` 镜像同一语义。
+
+## Sprint 111：错误日志时间范围与峰值告警
+
+- `error_log_summary` 新增 `hour` 粒度（UTC 整点对齐）与可选 `since_ms` / `until_ms`；`get_error_log_summary` 同步透传，Rust / 浏览器 fallback 同构。
+- System Error logs 卡片把 Day / Week 切换升级为 24h / 7d / 30d 时间范围，24h 自动使用 hour 粒度、7d / 30d 使用 day 粒度；总数徽标、趋势图与明细列表共用同一窗口。
+- 峰值告警：最高桶 count >= 3 且超过全量桶均值 3 倍时，显示 `data-error-peak` 徽标（峰值桶、计数与倍率）；切换范围后按新分桶即时重算。
 
 ## Sprint 63：RAG 文档状态面板
 

@@ -259,6 +259,10 @@ async function sampleTokens() {
   })()`);
 }
 
+function laneLog(label) {
+  console.log(`[ui-verify] ${label}`);
+}
+
 let port;
 
 try {
@@ -4629,10 +4633,11 @@ try {
     throw new Error(`Sync audit chart assertion failed: ${JSON.stringify(syncAuditChart)}`);
   }
   results.syncAuditChart = syncAuditChart;
+  laneLog('syncAuditChart ok, seeding error logs');
 
   await evaluate(`(() => {
     const dayMs = 86_400_000;
-    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    const now = Date.now();
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
     shape.logs = [
       {
@@ -4641,8 +4646,8 @@ try {
         message: "chart error today",
         stack: null,
         severity: "error",
-        timestamp: startOfToday + 1000,
-        updatedAt: startOfToday + 1000,
+        timestamp: now - 60 * 60 * 1000,
+        updatedAt: now - 60 * 60 * 1000,
         deviceId: "device-local",
       },
       {
@@ -4651,8 +4656,8 @@ try {
         message: "chart warning yesterday",
         stack: null,
         severity: "warning",
-        timestamp: startOfToday - dayMs + 5000,
-        updatedAt: startOfToday - dayMs + 5000,
+        timestamp: now - 23 * 60 * 60 * 1000,
+        updatedAt: now - 23 * 60 * 60 * 1000,
         deviceId: "device-remote",
       },
       {
@@ -4661,19 +4666,29 @@ try {
         message: "chart info yesterday",
         stack: null,
         severity: "info",
-        timestamp: startOfToday - dayMs + 6000,
-        updatedAt: startOfToday - dayMs + 6000,
+        timestamp: now - 22 * 60 * 60 * 1000,
+        updatedAt: now - 22 * 60 * 60 * 1000,
         deviceId: "device-local",
       },
       {
-        id: "err-week",
+        id: "err-six-days",
         source: "tauri",
-        message: "chart error week ago",
+        message: "chart error six days ago",
         stack: null,
         severity: "error",
-        timestamp: startOfToday - dayMs * 7 + 2000,
-        updatedAt: startOfToday - dayMs * 7 + 2000,
+        timestamp: now - dayMs * 6,
+        updatedAt: now - dayMs * 6,
         deviceId: "device-remote",
+      },
+      {
+        id: "err-old-month",
+        source: "frontend",
+        message: "chart error old month",
+        stack: null,
+        severity: "error",
+        timestamp: now - dayMs * 20,
+        updatedAt: now - dayMs * 20,
+        deviceId: "device-local",
       },
     ];
     shape.syncDeviceId = "device-local";
@@ -4718,18 +4733,64 @@ try {
     );
     const countsMatch =
       total === 4 && barTotal === 4 && errorCount === 2 && warningCount === 1 && infoCount === 1;
-    const dayAttr = chart()?.getAttribute("data-error-granularity");
-    document.querySelector("[data-error-granularity-week]")?.click();
-    let weekOk = false;
-    let weekBars = 0;
+    const defaultRangeOk = chart()?.getAttribute("data-error-granularity") === "day";
+    const defaultBars = bars.length;
+    const defaultOk = defaultRangeOk && (defaultBars === 6 || defaultBars === 7);
+    document.querySelector("[data-error-range-24h]")?.click();
+    let hourOk = false;
+    let hourBars = 0;
+    let hourTotal = 0;
+    let hourBarMeta = [];
     for (let i = 0; i < 20; i++) {
       await sleep(100);
-      weekBars = document.querySelectorAll("[data-error-log-bar]").length;
-      weekOk = chart()?.getAttribute("data-error-granularity") === "week" && weekBars === 2;
-      if (weekOk) break;
+      hourBarMeta = [...document.querySelectorAll("[data-error-log-bar]")].map((bar) => ({
+        bucket: bar.getAttribute("data-error-bucket"),
+        count: Number(bar.getAttribute("data-error-count") || 0),
+      }));
+      hourBars = hourBarMeta.length;
+      hourTotal = Number(
+        document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+      );
+      hourOk =
+        chart()?.getAttribute("data-error-granularity") === "hour" &&
+        hourBars === 23 &&
+        hourTotal === 3;
+      if (hourOk) break;
     }
-    const weekTotalText = document.querySelector("[data-error-log-total]")?.textContent ?? "";
-    const weekTotal = Number(weekTotalText.replace(/[^0-9]/g, "") || 0);
+    document.querySelector("[data-error-range-30d]")?.click();
+    let monthOk = false;
+    let monthBars = 0;
+    let monthTotal = 0;
+    let monthBarMeta = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      monthBarMeta = [...document.querySelectorAll("[data-error-log-bar]")].map((bar) => ({
+        bucket: bar.getAttribute("data-error-bucket"),
+        count: Number(bar.getAttribute("data-error-count") || 0),
+      }));
+      monthBars = monthBarMeta.length;
+      monthTotal = Number(
+        document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+      );
+      monthOk =
+        chart()?.getAttribute("data-error-granularity") === "day" &&
+        monthBars >= 20 &&
+        monthBars <= 22 &&
+        monthTotal === 5;
+      if (monthOk) break;
+    }
+    document.querySelector("[data-error-range-7d]")?.click();
+    let dayRestored = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      dayRestored =
+        chart()?.getAttribute("data-error-granularity") === "day" &&
+        Number(
+          document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") ||
+            0,
+        ) === 4;
+      if (dayRestored) break;
+    }
     const select = document.querySelector("[data-error-severity-filter]");
     let filterOk = false;
     let filteredTotal = 0;
@@ -4755,19 +4816,24 @@ try {
       select.dispatchEvent(new Event("change", { bubbles: true }));
       await sleep(200);
     }
-    document.querySelector("[data-error-granularity-day]")?.click();
-    await sleep(250);
-    const dayRestored = chart()?.getAttribute("data-error-granularity") === "day";
     return {
-      ok: countsMatch && weekOk && weekTotal === 4 && filterOk && dayRestored,
+      ok: countsMatch && defaultOk && hourOk && monthOk && dayRestored && filterOk,
       total,
       barTotal,
       errorCount,
       warningCount,
       infoCount,
-      dayAttr,
-      weekBars,
-      weekTotal,
+      defaultRangeOk,
+      defaultBars,
+      defaultOk,
+      hourOk,
+      hourBars,
+      hourTotal,
+      hourBarMeta,
+      monthOk,
+      monthBars,
+      monthTotal,
+      monthBarMeta,
       filterOk,
       filteredTotal,
       dayRestored,
@@ -4778,6 +4844,7 @@ try {
     throw new Error(`Error log trend assertion failed: ${JSON.stringify(errorLogTrend)}`);
   }
   results.errorLogTrend = errorLogTrend;
+  laneLog('errorLogTrend ok');
 
   const errorLogSourceDevice = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -4867,6 +4934,154 @@ try {
     );
   }
   results.errorLogSourceDevice = errorLogSourceDevice;
+  laneLog('errorLogSourceDevice ok, seeding peak');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const hourMs = 60 * 60 * 1000;
+    const burst = Array.from({ length: 5 }, (_, index) => ({
+      id: "peak-" + index,
+      source: "frontend",
+      message: "peak burst " + index,
+      stack: null,
+      severity: "error",
+      timestamp: now - 30 * 60 * 1000,
+      updatedAt: now - 30 * 60 * 1000,
+      deviceId: "device-local",
+    }));
+    const baseline = [
+      {
+        id: "peak-base-1",
+        source: "tauri",
+        message: "peak baseline warning",
+        stack: null,
+        severity: "warning",
+        timestamp: now - 5 * hourMs,
+        updatedAt: now - 5 * hourMs,
+        deviceId: "device-remote",
+      },
+      {
+        id: "peak-base-2",
+        source: "frontend",
+        message: "peak baseline info",
+        stack: null,
+        severity: "info",
+        timestamp: now - 11 * hourMs,
+        updatedAt: now - 11 * hourMs,
+        deviceId: "device-local",
+      },
+      {
+        id: "peak-base-3",
+        source: "tauri",
+        message: "peak baseline error",
+        stack: null,
+        severity: "error",
+        timestamp: now - 17 * hourMs,
+        updatedAt: now - 17 * hourMs,
+        deviceId: "device-remote",
+      },
+    ];
+    shape.logs = [...burst, ...baseline];
+    shape.syncDeviceId = "device-local";
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const errorLogPeakAlert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-error-log-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-error-log-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      return { ok: false, reason: "no error bars after peak seed" };
+    }
+    document.querySelector("[data-error-range-24h]")?.click();
+    let peakSeen = false;
+    let peakCount = 0;
+    let peakRatio = 0;
+    let hourGranularity = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const peak = document.querySelector("[data-error-peak]");
+      peakCount = Number(peak?.getAttribute("data-error-peak-count") || 0);
+      peakRatio = Number(peak?.getAttribute("data-error-peak-ratio") || 0);
+      hourGranularity = chart()?.getAttribute("data-error-granularity") === "hour";
+      peakSeen = Boolean(peak) && peakCount === 5 && peakRatio >= 3 && hourGranularity;
+      if (peakSeen) break;
+    }
+    document.querySelector("[data-error-range-7d]")?.click();
+    let peakCleared = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      peakCleared = !document.querySelector("[data-error-peak]");
+      if (peakCleared) break;
+    }
+    return { ok: peakSeen && peakCleared, peakSeen, peakCount, peakRatio, hourGranularity, peakCleared };
+  })()`);
+  if (!errorLogPeakAlert.ok) {
+    throw new Error(`Error log peak alert assertion failed: ${JSON.stringify(errorLogPeakAlert)}`);
+  }
+  results.errorLogPeakAlert = errorLogPeakAlert;
+  laneLog('errorLogPeakAlert ok, restoring logs');
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.logs = [
+      {
+        id: "err-today",
+        source: "frontend",
+        message: "chart error today",
+        stack: null,
+        severity: "error",
+        timestamp: now - 60 * 60 * 1000,
+        updatedAt: now - 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "warn-yesterday",
+        source: "tauri",
+        message: "chart warning yesterday",
+        stack: null,
+        severity: "warning",
+        timestamp: now - 23 * 60 * 60 * 1000,
+        updatedAt: now - 23 * 60 * 60 * 1000,
+        deviceId: "device-remote",
+      },
+      {
+        id: "info-yesterday",
+        source: "frontend",
+        message: "chart info yesterday",
+        stack: null,
+        severity: "info",
+        timestamp: now - 22 * 60 * 60 * 1000,
+        updatedAt: now - 22 * 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "err-six-days",
+        source: "tauri",
+        message: "chart error six days ago",
+        stack: null,
+        severity: "error",
+        timestamp: now - dayMs * 6,
+        updatedAt: now - dayMs * 6,
+        deviceId: "device-remote",
+      },
+    ];
+    shape.syncDeviceId = "device-local";
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
 
   const syncAuditCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5018,6 +5233,7 @@ try {
     throw new Error(`Sync audit assertion failed: ${JSON.stringify(syncAuditCheck)}`);
   }
   results.syncAudit = syncAuditCheck;
+  laneLog('syncAudit ok');
 
   const autoSyncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5075,10 +5291,12 @@ try {
     throw new Error(`auto sync assertion failed: ${JSON.stringify(autoSyncCheck)}`);
   }
   results.autoSync = autoSyncCheck;
+  laneLog('autoSync ok');
 
   await setViewport(390, 844);
   await clickDock('AI Studio');
   results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
+  laneLog('mobileShot ok');
   results.motion.mobileOverflowX = await evaluate(
     `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
   );
@@ -5116,6 +5334,7 @@ try {
     );
   }
   results.sessionPersistence = sessionPersistence;
+  laneLog('sessionPersistence ok');
 
   const sessionSearchEnhanced = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5228,6 +5447,7 @@ try {
     );
   }
   results.sessionSearchEnhanced = sessionSearchEnhanced;
+  laneLog('sessionSearchEnhanced ok');
 
   await evaluate(`(() => {
     const now = Date.now();
@@ -5320,6 +5540,7 @@ try {
     );
   }
   results.sessionPinyinSearch = sessionPinyinSearch;
+  laneLog('sessionPinyinSearch ok');
 
   await evaluate(`(() => {
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
@@ -5419,6 +5640,7 @@ try {
     );
   }
   results.sessionManagement = sessionManagement;
+  laneLog('sessionManagement ok');
 
   await evaluate(`(() => {
     const now = Date.now();
@@ -5559,6 +5781,7 @@ try {
     );
   }
   results.sessionWorkspace = sessionWorkspace;
+  laneLog('sessionWorkspace ok');
 
   const sessionSearchHistoryStats = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5633,7 +5856,9 @@ try {
     );
   }
   results.sessionSearchHistoryStats = sessionSearchHistoryStats;
+  laneLog('sessionSearchHistoryStats ok');
 
+  laneLog('providerToggled: clicking System');
   await clickDock('System');
   const providerToggled = await evaluate(`(async () => {
     const card = [...document.querySelectorAll(".provider-card")].find((c) => c.textContent?.includes("OpenAI"));
@@ -5693,6 +5918,7 @@ try {
     throw new Error(`AI Studio auto route assertion failed: ${JSON.stringify(autoRoute)}`);
   }
   results.autoRoute = autoRoute;
+  laneLog('autoRoute ok');
 
   const singleBtn = await evaluate(`(() => {
     const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Single");
@@ -5938,6 +6164,7 @@ try {
     );
   }
   results.messageEdit = messageEdit;
+  laneLog('messageEdit ok');
 
   const streamError = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -6000,6 +6227,7 @@ try {
     );
   }
   results.streamError = streamError;
+  laneLog('streamError ok');
 
   let liveServer = null;
   try {
@@ -6301,6 +6529,7 @@ try {
     throw new Error(`Provider priority assertion failed: ${JSON.stringify(providerPriority)}`);
   }
   results.providerPriority = providerPriority;
+  laneLog('providerPriority ok');
 
   let moaServer = null;
   try {
@@ -6575,6 +6804,7 @@ try {
       throw new Error(`AI Studio auto fallback assertion failed: ${JSON.stringify(autoFallback)}`);
     }
     results.autoFallback = autoFallback;
+    laneLog('autoFallback ok');
   } finally {
     if (fallbackServer) fallbackServer.close();
   }
@@ -6680,6 +6910,7 @@ try {
     );
   }
   results.webhookSystemEvents = webhookSystemEvents;
+  laneLog('webhookSystemEvents ok');
 
   let budgetServer = null;
   try {
