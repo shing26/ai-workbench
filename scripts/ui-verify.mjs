@@ -6610,6 +6610,199 @@ try {
   results.sessionWorkspace = sessionWorkspace;
   laneLog('sessionWorkspace ok');
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "arch-a",
+        projectId: null,
+        title: "Archive Alpha",
+        model: "openai",
+        pinned: false,
+        archived: false,
+        createdAt: now - 5000,
+      },
+      {
+        id: "arch-b",
+        projectId: null,
+        title: "Archive Beta",
+        model: "ollama",
+        pinned: true,
+        archived: false,
+        createdAt: now - 4000,
+      },
+      {
+        id: "arch-c",
+        projectId: null,
+        title: "Archive Charlie",
+        model: "openai",
+        pinned: false,
+        archived: true,
+        createdAt: now - 3000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "arch-a-msg", sessionId: "arch-a", role: "user", content: "archive alpha question", createdAt: now - 4500 },
+      { id: "arch-b-msg", sessionId: "arch-b", role: "user", content: "beta archive question", createdAt: now - 3500 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
+  const sessionArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    const activeTab = () => document.querySelector('button[data-session-archive-tab="active"]');
+    const archivedTab = () => document.querySelector('button[data-session-archive-tab="archived"]');
+    let rendered = false;
+    for (let i = 0; i < 30; i++) {
+      rendered = rows().filter(({ row }) => row?.textContent?.includes("Archive")).length >= 2;
+      if (rendered) break;
+      await sleep(100);
+    }
+    if (!rendered) {
+      return { ok: false, reason: "archive seed not rendered", rendered: rows().length };
+    }
+    const alpha = rows().find(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    const archiveBtn = alpha?.row.querySelector('button[data-session-archive="arch-a"]');
+    if (!archiveBtn) {
+      return { ok: false, reason: "archive button missing", rendered, alphaFound: !!alpha };
+    }
+    archiveBtn.click();
+    const activeGone = await waitFor(
+      () => !rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    archivedTab()?.click();
+    const archivedHasAlpha = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const archivedHasCharlie = rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Charlie"),
+    );
+    return {
+      ok: rendered && activeGone && archivedHasAlpha && archivedHasCharlie,
+      rendered,
+      activeGone,
+      archivedHasAlpha,
+      archivedHasCharlie,
+      activeCountText: activeTab()?.textContent?.trim() ?? "",
+      archivedCountText: archivedTab()?.textContent?.trim() ?? "",
+    };
+  })()`);
+  if (!sessionArchive.ok) {
+    throw new Error(
+      `AI Studio session archive assertion failed: ${JSON.stringify(sessionArchive)}`,
+    );
+  }
+  results.sessionArchive = sessionArchive;
+  laneLog('sessionArchive ok');
+
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionArchivePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    const activeMissingAlpha = !rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Alpha"),
+    );
+    document.querySelector('button[data-session-archive-tab="archived"]')?.click();
+    const archivedHasAlpha = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedArchived =
+      shape.sessions.find((s) => s.id === "arch-a")?.archived === true;
+    return {
+      ok: activeMissingAlpha && archivedHasAlpha && storedArchived,
+      activeMissingAlpha,
+      archivedHasAlpha,
+      storedArchived,
+    };
+  })()`);
+  if (!sessionArchivePersisted.ok) {
+    throw new Error(
+      `AI Studio session archive persistence assertion failed: ${JSON.stringify(
+        sessionArchivePersisted,
+      )}`,
+    );
+  }
+  results.sessionArchivePersisted = sessionArchivePersisted;
+  laneLog('sessionArchivePersisted ok');
+
+  const sessionArchiveRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    document.querySelector('button[data-session-archive-tab="archived"]')?.click();
+    const archivedReady = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const alpha = rows().find(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    const restoreBtn = alpha?.row.querySelector('button[data-session-restore="arch-a"]');
+    if (!restoreBtn) {
+      return { ok: false, reason: "restore button missing", archivedReady, alphaFound: !!alpha };
+    }
+    restoreBtn.click();
+    const activeHasAlpha = await waitFor(() => {
+      document.querySelector('button[data-session-archive-tab="active"]')?.click();
+      return rows().some(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    });
+    const archivedGone = !rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Alpha"),
+    );
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedRestored =
+      shape.sessions.find((s) => s.id === "arch-a")?.archived === false;
+    return {
+      ok: archivedReady && activeHasAlpha && archivedGone && storedRestored,
+      archivedReady,
+      activeHasAlpha,
+      archivedGone,
+      storedRestored,
+    };
+  })()`);
+  if (!sessionArchiveRestored.ok) {
+    throw new Error(
+      `AI Studio session archive restore assertion failed: ${JSON.stringify(
+        sessionArchiveRestored,
+      )}`,
+    );
+  }
+  results.sessionArchiveRestored = sessionArchiveRestored;
+  laneLog('sessionArchiveRestored ok');
+
   const sessionSearchHistoryStats = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const waitFor = async (fn, timeout = 5000) => {

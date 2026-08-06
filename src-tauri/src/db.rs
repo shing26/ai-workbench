@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     model TEXT,
     pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS providers (
@@ -341,6 +342,7 @@ pub struct Session {
     pub title: String,
     pub model: String,
     pub pinned: bool,
+    pub archived: bool,
     pub message_count: i64,
     pub created_at: i64,
 }
@@ -1156,6 +1158,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_webhook_secret_retries(&conn)?;
     migrate_webhook_trigger_event(&conn)?;
     migrate_session_pinned(&conn)?;
+    migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
@@ -1296,6 +1299,13 @@ fn migrate_webhook_trigger_event(conn: &Connection) -> Result<()> {
 fn migrate_session_pinned(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "sessions", "pinned")? {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    Ok(())
+}
+
+fn migrate_session_archived(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "sessions", "archived")? {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;")?;
     }
     Ok(())
 }
@@ -4412,7 +4422,7 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
 
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.project_id, s.title, s.model, s.created_at, s.pinned,
+        "SELECT s.id, s.project_id, s.title, s.model, s.created_at, s.pinned, s.archived,
                 (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) AS message_count
          FROM sessions s
          ORDER BY s.pinned DESC, s.created_at DESC",
@@ -4425,7 +4435,8 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
             model: row.get(3)?,
             created_at: row.get(4)?,
             pinned: row.get::<_, i64>(5)? != 0,
-            message_count: row.get(6)?,
+            archived: row.get::<_, i64>(6)? != 0,
+            message_count: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -4545,6 +4556,7 @@ pub fn search_sessions(
     let q = query.trim();
     let sessions = list_sessions(conn)?
         .into_iter()
+        .filter(|s| !s.archived)
         .filter(|s| since_ms.is_none_or(|since| s.created_at >= since))
         .filter(|s| until_ms.is_none_or(|until| s.created_at <= until));
 
@@ -4648,6 +4660,7 @@ pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Ses
         title: title.to_string(),
         model: model.to_string(),
         pinned: false,
+        archived: false,
         message_count: 0,
         created_at: now,
     })
@@ -4670,6 +4683,17 @@ pub fn set_session_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<(
         return Err(rusqlite::Error::QueryReturnedNoRows);
     }
     Ok(())
+}
+
+pub fn set_session_archived(conn: &Connection, id: &str, archived: bool) -> Result<Session> {
+    conn.execute(
+        "UPDATE sessions SET archived = ?1 WHERE id = ?2",
+        params![archived as i64, id],
+    )?;
+    list_sessions(conn)?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String> {
@@ -4731,6 +4755,7 @@ pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String>
         title,
         model: source.3,
         pinned: false,
+        archived: false,
         message_count: messages.len() as i64,
         created_at: now,
     })
@@ -5151,6 +5176,64 @@ mod tests {
     }
 
     #[test]
+    fn session_archived_migration_adds_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                title TEXT,
+                model TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER
+            );",
+        )
+        .unwrap();
+        migrate_session_archived(&conn).unwrap();
+        assert!(column_exists(&conn, "sessions", "archived").unwrap());
+        conn.execute(
+            "INSERT INTO sessions (id, title, model, created_at) VALUES (?1, 'old', 'openai', 1)",
+            params!["old-session"],
+        )
+        .unwrap();
+        let archived: i64 = conn
+            .query_row(
+                "SELECT archived FROM sessions WHERE id = 'old-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn session_archive_round_trip_search_and_duplicate() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let first = create_session(&conn, "Archive me", "openai").unwrap();
+        let _second = create_session(&conn, "Keep me", "ollama").unwrap();
+        save_chat_message(&conn, &first.id, "user", "archive question", None).unwrap();
+
+        let archived = set_session_archived(&conn, &first.id, true).unwrap();
+        assert!(archived.archived);
+        let sessions = list_sessions(&conn).unwrap();
+        assert!(sessions.iter().any(|s| s.id == first.id && s.archived));
+        assert!(search_sessions(&conn, "archive", None, None, None, true)
+            .unwrap()
+            .is_empty());
+
+        let restored = set_session_archived(&conn, &first.id, false).unwrap();
+        assert!(!restored.archived);
+        let copy = duplicate_session(&conn, &first.id).unwrap();
+        assert!(!copy.archived);
+        let hits = search_sessions(&conn, "archive", None, None, None, true).unwrap();
+        assert!(hits.iter().any(|h| h.session.id == first.id));
+
+        assert!(set_session_archived(&conn, "missing", true).is_err());
+        drop(conn);
+    }
+
+    #[test]
     fn session_pin_duplicate_orders_and_counts() {
         let dir = std::env::temp_dir().join(format!("aiwb-db-session-workspace-{}", uid()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -5175,6 +5258,7 @@ mod tests {
 
         let copy = duplicate_session(&conn, &first.id).unwrap();
         assert!(copy.title.ends_with("(copy)"));
+        assert!(!copy.archived);
         assert_eq!(copy.message_count, 2);
         let messages = list_chat_messages(&conn, &copy.id).unwrap();
         assert_eq!(messages.len(), 2);

@@ -364,6 +364,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 周目标保存后行内周进度、今日进度汇总与热力条同步；删除后习惯行消失且今日进度汇总同步减少。
 - `verify:ui` / `verify:preview` 新增 `habitManage` / `habitManagePersisted` / `habitManageRestored` / `habitDeleteCheck`：编辑 7 → reload 持久化 → 恢复 5，并创建后删除测试习惯；`cargo test --lib` 增至 128 条。
 
+## Sprint 123：AI Studio 会话归档与恢复
+
+- `sessions` 新增 `archived INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 直接建列，旧库 `migrate_session_archived` 幂等补列；`list_sessions` 返回 `archived`，`search_sessions` 默认只搜索 active 会话。
+- Rust 新增 `set_session_archived(id, archived)` 命令并返回最新 Session；`create_session` / `duplicate_session` 默认生成 active 会话。
+- `db.ts` 新增同构 `setSessionArchived`，localStorage fallback 读取旧数据时自动补 `archived=false`。
+- AI Studio 会话侧栏新增 Active / Archived 切换（`data-session-archive-tab`）与归档/恢复行操作（`data-session-archive` / `data-session-restore`）；归档当前会话自动切到下一个 active，恢复后回到 active tab，搜索与选中逻辑跟随当前 tab。
+- `verify:ui` / `verify:preview` 新增 `sessionArchive` / `sessionArchivePersisted` / `sessionArchiveRestored`：归档 → reload 持久化 → 恢复；`cargo test --lib` 增至 130 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

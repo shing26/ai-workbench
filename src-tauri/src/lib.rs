@@ -1763,6 +1763,16 @@ fn set_session_pinned(state: State<'_, db::Db>, id: String, pinned: bool) -> Res
 }
 
 #[tauri::command]
+fn set_session_archived(
+    state: State<'_, db::Db>,
+    id: String,
+    archived: bool,
+) -> Result<db::Session, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_session_archived(&conn, &id, archived).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn duplicate_session(state: State<'_, db::Db>, id: String) -> Result<db::Session, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::duplicate_session(&conn, &id)
@@ -5406,6 +5416,7 @@ pub fn run() {
             create_session,
             rename_session,
             set_session_pinned,
+            set_session_archived,
             duplicate_session,
             delete_session,
             save_chat_message,

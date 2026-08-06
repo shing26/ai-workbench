@@ -58,6 +58,7 @@ export type Session = {
   title: string;
   model: string;
   pinned: boolean;
+  archived: boolean;
   messageCount: number;
   createdAt: number;
 };
@@ -990,6 +991,7 @@ function seedShape(): LocalShape {
         title: 'Workbench planning',
         model: 'openai',
         pinned: false,
+        archived: false,
         messageCount: 0,
         createdAt: now - 60000,
       },
@@ -1636,6 +1638,7 @@ export async function listSessions(): Promise<Session[]> {
     .map((s) => ({
       ...s,
       pinned: s.pinned ?? false,
+      archived: s.archived ?? false,
       messageCount: shape.chatMessages.filter((m) => m.sessionId === s.id).length,
     }))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
@@ -1737,8 +1740,10 @@ export async function searchSessions(
     .map((s) => ({
       ...s,
       pinned: s.pinned ?? false,
+      archived: s.archived ?? false,
       messageCount: (shape.chatMessages ?? []).filter((m) => m.sessionId === s.id).length,
     }))
+    .filter((s) => !s.archived)
     .filter((s) => options.since == null || s.createdAt >= options.since)
     .filter((s) => options.until == null || s.createdAt <= options.until);
   if (!q) {
@@ -1827,6 +1832,7 @@ export async function createSession(title: string, model: string): Promise<Sessi
     title,
     model,
     pinned: false,
+    archived: false,
     messageCount: 0,
     createdAt: Date.now(),
   };
@@ -1857,6 +1863,19 @@ export async function setSessionPinned(id: string, pinned: boolean): Promise<voi
   writeLocal(shape);
 }
 
+export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
+  if (isTauri()) return invoke<Session>('set_session_archived', { id, archived });
+  const shape = readLocal();
+  const session = shape.sessions.find((s) => s.id === id);
+  if (!session) throw new Error(`Session not found: ${id}`);
+  session.archived = archived;
+  writeLocal(shape);
+  return {
+    ...session,
+    messageCount: shape.chatMessages.filter((m) => m.sessionId === id).length,
+  };
+}
+
 export async function duplicateSession(id: string): Promise<Session> {
   if (isTauri()) return invoke<Session>('duplicate_session', { id });
   const shape = readLocal();
@@ -1869,6 +1888,7 @@ export async function duplicateSession(id: string): Promise<Session> {
     title: `${source.title} (copy)`,
     model: source.model,
     pinned: false,
+    archived: false,
     messageCount: shape.chatMessages.filter((m) => m.sessionId === id).length,
     createdAt: now,
   };
