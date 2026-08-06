@@ -6122,16 +6122,8 @@ mod tests {
         .unwrap();
         assert_eq!(combo.total, 3);
 
-        let recent = error_log_summary(
-            &conn,
-            "day",
-            None,
-            None,
-            None,
-            Some(monday - day_ms * 1),
-            None,
-        )
-        .unwrap();
+        let recent =
+            error_log_summary(&conn, "day", None, None, None, Some(monday - day_ms), None).unwrap();
         assert_eq!(recent.total, 4);
         assert_eq!(recent.buckets.len(), 3);
         assert_eq!(recent.buckets[0].bucket, "2026-08-03");

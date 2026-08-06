@@ -80,6 +80,27 @@
 - 保留 `portfolioSummaryExport` lane，修改 Projects 汇总或 Git 活动聚合时重跑 `verify:ui` / `verify:preview`。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 118
+
+### What went well?
+
+- Knowledge 新增 Tag Library 分类视图：标签 chips 聚合每个标签的笔记数与类型分布，点击后同步侧栏过滤器并展示该标签下最近笔记，All 一键恢复全部。
+- Tag Library 是纯前端派生视图，复用 `thoughts.tags` 的逗号分隔标签，无新增后端命令与持久化字段，改动面小。
+- `verify:ui` / `verify:preview` 新增 `knowledgeTagLibrary` lane：标签计数、选中联动、侧栏过滤行数、预览列表与 All 恢复全链路断言。
+- 顺带修复 Rust 测试代码里一处 Clippy `identity_op`（`day_ms * 1` → `day_ms`），`cargo clippy --all-targets -- -D warnings` 恢复全绿。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings`、`cargo test --lib`（123 条）、双端验证全绿。
+
+### What went wrong?
+
+- lane 首轮按“结果行文本包含 `#work`”断言过滤，但侧栏结果行只显示正文、标签在详情 ModelBadge；改为断言过滤后结果行数等于 `#work` 计数后稳定。
+- Clippy 首次以 `--all-targets` 全量检查时暴露测试代码里的 `identity_op`，顺手修复后门禁通过。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量测试、AI Studio 会话分组/归档、Actions 习惯连续天数可视化、Projects 项目状态管理/收益编辑、Knowledge 笔记标签编辑。
+- 保留 `knowledgeTagLibrary` lane，修改 Knowledge 标签解析、侧栏过滤或 Tag Library 卡片时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?
