@@ -17,6 +17,8 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  SlidersHorizontal,
+  Star,
   Terminal,
   Trash2,
   Upload,
@@ -94,6 +96,27 @@ function deriveErrorLogPeak(buckets: db.ErrorLogBucket[] | undefined) {
     : null;
 }
 
+function formatCompact(value: number): string {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+  }
+  return String(value);
+}
+
+function providerModelCacheStatus(models: db.ProviderModel[] | undefined) {
+  const list = models ?? [];
+  if (list.length === 0) return null;
+  const latest = Math.max(...list.map((m) => m.fetchedAt ?? 0));
+  if (!latest) return { count: list.length, label: 'stale' };
+  const fresh = Date.now() - latest <= db.MODEL_CACHE_TTL_MS;
+  return { count: list.length, label: fresh ? 'fresh' : 'stale' };
+}
+
 function syncErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
@@ -130,6 +153,20 @@ export default function SystemView() {
   const [providerModels, setProviderModels] = useState<Record<string, db.ProviderModel[]>>({});
   const [providerModelOpen, setProviderModelOpen] = useState<Record<string, boolean>>({});
   const [providerModelError, setProviderModelError] = useState<Record<string, string>>({});
+  const [modelMetaEditOpen, setModelMetaEditOpen] = useState<Record<string, boolean>>({});
+  const [modelRefreshBusy, setModelRefreshBusy] = useState<Record<string, boolean>>({});
+  const [modelMetaDraft, setModelMetaDraft] = useState<
+    Record<
+      string,
+      {
+        contextWindow: string;
+        inputPricePerMtok: string;
+        outputPricePerMtok: string;
+        rateTpm: string;
+        rateRpm: string;
+      }
+    >
+  >({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   const [streamDrafts, setStreamDrafts] = useState<
     Record<string, { timeoutSecs: number; retryCount: number; retryDelaySecs: number }>
@@ -1361,6 +1398,32 @@ export default function SystemView() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    const ids = providers.map((p) => p.id);
+    void (async () => {
+      for (const id of ids) {
+        try {
+          const cached = await db.listCachedProviderModels(id);
+          if (disposed) return;
+          setProviderModels((prev) => ({ ...prev, [id]: cached }));
+          const stale =
+            cached.length > 0 &&
+            cached.every((m) => Date.now() - (m.fetchedAt ?? 0) > db.MODEL_CACHE_TTL_MS);
+          if (stale) {
+            const fresh = await db.refreshProviderModels(id);
+            if (!disposed) setProviderModels((prev) => ({ ...prev, [id]: fresh }));
+          }
+        } catch {
+          // unreachable providers stay uncached until manual detect
+        }
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [providers]);
+
   const create = async () => {
     if (!name.trim() || !baseUrl.trim()) return;
     await addProvider(name.trim(), baseUrl.trim(), apiKey.trim(), model.trim());
@@ -1382,8 +1445,9 @@ export default function SystemView() {
   const detectProviderModels = async (id: string) => {
     const provider = providers.find((p) => p.id === id);
     if (!provider) return;
+    setModelRefreshBusy((prev) => ({ ...prev, [id]: true }));
     try {
-      const models = await db.listProviderModels(provider);
+      const models = await db.refreshProviderModels(id);
       setProviderModels((prev) => ({ ...prev, [id]: models }));
       setProviderModelOpen((prev) => ({ ...prev, [id]: true }));
       setProviderModelError((prev) => {
@@ -1396,6 +1460,12 @@ export default function SystemView() {
         ...prev,
         [id]: err instanceof Error ? err.message : String(err),
       }));
+    } finally {
+      setModelRefreshBusy((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   };
 
@@ -1403,6 +1473,35 @@ export default function SystemView() {
     setModelDrafts((prev) => ({ ...prev, [id]: modelId }));
     setProviderModelOpen((prev) => ({ ...prev, [id]: false }));
     await saveProviderModel(id, modelId);
+    await db.touchProviderModelUsage(id, modelId).catch(() => {});
+    const models = await db.listCachedProviderModels(id);
+    setProviderModels((prev) => ({ ...prev, [id]: models }));
+  };
+
+  const toggleProviderModelFavorite = async (id: string, modelId: string) => {
+    const current = providerModels[id]?.find((m) => m.id === modelId);
+    await db.setProviderModelFavorite(id, modelId, !current?.isFavorite);
+    const models = await db.listCachedProviderModels(id);
+    setProviderModels((prev) => ({ ...prev, [id]: models }));
+  };
+
+  const saveProviderModelMeta = async (id: string, modelId: string) => {
+    const draft = modelMetaDraft[`${id}:${modelId}`];
+    if (!draft) return;
+    await db.updateProviderModelMeta(id, modelId, {
+      contextWindow: Number(draft.contextWindow) || 0,
+      inputPricePerMtok: Number(draft.inputPricePerMtok) || 0,
+      outputPricePerMtok: Number(draft.outputPricePerMtok) || 0,
+      rateTpm: Number(draft.rateTpm) || 0,
+      rateRpm: Number(draft.rateRpm) || 0,
+    });
+    const models = await db.listCachedProviderModels(id);
+    setProviderModels((prev) => ({ ...prev, [id]: models }));
+    setModelMetaEditOpen((prev) => {
+      const next = { ...prev };
+      delete next[`${id}:${modelId}`];
+      return next;
+    });
   };
 
   const saveProviderStreamConfig = async (
@@ -1556,6 +1655,29 @@ export default function SystemView() {
                   >
                     <List size={10} />
                   </button>
+                  {(() => {
+                    const status = providerModelCacheStatus(providerModels[p.id]);
+                    return status ? (
+                      <span
+                        data-provider-model-cache-status={p.id}
+                        className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
+                          status.label === 'fresh'
+                            ? 'bg-sky-500/10 text-sky-300'
+                            : 'bg-amber-500/10 text-amber-300'
+                        }`}
+                      >
+                        {status.count} · {status.label}
+                      </span>
+                    ) : null;
+                  })()}
+                  {modelRefreshBusy[p.id] && (
+                    <span
+                      data-provider-model-refresh-busy={p.id}
+                      className="shrink-0 rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300"
+                    >
+                      refresh
+                    </span>
+                  )}
                   <span
                     data-provider-model={p.model}
                     className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] ${
@@ -1570,24 +1692,126 @@ export default function SystemView() {
                 {providerModelOpen[p.id] && (providerModels[p.id]?.length ?? 0) > 0 && (
                   <div
                     data-provider-model-options
-                    className="mt-1.5 grid max-h-28 gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#101014] p-1"
+                    className="mt-1.5 grid max-h-40 gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#101014] p-1"
                   >
-                    {providerModels[p.id].map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        data-provider-model-option={m.id}
-                        onClick={() => void pickProviderModel(p.id, m.id)}
-                        className={`flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-[10px] ${
-                          m.id === (modelDrafts[p.id] ?? p.model)
-                            ? 'bg-emerald-500/15 text-emerald-300'
-                            : 'text-slate-300 hover:bg-white/[0.06]'
-                        }`}
-                      >
-                        <span className="truncate">{m.id}</span>
-                        {m.ownedBy && <span className="shrink-0 text-slate-600">{m.ownedBy}</span>}
-                      </button>
-                    ))}
+                    {providerModels[p.id].map((m) => {
+                      const metaKey = `${p.id}:${m.id}`;
+                      const draft = modelMetaDraft[metaKey] ?? {
+                        contextWindow: String(m.contextWindow ?? 0),
+                        inputPricePerMtok: String(m.inputPricePerMtok ?? 0),
+                        outputPricePerMtok: String(m.outputPricePerMtok ?? 0),
+                        rateTpm: String(m.rateTpm ?? 0),
+                        rateRpm: String(m.rateRpm ?? 0),
+                      };
+                      return (
+                        <div
+                          key={m.id}
+                          className="rounded-md border border-transparent hover:border-white/10"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              data-provider-model-option={m.id}
+                              onClick={() => void pickProviderModel(p.id, m.id)}
+                              className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[10px] ${
+                                m.id === (modelDrafts[p.id] ?? p.model)
+                                  ? 'bg-emerald-500/15 text-emerald-300'
+                                  : 'text-slate-300 hover:bg-white/[0.06]'
+                              }`}
+                            >
+                              <span className="truncate">{m.id}</span>
+                              {m.contextWindow ? (
+                                <span className="shrink-0 rounded bg-sky-500/10 px-1 text-[8px] text-sky-300">
+                                  ctx {formatCompact(m.contextWindow)}
+                                </span>
+                              ) : null}
+                              {(m.inputPricePerMtok ?? 0) > 0 || (m.outputPricePerMtok ?? 0) > 0 ? (
+                                <span className="shrink-0 rounded bg-emerald-500/10 px-1 text-[8px] text-emerald-300">
+                                  ${m.inputPricePerMtok ?? 0}/{m.outputPricePerMtok ?? 0}
+                                </span>
+                              ) : null}
+                              {(m.rateTpm ?? 0) > 0 ? (
+                                <span className="shrink-0 rounded bg-amber-500/10 px-1 text-[8px] text-amber-300">
+                                  TPM {formatCompact(m.rateTpm ?? 0)}
+                                </span>
+                              ) : null}
+                              {m.ownedBy ? (
+                                <span className="shrink-0 text-slate-600">{m.ownedBy}</span>
+                              ) : null}
+                            </button>
+                            <button
+                              type="button"
+                              data-model-favorite={m.id}
+                              aria-label={m.isFavorite ? 'Unfavorite model' : 'Favorite model'}
+                              onClick={() => void toggleProviderModelFavorite(p.id, m.id)}
+                              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                                m.isFavorite
+                                  ? 'border-amber-500/30 bg-amber-500/15 text-amber-300'
+                                  : 'border-white/10 bg-white/[0.03] text-slate-500 hover:text-amber-300'
+                              }`}
+                            >
+                              <Star size={9} fill={m.isFavorite ? 'currentColor' : 'none'} />
+                            </button>
+                            <button
+                              type="button"
+                              data-model-meta-edit={m.id}
+                              aria-label={`Edit ${m.id} metadata`}
+                              onClick={() =>
+                                setModelMetaEditOpen((prev) => ({
+                                  ...prev,
+                                  [metaKey]: !prev[metaKey],
+                                }))
+                              }
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-slate-500 hover:border-sky-500/30 hover:text-sky-300"
+                            >
+                              <SlidersHorizontal size={9} />
+                            </button>
+                          </div>
+                          {modelMetaEditOpen[metaKey] && (
+                            <div
+                              data-model-meta-editor={m.id}
+                              className="mt-1 grid grid-cols-5 gap-1 px-1 pb-1"
+                            >
+                              {(
+                                [
+                                  'contextWindow',
+                                  'inputPricePerMtok',
+                                  'outputPricePerMtok',
+                                  'rateTpm',
+                                  'rateRpm',
+                                ] as const
+                              ).map((field) => (
+                                <label key={field} className="flex flex-col gap-0.5">
+                                  <span className="text-[8px] text-slate-600">{field}</span>
+                                  <input
+                                    data-model-meta-input={field}
+                                    value={draft[field]}
+                                    onChange={(e) =>
+                                      setModelMetaDraft((prev) => ({
+                                        ...prev,
+                                        [metaKey]: {
+                                          ...draft,
+                                          [field]: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    className="h-5 min-w-0 rounded border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-300"
+                                  />
+                                </label>
+                              ))}
+                              <button
+                                type="button"
+                                data-model-meta-save={m.id}
+                                onClick={() => void saveProviderModelMeta(p.id, m.id)}
+                                className="col-span-5 h-5 rounded-md bg-sky-500/15 text-[9px] text-sky-300 hover:bg-sky-500/25"
+                              >
+                                Save metadata
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 {providerModelError[p.id] && (

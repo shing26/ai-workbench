@@ -1725,6 +1725,10 @@ fn list_provider_models(
         .ok_or_else(|| "Provider not found".to_string())?;
     let provider = decrypt_provider(provider)?;
     drop(conn);
+    fetch_provider_models(&provider)
+}
+
+fn fetch_provider_models(provider: &db::Provider) -> Result<Vec<ProviderModel>, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()
@@ -1737,7 +1741,7 @@ fn list_provider_models(
     };
     let mut request = client.get(&endpoint);
     if !is_ollama {
-        let api_key = resolve_provider_api_key(&provider)?;
+        let api_key = resolve_provider_api_key(provider)?;
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
     let response = request.send().map_err(|e| e.to_string())?;
@@ -1747,6 +1751,79 @@ fn list_provider_models(
         return Err(format!("Models HTTP {}: {}", status, truncate_error(&body)));
     }
     parse_provider_models(&body, is_ollama)
+}
+
+#[tauri::command]
+fn list_cached_provider_models(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<Vec<db::ModelMeta>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_cached_provider_models(&conn, &provider_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn refresh_provider_models(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<Vec<db::ModelMeta>, String> {
+    let provider = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::get_provider(&conn, &provider_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Provider not found".to_string())?
+    };
+    let provider = decrypt_provider(provider)?;
+    let models = fetch_provider_models(&provider)?;
+    let inputs: Vec<(String, Option<String>)> =
+        models.into_iter().map(|m| (m.id, m.owned_by)).collect();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::upsert_provider_models(&conn, &provider_id, &inputs).map_err(|e| e.to_string())?;
+    db::list_cached_provider_models(&conn, &provider_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_provider_model_meta(
+    state: State<'_, db::Db>,
+    provider_id: String,
+    model_id: String,
+    meta: db::ModelMetaPatch,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_model_meta(
+        &conn,
+        &provider_id,
+        &model_id,
+        db::ModelMetaPatch {
+            context_window: meta.context_window.clamp(0, 1_000_000_000),
+            input_price_per_mtok: meta.input_price_per_mtok.max(0.0),
+            output_price_per_mtok: meta.output_price_per_mtok.max(0.0),
+            rate_tpm: meta.rate_tpm.clamp(0, 1_000_000_000),
+            rate_rpm: meta.rate_rpm.clamp(0, 1_000_000_000),
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_provider_model_favorite(
+    state: State<'_, db::Db>,
+    provider_id: String,
+    model_id: String,
+    favorite: bool,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_model_favorite(&conn, &provider_id, &model_id, favorite).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn touch_provider_model_usage(
+    state: State<'_, db::Db>,
+    provider_id: String,
+    model_id: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::touch_model_usage(&conn, &provider_id, &model_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6710,6 +6787,11 @@ pub fn run() {
             export_providers,
             import_providers,
             list_provider_models,
+            list_cached_provider_models,
+            refresh_provider_models,
+            update_provider_model_meta,
+            set_provider_model_favorite,
+            touch_provider_model_usage,
             list_departments,
             list_agents,
             create_department,

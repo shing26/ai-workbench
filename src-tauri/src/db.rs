@@ -64,6 +64,23 @@ CREATE TABLE IF NOT EXISTS providers (
     retry_count INTEGER NOT NULL DEFAULT 1,
     retry_delay_secs INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS model_metadata (
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    owned_by TEXT NOT NULL DEFAULT '',
+    context_window INTEGER NOT NULL DEFAULT 0,
+    input_price_per_mtok REAL NOT NULL DEFAULT 0,
+    output_price_per_mtok REAL NOT NULL DEFAULT 0,
+    rate_tpm INTEGER NOT NULL DEFAULT 0,
+    rate_rpm INTEGER NOT NULL DEFAULT 0,
+    is_favorite INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider_id, model_id)
+);
+CREATE INDEX IF NOT EXISTS idx_model_metadata_sort
+    ON model_metadata(provider_id, is_favorite DESC, last_used_at DESC);
 CREATE TABLE IF NOT EXISTS departments (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -565,6 +582,32 @@ pub struct Provider {
     pub timeout_secs: i64,
     pub retry_count: i64,
     pub retry_delay_secs: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMeta {
+    pub id: String,
+    pub owned_by: String,
+    pub context_window: i64,
+    pub input_price_per_mtok: f64,
+    pub output_price_per_mtok: f64,
+    pub rate_tpm: i64,
+    pub rate_rpm: i64,
+    pub is_favorite: bool,
+    pub last_used_at: i64,
+    pub fetched_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMetaPatch {
+    pub context_window: i64,
+    pub input_price_per_mtok: f64,
+    pub output_price_per_mtok: f64,
+    pub rate_tpm: i64,
+    pub rate_rpm: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -3781,6 +3824,126 @@ pub fn update_provider_stream_config(
     conn.execute(
         "UPDATE providers SET timeout_secs = ?1, retry_count = ?2, retry_delay_secs = ?3 WHERE id = ?4",
         params![timeout_secs, retry_count, retry_delay_secs, id],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_provider_models(
+    conn: &Connection,
+    provider_id: &str,
+    models: &[(String, Option<String>)],
+) -> Result<usize> {
+    let now = now_millis();
+    let mut changed = 0usize;
+    for (model_id, owned_by) in models {
+        changed += conn.execute(
+            "INSERT INTO model_metadata (provider_id, model_id, owned_by, fetched_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                owned_by = excluded.owned_by,
+                fetched_at = excluded.fetched_at,
+                updated_at = excluded.updated_at",
+            params![
+                provider_id,
+                model_id,
+                owned_by.clone().unwrap_or_default(),
+                now
+            ],
+        )?;
+    }
+    Ok(changed)
+}
+
+pub fn list_cached_provider_models(conn: &Connection, provider_id: &str) -> Result<Vec<ModelMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT model_id, owned_by, context_window, input_price_per_mtok,
+                output_price_per_mtok, rate_tpm, rate_rpm, is_favorite,
+                last_used_at, fetched_at, updated_at
+         FROM model_metadata
+         WHERE provider_id = ?1
+         ORDER BY is_favorite DESC, last_used_at DESC, model_id ASC",
+    )?;
+    let rows = stmt.query_map(params![provider_id], |row| {
+        Ok(ModelMeta {
+            id: row.get(0)?,
+            owned_by: row.get(1)?,
+            context_window: row.get(2)?,
+            input_price_per_mtok: row.get(3)?,
+            output_price_per_mtok: row.get(4)?,
+            rate_tpm: row.get(5)?,
+            rate_rpm: row.get(6)?,
+            is_favorite: row.get::<_, i64>(7)? != 0,
+            last_used_at: row.get(8)?,
+            fetched_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn update_model_meta(
+    conn: &Connection,
+    provider_id: &str,
+    model_id: &str,
+    patch: ModelMetaPatch,
+) -> Result<()> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO model_metadata (provider_id, model_id, context_window,
+                input_price_per_mtok, output_price_per_mtok, rate_tpm, rate_rpm, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(provider_id, model_id) DO UPDATE SET
+            context_window = excluded.context_window,
+            input_price_per_mtok = excluded.input_price_per_mtok,
+            output_price_per_mtok = excluded.output_price_per_mtok,
+            rate_tpm = excluded.rate_tpm,
+            rate_rpm = excluded.rate_rpm,
+            updated_at = excluded.updated_at",
+        params![
+            provider_id,
+            model_id,
+            patch.context_window,
+            patch.input_price_per_mtok,
+            patch.output_price_per_mtok,
+            patch.rate_tpm,
+            patch.rate_rpm,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn set_model_favorite(
+    conn: &Connection,
+    provider_id: &str,
+    model_id: &str,
+    favorite: bool,
+) -> Result<()> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO model_metadata (provider_id, model_id, is_favorite, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(provider_id, model_id) DO UPDATE SET
+            is_favorite = excluded.is_favorite,
+            updated_at = excluded.updated_at",
+        params![provider_id, model_id, favorite as i64, now],
+    )?;
+    Ok(())
+}
+
+pub fn touch_model_usage(conn: &Connection, provider_id: &str, model_id: &str) -> Result<()> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO model_metadata (provider_id, model_id, last_used_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(provider_id, model_id) DO UPDATE SET
+            last_used_at = excluded.last_used_at,
+            updated_at = excluded.updated_at",
+        params![provider_id, model_id, now],
     )?;
     Ok(())
 }
@@ -10882,6 +11045,51 @@ mod tests {
         assert_eq!(providers[0].retry_count, 5);
         assert_eq!(providers[0].retry_delay_secs, 0);
         assert!(providers[0].api_key_encrypted);
+    }
+
+    #[test]
+    fn model_metadata_cache_lifecycle_sorts_by_favorite_then_recent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_provider_models(
+            &conn,
+            "provider-a",
+            &[
+                ("gamma".to_string(), Some("mockai".to_string())),
+                ("alpha".to_string(), None),
+                ("beta".to_string(), Some("mockai".to_string())),
+            ],
+        )
+        .unwrap();
+        set_model_favorite(&conn, "provider-a", "beta", true).unwrap();
+        touch_model_usage(&conn, "provider-a", "gamma").unwrap();
+        update_model_meta(
+            &conn,
+            "provider-a",
+            "alpha",
+            ModelMetaPatch {
+                context_window: 128_000,
+                input_price_per_mtok: 1.5,
+                output_price_per_mtok: 4.0,
+                rate_tpm: 1_000_000,
+                rate_rpm: 2_000,
+            },
+        )
+        .unwrap();
+
+        let cached = list_cached_provider_models(&conn, "provider-a").unwrap();
+        assert_eq!(
+            cached.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["beta", "gamma", "alpha"]
+        );
+        assert!(cached[0].is_favorite);
+        assert!(cached[1].last_used_at > cached[2].last_used_at);
+        let alpha = cached.iter().find(|m| m.id == "alpha").unwrap();
+        assert_eq!(alpha.context_window, 128_000);
+        assert_eq!(alpha.rate_tpm, 1_000_000);
+        assert!(list_cached_provider_models(&conn, "provider-other")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

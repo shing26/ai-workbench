@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 151
+
+### What went well?
+
+- SQLite 新增 `model_metadata` 模型目录：`(provider_id, model_id)` 联合主键承载 context window / 输入输出价格 / TPM / RPM / 收藏 / 最近使用 / 缓存时间；Rust 提供 upsert / list / update / favorite / touch 五组函数，SQL 直接按 `is_favorite DESC, last_used_at DESC, model_id ASC` 排序。
+- `refresh_provider_models` 复用真实 `/models` / `/api/tags` 探测并 upsert，只刷新 `owned_by / fetched_at`，保留用户填写的元数据、收藏与最近使用；`list_cached_provider_models` 返回完整目录。
+- System Provider 卡片自动加载缓存并自动刷新过期缓存（24h TTL），Detect 按钮也走同一刷新链路；模型选项行展示 `ctx / 价格 / TPM` 徽标、收藏星标与 5 字段元数据编辑器，选择模型即记录最近使用并重排。
+- 浏览器 fallback 在 `ai-workbench:db:v1` 新增 `modelCache`，与 Tauri 链路同构；`verify:ui` / `verify:preview` 新增 `providerModelCatalog` lane，种子 stale 缓存验证自动刷新、收藏重排、选择重排与元数据持久化。Rust 单测增至 183 条。
+
+### What went wrong?
+
+- 首轮 `update_provider_model_meta` 命令参数过多触发 `clippy::too_many_arguments`；改为 `ModelMetaPatch` 结构体整体传参后通过。
+- `modelRefreshBusy` 状态一度只赋值不渲染，`tsc` / ESLint 报未使用；补上卡片上的 refresh 状态徽标后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Sync 口令强度提示与确认框、多设备口令交换、密钥轮换与 salt 入库。
+- 保留 `providerModelCatalog` lane，修改模型缓存、排序或元数据编辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 150
 
 ### What went well?

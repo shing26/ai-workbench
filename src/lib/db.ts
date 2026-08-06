@@ -162,6 +162,15 @@ export type Provider = {
 export type ProviderModel = {
   id: string;
   ownedBy: string | null;
+  contextWindow?: number;
+  inputPricePerMtok?: number;
+  outputPricePerMtok?: number;
+  rateTpm?: number;
+  rateRpm?: number;
+  isFavorite?: boolean;
+  lastUsedAt?: number;
+  fetchedAt?: number;
+  updatedAt?: number;
 };
 
 export type Department = {
@@ -905,6 +914,7 @@ type LocalShape = {
   scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
   logs: ErrorLog[];
+  modelCache: Record<string, ProviderModel[]>;
   syncDeviceId: string;
   lastSyncedAt: number;
 };
@@ -951,6 +961,7 @@ function emptyShape(): LocalShape {
     scheduleEvents: [],
     clipboard: [],
     logs: [],
+    modelCache: {},
     syncDeviceId: '',
     lastSyncedAt: 0,
   };
@@ -1360,6 +1371,7 @@ function seedShape(): LocalShape {
         deviceId: existing.syncDeviceId || 'device-local',
       },
     ],
+    modelCache: {},
     syncDeviceId: existing.syncDeviceId || makeId(),
     lastSyncedAt: existing.lastSyncedAt ?? 0,
     habitLogs: [],
@@ -1949,6 +1961,152 @@ export async function listProviderModels(provider: Provider): Promise<ProviderMo
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function clampModelNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeModelMeta(raw: Partial<ProviderModel>): ProviderModel {
+  return {
+    id: String(raw.id ?? ''),
+    ownedBy: raw.ownedBy ?? null,
+    contextWindow: clampModelNumber(raw.contextWindow, 0, 1_000_000_000, 0),
+    inputPricePerMtok: Math.max(0, Number(raw.inputPricePerMtok) || 0),
+    outputPricePerMtok: Math.max(0, Number(raw.outputPricePerMtok) || 0),
+    rateTpm: clampModelNumber(raw.rateTpm, 0, 1_000_000_000, 0),
+    rateRpm: clampModelNumber(raw.rateRpm, 0, 1_000_000_000, 0),
+    isFavorite: Boolean(raw.isFavorite),
+    lastUsedAt: clampModelNumber(raw.lastUsedAt, 0, Number.MAX_SAFE_INTEGER, 0),
+    fetchedAt: clampModelNumber(raw.fetchedAt, 0, Number.MAX_SAFE_INTEGER, 0),
+    updatedAt: clampModelNumber(raw.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0),
+  };
+}
+
+export function sortModelMeta(models: ProviderModel[]): ProviderModel[] {
+  return [...models].sort((a, b) => {
+    if (Boolean(b.isFavorite) !== Boolean(a.isFavorite)) {
+      return Number(Boolean(b.isFavorite)) - Number(Boolean(a.isFavorite));
+    }
+    if ((b.lastUsedAt ?? 0) !== (a.lastUsedAt ?? 0)) {
+      return (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0);
+    }
+    return a.id.localeCompare(b.id);
+  });
+}
+
+export async function listCachedProviderModels(providerId: string): Promise<ProviderModel[]> {
+  if (isTauri()) {
+    return invoke<ProviderModel[]>('list_cached_provider_models', { providerId });
+  }
+  return sortModelMeta((readLocal().modelCache[providerId] ?? []).map(normalizeModelMeta));
+}
+
+export async function refreshProviderModels(providerId: string): Promise<ProviderModel[]> {
+  if (isTauri()) {
+    return invoke<ProviderModel[]>('refresh_provider_models', { providerId });
+  }
+  const provider = (await listProviders()).find((p) => p.id === providerId);
+  if (!provider) throw new Error('Provider not found');
+  const fresh = await listProviderModels(provider);
+  const now = Date.now();
+  const shape = readLocal();
+  const existing = new Map((shape.modelCache[providerId] ?? []).map((m) => [m.id, m]));
+  for (const model of fresh) {
+    const prev = existing.get(model.id) ?? {};
+    existing.set(
+      model.id,
+      normalizeModelMeta({ ...prev, ...model, fetchedAt: now, updatedAt: now }),
+    );
+  }
+  shape.modelCache = {
+    ...shape.modelCache,
+    [providerId]: sortModelMeta([...existing.values()]),
+  };
+  writeLocal(shape);
+  return shape.modelCache[providerId];
+}
+
+export async function setProviderModelFavorite(
+  providerId: string,
+  modelId: string,
+  favorite: boolean,
+): Promise<void> {
+  if (isTauri()) {
+    await invoke('set_provider_model_favorite', { providerId, modelId, favorite });
+    return;
+  }
+  const shape = readLocal();
+  const cache = shape.modelCache[providerId] ?? [];
+  const found = cache.find((m) => m.id === modelId);
+  if (found) {
+    found.isFavorite = favorite;
+  } else {
+    cache.push(normalizeModelMeta({ id: modelId, isFavorite: favorite, updatedAt: Date.now() }));
+  }
+  shape.modelCache = { ...shape.modelCache, [providerId]: sortModelMeta(cache) };
+  writeLocal(shape);
+}
+
+export async function updateProviderModelMeta(
+  providerId: string,
+  modelId: string,
+  patch: Partial<
+    Pick<
+      ProviderModel,
+      'contextWindow' | 'inputPricePerMtok' | 'outputPricePerMtok' | 'rateTpm' | 'rateRpm'
+    >
+  >,
+): Promise<void> {
+  if (isTauri()) {
+    await invoke('update_provider_model_meta', {
+      providerId,
+      modelId,
+      meta: {
+        contextWindow: patch.contextWindow ?? 0,
+        inputPricePerMtok: patch.inputPricePerMtok ?? 0,
+        outputPricePerMtok: patch.outputPricePerMtok ?? 0,
+        rateTpm: patch.rateTpm ?? 0,
+        rateRpm: patch.rateRpm ?? 0,
+      },
+    });
+    return;
+  }
+  const shape = readLocal();
+  const cache = shape.modelCache[providerId] ?? [];
+  const found = cache.find((m) => m.id === modelId);
+  const merged = normalizeModelMeta({
+    ...(found ?? { id: modelId }),
+    ...patch,
+    updatedAt: Date.now(),
+  });
+  if (found) Object.assign(found, merged);
+  else cache.push(merged);
+  shape.modelCache = { ...shape.modelCache, [providerId]: sortModelMeta(cache) };
+  writeLocal(shape);
+}
+
+export async function touchProviderModelUsage(providerId: string, modelId: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('touch_provider_model_usage', { providerId, modelId });
+    return;
+  }
+  const now = Date.now();
+  const shape = readLocal();
+  const cache = shape.modelCache[providerId] ?? [];
+  const found = cache.find((m) => m.id === modelId);
+  if (found) {
+    found.lastUsedAt = now;
+    found.updatedAt = now;
+  } else {
+    cache.push(normalizeModelMeta({ id: modelId, lastUsedAt: now, updatedAt: now }));
+  }
+  shape.modelCache = { ...shape.modelCache, [providerId]: sortModelMeta(cache) };
+  writeLocal(shape);
 }
 
 export async function listDepartments(): Promise<Department[]> {
