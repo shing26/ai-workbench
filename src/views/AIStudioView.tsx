@@ -156,6 +156,7 @@ export default function AIStudioView() {
   const [input, setInput] = useState('');
   const [providerId, setProviderId] = useState('');
   const [moa, setMoa] = useState(false);
+  const [moaChain, setMoaChain] = useState(false);
   const [autoRoute, setAutoRoute] = useState(false);
   const [routedProvider, setRoutedProvider] = useState<{
     name: string;
@@ -873,6 +874,7 @@ export default function AIStudioView() {
         content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join('\n')}`,
       });
     }
+    const chain = moa && moaChain;
     try {
       await db.sendAiMessageStream({
         providerIds,
@@ -880,6 +882,7 @@ export default function AIStudioView() {
         moa,
         runId,
         autoFallback: !moa && (autoRoute || !selectedAgent),
+        moaChain: chain,
       });
     } catch {
       setMessages((prev) =>
@@ -892,7 +895,7 @@ export default function AIStudioView() {
       setStreamError('stream unavailable');
     }
     let moaOutput = runsRef.current.get(runId)?.content ?? '';
-    if (moa && !moaOutput.includes('## MOA Consensus')) {
+    if (moa && !chain && !moaOutput.includes('## MOA Consensus')) {
       for (let i = 0; i < 30 && runsRef.current.has(runId); i += 1) {
         await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
         moaOutput = runsRef.current.get(runId)?.content ?? '';
@@ -913,13 +916,24 @@ export default function AIStudioView() {
         label: 'Providers',
         value: providerIds.length ? providerIds.join(', ') : 'none',
       });
-      sections.push({ label: 'Status', value: '3-way consensus' });
-      const consensusStart = moaOutput.indexOf('## MOA Consensus');
-      if (consensusStart >= 0) {
+      sections.push({ label: 'Status', value: chain ? 'chain' : '3-way consensus' });
+      if (chain) {
         sections.push({
-          label: 'Consensus',
-          value: moaOutput.slice(consensusStart).replace(/\s+/g, ' ').slice(0, 140),
+          label: 'Chain',
+          value: moaProviders.map((p) => p.name).join(' → '),
         });
+        const finalProvider = moaProviders[moaProviders.length - 1];
+        if (finalProvider) {
+          sections.push({ label: 'Final', value: finalProvider.name });
+        }
+      } else {
+        const consensusStart = moaOutput.indexOf('## MOA Consensus');
+        if (consensusStart >= 0) {
+          sections.push({
+            label: 'Consensus',
+            value: moaOutput.slice(consensusStart).replace(/\s+/g, ' ').slice(0, 140),
+          });
+        }
       }
     } else if (routedName) {
       sections.push({ label: 'Router', value: `auto → ${routedName}` });
@@ -957,12 +971,16 @@ export default function AIStudioView() {
             ? 'Agent Trace + RAG'
             : 'Agent Trace'
           : moa && hits.length > 0
-            ? 'MOA Trace + RAG'
+            ? chain
+              ? 'MOA Chain Trace + RAG'
+              : 'MOA Trace + RAG'
             : hits.length > 0
               ? 'RAG Context'
               : fallbackChainRef.current.length > 0
                 ? 'Router Trace'
-                : 'MOA Trace',
+                : chain
+                  ? 'MOA Chain Trace'
+                  : 'MOA Trace',
         sections,
       );
     }
@@ -1290,7 +1308,18 @@ export default function AIStudioView() {
             <ModelBadge label={activeProvider?.name ?? 'No provider'} tone="green" />
           )}
           {teamMode && <ModelBadge label="Team" tone="blue" status="parallel" />}
-          {moa && <ModelBadge label="MOA" tone="blue" status="3-way+summary" />}
+          {moa && (
+            <ModelBadge label="MOA" tone="blue" status={moaChain ? 'chain' : '3-way+summary'} />
+          )}
+          {moa && moaChain && moaProviders.length > 1 && (
+            <span
+              data-moa-chain-badge
+              className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300"
+            >
+              <GitCompare size={11} />
+              {moaProviders.map((p) => p.name).join(' → ')}
+            </span>
+          )}
           {fallbackChain.length > 0 && (
             <span
               data-ai-fallback-chain
@@ -1353,6 +1382,39 @@ export default function AIStudioView() {
               Auto
             </button>
           </div>
+          {moa && (
+            <div
+              data-moa-chain-toggle
+              className="flex overflow-hidden rounded-xl border border-violet-500/20 bg-white/[0.04] p-0.5"
+            >
+              <button
+                type="button"
+                data-moa-chain-mode="parallel"
+                aria-pressed={!moaChain}
+                onClick={() => setMoaChain(false)}
+                className={`rounded-[10px] px-2.5 py-1.5 text-[11px] ${
+                  !moaChain
+                    ? 'bg-violet-500/20 text-violet-300'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                Parallel
+              </button>
+              <button
+                type="button"
+                data-moa-chain-mode="chain"
+                aria-pressed={moaChain}
+                onClick={() => setMoaChain(true)}
+                className={`rounded-[10px] px-2.5 py-1.5 text-[11px] ${
+                  moaChain
+                    ? 'bg-violet-500/20 text-violet-300'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                Chain
+              </button>
+            </div>
+          )}
           {teamMode ? (
             <select
               value={teamDeptId}

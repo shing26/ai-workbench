@@ -119,6 +119,8 @@ Sprint 62 新增命令：`get_error_log_summary`；Error logs 按 UTC 日 / 周�
 
 Sprint 111 扩展 `get_error_log_summary`：新增 hour 粒度与 `since_ms` / `until_ms` 时间范围过滤；System Error logs 卡片升级为 24h / 7d / 30d 范围切换，并新增峰值告警徽标。
 
+Sprint 112 扩展 `stream_ai_message`：新增 `moa_chain` 链式路由，前 3 个启用 Provider 按优先级串行执行，后续请求携带上一路输出作为上下文；AI Studio 新增 Parallel / Chain 切换与链式徽标。
+
 Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
 
 Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`，磁盘文件缺失或索引后过期会在 Document status 面板显示徽标。
@@ -279,6 +281,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `error_log_summary` 新增 `hour` 粒度（UTC 整点对齐）与可选 `since_ms` / `until_ms`；`get_error_log_summary` 同步透传，Rust / 浏览器 fallback 同构。
 - System Error logs 卡片把 Day / Week 切换升级为 24h / 7d / 30d 时间范围，24h 自动使用 hour 粒度、7d / 30d 使用 day 粒度；总数徽标、趋势图与明细列表共用同一窗口。
 - 峰值告警：最高桶 count >= 3 且超过全量桶均值 3 倍时，显示 `data-error-peak` 徽标（峰值桶、计数与倍率）；切换范围后按新分桶即时重算。
+
+## Sprint 112：MOA 链式路由
+
+- Rust `stream_ai_message` 新增 `moa_chain`：前 3 个启用 Provider 按优先级顺序串行执行，每路先 emit `## {name}`；后续请求在原始 messages 后追加 `{role:"user", content:"[Previous agent output from {name}]\n{output}"}`，失败只插入错误片段并继续。
+- `src/lib/db.ts` 新增 `appendMoaChainContext`，`sendAiMessageStream` 的 `moaChain` 分支串行消费真实 SSE / NDJSON；取消语义与并行 MOA 一致，最终统一 emit `done`。
+- AI Studio MOA 新增 `data-moa-chain-mode` Parallel / Chain 切换；Chain 时头部展示 `data-moa-chain-badge`（`Alpha AI → Beta AI → Gamma AI`），MOA badge 状态显示 chain，Inspector 展示 Chain / Final。
+- `verify:ui` / `verify:preview` 新增 `moaChain` lane：断言请求顺序、`maxActive <= 1`、上下文传递与链式徽标。
 
 ## Sprint 63：RAG 文档状态面板
 

@@ -4379,12 +4379,27 @@ async function streamProviderLive(
   return collected;
 }
 
+export function appendMoaChainContext(
+  messages: { role: string; content: string }[],
+  previousName: string,
+  previousOutput: string,
+): { role: string; content: string }[] {
+  return [
+    ...messages,
+    {
+      role: 'user',
+      content: `[Previous agent output from ${previousName}]\n${previousOutput}`,
+    },
+  ];
+}
+
 export async function sendAiMessageStream(args: {
   providerIds: string[];
   messages: { role: string; content: string }[];
   moa: boolean;
   runId: string;
   autoFallback?: boolean;
+  moaChain?: boolean;
 }): Promise<void> {
   if (isTauri()) {
     await invoke('stream_ai_message', {
@@ -4393,6 +4408,7 @@ export async function sendAiMessageStream(args: {
       moa: args.moa,
       runId: args.runId,
       autoFallback: args.autoFallback ?? false,
+      moaChain: args.moaChain ?? false,
     });
     return;
   }
@@ -4425,6 +4441,54 @@ export async function sendAiMessageStream(args: {
       : candidates.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 1);
   const realProviders = providers.filter(canRealStream);
   if (args.moa && realProviders.length > 0) {
+    if (args.moaChain) {
+      let previousName: string | null = null;
+      let previousOutput = '';
+      for (const provider of realProviders) {
+        if (localCancelledRuns.has(args.runId)) break;
+        emitLocalStreamChunk({
+          id: args.runId,
+          delta: `\n\n## ${provider.name}\n\n`,
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        const stepMessages =
+          previousName !== null
+            ? appendMoaChainContext(args.messages, previousName, previousOutput)
+            : args.messages;
+        try {
+          previousOutput = await streamProviderLive(
+            provider,
+            { ...args, providerIds: [provider.id], messages: stepMessages },
+            { final: false, manageCancel: false },
+          );
+          previousName = provider.name;
+        } catch (err) {
+          emitLocalStreamChunk({
+            id: args.runId,
+            delta: `\n[${provider.name} error: ${
+              err instanceof Error ? err.message : String(err)
+            }]\n`,
+            done: false,
+            error: null,
+            cancelled: false,
+          });
+          previousOutput = '';
+          previousName = provider.name;
+        }
+      }
+      const wasCancelled = localCancelledRuns.has(args.runId);
+      localCancelledRuns.delete(args.runId);
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: '',
+        done: true,
+        error: null,
+        cancelled: wasCancelled,
+      });
+      return;
+    }
     const outputs = new Map<string, string>();
     await Promise.allSettled(
       realProviders.map(async (provider) => {

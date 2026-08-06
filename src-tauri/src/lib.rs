@@ -731,6 +731,56 @@ fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String,
     }
 }
 
+fn stream_provider(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    provider: &db::Provider,
+    messages_json: &str,
+) -> Result<String, String> {
+    if is_ollama_provider(&provider.name, &provider.base_url) {
+        let model = if provider.model.is_empty() {
+            "qwen2.5:3b"
+        } else {
+            &provider.model
+        };
+        stream_ollama(app, run_id, &provider.base_url, messages_json, model)
+    } else {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        let api_key = get_api_key(key_ref)?;
+        let model = if provider.model.is_empty() {
+            "gpt-4o-mini"
+        } else {
+            &provider.model
+        };
+        stream_openai_compatible(
+            app,
+            run_id,
+            &provider.base_url,
+            &api_key,
+            messages_json,
+            model,
+        )
+    }
+}
+
+fn append_moa_chain_context(
+    base_messages_json: &str,
+    previous_name: &str,
+    previous_output: &str,
+) -> Result<String, String> {
+    let mut messages: Vec<Value> =
+        serde_json::from_str(base_messages_json).map_err(|e| e.to_string())?;
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": format!("[Previous agent output from {}]\n{}", previous_name, previous_output)
+    }));
+    serde_json::to_string(&messages).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn fetch_url(url: String) -> Result<String, String> {
     let client = reqwest::blocking::Client::new();
@@ -3015,6 +3065,7 @@ async fn stream_ai_message(
     provider_ids: Vec<String>,
     messages: Vec<Value>,
     moa: bool,
+    moa_chain: bool,
     run_id: String,
     auto_fallback: bool,
 ) -> Result<(), String> {
@@ -3037,7 +3088,62 @@ async fn stream_ai_message(
         return Err("No providers configured".to_string());
     }
 
-    let done: Result<(), String> = if moa {
+    let done: Result<(), String> = if moa && moa_chain {
+        let providers: Vec<db::Provider> = selected.into_iter().take(3).collect();
+        let mut previous_name: Option<String> = None;
+        let mut previous_output = String::new();
+        for provider in providers {
+            if is_stream_cancelled(&app, &run_id) {
+                break;
+            }
+            let step_messages_json = match &previous_name {
+                Some(name) => append_moa_chain_context(&messages_json, name, &previous_output)?,
+                None => messages_json.clone(),
+            };
+            let _ = app.emit(
+                "stream-chunk",
+                StreamChunk {
+                    id: run_id.clone(),
+                    delta: format!("\n\n## {}\n\n", provider.name),
+                    done: false,
+                    error: None,
+                    cancelled: false,
+                },
+            );
+            let app_step = app.clone();
+            let run_id_step = run_id.clone();
+            let provider_step = provider.clone();
+            let streamed: Result<String, String> =
+                tauri::async_runtime::spawn_blocking(move || {
+                    stream_provider(&app_step, &run_id_step, &provider_step, &step_messages_json)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            match streamed {
+                Ok(text) => {
+                    previous_output = text;
+                    previous_name = Some(provider.name);
+                }
+                Err(err) => {
+                    if !is_stream_cancelled(&app, &run_id) {
+                        let _ = app.emit(
+                            "stream-chunk",
+                            StreamChunk {
+                                id: run_id.clone(),
+                                delta: format!("\n[{} error: {}]\n", provider.name, err),
+                                done: false,
+                                error: None,
+                                cancelled: false,
+                            },
+                        );
+                    }
+                    previous_output = String::new();
+                    previous_name = Some(provider.name);
+                }
+            }
+        }
+        Ok(())
+    } else if moa {
         let mut tasks: Vec<tauri::async_runtime::JoinHandle<Result<String, String>>> = Vec::new();
         for provider in selected.into_iter().take(3) {
             let app = app.clone();
@@ -3057,37 +3163,7 @@ async fn stream_ai_message(
                         cancelled: false,
                     },
                 );
-                let result: Result<String, String> = (|| {
-                    if is_ollama_provider(&provider.name, &provider.base_url) {
-                        let model = if provider.model.is_empty() {
-                            "qwen2.5:3b".to_string()
-                        } else {
-                            provider.model.clone()
-                        };
-                        stream_ollama(&app, &run_id, &provider.base_url, &messages_json, &model)
-                    } else {
-                        let key_ref = if provider.api_key.is_empty() {
-                            "OPENAI_API_KEY".to_string()
-                        } else {
-                            provider.api_key.clone()
-                        };
-                        let api_key = get_api_key(&key_ref)?;
-                        let model = if provider.model.is_empty() {
-                            "gpt-4o-mini".to_string()
-                        } else {
-                            provider.model.clone()
-                        };
-                        stream_openai_compatible(
-                            &app,
-                            &run_id,
-                            &provider.base_url,
-                            &api_key,
-                            &messages_json,
-                            &model,
-                        )
-                    }
-                })();
-                match result {
+                match stream_provider(&app, &run_id, &provider, &messages_json) {
                     Ok(text) => Ok(text),
                     Err(err) => {
                         if !is_stream_cancelled(&app, &run_id) {
@@ -3144,40 +3220,7 @@ async fn stream_ai_message(
             let messages_json = messages_json.clone();
             let streamed: Result<String, String> =
                 tauri::async_runtime::spawn_blocking(move || {
-                    if is_ollama_provider(&provider.name, &provider.base_url) {
-                        let model = if provider.model.is_empty() {
-                            "qwen2.5:3b".to_string()
-                        } else {
-                            provider.model.clone()
-                        };
-                        stream_ollama(
-                            &app_clone,
-                            &run_id_clone,
-                            &provider.base_url,
-                            &messages_json,
-                            &model,
-                        )
-                    } else {
-                        let key_ref = if provider.api_key.is_empty() {
-                            "OPENAI_API_KEY".to_string()
-                        } else {
-                            provider.api_key.clone()
-                        };
-                        let api_key = get_api_key(&key_ref)?;
-                        let model = if provider.model.is_empty() {
-                            "gpt-4o-mini".to_string()
-                        } else {
-                            provider.model.clone()
-                        };
-                        stream_openai_compatible(
-                            &app_clone,
-                            &run_id_clone,
-                            &provider.base_url,
-                            &api_key,
-                            &messages_json,
-                            &model,
-                        )
-                    }
+                    stream_provider(&app_clone, &run_id_clone, &provider, &messages_json)
                 })
                 .await
                 .map_err(|e| e.to_string())?;
@@ -5333,6 +5376,19 @@ mod tests {
             auto_fallback_marker("Alpha", "Beta"),
             "\n[auto fallback: Alpha → Beta]\n"
         );
+    }
+
+    #[test]
+    fn moa_chain_context_appends_previous_output() {
+        let base = serde_json::json!([{ "role": "user", "content": "plan a trip" }]).to_string();
+        let next = append_moa_chain_context(&base, "Alpha AI", "step one").unwrap();
+        let parsed: Vec<Value> = serde_json::from_str(&next).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["role"], "user");
+        assert_eq!(parsed[1]["role"], "user");
+        let content = parsed[1]["content"].as_str().unwrap();
+        assert!(content.contains("[Previous agent output from Alpha AI]"));
+        assert!(content.contains("step one"));
     }
 
     #[test]
