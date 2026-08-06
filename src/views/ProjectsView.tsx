@@ -182,6 +182,42 @@ export default function ProjectsView() {
   })();
   const revenueCsvRowCount = revenueCsv.split('\n').length;
 
+  const revenueAggregate = (() => {
+    const day = 86_400_000;
+    const byStatus: Record<string, { count: number; revenue: number }> = {};
+    let latestTotal = 0;
+    let trendTotal = 0;
+    let delta7d = 0;
+    let delta30d = 0;
+    for (const project of projects) {
+      const status = project.status || 'other';
+      const bucket = byStatus[status] ?? { count: 0, revenue: 0 };
+      bucket.count += 1;
+      bucket.revenue += project.revenue || 0;
+      byStatus[status] = bucket;
+
+      const points = revenueTrends[project.id] ?? [];
+      trendTotal += points.length;
+      const latestPoint =
+        points.length > 0 ? points[points.length - 1].revenue : project.revenue || 0;
+      latestTotal += latestPoint;
+      if (points.length >= 2) {
+        const latestAt = points[points.length - 1].recordedAt;
+        const valueAtCutoff = (cutoff: number) => {
+          let candidate = points[0];
+          for (const point of points) {
+            if (point.recordedAt > cutoff) break;
+            candidate = point;
+          }
+          return candidate.revenue;
+        };
+        delta7d += latestPoint - valueAtCutoff(latestAt - 7 * day);
+        delta30d += latestPoint - valueAtCutoff(latestAt - 30 * day);
+      }
+    }
+    return { latestTotal, trendTotal, delta7d, delta30d, byStatus };
+  })();
+
   const portfolioReport = (() => {
     const rows = projects
       .map(
@@ -205,6 +241,10 @@ Generated: ${new Date().toLocaleString()}
 
 - Projects: ${projects.length}
 - Revenue: $${totalRevenue.toFixed(2)}
+- Latest revenue: $${revenueAggregate.latestTotal.toFixed(2)}
+- Revenue points: ${revenueAggregate.trendTotal}
+- 7d delta: ${revenueAggregate.delta7d >= 0 ? '+' : ''}${revenueAggregate.delta7d.toFixed(2)}
+- 30d delta: ${revenueAggregate.delta30d >= 0 ? '+' : ''}${revenueAggregate.delta30d.toFixed(2)}
 - Active: ${activeProjects}
 - Paused: ${pausedProjects}
 - Commits: ${gitActivity?.totalCommits ?? 0}
@@ -766,6 +806,56 @@ ${trend}
               value={String(gitActivity?.dirtyProjects ?? 0)}
               tone={gitActivity?.dirtyProjects ? 'neutral' : 'green'}
             />
+          </div>
+          <div data-project-revenue-summary className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+              <div className="text-[9px] text-slate-600">Latest</div>
+              <div data-project-revenue-latest className="font-mono text-[11px] text-emerald-300">
+                ${revenueAggregate.latestTotal.toFixed(2)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+              <div className="text-[9px] text-slate-600">Trend points</div>
+              <div data-project-revenue-points className="font-mono text-[11px] text-slate-200">
+                {revenueAggregate.trendTotal}
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+              <div className="text-[9px] text-slate-600">7d delta</div>
+              <div
+                data-project-revenue-delta7d
+                className={`font-mono text-[11px] ${
+                  revenueAggregate.delta7d >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                {revenueAggregate.delta7d >= 0 ? '+' : ''}
+                {revenueAggregate.delta7d.toFixed(2)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+              <div className="text-[9px] text-slate-600">30d delta</div>
+              <div
+                data-project-revenue-delta30d
+                className={`font-mono text-[11px] ${
+                  revenueAggregate.delta30d >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                {revenueAggregate.delta30d >= 0 ? '+' : ''}
+                {revenueAggregate.delta30d.toFixed(2)}
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {Object.entries(revenueAggregate.byStatus).map(([status, stat]) => (
+              <span
+                key={status}
+                data-project-revenue-status={status}
+                data-project-revenue-status-count={stat.count}
+                className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-2 text-[9px] text-slate-400"
+              >
+                {status} · ${stat.revenue.toFixed(2)} · {stat.count}
+              </span>
+            ))}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

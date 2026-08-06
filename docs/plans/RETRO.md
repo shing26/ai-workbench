@@ -1,5 +1,26 @@
 # Sprint Retrospective
 
+## Sprint 136
+
+### What went well?
+
+- ProjectsView 新增 `revenueAggregate` 派生：由 `projects` + `revenueTrends` 计算最新收益合计、趋势点数、7d / 30d 变化与状态拆分；无历史项目回退当前 revenue，delta 为 0。
+- Portfolio summary 新增 `data-project-revenue-summary` 四格面板（Latest / Trend points / 7d delta / 30d delta）与 `data-project-revenue-status` 状态收益 chips；Portfolio export 报告同步追加四行聚合数据。
+- 7d / 30d delta 以窗口内最后一个历史点为基线：种子 10→20→30→40 的趋势后，7d 为 +20.00、30d 为 +30.00。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueSummary` lane：种子两个项目（paused 收益 0）与 4 个趋势点，断言 40.00 最新值、4 点、+20.00 / +30.00 变化与 active / paused 拆分；lane 结束后恢复原始 projects / history，避免污染后续 Git activity 与编辑 lane。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（140 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮断言把 7d / 30d delta 预期写成 +10.00 / +20.00，实际按窗口基线语义为 +20.00 / +30.00，更新 lane 与计划后通过。
+- 聚合 lane 种子替换了默认 projects，导致下游 `projectEdit` / `gitActivityFilters` 断言失败；改为断言后恢复原 projects 与收益历史，验证顺序耦合已写入 lane 注释与 RETRO。
+
+### Action Items
+
+- 下一 Sprint 候选：System 自动化规则补强、AI Studio 会话摘要、Knowledge 双链补全编辑器提示。
+- 保留 `projectRevenueSummary` lane，修改收益模型、聚合派生或 Portfolio summary 渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 135
 
 ### What went well?
