@@ -216,6 +216,8 @@ export default function AIStudioView() {
   const [exportSession, setExportSession] = useState<db.Session | null>(null);
   const [exportMarkdown, setExportMarkdown] = useState('');
   const [exportCopied, setExportCopied] = useState(false);
+  const [exportKnowledgeBusy, setExportKnowledgeBusy] = useState(false);
+  const [exportKnowledgeResult, setExportKnowledgeResult] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
@@ -791,12 +793,30 @@ export default function AIStudioView() {
     setExportSession(session);
     setExportMarkdown(db.buildSessionMarkdown(session, messages));
     setExportCopied(false);
+    setExportKnowledgeBusy(false);
+    setExportKnowledgeResult('');
   };
 
   const closeSessionExport = () => {
     setExportSession(null);
     setExportMarkdown('');
     setExportCopied(false);
+    setExportKnowledgeBusy(false);
+    setExportKnowledgeResult('');
+  };
+
+  const saveSessionExportToKnowledge = async () => {
+    if (!exportSession || !exportMarkdown || exportKnowledgeBusy) return;
+    setExportKnowledgeBusy(true);
+    setExportKnowledgeResult('');
+    try {
+      await addThought(exportMarkdown, '#chat,#session', 'note');
+      setExportKnowledgeResult('Saved to Knowledge');
+    } catch {
+      setExportKnowledgeResult('Save failed');
+    } finally {
+      setExportKnowledgeBusy(false);
+    }
   };
 
   const copySessionExport = async () => {
@@ -2526,7 +2546,7 @@ export default function AIStudioView() {
             >
               {exportMarkdown}
             </pre>
-            <div className="flex items-center gap-2 border-t border-white/10 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3">
               <button
                 type="button"
                 aria-label="Copy session transcript"
@@ -2537,6 +2557,25 @@ export default function AIStudioView() {
                 <Copy size={12} />
                 {exportCopied ? 'Copied' : 'Copy'}
               </button>
+              <button
+                type="button"
+                aria-label="Save session transcript to Knowledge"
+                data-session-export-knowledge
+                onClick={() => void saveSessionExportToKnowledge()}
+                disabled={exportKnowledgeBusy}
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-blue-500/20 px-3 text-[11px] text-blue-300 hover:bg-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Save size={12} />
+                {exportKnowledgeBusy ? 'Saving' : '存入知识库'}
+              </button>
+              {exportKnowledgeResult && (
+                <span
+                  data-session-export-knowledge-result
+                  className="rounded-md bg-white/[0.04] px-2 py-1 text-[10px] text-slate-400"
+                >
+                  {exportKnowledgeResult}
+                </span>
+              )}
               <button
                 type="button"
                 aria-label="Download session transcript"

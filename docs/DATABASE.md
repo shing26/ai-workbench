@@ -563,6 +563,10 @@ ALTER TABLE webhook_rules ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 0
 - 新库 SCHEMA 的 `webhook_rules` 建表语句直接包含该列，旧库由 `migrate_webhook_cooldown` 幂等补列；冷却期只作用于事件型规则（`trigger_event != ''`），定时规则仍由 `interval_seconds` 控制。
 - `last_run_at` 在事件触发命中时更新为当前时间，`list_event_webhook_rules` 按 `now - last_run_at >= cooldown_seconds * 1000` 过滤；浏览器 fallback 在 `ai-workbench:webhook-rules:v1` 上维护同一 `lastRunAt` 语义，不新增 localStorage key。
 
+## Sprint 132：AI Studio 会话导出到知识库
+
+无表结构变更。导出按钮复用 `thoughts` 表与 `create_thought` 命令，把 `buildSessionMarkdown` 生成的 Markdown 作为 `content`，tags 为 `#chat,#session`，type 为 `note`；浏览器 fallback 写入 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增表、字段或 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

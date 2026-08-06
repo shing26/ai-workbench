@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 132
+
+### What went well?
+
+- 会话导出面板新增 `data-session-export-knowledge`：一键把 `buildSessionMarkdown` 输出存为 `#chat,#session` note，保存中禁用按钮，结果写入 `data-session-export-knowledge-result`，打开 / 关闭面板自动复位状态。
+- `verify:ui` / `verify:preview` 新增 `sessionSaveKnowledge` / `sessionSaveKnowledgePersisted`：复用 `sessionWorkspace` 留下的 Workspace Beta 会话，断言预览内容、保存结果、tags / type 与 reload 后 Knowledge 可见。
+- 纯前端改动，无新增 Rust 命令与表结构；`npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（137 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞，双端验证一次全绿；验证 lane 依赖 `sessionWorkspace` 留下的会话数据，因此在归档 lane 重置 sessions 之前执行，顺序耦合已写入 lane 注释与 RETRO。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 收益导出、System 投递保留策略、Knowledge 笔记双链 / 回溯。
+- 保留 `sessionSaveKnowledge` / `sessionSaveKnowledgePersisted` lane，修改会话导出、知识笔记模型或 Knowledge 列表渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 131
 
 ### What went well?
