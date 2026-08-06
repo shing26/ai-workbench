@@ -451,6 +451,7 @@ export type WebhookRule = {
   token: string;
   secret: string;
   retries: number;
+  cooldownSeconds: number;
   intervalSeconds: number;
   triggerEvent: string;
   enabled: boolean;
@@ -5271,7 +5272,8 @@ export async function deliverWebhook(
 function readWebhookRules(): WebhookRule[] {
   try {
     const raw = localStorage.getItem(WEBHOOK_RULES_LS_KEY);
-    return raw ? (JSON.parse(raw) as WebhookRule[]) : [];
+    const rules: WebhookRule[] = raw ? (JSON.parse(raw) as WebhookRule[]) : [];
+    return rules.map((rule) => ({ ...rule, cooldownSeconds: rule.cooldownSeconds ?? 0 }));
   } catch {
     return [];
   }
@@ -5295,6 +5297,7 @@ export async function createWebhookRule(
   intervalSeconds = 60,
   secret?: string,
   retries = 1,
+  cooldownSeconds = 0,
   triggerEvent = '',
 ): Promise<WebhookRule> {
   if (isTauri()) {
@@ -5307,6 +5310,7 @@ export async function createWebhookRule(
         token: token?.trim() ? token.trim() : null,
         secret: secret?.trim() ? secret.trim() : null,
         retries,
+        cooldownSeconds: Math.max(0, cooldownSeconds),
         intervalSeconds: Math.max(5, intervalSeconds),
         triggerEvent: triggerEvent.trim(),
       },
@@ -5322,6 +5326,7 @@ export async function createWebhookRule(
     token: token?.trim() || '',
     secret: secret?.trim() || '',
     retries: Math.max(0, retries),
+    cooldownSeconds: Math.max(0, cooldownSeconds),
     intervalSeconds: Math.max(5, intervalSeconds),
     triggerEvent: triggerEvent.trim(),
     enabled: true,
@@ -5432,8 +5437,13 @@ export async function triggerWebhookEvent(
   if (isTauri()) {
     return invoke<number>('trigger_webhook_event', { event, context: context ?? null });
   }
-  const rules = readWebhookRules().filter((r) => r.enabled && (r.triggerEvent || '') === event);
   const now = Date.now();
+  const rules = readWebhookRules().filter(
+    (r) =>
+      r.enabled &&
+      (r.triggerEvent || '') === event &&
+      (r.lastRunAt === 0 || now - r.lastRunAt >= (r.cooldownSeconds || 0) * 1000),
+  );
   const deliveries: WebhookDelivery[] = rules.map((rule) => ({
     id: makeId(),
     ruleId: rule.id,
@@ -5452,6 +5462,14 @@ export async function triggerWebhookEvent(
     createdAt: now,
     updatedAt: now,
   }));
+  if (rules.length > 0) {
+    const storedRules = readWebhookRules();
+    const fired = new Set(rules.map((rule) => rule.id));
+    for (const rule of storedRules) {
+      if (fired.has(rule.id)) rule.lastRunAt = now;
+    }
+    writeWebhookRules(storedRules);
+  }
   writeWebhookDeliveries([...readWebhookDeliveries(), ...deliveries]);
   return deliveries.length;
 }

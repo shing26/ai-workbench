@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 131
+
+### What went well?
+
+- `webhook_rules` 新增 `cooldown_seconds`：新库建列、旧库 `migrate_webhook_cooldown` 幂等补列；`list_event_webhook_rules` 按 `last_run_at` 过滤冷却规则，`trigger_webhook_event` 命中后写回 `last_run_at`，冷却期内重复事件不再入队。
+- System 规则编辑器新增 `data-webhook-rule-cooldown` 输入与 `data-webhook-rule-cooldown-badge` 徽标；浏览器 fallback 的 `triggerWebhookEvent` 同步过滤并写回规则，旧 localStorage 数据读取时默认补 0。
+- `verify:ui` / `verify:preview` 新增 `webhookRuleCooldown` lane：创建 60s 冷却规则后连续触发两次 `sync.completed`，第一次 1 条投递、第二次仍 1 条且 localStorage 只有 1 条；Rust 新增冷却迁移与抑制两条单测，`cargo test --lib` 增至 137 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 Rust 编译在 lib.rs 测试的 `WebhookRuleInput` 初始化中漏掉新增的 `cooldown_seconds` 字段，补齐后 clippy / test 通过；前端先格式化，Rust 由 `cargo fmt` 负责，prettier 不解析 Rust 文件。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话与知识库深度能力、Projects 收益导出、System 投递保留策略。
+- 保留 `webhookRuleCooldown` lane 与冷却单测，修改规则模型、事件触发链路或 System 规则 UI 时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 130
 
 ### What went well?
