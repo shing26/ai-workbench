@@ -13295,6 +13295,171 @@ try {
     if (budgetServer) budgetServer.close();
   }
 
+  const ragSourceSelector = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const vaultKey = "ai-workbench:vault:v1";
+    const prefKey = "ai-workbench:rag-source-preference:v1";
+    localStorage.setItem(
+      vaultKey,
+      JSON.stringify([
+        {
+          path: "C:/vault/Source Alpha.md",
+          title: "Source Alpha",
+          tags: "#work",
+          content: "Alpha sprint plan with rag source selector",
+          indexedAt: Date.now(),
+        },
+        {
+          path: "C:/vault/Source Beta.md",
+          title: "Source Beta",
+          tags: "#work",
+          content: "Beta release notes with rag source selector",
+          indexedAt: Date.now(),
+        },
+      ]),
+    );
+    localStorage.removeItem(prefKey);
+    [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "New chat")
+      ?.click();
+    await sleep(200);
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) return { ok: false, reason: "controls missing" };
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "rag source selector");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let panel = null;
+    let options = [];
+    for (let i = 0; i < 25; i++) {
+      panel = document.querySelector("[data-rag-source-panel]");
+      options = panel ? [...panel.querySelectorAll("[data-rag-source-option]")] : [];
+      if (options.length >= 2) break;
+      await sleep(100);
+    }
+    if (!panel || options.length < 2) {
+      return { ok: false, reason: "source panel not shown", count: options.length };
+    }
+    const alpha = options.find((el) =>
+      (el.getAttribute("data-rag-source-option") ?? "").includes("Source Alpha"),
+    );
+    if (!alpha) return { ok: false, reason: "alpha source missing" };
+    alpha.click();
+    await sleep(100);
+    panel = document.querySelector("[data-rag-source-panel]");
+    const remember = panel?.querySelector("[data-rag-source-remember]");
+    if (!remember) return { ok: false, reason: "remember checkbox missing" };
+    remember.click();
+    await sleep(100);
+    document.querySelector("[data-rag-confirm-send]")?.click();
+    let summary = "";
+    let stored = null;
+    for (let i = 0; i < 25; i++) {
+      summary = document.querySelector("[data-rag-source-summary]")?.textContent ?? "";
+      stored = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+      if (summary.includes("1 source(s) remembered") && stored?.enabled && stored.filePaths?.length === 1) {
+        break;
+      }
+      await sleep(100);
+    }
+    const storedPath = stored?.filePaths?.[0] ?? "";
+    const storedOk =
+      !!stored?.enabled && stored.mode === "selected" && storedPath.includes("Source Beta");
+    const summaryOk = summary.includes("1 source(s) remembered");
+    if (!storedOk || !summaryOk) {
+      return { ok: false, reason: "preference not remembered", summary, stored, storedOk, summaryOk };
+    }
+    return { ok: true, summary, storedPath, options: options.length };
+  })()`);
+  if (!ragSourceSelector.ok) {
+    throw new Error(`RAG source selector assertion failed: ${JSON.stringify(ragSourceSelector)}`);
+  }
+  results.ragSourceSelector = ragSourceSelector;
+  laneLog('ragSourceSelector ok');
+
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const ragSourcePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const prefKey = "ai-workbench:rag-source-preference:v1";
+    let summary = "";
+    let stored = null;
+    for (let i = 0; i < 30; i++) {
+      stored = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+      if (stored?.enabled) break;
+      await sleep(100);
+    }
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) {
+      return { ok: false, reason: "controls missing", stored };
+    }
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "rag source selector");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let options = [];
+    for (let i = 0; i < 25; i++) {
+      options = [...document.querySelectorAll("[data-rag-source-option]")];
+      if (
+        options.length === 1 &&
+        (options[0].getAttribute("data-rag-source-option") ?? "").includes("Source Beta")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const filteredOk =
+      options.length === 1 &&
+      (options[0].getAttribute("data-rag-source-option") ?? "").includes("Source Beta");
+    document.querySelector("[data-rag-confirm-send]")?.click();
+    for (let i = 0; i < 25; i++) {
+      summary = document.querySelector("[data-rag-source-summary]")?.textContent ?? "";
+      if (summary.includes("1 source(s) remembered")) break;
+      await sleep(100);
+    }
+    const resetBtn = document.querySelector("[data-rag-source-reset]");
+    if (!resetBtn) {
+      return {
+        ok: false,
+        reason: "reset missing",
+        summary,
+        stored,
+        filteredOk,
+        options: options.length,
+      };
+    }
+    resetBtn.click();
+    await sleep(200);
+    const afterReset = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+    const resetOk =
+      !!afterReset &&
+      afterReset.enabled === false &&
+      !document.querySelector("[data-rag-source-summary]");
+    return {
+      ok: summary.includes("1 source(s) remembered") && !!stored?.enabled && filteredOk && resetOk,
+      summary,
+      stored,
+      filteredOk,
+      options: options.length,
+      resetOk,
+    };
+  })()`);
+  if (!ragSourcePersisted.ok) {
+    throw new Error(
+      `RAG source persistence assertion failed: ${JSON.stringify(ragSourcePersisted)}`,
+    );
+  }
+  results.ragSourcePersisted = ragSourcePersisted;
+  laneLog('ragSourcePersisted ok');
+
   console.log(JSON.stringify(results, null, 2));
 } finally {
   try {
