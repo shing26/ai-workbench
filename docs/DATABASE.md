@@ -494,6 +494,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。Tag Library 是纯前端派生视图：`tagStats` / `tagEntries` 在运行时聚合 `thoughts.tags`（逗号分隔）的 count 与类型分布，不新增表、索引或字段；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts`，不新增 localStorage key。
 
+## Sprint 119：习惯连续天数与 14 天热力条
+
+无表结构变更。`habits.current_streak` 列与 `habit_logs` 表自早期 Sprint 已存在；本 Sprint 将 `current_streak` 改为运行时按连续日期计算，`recent_logs` 是查询派生字段、不落库，`toggle_habit` 仍只写 `habit_logs`。浏览器 fallback 在既有 `ai-workbench:db:v1` 内新增 `habitLogs` 数组（`id / habitId / date / checkedAt`），不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

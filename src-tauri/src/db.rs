@@ -439,6 +439,7 @@ pub struct Habit {
     pub color: String,
     pub done_today: bool,
     pub created_at: i64,
+    pub recent_logs: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -761,22 +762,71 @@ fn now_millis() -> i64 {
 }
 
 fn today_local() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs() as i64;
-    let days = secs.div_euclid(86_400);
-    let civil = days + 719_468;
-    let era = civil.div_euclid(146_097);
-    let doe = civil.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { year + 1 } else { year };
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn date_key_to_days(key: &str) -> Option<i64> {
+    let parts: Vec<&str> = key.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let year: i64 = parts[0].parse().ok()?;
+    let month: i64 = parts[1].parse().ok()?;
+    let day: i64 = parts[2].parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+fn compute_habit_streak(log_dates: &[String], today: &str) -> i64 {
+    let Some(today_days) = date_key_to_days(today) else {
+        return 0;
+    };
+    let mut checked: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for date in log_dates {
+        if let Some(days) = date_key_to_days(date) {
+            checked.insert(days);
+        }
+    }
+    let mut cursor = if checked.contains(&today_days) {
+        today_days
+    } else {
+        today_days - 1
+    };
+    let mut streak = 0;
+    while checked.contains(&cursor) {
+        streak += 1;
+        cursor -= 1;
+    }
+    streak
+}
+
+fn recent_habit_logs(log_dates: &[String], today: &str, window: i64) -> Vec<String> {
+    let Some(today_days) = date_key_to_days(today) else {
+        return Vec::new();
+    };
+    let min = today_days - window + 1;
+    let mut dates: Vec<String> = log_dates
+        .iter()
+        .filter_map(|date| {
+            let days = date_key_to_days(date)?;
+            if days >= min {
+                Some(date.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    dates.sort();
+    dates.dedup();
+    dates
 }
 
 fn uid() -> String {
@@ -1353,17 +1403,43 @@ fn seed_habits_if_empty(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     let now = now_millis();
+    let reading_id = uid();
     conn.execute(
-        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '晨间阅读', 5, 3, 'emerald', ?2)",
-        params![uid(), now],
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '晨间阅读', 5, 0, 'emerald', ?2)",
+        params![reading_id, now],
+    )?;
+    for days_ago in [1i64, 2, 3] {
+        seed_habit_log(conn, &reading_id, days_ago, now)?;
+    }
+    let deep_work_id = uid();
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '深水工作', 4, 0, 'blue', ?2)",
+        params![deep_work_id, now],
+    )?;
+    for days_ago in [1i64, 2] {
+        seed_habit_log(conn, &deep_work_id, days_ago, now)?;
+    }
+    let exercise_id = uid();
+    conn.execute(
+        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '运动 30 分钟', 3, 0, 'amber', ?2)",
+        params![exercise_id, now],
+    )?;
+    for days_ago in [1i64, 2, 3, 4, 5] {
+        seed_habit_log(conn, &exercise_id, days_ago, now)?;
+    }
+    Ok(())
+}
+
+fn seed_habit_log(conn: &Connection, habit_id: &str, days_ago: i64, now: i64) -> Result<()> {
+    let offset = format!("-{} days", days_ago);
+    let date: String = conn.query_row(
+        "SELECT date('now', 'localtime', ?1)",
+        params![offset],
+        |row| row.get(0),
     )?;
     conn.execute(
-        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '深水工作', 4, 2, 'blue', ?2)",
-        params![uid(), now],
-    )?;
-    conn.execute(
-        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, '运动 30 分钟', 3, 5, 'amber', ?2)",
-        params![uid(), now],
+        "INSERT OR IGNORE INTO habit_logs (id, habit_id, date, checked_at) VALUES (?1, ?2, ?3, ?4)",
+        params![uid(), habit_id, date, now - days_ago * 86_400_000],
     )?;
     Ok(())
 }
@@ -2066,27 +2142,46 @@ pub fn restore_agent_prompt(conn: &Connection, agent_id: &str, version_id: &str)
     get_agent(conn, agent_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
+fn habit_log_dates(conn: &Connection, habit_id: &str) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT date FROM habit_logs WHERE habit_id = ?1 ORDER BY date ASC")?;
+    let rows = stmt.query_map(params![habit_id], |row| row.get(0))?;
+    rows.collect()
+}
+
 pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
     let mut stmt = conn.prepare(
-        "SELECT h.id, h.name, h.week_goal, h.current_streak, h.color, h.created_at,
-                COALESCE(hl.id IS NOT NULL, 0)
-         FROM habits h
-         LEFT JOIN habit_logs hl ON hl.habit_id = h.id AND hl.date = ?1
-         ORDER BY h.created_at ASC",
+        "SELECT id, name, week_goal, current_streak, color, created_at
+         FROM habits
+         ORDER BY created_at ASC",
     )?;
-    let today = today_local();
-    let rows = stmt.query_map(params![today], |row| {
-        Ok(Habit {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            week_goal: row.get(2)?,
-            current_streak: row.get(3)?,
-            color: row.get(4)?,
-            created_at: row.get(5)?,
-            done_today: row.get::<_, i64>(6)? != 0,
-        })
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
     })?;
-    rows.collect()
+    let today = today_local();
+    let mut habits = Vec::new();
+    for row in rows {
+        let (id, name, week_goal, color, created_at) = row?;
+        let log_dates = habit_log_dates(conn, &id)?;
+        let done_today = log_dates.iter().any(|date| date == &today);
+        habits.push(Habit {
+            id,
+            name,
+            week_goal,
+            current_streak: compute_habit_streak(&log_dates, &today),
+            color,
+            done_today,
+            created_at,
+            recent_logs: recent_habit_logs(&log_dates, &today, 14),
+        });
+    }
+    Ok(habits)
 }
 
 pub fn create_habit(conn: &Connection, name: &str, week_goal: i64, color: &str) -> Result<Habit> {
@@ -2104,6 +2199,7 @@ pub fn create_habit(conn: &Connection, name: &str, week_goal: i64, color: &str) 
         color: color.to_string(),
         done_today: false,
         created_at: now,
+        recent_logs: Vec::new(),
     })
 }
 
@@ -5290,6 +5386,8 @@ mod tests {
             .expect("created habit should be listed");
         assert!(saved_habit.done_today);
         assert_eq!(saved_habit.name, "早睡");
+        assert_eq!(saved_habit.current_streak, 1);
+        assert!(saved_habit.recent_logs.iter().any(|d| d == &today_local()));
 
         let events = list_schedule_events(&conn).unwrap();
         let saved_event = events
@@ -5301,9 +5399,55 @@ mod tests {
 
         let untoggled = toggle_habit(&conn, &habit.id).unwrap();
         assert!(!untoggled.done_today);
+        assert_eq!(untoggled.current_streak, 0);
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn seeded_habits_have_log_backed_streaks() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-seed-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let habits = list_habits(&conn).unwrap();
+        assert_eq!(habits.len(), 3);
+        let reading = habits.iter().find(|h| h.name == "晨间阅读").unwrap();
+        let deep_work = habits.iter().find(|h| h.name == "深水工作").unwrap();
+        let exercise = habits.iter().find(|h| h.name == "运动 30 分钟").unwrap();
+        assert_eq!(reading.current_streak, 3);
+        assert_eq!(deep_work.current_streak, 2);
+        assert_eq!(exercise.current_streak, 5);
+        assert!(!reading.done_today);
+        assert!(!reading.recent_logs.is_empty());
+        assert!(!deep_work.recent_logs.is_empty());
+        assert!(!exercise.recent_logs.is_empty());
+
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn habit_streak_math_counts_consecutive_days() {
+        let now = chrono::Local::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let yesterday = (now - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let two_days_ago = (now - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let ending_yesterday = vec![two_days_ago.clone(), yesterday.clone()];
+        assert_eq!(compute_habit_streak(&ending_yesterday, &today), 2);
+
+        let ending_today = vec![two_days_ago.clone(), yesterday, today.clone()];
+        assert_eq!(compute_habit_streak(&ending_today, &today), 3);
+
+        let with_gap = vec![two_days_ago, today.clone()];
+        assert_eq!(compute_habit_streak(&with_gap, &today), 1);
     }
 
     #[test]
