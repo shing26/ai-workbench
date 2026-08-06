@@ -528,6 +528,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。批量 E2E 是运行时链路：`runProviderE2EStream` 复用既有 Provider 配置与 `stream_ai_message` 冒烟路径，汇总结果仅保存在前端状态，reload 后按各卡片既有 E2E 结果恢复；浏览器 fallback 不新增 localStorage key。
 
+## Sprint 127：Knowledge 笔记删除与类型转换
+
+无表结构变更。`update_thought_type` 复用 `thoughts.type` 既有列更新类型，`delete_thought` 直接删除 `thoughts` 行；`thoughts` 无外键依赖，删除无需级联。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，更新或删除后写回同一 key，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

@@ -392,6 +392,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Providers 操作区新增 `data-provider-batch-test` 按钮与 busy 状态，完成后显示 `data-provider-batch-result` 汇总（`N/M ok`，失败时追加失败数），结果同步写入各 Provider 卡片 `data-provider-e2e-result`。
 - `verify:ui` / `verify:preview` 新增 `providerBatchE2E` lane：点击批量按钮后断言 `2/2 ok` 与卡片结果数；`cargo test --lib` 保持 132 条。
 
+## Sprint 127：Knowledge 笔记删除与类型转换
+
+- Rust 新增 `update_thought_type(id, type)`（仅接受 inbox / note / doc）与 `delete_thought(id)`（缺失 id 返回 `QueryReturnedNoRows`）命令；`db.ts` / `workbenchStore` 新增同构 `updateThoughtType` / `deleteThought`，localStorage fallback 同步更新或移除 `thoughts`。
+- Knowledge 详情头部新增 `data-thought-type-select` 分段控件（inbox / note / doc），切换后类型徽标、Tag Library 类型分布与 RAG 结果同步刷新；新增 `data-thought-delete` / `data-thought-delete-confirm` / `data-thought-delete-cancel` 删除二次确认，删除后清除编辑状态并自动落到下一条笔记。
+- Thought Inbox 新增 `data-thought-inbox-input` / `data-thought-inbox-add`，RAG 结果行 `data-rag-result` 携带笔记 id，供双端验证定位。
+- `verify:ui` / `verify:preview` 新增 `thoughtTypeConvert` / `thoughtTypeConvertPersisted` / `thoughtTypeConvertRestored` / `thoughtDelete` / `thoughtDeleteCancel` / `thoughtDeletePersisted`；`cargo test --lib` 增至 134 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

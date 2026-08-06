@@ -3223,6 +3223,204 @@ try {
       )}`,
     );
   }
+  const thoughtTypeConvert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing for type convert" };
+    noteBtn.click();
+    await sleep(300);
+    const select = document.querySelector("[data-thought-type-select]");
+    if (!select) return { ok: false, reason: "type select missing" };
+    const thoughtId = select.getAttribute("data-thought-type-select");
+    const originalType = select.getAttribute("data-thought-type-current") || "";
+    const docBtn = document.querySelector('[data-thought-type-option="doc"]');
+    if (!docBtn) return { ok: false, reason: "doc option missing", thoughtId, originalType };
+    docBtn.click();
+    let converted = false;
+    let currentType = "";
+    for (let i = 0; i < 30; i++) {
+      currentType =
+        document.querySelector('[data-thought-type-select="' + thoughtId + '"]')
+          ?.getAttribute("data-thought-type-current") ?? "";
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const stored = shape.thoughts.find((t) => t.id === thoughtId)?.type ?? "";
+      converted = currentType === "doc" && stored === "doc";
+      if (converted) break;
+      await sleep(100);
+    }
+    const active =
+      document.querySelector('[data-thought-type-option="doc"]')
+        ?.getAttribute("data-thought-type-active") === "true";
+    return { ok: converted && active, thoughtId, originalType, currentType, active };
+  })()`);
+  results.thoughtTypeConvert = thoughtTypeConvert;
+  if (!results.thoughtTypeConvert.ok) {
+    throw new Error(
+      `Thought type convert assertion failed: ${JSON.stringify(results.thoughtTypeConvert)}`,
+    );
+  }
+  const thoughtTypeConvertId = results.thoughtTypeConvert.thoughtId ?? '';
+  const thoughtTypeOriginal = results.thoughtTypeConvert.originalType ?? 'note';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtTypeConvertPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTypeConvertId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let select = null;
+    for (let i = 0; i < 20; i++) {
+      select = document.querySelector('[data-thought-type-select="' + id + '"]');
+      if (select) break;
+      await sleep(100);
+    }
+    if (!select) return { ok: false, reason: "type select missing after reload" };
+    const currentType = select.getAttribute("data-thought-type-current") ?? "";
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stored = shape.thoughts.find((t) => t.id === id)?.type ?? "";
+    const active =
+      document.querySelector('[data-thought-type-option="doc"]')
+        ?.getAttribute("data-thought-type-active") === "true";
+    return {
+      ok: currentType === "doc" && stored === "doc" && active,
+      currentType,
+      stored,
+      active,
+    };
+  })()`);
+  results.thoughtTypeConvertPersisted = thoughtTypeConvertPersisted;
+  if (!results.thoughtTypeConvertPersisted?.ok) {
+    throw new Error(
+      `Thought type convert persistence assertion failed: ${JSON.stringify(
+        results.thoughtTypeConvertPersisted,
+      )}`,
+    );
+  }
+  const thoughtTypeConvertRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTypeConvertId)};
+    const original = ${JSON.stringify(thoughtTypeOriginal)};
+    const noteBtn = document.querySelector('[data-thought-type-option="' + original + '"]');
+    if (!noteBtn) return { ok: false, reason: "original type option missing" };
+    noteBtn.click();
+    let restored = false;
+    let currentType = "";
+    for (let i = 0; i < 30; i++) {
+      currentType =
+        document.querySelector('[data-thought-type-select="' + id + '"]')
+          ?.getAttribute("data-thought-type-current") ?? "";
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const stored = shape.thoughts.find((t) => t.id === id)?.type ?? "";
+      restored = currentType === original && stored === original;
+      if (restored) break;
+      await sleep(100);
+    }
+    return { ok: restored, currentType, original };
+  })()`);
+  results.thoughtTypeConvertRestored = thoughtTypeConvertRestored;
+  if (!results.thoughtTypeConvertRestored?.ok) {
+    throw new Error(
+      `Thought type convert restore assertion failed: ${JSON.stringify(
+        results.thoughtTypeConvertRestored,
+      )}`,
+    );
+  }
+  const thoughtDelete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector("[data-thought-inbox-input]");
+    const addBtn = document.querySelector("[data-thought-inbox-add]");
+    if (!input || !addBtn) return { ok: false, reason: "inbox input or add button missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    const title = "Delete E2E thought 127";
+    setter.call(input, title);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const beforeCount = document.querySelectorAll("[data-rag-result]").length;
+    addBtn.click();
+    let row = null;
+    let thoughtId = "";
+    for (let i = 0; i < 30; i++) {
+      row = [...document.querySelectorAll("[data-rag-result]")]
+        .find((b) => (b.textContent || "").includes(title));
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "created thought row missing", beforeCount };
+    thoughtId = row.getAttribute("data-rag-result") || "";
+    row.click();
+    await sleep(300);
+    const deleteBtn = document.querySelector('[data-thought-delete="' + thoughtId + '"]');
+    if (!deleteBtn) return { ok: false, reason: "delete button missing", thoughtId, beforeCount };
+    deleteBtn.click();
+    await sleep(150);
+    const cancelBtn = document.querySelector('[data-thought-delete-cancel="' + thoughtId + '"]');
+    if (!cancelBtn) return { ok: false, reason: "delete cancel missing", thoughtId, beforeCount };
+    cancelBtn.click();
+    await sleep(150);
+    const shapeAfterCancel = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stillExistsAfterCancel = shapeAfterCancel.thoughts.some((t) => t.id === thoughtId);
+    const deleteBtnAgain = document.querySelector('[data-thought-delete="' + thoughtId + '"]');
+    if (!stillExistsAfterCancel || !deleteBtnAgain) {
+      return {
+        ok: false,
+        reason: "cancel did not preserve thought",
+        thoughtId,
+        stillExistsAfterCancel,
+        beforeCount,
+      };
+    }
+    deleteBtnAgain.click();
+    await sleep(150);
+    const confirmBtn = document.querySelector('[data-thought-delete-confirm="' + thoughtId + '"]');
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing", thoughtId, beforeCount };
+    confirmBtn.click();
+    let deleted = false;
+    let afterCount = 0;
+    let detailGone = false;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      afterCount = document.querySelectorAll("[data-rag-result]").length;
+      deleted = !shape.thoughts.some((t) => t.id === thoughtId) && afterCount === beforeCount;
+      detailGone = !(document.querySelector(".markdown-body")?.textContent ?? "").includes(title);
+      if (deleted && detailGone) break;
+      await sleep(100);
+    }
+    return {
+      ok: deleted && detailGone,
+      thoughtId,
+      beforeCount,
+      afterCount,
+      deleted,
+      detailGone,
+    };
+  })()`);
+  results.thoughtDelete = thoughtDelete;
+  if (!results.thoughtDelete.ok) {
+    throw new Error(`Thought delete assertion failed: ${JSON.stringify(results.thoughtDelete)}`);
+  }
+  const thoughtDeleteId = results.thoughtDelete.thoughtId ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtDeletePersisted = await evaluate(`(async () => {
+    const id = ${JSON.stringify(thoughtDeleteId)};
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !shape.thoughts.some((t) => t.id === id);
+    const rowGone = ![...document.querySelectorAll("[data-rag-result]")]
+      .some((b) => (b.textContent || "").includes("Delete E2E thought 127"));
+    return { ok: storedGone && rowGone, storedGone, rowGone };
+  })()`);
+  results.thoughtDeletePersisted = thoughtDeletePersisted;
+  if (!results.thoughtDeletePersisted?.ok) {
+    throw new Error(
+      `Thought delete persistence assertion failed: ${JSON.stringify(
+        results.thoughtDeletePersisted,
+      )}`,
+    );
+  }
   const ragSearch = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="RAG search..."]');
     if (!input) return { ok: false, reason: "no rag input" };
