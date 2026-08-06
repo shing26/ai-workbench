@@ -90,6 +90,10 @@ export default function ActionsView() {
   const todayDone = todayTasks.filter((t) => t.status === 'done').length;
   const focusProgress = Math.min(todayDone / 3, 1);
   const now = new Date();
+  const recentDayKeys = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (13 - i));
+    return dayKey(d);
+  });
   const mondayOffset = (now.getDay() + 6) % 7;
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
   const weekDays = Array.from({ length: 7 }, (_, i) => {
@@ -369,6 +373,8 @@ export default function ActionsView() {
           <div className="flex flex-col gap-1.5">
             {habits.map((h) => {
               const tone = colorClass[h.color] ?? colorClass.emerald;
+              const recentSet = new Set(h.recentLogs ?? []);
+              const weekCount = recentDayKeys.slice(7).filter((key) => recentSet.has(key)).length;
               return (
                 <div
                   key={h.id}
@@ -378,6 +384,7 @@ export default function ActionsView() {
                 >
                   <button
                     type="button"
+                    data-habit-toggle
                     onClick={() => void toggleHabit(h.id)}
                     aria-label={`Toggle ${h.name}`}
                     className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border ${
@@ -389,16 +396,47 @@ export default function ActionsView() {
                     <Check size={12} />
                   </button>
                   <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`truncate text-xs ${
+                          h.doneToday ? 'text-current' : 'text-slate-300'
+                        }`}
+                      >
+                        {h.name}
+                      </span>
+                      <span
+                        data-habit-week={`${weekCount}/${h.weekGoal}`}
+                        className="shrink-0 font-mono text-[9px] text-slate-500"
+                      >
+                        周 {weekCount}/{h.weekGoal}
+                      </span>
+                    </div>
                     <div
-                      className={`truncate text-xs ${h.doneToday ? 'text-current' : 'text-slate-300'}`}
+                      data-habit-recent-days
+                      className="mt-1 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[3px]"
                     >
-                      {h.name}
+                      {recentDayKeys.map((key) => {
+                        const checked = recentSet.has(key);
+                        return (
+                          <span
+                            key={key}
+                            data-habit-day={key}
+                            data-habit-day-checked={checked ? 'true' : 'false'}
+                            className={`h-1.5 rounded-[2px] ${
+                              checked ? tone.dot : 'bg-white/[0.06]'
+                            }`}
+                          />
+                        );
+                      })}
                     </div>
                     <div className="mt-0.5 text-[10px] text-slate-500">
                       {h.doneToday ? '今天已打卡' : `本周目标 ${h.weekGoal} 次`}
                     </div>
                   </div>
-                  <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500">
+                  <span
+                    data-habit-streak={h.currentStreak}
+                    className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500"
+                  >
                     <Flame size={11} className={h.currentStreak >= 3 ? 'text-amber-400' : ''} />
                     {h.currentStreak} 天
                   </span>

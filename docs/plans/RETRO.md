@@ -101,6 +101,28 @@
 - 保留 `knowledgeTagLibrary` lane，修改 Knowledge 标签解析、侧栏过滤或 Tag Library 卡片时重跑 `verify:ui` / `verify:preview`。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 119
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构升级习惯数据：`list_habits` 从 `habit_logs` 实时计算连续天数与最近 14 天打卡，`toggle_habit` 写入 / 删除当天日志，静态 `current_streak` 种子不再参与计算。
+- Rust 引入 chrono 本地日期，种子习惯自动生成连续打卡日志（晨间阅读 3 天 / 深水工作 2 天 / 运动 5 天），`today_local` 与浏览器 `dayKey` 对齐。
+- Actions Habits 卡片新增 14 天热力条与周目标进度：`data-habit-recent-days` / `data-habit-day` / `data-habit-day-checked` / `data-habit-streak` / `data-habit-week` 锚点齐全。
+- `verify:ui` / `verify:preview` habit lane 覆盖种子连续天数、14 天热力条、打卡后连续天数 +1、今日点亮、周进度与 reload 持久化；`cargo test --lib` 增至 125 条。
+- 顺带修正两处既有验证缺陷：习惯按钮改用 `data-habit-toggle` 精确定位；`focusWeekArchive` 改为 reload 后先验归档持久化，再恢复任务，逻辑不再自相矛盾。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 的习惯断言拿到 0，因为旧 `aria-label^="Toggle "` 选择器在 Actions 视图里会先命中任务行的 Toggle；为习惯按钮补充显式锚点后稳定。
+- Rust 种子测试首轮失败：深水工作日志偏移写成 `[2,3]`，导致昨天断档、连续天数算成 0；改为 `[1,2]` 后符合 2 天连续。
+- 修复习惯选择器后暴露出 `focusWeekArchive` 验证本身有误：它先恢复归档再 reload，却要求归档仍存在；重新编排为 reload 验归档、再恢复。
+
+### Action Items
+
+- 下一 Sprint 候选：System Provider 批量测试、AI Studio 会话分组/归档、Projects 项目状态管理/收益编辑、Knowledge 笔记标签编辑。
+- 保留 habit lane 与 `focusWeekArchive` / `focusWeekPersisted` / `focusWeekRestored` 断言，修改习惯打卡、Focus 周视图或归档逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

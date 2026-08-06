@@ -335,6 +335,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Tag Library 为纯前端派生视图，复用 `thoughts.tags` 的逗号分隔标签，无新增后端命令或持久化字段。
 - `verify:ui` / `verify:preview` 新增 `knowledgeTagLibrary` lane：断言标签计数、选中联动、侧栏过滤行数、预览列表与 All 恢复。
 
+## Sprint 119：习惯连续天数与 14 天热力条
+
+- Rust `list_habits` 改为从 `habit_logs` 实时计算 `current_streak` 与 `recent_logs`：今天未打卡时从昨天向前计数，今天已打卡则包含今天；新增 chrono 本地日期，与浏览器 fallback 的本地 `YYYY-MM-DD` 对齐。
+- `toggle_habit` 继续写入 / 删除当天 `habit_logs`；浏览器 `LocalShape` 新增 `habitLogs` 数组，`listHabits` / `toggleHabit` 与 Rust 同构计算，旧 localStorage 读取时自动补空数组。
+- Actions Habits 卡片新增 `data-habit-recent-days` 最近 14 天热力条：每个 `data-habit-day` 单元格带 `data-habit-day-checked`，打卡日按习惯色高亮；行内新增 `data-habit-streak` 与 `data-habit-week` 周目标进度。
+- 习惯按钮新增 `data-habit-toggle` 锚点，验证不再误选任务行 Toggle。
+- `verify:ui` / `verify:preview` 的 habit lane 新增种子 3/2/5 连续天数、14 天热力条、打卡后连续天数 +1、今日点亮、周进度与 reload 持久化断言；`focusWeekArchive` 验证顺序修正为 reload 后先验归档持久化，再恢复任务。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
