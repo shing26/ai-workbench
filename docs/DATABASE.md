@@ -636,6 +636,16 @@ ALTER TABLE schedule_events ADD COLUMN date TEXT NOT NULL DEFAULT '';
 - `create_schedule_event` / `list_schedule_events` 全程携带 `date`，列表按 `date ASC, start_time ASC` 排序；浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `scheduleEvents` 数组，新增事件写入 `date` 字段，旧数据缺省视为空日期。
 - 周计划模板本身只保存在 `ai-workbench:week-plan-templates:v1`，不写入 SQLite。
 
+## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
+
+```sql
+ALTER TABLE webhook_rules ADD COLUMN trigger_condition TEXT NOT NULL DEFAULT '';
+```
+
+- 新库 SCHEMA 的 `webhook_rules` 建表语句直接包含 `trigger_condition` 列，旧库由 `migrate_webhook_trigger_condition` 按列存在性幂等补列并加入 `init_connection` 迁移链。
+- `trigger_condition` 保存条件 DSL 原文（事件匹配 / context 比较 / `and or not` / `cron(...)`），创建时非空先由 `webhook_condition::validate_condition` 校验；条件过滤发生在 `spawn_webhook_delivery_worker` 与 `trigger_webhook_event` 运行时，不入库额外索引。
+- 签名校验是纯运行时计算，不新增表或字段：Tauri `verify_webhook_signature` 复用 HMAC-SHA256，浏览器 fallback 用 Web Crypto 计算同一 `expected`；浏览器 fallback 继续使用 `ai-workbench:webhook-rules:v1`，规则对象新增 `triggerCondition` 字段，旧数据读取时默认补空串。
+
 ## Sprint 140：Knowledge 双链补全编辑器提示
 
 无表结构变更。双链补全候选由 `db.ts` 从 `thoughts` 的 `content` 首行标题与 `tags` 运行时派生，不新增 SQLite 表、索引或字段；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。

@@ -478,6 +478,12 @@ export type WebhookDeliveryResult = {
   message: string;
 };
 
+export type WebhookSignatureVerifyResult = {
+  valid: boolean;
+  expected: string;
+  algorithm: string;
+};
+
 export type WebhookRule = {
   id: string;
   name: string;
@@ -490,6 +496,7 @@ export type WebhookRule = {
   cooldownSeconds: number;
   intervalSeconds: number;
   triggerEvent: string;
+  triggerCondition: string;
   enabled: boolean;
   lastRunAt: number;
   lastStatus: number;
@@ -5589,6 +5596,7 @@ function readWebhookRules(): WebhookRule[] {
       cooldownSeconds: rule.cooldownSeconds ?? 0,
       consecutiveFailures: rule.consecutiveFailures ?? 0,
       autoDisableAfter: rule.autoDisableAfter ?? 3,
+      triggerCondition: rule.triggerCondition ?? '',
     }));
   } catch {
     return [];
@@ -5677,7 +5685,10 @@ export async function createWebhookRule(
   cooldownSeconds = 0,
   triggerEvent = '',
   autoDisableAfter = 3,
+  triggerCondition = '',
 ): Promise<WebhookRule> {
+  const conditionError = validateWebhookCondition(triggerCondition);
+  if (conditionError) throw new Error(`Invalid trigger condition: ${conditionError}`);
   if (isTauri()) {
     return invoke<WebhookRule>('create_webhook_rule', {
       request: {
@@ -5692,6 +5703,7 @@ export async function createWebhookRule(
         intervalSeconds: Math.max(5, intervalSeconds),
         triggerEvent: triggerEvent.trim(),
         autoDisableAfter: Math.max(0, autoDisableAfter),
+        triggerCondition: triggerCondition.trim(),
       },
     });
   }
@@ -5708,6 +5720,7 @@ export async function createWebhookRule(
     cooldownSeconds: Math.max(0, cooldownSeconds),
     intervalSeconds: Math.max(5, intervalSeconds),
     triggerEvent: triggerEvent.trim(),
+    triggerCondition: triggerCondition.trim(),
     enabled: true,
     lastRunAt: 0,
     lastStatus: 0,
@@ -5832,6 +5845,453 @@ export function renderWebhookPayload(
   });
 }
 
+type WebhookConditionToken =
+  | { type: 'atom'; value: string }
+  | { type: 'str'; value: string }
+  | { type: 'op'; value: '==' | '!=' | '>' | '>=' | '<' | '<=' }
+  | { type: 'paren'; value: '(' | ')' };
+
+type WebhookConditionExpr =
+  | { kind: 'and'; left: WebhookConditionExpr; right: WebhookConditionExpr }
+  | { kind: 'or'; left: WebhookConditionExpr; right: WebhookConditionExpr }
+  | { kind: 'not'; inner: WebhookConditionExpr }
+  | { kind: 'compare'; path: string; op: string; value: unknown }
+  | { kind: 'event'; value: string }
+  | { kind: 'cron'; expr: string }
+  | { kind: 'bool'; value: boolean };
+
+function tokenizeWebhookCondition(input: string): WebhookConditionToken[] {
+  const tokens: WebhookConditionToken[] = [];
+  let i = 0;
+  while (i < input.length) {
+    const char = input[i];
+    if (/\s/.test(char)) {
+      i += 1;
+      continue;
+    }
+    if (char === '(' || char === ')') {
+      tokens.push({ type: 'paren', value: char });
+      i += 1;
+      continue;
+    }
+    const pair = input.slice(i, i + 2);
+    if (pair === '==' || pair === '!=' || pair === '>=' || pair === '<=') {
+      tokens.push({ type: 'op', value: pair });
+      i += 2;
+      continue;
+    }
+    if (char === '>' || char === '<') {
+      tokens.push({ type: 'op', value: char });
+      i += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      let value = '';
+      let j = i + 1;
+      let closed = false;
+      while (j < input.length) {
+        const ch = input[j];
+        if (ch === '\\' && j + 1 < input.length) {
+          value += input[j + 1];
+          j += 2;
+          continue;
+        }
+        if (ch === quote) {
+          closed = true;
+          break;
+        }
+        value += ch;
+        j += 1;
+      }
+      if (!closed) throw new Error('Unterminated string literal');
+      tokens.push({ type: 'str', value });
+      i = j + 1;
+      continue;
+    }
+    const start = i;
+    while (
+      i < input.length &&
+      !/\s/.test(input[i]) &&
+      !'()"\''.includes(input[i]) &&
+      !'=!<>'.includes(input[i])
+    ) {
+      i += 1;
+    }
+    if (i === start) throw new Error(`Unexpected character '${char}'`);
+    tokens.push({ type: 'atom', value: input.slice(start, i) });
+  }
+  return tokens;
+}
+
+class WebhookConditionParser {
+  private pos = 0;
+
+  constructor(private readonly tokens: WebhookConditionToken[]) {}
+
+  private peek(): WebhookConditionToken | undefined {
+    return this.tokens[this.pos];
+  }
+
+  private next(): WebhookConditionToken | undefined {
+    const token = this.tokens[this.pos];
+    if (token) this.pos += 1;
+    return token;
+  }
+
+  private isKeyword(keyword: string): boolean {
+    const token = this.peek();
+    return token?.type === 'atom' && token.value === keyword;
+  }
+
+  parseCondition(): WebhookConditionExpr {
+    const expr = this.parseOr();
+    if (this.pos !== this.tokens.length) throw new Error('Unexpected token at end of condition');
+    return expr;
+  }
+
+  private parseOr(): WebhookConditionExpr {
+    let left = this.parseAnd();
+    while (this.isKeyword('or')) {
+      this.next();
+      const right = this.parseAnd();
+      left = { kind: 'or', left, right };
+    }
+    return left;
+  }
+
+  private parseAnd(): WebhookConditionExpr {
+    let left = this.parseNot();
+    while (this.isKeyword('and')) {
+      this.next();
+      const right = this.parseNot();
+      left = { kind: 'and', left, right };
+    }
+    return left;
+  }
+
+  private parseNot(): WebhookConditionExpr {
+    if (this.isKeyword('not')) {
+      this.next();
+      return { kind: 'not', inner: this.parseNot() };
+    }
+    return this.parsePrimary();
+  }
+
+  private parsePrimary(): WebhookConditionExpr {
+    const token = this.next();
+    if (!token) throw new Error('Expected condition');
+    if (token.type === 'paren' && token.value === '(') {
+      const inner = this.parseOr();
+      const closing = this.next();
+      if (closing?.type !== 'paren' || closing.value !== ')') {
+        throw new Error("Expected ')'");
+      }
+      return inner;
+    }
+    if (token.type === 'str') {
+      throw new Error(`Unexpected string literal '${token.value}'`);
+    }
+    if (token.type !== 'atom') throw new Error('Expected condition');
+    if (token.value === 'true') return { kind: 'bool', value: true };
+    if (token.value === 'false') return { kind: 'bool', value: false };
+    if (token.value === 'cron') {
+      const open = this.next();
+      if (open?.type !== 'paren' || open.value !== '(') {
+        throw new Error("Expected '(' after cron");
+      }
+      const fields: string[] = [];
+      while (true) {
+        const field = this.next();
+        if (field?.type === 'paren' && field.value === ')') break;
+        if (field?.type !== 'atom') throw new Error("Expected cron fields or ')'");
+        fields.push(field.value);
+      }
+      const expr = fields.join(' ');
+      if (!expr.trim() || !isValidCron(expr)) {
+        throw new Error(`Invalid cron expression '${expr}'`);
+      }
+      return { kind: 'cron', expr };
+    }
+    return this.parseAtomExpr(token.value);
+  }
+
+  private parseAtomExpr(path: string): WebhookConditionExpr {
+    const op = this.peek();
+    if (op?.type !== 'op') return { kind: 'event', value: path };
+    this.next();
+    const valueToken = this.next();
+    let value: unknown;
+    if (valueToken?.type === 'str') {
+      value = valueToken.value;
+    } else if (valueToken?.type === 'atom') {
+      value = parseWebhookLiteral(valueToken.value);
+    } else {
+      throw new Error(`Expected comparison value after '${path}'`);
+    }
+    return { kind: 'compare', path, op: op.value, value };
+  }
+}
+
+function parseWebhookCondition(condition: string): WebhookConditionExpr {
+  return new WebhookConditionParser(tokenizeWebhookCondition(condition)).parseCondition();
+}
+
+function parseWebhookLiteral(atom: string): unknown {
+  if (atom === 'true') return true;
+  if (atom === 'false') return false;
+  if (atom === 'null') return null;
+  if (atom.trim() !== '' && Number.isFinite(Number(atom))) return Number(atom);
+  return atom;
+}
+
+function resolveWebhookValue(
+  path: string,
+  event: string,
+  context: Record<string, unknown>,
+): unknown {
+  if (path === 'event') return event;
+  if (path === 'context') return context;
+  if (!path.startsWith('context.')) return null;
+  let current: unknown = context;
+  for (const part of path.slice('context.'.length).split('.')) {
+    if (current && typeof current === 'object') {
+      current = (current as Record<string, unknown>)[part];
+    } else {
+      current = null;
+      break;
+    }
+  }
+  return current ?? null;
+}
+
+function webhookValuesEqual(left: unknown, right: unknown): boolean {
+  if (typeof left === 'number' && typeof right === 'number') return left === right;
+  if (typeof left === 'string' && typeof right === 'string') return left === right;
+  if (typeof left === 'boolean' && typeof right === 'boolean') return left === right;
+  if (left === null && right === null) return true;
+  return false;
+}
+
+function webhookNumericValue(value: unknown): number | null {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value.trim()))) {
+    return Number(value.trim());
+  }
+  return null;
+}
+
+function evaluateWebhookCompare(
+  path: string,
+  op: string,
+  expected: unknown,
+  event: string,
+  context: Record<string, unknown>,
+): boolean {
+  const actual = resolveWebhookValue(path, event, context);
+  if (op === '==') return webhookValuesEqual(actual, expected);
+  if (op === '!=') return !webhookValuesEqual(actual, expected);
+  const a = webhookNumericValue(actual);
+  const b = webhookNumericValue(expected);
+  if (a === null || b === null) return false;
+  if (op === '>') return a > b;
+  if (op === '>=') return a >= b;
+  if (op === '<') return a < b;
+  return a <= b;
+}
+
+function evaluateWebhookCondition(
+  expr: WebhookConditionExpr,
+  event: string,
+  context: Record<string, unknown>,
+  now: Date,
+): boolean {
+  switch (expr.kind) {
+    case 'and':
+      return (
+        evaluateWebhookCondition(expr.left, event, context, now) &&
+        evaluateWebhookCondition(expr.right, event, context, now)
+      );
+    case 'or':
+      return (
+        evaluateWebhookCondition(expr.left, event, context, now) ||
+        evaluateWebhookCondition(expr.right, event, context, now)
+      );
+    case 'not':
+      return !evaluateWebhookCondition(expr.inner, event, context, now);
+    case 'bool':
+      return expr.value;
+    case 'event':
+      return event === expr.value;
+    case 'cron':
+      return matchesCron(expr.expr, now);
+    case 'compare':
+      return evaluateWebhookCompare(expr.path, expr.op, expr.value, event, context);
+  }
+}
+
+function cronFieldMatches(spec: string, value: number, min: number, max: number): boolean {
+  return spec.split(',').some((part) => {
+    const trimmed = part.trim();
+    if (!trimmed) return false;
+    const [rangePart, stepPart] = trimmed.split('/');
+    if (stepPart !== undefined && stepPart.trim() === '') return false;
+    const step = stepPart === undefined ? 1 : Math.max(1, Number(stepPart) || 1);
+    let start: number;
+    let end: number;
+    if (rangePart === '*') {
+      start = min;
+      end = max;
+    } else if (rangePart.includes('-')) {
+      const [s, e] = rangePart.split('-').map((v) => Number(v));
+      if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+      start = s;
+      end = e;
+    } else {
+      const single = Number(rangePart);
+      if (!Number.isFinite(single)) return false;
+      if (step > 1) {
+        start = single;
+        end = max;
+      } else {
+        start = single;
+        end = single;
+      }
+    }
+    start = Math.max(start, min);
+    end = Math.min(end, max);
+    if (end < start) return false;
+    return value >= start && value <= end && (value - start) % step === 0;
+  });
+}
+
+function isValidCron(expr: string): boolean {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const bounds: Array<[string, number, number]> = [
+    [fields[0], 0, 59],
+    [fields[1], 0, 23],
+    [fields[2], 1, 31],
+    [fields[3], 1, 12],
+    [fields[4], 0, 7],
+  ];
+  return bounds.every(([field, min, max]) =>
+    field.split(',').every((part) => {
+      const trimmed = part.trim();
+      const [rangePart, stepPart] = trimmed.split('/');
+      if (
+        stepPart !== undefined &&
+        (stepPart.trim() === '' || !Number.isFinite(Number(stepPart)))
+      ) {
+        return false;
+      }
+      if (rangePart === '*') return true;
+      if (rangePart.includes('-')) {
+        const [s, e] = rangePart.split('-').map((v) => Number(v));
+        return (
+          Number.isFinite(s) &&
+          Number.isFinite(e) &&
+          s >= min &&
+          s <= max &&
+          e >= min &&
+          e <= max &&
+          s <= e
+        );
+      }
+      const single = Number(rangePart);
+      return Number.isFinite(single) && single >= min && single <= max;
+    }),
+  );
+}
+
+export function matchesCron(expr: string, now = new Date()): boolean {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5 || !isValidCron(expr)) return false;
+  const minute = now.getMinutes();
+  const hour = now.getHours();
+  const day = now.getDate();
+  const month = now.getMonth() + 1;
+  const dow = now.getDay() === 7 ? 0 : now.getDay();
+  const dowSpec = fields[4] === '7' ? '0' : fields[4];
+  const domMatches = cronFieldMatches(fields[2], day, 1, 31);
+  const dowMatches = cronFieldMatches(dowSpec, dow, 0, 7);
+  const dayOk =
+    fields[2] !== '*' && fields[4] !== '*' ? domMatches || dowMatches : domMatches && dowMatches;
+  return (
+    cronFieldMatches(fields[0], minute, 0, 59) &&
+    cronFieldMatches(fields[1], hour, 0, 23) &&
+    dayOk &&
+    cronFieldMatches(fields[3], month, 1, 12)
+  );
+}
+
+export function validateWebhookCondition(condition: string): string | null {
+  const trimmed = condition.trim();
+  if (!trimmed) return null;
+  try {
+    parseWebhookCondition(trimmed);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+export function matchesWebhookCondition(
+  condition: string,
+  event: string,
+  context: Record<string, unknown> = {},
+  now = new Date(),
+): boolean {
+  const trimmed = condition.trim();
+  if (!trimmed) return true;
+  try {
+    return evaluateWebhookCondition(parseWebhookCondition(trimmed), event, context, now);
+  } catch {
+    return false;
+  }
+}
+
+async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const bytes = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
+  return Array.from(new Uint8Array(bytes))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function verifyWebhookSignature(
+  secret: string,
+  payload: string,
+  signature: string,
+): Promise<WebhookSignatureVerifyResult> {
+  if (isTauri()) {
+    return invoke<WebhookSignatureVerifyResult>('verify_webhook_signature', {
+      secret,
+      payload,
+      signature,
+    });
+  }
+  const expected = await hmacSha256Hex(secret, payload);
+  const provided = signature.trim();
+  const normalized = provided.startsWith('sha256=')
+    ? provided.slice('sha256='.length)
+    : provided.startsWith('SHA256=')
+      ? provided.slice('SHA256='.length)
+      : provided;
+  return {
+    valid: provided.length > 0 && normalized.trim().toLowerCase() === expected,
+    expected,
+    algorithm: 'HMAC-SHA256',
+  };
+}
+
 export async function triggerWebhookEvent(
   event: string,
   context?: Record<string, unknown>,
@@ -5844,6 +6304,7 @@ export async function triggerWebhookEvent(
     (r) =>
       r.enabled &&
       (r.triggerEvent || '') === event &&
+      matchesWebhookCondition(r.triggerCondition ?? '', event, context ?? {}) &&
       (r.lastRunAt === 0 || now - r.lastRunAt >= (r.cooldownSeconds || 0) * 1000),
   );
   const deliveries: WebhookDelivery[] = rules.map((rule) => ({

@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 142
+
+### What went well?
+
+- 新增 `webhook_condition.rs`：条件 DSL 与 cron 在 Rust / TS 双端同构，`event / context / and / or / not / 括号` 与 `cron(分 时 日 月 周)` 均可组合，事件不满足条件不入队。
+- `webhook_rules` 新增 `trigger_condition` 列并走幂等迁移；`verify_webhook_signature` 命令与 Web Crypto fallback 覆盖 `sha256=<hex>` 与裸 hex，System Webhook 卡片补齐签名校验面板。
+- `verify:ui` / `verify:preview` 新增 `webhookTriggerCondition` / `webhookSignatureVerify` lane，双端通过；Rust 单测新增 cron、条件、签名与迁移覆盖，`cargo test --lib` 增至 154 条，全部门禁全绿。
+
+### What went wrong?
+
+- 首轮条件 lane 用 `event == and` 作为非法条件，但 DSL 会把它解析为比较字符串 `"and"`，两边引擎都判定合法；改为缺右侧值的 `event ==` 后正确触发校验错误。
+- clippy 对 `cron_is_valid` 中两处 `map_or` 给出简化提示，改用 `is_ok_and` / `is_some_and` 后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Webhook 多通道投递（邮件 / 系统通知）与熔断恢复指数退避调度。
+- 保留 `webhookTriggerCondition` / `webhookSignatureVerify` lane，修改条件 DSL、cron 或签名逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 141
 
 ### What went well?

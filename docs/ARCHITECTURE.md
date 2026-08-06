@@ -485,6 +485,15 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - ActionsView 新增 Week Plan 卡片：`data-week-plan-template` 模板选择、`data-week-plan-preview` 7 日预览、`data-week-plan-apply` 一键写入、`data-week-plan-result` 汇总；Schedule Timeline 行新增 `data-schedule-event-row` 并展示日期，手动建事件可自选日期。
 - `verify:ui` / `verify:preview` 新增 `weekPlanTemplate` / `weekPlanPersisted` lane；Rust 单测新增 `schedule_event_date_migration_adds_column_and_orders`，`cargo test --lib` 增至 145 条。
 
+## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
+
+- 新增 `src-tauri/src/webhook_condition.rs`：`validate_condition` 校验、`matches_condition(condition, event, context, now)` 求值；DSL 支持 `event == / !=`、`context.field == / != / > / < / >= / <=`、`true / false / null`、`and / or / not / 括号`、裸事件名简写与 `cron(...)`。
+- `webhook_rules` 新增 `trigger_condition TEXT NOT NULL DEFAULT ''`：新库 SCHEMA 直接建列，旧库 `migrate_webhook_trigger_condition` 幂等补列并加入 `init_connection` 迁移链；`WebhookRule` / `WebhookRuleInput` / `WebhookRuleRequest` 全程携带，创建时非空条件先校验再落库。
+- cron 支持 5 段（分 时 日 月 周）`*` / 数字 / `1-5` / `*/5` / `1-15/5` / `a/step` / 逗号列表，日与周同时受限时按标准 cron OR 语义匹配；`spawn_webhook_delivery_worker` 对 due 规则按条件 / cron 过滤，`trigger_webhook_event` 对事件规则按条件过滤，条件不满足不入队。
+- 新增 Tauri 命令 `verify_webhook_signature(secret, payload, signature)`，返回 `{ valid, expected, algorithm }`：复用 HMAC-SHA256，兼容 `sha256=<hex>` 前缀与裸 hex；`db.ts` 新增同构 `verifyWebhookSignature`（浏览器 fallback 用 Web Crypto HMAC-SHA256）。
+- System Webhook 卡片新增 Signature verify 区（`data-webhook-sig-secret` / `data-webhook-sig-signature` / `data-webhook-sig-payload` / `data-webhook-sig-verify` / `data-webhook-sig-result`）；规则表单新增 `data-webhook-rule-condition-input`，规则行新增 `data-webhook-rule-condition` 徽标与 `data-webhook-condition-error` 校验提示。
+- `verify:ui` / `verify:preview` 新增 `webhookTriggerCondition` / `webhookSignatureVerify` lane；Rust 新增 cron 匹配、条件表达式正反例、签名校验前缀兼容与迁移 / 持久化单测，`cargo test --lib` 增至 154 条。
+
 ## Sprint 140：Knowledge 双链补全编辑器提示
 
 - `db.ts` 新增 `WikiLinkSuggestion` 与 `suggestWikiLinkTargets`：按首行标题 / 标签过滤，精确 > 前缀 > 包含 > 标签排序，默认返回最多 6 条并排除当前笔记；补全候选为运行时派生数据，不新增持久化字段。

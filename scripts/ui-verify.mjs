@@ -6325,6 +6325,202 @@ try {
   }
   results.webhookRuleCooldown = webhookRuleCooldown;
 
+  const webhookTriggerCondition = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const conditionInput = document.querySelector("[data-webhook-rule-condition-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (
+      !urlInput ||
+      !nameInput ||
+      !triggerInput ||
+      !conditionInput ||
+      !saveBtn ||
+      !triggerBtn ||
+      !contextInput
+    ) {
+      return { ok: false, reason: "condition controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/conditional");
+    setValue(nameInput, "Conditional sync hook");
+    setValue(triggerInput, "sync.completed");
+    setValue(conditionInput, 'context.status == "ok" and event == "sync.completed"');
+    await sleep(120);
+    saveBtn.click();
+    let item = null;
+    let badge = "";
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      badge =
+        item?.querySelector("[data-webhook-rule-condition]")?.textContent?.trim() ?? "";
+      if (item && item.textContent.includes("Conditional sync hook") && badge.includes("if:")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Conditional sync hook");
+    const created =
+      !!item &&
+      badge.includes('context.status == "ok"') &&
+      storedRule?.triggerCondition === 'context.status == "ok" and event == "sync.completed"';
+
+    setValue(contextInput, '{"status":"error"}');
+    await sleep(150);
+    const beforeError = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    triggerBtn.click();
+    await sleep(400);
+    const afterError = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    const suppressed = afterError === beforeError;
+
+    setValue(contextInput, '{"status":"ok"}');
+    await sleep(150);
+    triggerBtn.click();
+    let delivered = false;
+    for (let i = 0; i < 20; i++) {
+      const deliveries = document.querySelectorAll("[data-webhook-delivery-item]").length;
+      if (deliveries > afterError) {
+        delivered = true;
+        break;
+      }
+      await sleep(100);
+    }
+
+    setValue(nameInput, "Bad condition hook");
+    setValue(conditionInput, "event ==");
+    await sleep(120);
+    saveBtn.click();
+    let conditionError = "";
+    for (let i = 0; i < 20; i++) {
+      conditionError =
+        document.querySelector("[data-webhook-condition-error]")?.textContent ?? "";
+      if (conditionError.includes("Invalid trigger condition")) break;
+      await sleep(100);
+    }
+    const storedAfterBad = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const badRejected = !storedAfterBad.some((r) => r.name === "Bad condition hook");
+    return {
+      ok: created && suppressed && delivered && badRejected,
+      badge,
+      created,
+      suppressed,
+      delivered,
+      badRejected,
+      conditionError,
+      beforeError,
+      afterError,
+    };
+  })()`);
+  if (!webhookTriggerCondition.ok) {
+    throw new Error(
+      `Webhook trigger condition assertion failed: ${JSON.stringify(webhookTriggerCondition)}`,
+    );
+  }
+  results.webhookTriggerCondition = webhookTriggerCondition;
+  laneLog('webhookTriggerCondition ok');
+
+  const webhookSignatureVerify = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const secretInput = document.querySelector("[data-webhook-sig-secret]");
+    const signatureInput = document.querySelector("[data-webhook-sig-signature]");
+    const payloadInput = document.querySelector("[data-webhook-sig-payload]");
+    const verifyBtn = document.querySelector("[data-webhook-sig-verify]");
+    if (!secretInput || !signatureInput || !payloadInput || !verifyBtn) {
+      return { ok: false, reason: "signature verify controls missing" };
+    }
+    const payload = '{"event":"signed.delivery"}';
+    const secret = "verify-secret";
+    setValue(payloadInput, payload);
+    setValue(secretInput, secret);
+    setValue(signatureInput, "deadbeef");
+    await sleep(150);
+    verifyBtn.click();
+    let resultText = "";
+    for (let i = 0; i < 20; i++) {
+      resultText = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      if (resultText.includes("INVALID")) break;
+      await sleep(100);
+    }
+    const wrongRejected = resultText.includes("INVALID");
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const bytes = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+    const expected = Array.from(new Uint8Array(bytes))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    setValue(signatureInput, "sha256=" + expected);
+    await sleep(150);
+    verifyBtn.click();
+    let validText = "";
+    let expectedText = "";
+    for (let i = 0; i < 20; i++) {
+      validText = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      expectedText =
+        document.querySelector("[data-webhook-sig-expected]")?.textContent ?? "";
+      if (validText.includes("VALID")) break;
+      await sleep(100);
+    }
+    const prefixedValid = validText.includes("VALID") && expectedText.includes(expected);
+    setValue(signatureInput, expected.toUpperCase());
+    await sleep(150);
+    verifyBtn.click();
+    let bareValid = false;
+    for (let i = 0; i < 20; i++) {
+      const text = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      if (text.includes("VALID")) {
+        bareValid = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return {
+      ok: wrongRejected && prefixedValid && bareValid,
+      wrongRejected,
+      prefixedValid,
+      bareValid,
+      expected: expected.slice(0, 16),
+      resultText,
+      validText,
+    };
+  })()`);
+  if (!webhookSignatureVerify.ok) {
+    throw new Error(
+      `Webhook signature verify assertion failed: ${JSON.stringify(webhookSignatureVerify)}`,
+    );
+  }
+  results.webhookSignatureVerify = webhookSignatureVerify;
+  laneLog('webhookSignatureVerify ok');
+
   await evaluate(`(() => {
     const now = Date.now();
     const day = 86_400_000;
