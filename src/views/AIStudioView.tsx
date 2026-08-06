@@ -218,6 +218,7 @@ export default function AIStudioView() {
   const [exportCopied, setExportCopied] = useState(false);
   const [exportKnowledgeBusy, setExportKnowledgeBusy] = useState(false);
   const [exportKnowledgeResult, setExportKnowledgeResult] = useState('');
+  const [exportSummary, setExportSummary] = useState<db.SessionSummary | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
@@ -792,6 +793,7 @@ export default function AIStudioView() {
     const messages = await db.listChatMessages(session.id);
     setExportSession(session);
     setExportMarkdown(db.buildSessionMarkdown(session, messages));
+    setExportSummary(db.buildSessionSummary(messages));
     setExportCopied(false);
     setExportKnowledgeBusy(false);
     setExportKnowledgeResult('');
@@ -800,6 +802,7 @@ export default function AIStudioView() {
   const closeSessionExport = () => {
     setExportSession(null);
     setExportMarkdown('');
+    setExportSummary(null);
     setExportCopied(false);
     setExportKnowledgeBusy(false);
     setExportKnowledgeResult('');
@@ -2540,6 +2543,36 @@ export default function AIStudioView() {
                 <X size={13} />
               </button>
             </div>
+            {exportSummary && (
+              <div data-session-summary className="border-b border-white/10 px-4 py-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span data-session-summary-stats className="text-[9px] text-slate-500">
+                    {exportSummary.questionCount} questions · {exportSummary.keywords.length}{' '}
+                    keywords
+                  </span>
+                  {exportSummary.keywords.map((keyword) => (
+                    <span
+                      key={keyword}
+                      data-session-summary-keyword
+                      className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-300"
+                    >
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+                <ul className="mt-1.5 space-y-1">
+                  {exportSummary.points.map((point, index) => (
+                    <li
+                      key={`${point.question}-${index}`}
+                      data-session-summary-point
+                      className="text-[10px] leading-relaxed text-slate-400"
+                    >
+                      Q: {point.question || '—'} / A: {point.answer || '—'}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <pre
               data-session-export-preview
               className="max-h-[50vh] overflow-auto whitespace-pre-wrap px-4 py-3 text-[11px] leading-relaxed text-slate-300"

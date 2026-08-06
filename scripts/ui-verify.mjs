@@ -7853,6 +7853,91 @@ try {
   results.sessionSaveKnowledgePersisted = sessionSaveKnowledgePersisted;
   laneLog('sessionSaveKnowledgePersisted ok');
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "sum-session",
+        projectId: null,
+        title: "Weekly Sync",
+        model: "openai",
+        pinned: false,
+        archived: false,
+        messageCount: 2,
+        createdAt: now - 5000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "sum-u1", sessionId: "sum-session", role: "user", content: "帮我总结本周项目收益与风险", createdAt: now - 4000 },
+      { id: "sum-a1", sessionId: "sum-session", role: "assistant", content: "本周项目收益为 1200 元，主要风险是外部依赖未交付。", createdAt: now - 3000 },
+      { id: "sum-u2", sessionId: "sum-session", role: "user", content: "下一步安排是什么", createdAt: now - 2000 },
+      { id: "sum-a2", sessionId: "sum-session", role: "assistant", content: "下一步聚焦测试与发布，并同步风险清单。", createdAt: now - 1000 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
+  const sessionSummary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("Weekly Sync"));
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "weekly sync session row missing" };
+    row.querySelector('button[aria-label="Export session"]')?.click();
+    let stats = "";
+    let keywords = [];
+    let points = [];
+    let preview = "";
+    for (let i = 0; i < 30; i++) {
+      stats = document.querySelector("[data-session-summary-stats]")?.textContent ?? "";
+      keywords = [...document.querySelectorAll("[data-session-summary-keyword]")].map(
+        (el) => el.textContent ?? "",
+      );
+      points = [...document.querySelectorAll("[data-session-summary-point]")].map(
+        (el) => el.textContent ?? "",
+      );
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (stats.includes("2 questions") && points.length === 2 && preview.includes("## Summary")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const ok =
+      stats.includes("2 questions") &&
+      keywords.length >= 3 &&
+      keywords.includes("收益") &&
+      keywords.includes("风险") &&
+      points.length === 2 &&
+      points[0].includes("本周项目收益与风险") &&
+      points[1].includes("下一步安排是什么") &&
+      preview.includes("## Summary") &&
+      preview.includes("Keywords:") &&
+      preview.includes("- Questions: 2");
+    document.querySelector("[data-session-export-close]")?.click();
+    return {
+      ok,
+      stats,
+      keywords,
+      points,
+      previewHasSummary: preview.includes("## Summary"),
+    };
+  })()`);
+  if (!sessionSummary.ok) {
+    throw new Error(
+      `AI Studio session summary assertion failed: ${JSON.stringify(sessionSummary)}`,
+    );
+  }
+  results.sessionSummary = sessionSummary;
+  laneLog('sessionSummary ok');
+
   await clickDock('AI Studio');
   await evaluate(`(() => {
     const now = Date.now();
