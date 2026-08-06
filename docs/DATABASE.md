@@ -1241,3 +1241,26 @@ CREATE TABLE IF NOT EXISTS sync_paired_devices (
 - 无表结构变更。`search_thoughts` 的 `knowledge_files` 查询改为同时读取 `id / path / content / tags / embedding / shard_id / embedding_model / vault_path`：`id` 继续作为结果主键，`path` 作为 `source_file` 返回，`vault_path` 随结果返回，供前端跨文件来源选择与过滤。
 - 新增 `RagSourceFilter { enabled, mode, file_paths }`：`mode = all` 或 `selected` 且 `file_paths` 为空时不过滤；`mode = selected` 时文件命中仅保留 `path` 在列表中的记录，thoughts 不受影响。
 - 偏好持久化不写入 SQLite，保存在前端 `ai-workbench:rag-source-preference:v1`（`{ enabled, mode, filePaths }`），浏览器 fallback 与 Tauri UI 共用同一偏好协议。
+
+## Sprint 154：Webhook 模板版本表与高级渲染
+
+```sql
+-- 旧库由 migrate_webhook_template_version 幂等补列
+ALTER TABLE webhook_rules ADD COLUMN template_version INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS webhook_template_versions (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE (rule_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_template_versions_rule
+    ON webhook_template_versions(rule_id, version DESC);
+```
+
+- 新库 `webhook_rules` 建表语句已直接包含 `template_version INTEGER NOT NULL DEFAULT 1`；旧库由幂等 `migrate_webhook_template_version` 补列并回写 NULL，已加入 `init_connection` 迁移链。
+- `create_webhook_rule` 自动写入 v1 版本记录；`next_webhook_template_version` 按规则取 `MAX(version)+1`，`save_webhook_template_version` 同时更新 `webhook_rules.payload / template_version`，`list_webhook_template_versions` 按版本倒序返回，`restore_webhook_template_version` 回滚 payload 与 `template_version`。
+- 浏览器 fallback 使用 `ai-workbench:webhook-template-versions:v1` 保存同构版本列表，不写入 SQLite；`readWebhookRules` 自动补 `templateVersion ?? 1`。

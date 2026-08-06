@@ -13080,6 +13080,195 @@ try {
   results.webhookRuleRunLog = webhookRuleRunLog;
   laneLog('webhookRuleRunLog ok');
 
+  await evaluate(`(async () => {
+    const rulesKey = "ai-workbench:webhook-rules:v1";
+    const versionsKey = "ai-workbench:webhook-template-versions:v1";
+    const existing = JSON.parse(localStorage.getItem(rulesKey) ?? "[]");
+    const ruleId = "sprint154-template-rule";
+    const rule = {
+      id: ruleId,
+      name: "Sprint 154 Template",
+      url: "https://hooks.example.test/template",
+      payload: '{"v":1}',
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "sync.completed",
+      triggerCondition: "",
+      channels: ["http"],
+      recoveryBackoffSeconds: 300,
+      circuitOpenedAt: 0,
+      enabled: true,
+      lastRunAt: 0,
+      lastStatus: 0,
+      lastMessage: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      consecutiveFailures: 0,
+      autoDisableAfter: 3,
+      templateVersion: 1,
+    };
+    const versionsByRule = JSON.parse(localStorage.getItem(versionsKey) ?? "{}");
+    versionsByRule[ruleId] = [
+      {
+        id: "sprint154-v1",
+        ruleId,
+        version: 1,
+        payload: '{"v":1}',
+        note: "",
+        createdAt: Date.now(),
+      },
+    ];
+    localStorage.setItem(rulesKey, JSON.stringify([...existing, rule]));
+    localStorage.setItem(versionsKey, JSON.stringify(versionsByRule));
+    return { ok: true, rules: [...existing, rule].length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookTemplateVersioning = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const versionsKey = "ai-workbench:webhook-template-versions:v1";
+    const ruleId = "sprint154-template-rule";
+    const item = () =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes("Sprint 154 Template"),
+      );
+    let ruleItem = item();
+    for (let i = 0; i < 30 && !ruleItem; i++) {
+      await sleep(100);
+      ruleItem = item();
+    }
+    if (!ruleItem) return { ok: false, reason: "rule item missing" };
+    const payloadInput = ruleItem.querySelector("[data-webhook-rule-payload-input]");
+    const count = ruleItem.querySelector("[data-webhook-rule-version-count]");
+    if (!payloadInput || !count) {
+      return { ok: false, reason: "template controls missing" };
+    }
+    const initialCount = count.textContent.trim();
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    const v2 = '{"v":2,"ready":{{#if context.status == "ready"}}true{{#else}}false{{/if}}}';
+    setter.call(payloadInput, v2);
+    payloadInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(150);
+    ruleItem.querySelector("[data-webhook-rule-version-save]")?.click();
+    let countAfter = "";
+    let storedVersions = [];
+    for (let i = 0; i < 30; i++) {
+      ruleItem = item();
+      countAfter =
+        ruleItem?.querySelector("[data-webhook-rule-version-count]")?.textContent?.trim() ?? "";
+      storedVersions = JSON.parse(localStorage.getItem(versionsKey) ?? "{}")[ruleId] ?? [];
+      if (countAfter === "v2" && storedVersions.length === 2) break;
+      await sleep(100);
+    }
+    const savedOk =
+      countAfter === "v2" &&
+      storedVersions.length === 2 &&
+      storedVersions.some((version) => version.version === 2 && version.payload.includes("ready"));
+    const select = ruleItem?.querySelector("[data-webhook-rule-version-select]");
+    if (!select) {
+      return { ok: false, reason: "version select missing", savedOk, countAfter };
+    }
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    selectSetter.call(select, "1");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(120);
+    ruleItem = item();
+    ruleItem?.querySelector("[data-webhook-rule-version-restore]")?.click();
+    let restoredValue = "";
+    for (let i = 0; i < 30; i++) {
+      ruleItem = item();
+      restoredValue =
+        ruleItem?.querySelector("[data-webhook-rule-payload-input]")?.value ?? "";
+      if (restoredValue === '{"v":1}') break;
+      await sleep(100);
+    }
+    const restoreOk = restoredValue === '{"v":1}';
+    return {
+      ok: savedOk && restoreOk,
+      savedOk,
+      restoreOk,
+      initialCount,
+      countAfter,
+      versions: storedVersions.map((version) => version.version),
+      restoredValue,
+    };
+  })()`);
+  if (!webhookTemplateVersioning.ok) {
+    throw new Error(
+      `Webhook template versioning assertion failed: ${JSON.stringify(webhookTemplateVersioning)}`,
+    );
+  }
+  results.webhookTemplateVersioning = webhookTemplateVersioning;
+  laneLog('webhookTemplateVersioning ok');
+
+  const webhookTemplateValidationUi = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const payload = document.querySelector("[data-webhook-payload]");
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (!payload || !contextInput) return { ok: false, reason: "delivery controls missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(payload, '{"items":[]}');
+    payload.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-webhook-template-snippet="each"]')?.click();
+    await sleep(120);
+    const snippetInserted = (document.querySelector("[data-webhook-payload]")?.value ?? "").includes(
+      "#each",
+    );
+    const template =
+      '{"status":{{#if context.status == "ready"}}"ready"{{#else}}"busy"{{/if}},"items":[{{#each context.items}}{"name":{{this.name}}}{{#if @last}}{{#else}},{{/if}}{{/each}}]}';
+    setter.call(payload, template);
+    payload.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const contextSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    contextSetter.call(
+      contextInput,
+      '{"status":"ready","items":[{"name":"alpha"},{"name":"beta"}]}',
+    );
+    contextInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector("[data-webhook-template-validate]")?.click();
+    let validation = "";
+    for (let i = 0; i < 30; i++) {
+      validation = document.querySelector("[data-webhook-template-validation]")?.textContent ?? "";
+      if (validation.includes("valid") && validation.includes("JSON ok")) break;
+      await sleep(100);
+    }
+    const validationOk =
+      validation.includes("valid") &&
+      validation.includes("variable(s)") &&
+      validation.includes("JSON ok");
+    document.querySelector("[data-webhook-payload-preview]")?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview =
+        document.querySelector("[data-webhook-payload-preview-text]")?.textContent ?? "";
+      if (preview.includes("alpha") && preview.includes("beta") && preview.includes("ready")) break;
+      await sleep(100);
+    }
+    const previewOk =
+      preview.includes("alpha") && preview.includes("beta") && preview.includes("ready");
+    return {
+      ok: snippetInserted && validationOk && previewOk,
+      snippetInserted,
+      validationOk,
+      previewOk,
+      validation,
+      preview,
+    };
+  })()`);
+  if (!webhookTemplateValidationUi.ok) {
+    throw new Error(
+      `Webhook template validation assertion failed: ${JSON.stringify(webhookTemplateValidationUi)}`,
+    );
+  }
+  results.webhookTemplateValidationUi = webhookTemplateValidationUi;
+  laneLog('webhookTemplateValidationUi ok');
+
   let budgetServer = null;
   try {
     budgetServer = http.createServer((req, res) => {
