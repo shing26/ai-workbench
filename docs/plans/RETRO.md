@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 137
+
+### What went well?
+
+- `db.ts` 新增 `buildSessionSummary`：统计 questionCount、提取关键词（中文 2-3 字 n-gram + 英文词，过滤停用词，取 top 6）、生成 Q&A 要点（每个 user 消息配对下一条 assistant 回复，首行截断）。
+- `buildSessionMarkdown` 在正文前插入 `## Summary` 段：Questions / Keywords / Q&A 要点，导出到知识库的笔记自带摘要。
+- 导出面板头部新增 `data-session-summary` 摘要条：`data-session-summary-stats`、`data-session-summary-keyword` chips、`data-session-summary-point` 要点列表。
+- `verify:ui` / `verify:preview` 新增 `sessionSummary` lane：种子 Weekly Sync 会话与 4 条消息，断言 2 questions、收益 / 风险关键词、2 个要点与 Markdown Summary 段。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（140 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- tsc 报 `buildSessionSummary` 的 map 回调里 `index` 未使用，去掉参数后通过；纯前端改动，无 Rust 命令与表结构变更。
+
+### Action Items
+
+- 下一 Sprint 候选：System 自动化规则补强、Knowledge 双链补全编辑器提示、Actions 周计划模板。
+- 保留 `sessionSummary` lane，修改会话摘要、导出 Markdown 或导出面板时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 136
 
 ### What went well?

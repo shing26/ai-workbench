@@ -87,6 +87,17 @@ export type Session = {
   createdAt: number;
 };
 
+export type SessionSummaryPoint = {
+  question: string;
+  answer: string;
+};
+
+export type SessionSummary = {
+  questionCount: number;
+  keywords: string[];
+  points: SessionSummaryPoint[];
+};
+
 export type SessionSearchHit = {
   session: Session;
   matchType:
@@ -2100,6 +2111,116 @@ export async function duplicateSession(id: string): Promise<Session> {
   return copy;
 }
 
+const SESSION_SUMMARY_STOPWORDS = new Set([
+  '的',
+  '了',
+  '是',
+  '我',
+  '你',
+  '他',
+  '她',
+  '它',
+  '们',
+  '这',
+  '那',
+  '在',
+  '有',
+  '和',
+  '就',
+  '都',
+  '而',
+  '及',
+  '与',
+  '着',
+  '或',
+  '一个',
+  '没有',
+  '什么',
+  '怎么',
+  '如何',
+  '为什么',
+  '吗',
+  '呢',
+  '吧',
+  '啊',
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'of',
+  'to',
+  'for',
+  'in',
+  'on',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'with',
+  'this',
+  'that',
+  'it',
+  'as',
+  'at',
+  'by',
+  'from',
+  'please',
+  'help',
+  'me',
+  'my',
+  'you',
+]);
+
+function sessionSummaryTokens(content: string): string[] {
+  const tokens: string[] = [];
+  const cjk = content.replace(/[^\u4e00-\u9fff]/g, ' ');
+  for (const chunk of cjk.split(/\s+/).filter(Boolean)) {
+    if (chunk.length >= 3) {
+      for (let i = 0; i < chunk.length - 2; i += 1) tokens.push(chunk.slice(i, i + 3));
+    }
+    for (let i = 0; i < chunk.length - 1; i += 1) tokens.push(chunk.slice(i, i + 2));
+  }
+  const english = content.replace(/[\u4e00-\u9fff]/g, ' ').toLowerCase();
+  for (const raw of english.split(/[^a-z0-9]+/)) {
+    if (raw.length > 1) tokens.push(raw);
+  }
+  return tokens.filter((token) => !SESSION_SUMMARY_STOPWORDS.has(token));
+}
+
+function sessionSummaryLine(content: string, max: number): string {
+  const line =
+    content
+      .split('\n')
+      .map((part) => part.trim())
+      .find(Boolean) ?? '';
+  return line.slice(0, max);
+}
+
+export function buildSessionSummary(messages: ChatMessage[], limit = 5): SessionSummary {
+  const userMessages = messages.filter((message) => message.role === 'user');
+  const counts = new Map<string, number>();
+  for (const message of messages) {
+    for (const token of sessionSummaryTokens(message.content)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+  }
+  const keywords = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 6)
+    .map(([token]) => token);
+  const points = userMessages.slice(0, limit).map((user) => {
+    const rest = messages.slice(messages.indexOf(user) + 1);
+    const answer = rest.find((message) => message.role === 'assistant');
+    return {
+      question: sessionSummaryLine(user.content, 40),
+      answer: answer ? sessionSummaryLine(answer.content, 90) : '',
+    };
+  });
+  return { questionCount: userMessages.length, keywords, points };
+}
+
 export function buildSessionMarkdown(session: Session, messages: ChatMessage[]): string {
   const lines: string[] = [
     `# ${session.title}`,
@@ -2107,6 +2228,14 @@ export function buildSessionMarkdown(session: Session, messages: ChatMessage[]):
     `> Model: ${session.model} · Created: ${new Date(session.createdAt).toLocaleString()}`,
     '',
   ];
+  const summary = buildSessionSummary(messages);
+  lines.push('## Summary', '', `- Questions: ${summary.questionCount}`);
+  lines.push(`- Keywords: ${summary.keywords.join(', ') || '-'}`, '');
+  for (const point of summary.points) {
+    lines.push(`- Q: ${point.question || '—'}`);
+    lines.push(`  A: ${point.answer || '—'}`);
+  }
+  lines.push('');
   for (const message of messages) {
     lines.push(`## ${message.role === 'user' ? 'User' : 'Assistant'}`, '', message.content, '');
   }

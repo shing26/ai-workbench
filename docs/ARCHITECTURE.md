@@ -462,6 +462,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Portfolio export 报告 Overview 新增 Latest revenue / Revenue points / 7d delta / 30d delta 四行；聚合全部为运行时派生，无新增表结构。
 - `verify:ui` / `verify:preview` 新增 `projectRevenueSummary` lane：种子两个项目与 4 个趋势点后断言聚合数值与状态拆分，并在 lane 结束后恢复原始 projects / history 以保护后续 Git 与编辑 lane。
 
+## Sprint 137：AI Studio 会话摘要与关键词
+
+- `db.ts` 新增 `buildSessionSummary`：questionCount、keywords（中文 2-3 字 n-gram + 英文词，过滤停用词，top 6）、points（user 消息配对下一条 assistant 回复，各取首行截断），纯运行时派生。
+- `buildSessionMarkdown` 在正文前插入 `## Summary` 段：`Questions` / `Keywords` / Q&A 要点，会话导出到知识库时摘要一并落库。
+- AI Studio 导出面板头部新增 `data-session-summary` 摘要条：`data-session-summary-stats`、`data-session-summary-keyword` chips、`data-session-summary-point` 要点列表；打开 / 关闭面板时同步设置 / 清空摘要状态。
+- `verify:ui` / `verify:preview` 新增 `sessionSummary` lane：覆盖摘要统计、关键词、要点与 Markdown Summary 段；纯前端改动，无新增 Rust 命令与表结构。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
