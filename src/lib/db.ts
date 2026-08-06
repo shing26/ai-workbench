@@ -1254,6 +1254,19 @@ export async function updateProject(id: string, status: string, revenue: number)
   return project;
 }
 
+export async function deleteProject(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_project', { id });
+    return;
+  }
+  const shape = readLocal();
+  shape.projects = shape.projects.filter((p) => p.id !== id);
+  shape.sessions = (shape.sessions ?? []).map((s) =>
+    s.projectId === id ? { ...s, projectId: null } : s,
+  );
+  writeLocal(shape);
+}
+
 export async function listThoughts(): Promise<Thought[]> {
   return isTauri() ? invoke<Thought[]>('list_thoughts') : readLocal().thoughts;
 }

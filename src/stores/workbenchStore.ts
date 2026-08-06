@@ -26,6 +26,7 @@ type WorkbenchState = {
   setTaskDueDate: (id: string, dueDate: string | null) => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   updateProject: (id: string, status: string, revenue: number) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
   addThought: (content: string, tags: string, type: db.ThoughtType) => Promise<void>;
   updateThoughtTags: (id: string, tags: string) => Promise<void>;
   updateThoughtContent: (id: string, content: string) => Promise<void>;
@@ -123,6 +124,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
   updateProject: async (id, status, revenue) => {
     await db.updateProject(id, status, revenue);
+    set({ projects: await db.listProjects() });
+  },
+  deleteProject: async (id) => {
+    await db.deleteProject(id);
     set({ projects: await db.listProjects() });
   },
   addThought: async (content, tags, type) => {
