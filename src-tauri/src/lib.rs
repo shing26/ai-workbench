@@ -2727,6 +2727,15 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                 let _ = db::enqueue_webhook_delivery(&conn, rule, "", &payload);
                 let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
             }
+            if let Ok(config) = db::get_webhook_retention_config(&conn) {
+                if config.auto_cleanup {
+                    let _ = db::prune_webhook_deliveries(
+                        &conn,
+                        config.retention_days,
+                        config.max_records,
+                    );
+                }
+            }
             let Ok(claimed) = db::claim_due_webhook_deliveries(&conn, now, 8) else {
                 continue;
             };
@@ -4903,6 +4912,42 @@ fn clear_webhook_deliveries(
 }
 
 #[tauri::command]
+fn get_webhook_retention_config(
+    state: State<'_, db::Db>,
+) -> Result<db::WebhookRetentionConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_webhook_retention_config(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_webhook_retention_config(
+    state: State<'_, db::Db>,
+    retention_days: i64,
+    max_records: i64,
+    auto_cleanup: bool,
+) -> Result<db::WebhookRetentionConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_webhook_retention_config(&conn, retention_days, max_records, auto_cleanup)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn prune_webhook_deliveries(state: State<'_, db::Db>) -> Result<db::WebhookPruneResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let config = db::get_webhook_retention_config(&conn).map_err(|e| e.to_string())?;
+    db::prune_webhook_deliveries(&conn, config.retention_days, config.max_records)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_webhook_delivery_stats(
+    state: State<'_, db::Db>,
+) -> Result<db::WebhookDeliveryStats, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_webhook_delivery_stats(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn push_sync_snapshot(
     state: State<'_, db::Db>,
     remote_url: String,
@@ -5559,6 +5604,10 @@ pub fn run() {
             retry_webhook_delivery,
             delete_webhook_delivery,
             clear_webhook_deliveries,
+            get_webhook_retention_config,
+            set_webhook_retention_config,
+            prune_webhook_deliveries,
+            get_webhook_delivery_stats,
             run_provider_stream_smoke_test,
             run_provider_e2e_stream
         ])

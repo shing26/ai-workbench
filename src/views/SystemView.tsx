@@ -142,6 +142,14 @@ export default function SystemView() {
   const [webhookEventContext, setWebhookEventContext] = useState('');
   const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
   const [webhookDeliveries, setWebhookDeliveries] = useState<db.WebhookDelivery[]>([]);
+  const [webhookRetention, setWebhookRetention] = useState<db.WebhookRetentionConfig | null>(null);
+  const [webhookRetentionDays, setWebhookRetentionDays] = useState('30');
+  const [webhookRetentionLimit, setWebhookRetentionLimit] = useState('200');
+  const [webhookRetentionAuto, setWebhookRetentionAuto] = useState(true);
+  const [webhookRetentionResult, setWebhookRetentionResult] = useState('');
+  const [webhookDeliveryStats, setWebhookDeliveryStats] = useState<db.WebhookDeliveryStats | null>(
+    null,
+  );
   const [deviceId, setDeviceId] = useState('');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [lastRemoteDevice, setLastRemoteDevice] = useState('');
@@ -945,6 +953,39 @@ export default function SystemView() {
     await loadWebhookDeliveries();
   };
 
+  const loadWebhookRetention = async () => {
+    const config = await db.getWebhookRetentionConfig();
+    setWebhookRetention(config);
+    setWebhookRetentionDays(String(config.retentionDays));
+    setWebhookRetentionLimit(String(config.maxRecords));
+    setWebhookRetentionAuto(config.autoCleanup);
+    setWebhookDeliveryStats(await db.getWebhookDeliveryStats());
+  };
+
+  const saveWebhookRetention = async () => {
+    const config = await db.setWebhookRetentionConfig(
+      Number(webhookRetentionDays) || 30,
+      Number(webhookRetentionLimit) || 200,
+      webhookRetentionAuto,
+    );
+    setWebhookRetention(config);
+    setWebhookRetentionDays(String(config.retentionDays));
+    setWebhookRetentionLimit(String(config.maxRecords));
+    setWebhookRetentionAuto(config.autoCleanup);
+    setWebhookRetentionResult(
+      `Retention saved: ${config.retentionDays}d / ${config.maxRecords} records`,
+    );
+  };
+
+  const runWebhookRetentionPrune = async () => {
+    const result = await db.pruneWebhookDeliveries();
+    setWebhookRetentionResult(
+      `Cleaned ${result.totalRemoved} (age ${result.removedByAge}, count ${result.removedByCount})`,
+    );
+    await loadWebhookDeliveries();
+    setWebhookDeliveryStats(await db.getWebhookDeliveryStats());
+  };
+
   useEffect(() => {
     void checkAll();
   }, [checkAll]);
@@ -952,6 +993,7 @@ export default function SystemView() {
   useEffect(() => {
     void loadWebhookRules();
     void loadWebhookDeliveries();
+    void loadWebhookRetention();
     const onWebhooksUpdated = () => void loadWebhookDeliveries();
     window.addEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
     const timer = window.setInterval(() => {
@@ -2241,6 +2283,83 @@ export default function SystemView() {
                 </button>
               </div>
             ))}
+          </div>
+          <div data-webhook-retention className="mt-3 border-t border-white/5 pt-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[9px] text-slate-500">Retention policy</span>
+              <label className="flex h-6 items-center gap-1 text-[9px] text-slate-400">
+                <span>Days</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={webhookRetentionDays}
+                  onChange={(e) => setWebhookRetentionDays(e.target.value)}
+                  data-webhook-retention-days
+                  className="h-6 w-14 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+                />
+              </label>
+              <label className="flex h-6 items-center gap-1 text-[9px] text-slate-400">
+                <span>Max</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100000}
+                  value={webhookRetentionLimit}
+                  onChange={(e) => setWebhookRetentionLimit(e.target.value)}
+                  data-webhook-retention-limit
+                  className="h-6 w-16 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40"
+                />
+              </label>
+              <label className="flex h-6 items-center gap-1 text-[9px] text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={webhookRetentionAuto}
+                  onChange={(e) => setWebhookRetentionAuto(e.target.checked)}
+                  data-webhook-retention-auto
+                  className="accent-emerald-500"
+                />
+                Auto
+              </label>
+              <button
+                type="button"
+                data-webhook-retention-save
+                onClick={() => void saveWebhookRetention()}
+                className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                data-webhook-retention-prune
+                onClick={() => void runWebhookRetentionPrune()}
+                className="flex h-6 items-center rounded-md bg-emerald-500/10 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/20"
+              >
+                Run cleanup
+              </button>
+              {webhookDeliveryStats && (
+                <span
+                  data-webhook-retention-stats
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  {webhookDeliveryStats.total} total · {webhookDeliveryStats.queued} queued ·{' '}
+                  {webhookDeliveryStats.success} ok · {webhookDeliveryStats.dead} dead
+                </span>
+              )}
+              {webhookRetentionResult && (
+                <span
+                  data-webhook-retention-result
+                  className="max-w-64 truncate rounded-md bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-slate-400"
+                >
+                  {webhookRetentionResult}
+                </span>
+              )}
+              {webhookRetention && (
+                <span className="ml-auto text-[9px] text-slate-600">
+                  config {webhookRetention.retentionDays}d / {webhookRetention.maxRecords}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </BentoCard>

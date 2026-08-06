@@ -571,6 +571,22 @@ ALTER TABLE webhook_rules ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 0
 
 无表结构变更。CSV 是运行时派生数据：`ProjectsView` 把 `projects` 与 `project_revenue_history`（前端 `revenueTrends`）汇总为文本，预览 / 复制 / 下载都不落库；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `projectRevenueHistory`，不新增 localStorage key。
 
+## Sprint 134：Webhook 投递保留策略
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_retention_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    retention_days INTEGER NOT NULL DEFAULT 30,
+    max_records INTEGER NOT NULL DEFAULT 200,
+    auto_cleanup INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- 新表由 SCHEMA 自动创建，无旧库迁移；`get_webhook_retention_config` 空行回退默认值，`set_webhook_retention_config` 以单行 upsert 持久化。
+- `prune_webhook_deliveries` 只按年龄删除 `status IN ('success','dead')` 的过期记录，条数裁剪也只作用于终态记录；queued / delivering 不受保留策略影响，避免误删待投递工作。
+- 浏览器 fallback 使用 `ai-workbench:webhook-retention:v1` 保存同一模型，不写入 SQLite。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

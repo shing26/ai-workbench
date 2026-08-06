@@ -483,6 +483,28 @@ export type WebhookDelivery = {
   updatedAt: number;
 };
 
+export type WebhookRetentionConfig = {
+  retentionDays: number;
+  maxRecords: number;
+  autoCleanup: boolean;
+  updatedAt: number;
+};
+
+export type WebhookPruneResult = {
+  removedByAge: number;
+  removedByCount: number;
+  totalRemoved: number;
+};
+
+export type WebhookDeliveryStats = {
+  total: number;
+  queued: number;
+  delivering: number;
+  success: number;
+  dead: number;
+  failed: number;
+};
+
 export type RagSearchResult = {
   id: string;
   content: string;
@@ -663,6 +685,7 @@ const makeId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`;
 const WEBHOOK_RULES_LS_KEY = 'ai-workbench:webhook-rules:v1';
 const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
+const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -5470,7 +5493,12 @@ export async function triggerWebhookEvent(
     }
     writeWebhookRules(storedRules);
   }
-  writeWebhookDeliveries([...readWebhookDeliveries(), ...deliveries]);
+  let next = [...readWebhookDeliveries(), ...deliveries];
+  const retention = readWebhookRetentionConfig();
+  if (retention.autoCleanup) {
+    next = applyWebhookRetention(next, retention).deliveries;
+  }
+  writeWebhookDeliveries(next);
   return deliveries.length;
 }
 
@@ -5520,6 +5548,131 @@ export async function clearWebhookDeliveries(status?: string): Promise<number> {
   const next = status?.trim() ? deliveries.filter((d) => d.status !== status.trim()) : [];
   writeWebhookDeliveries(next);
   return deliveries.length - next.length;
+}
+
+function clampRetention(days: number, maxRecords: number): { days: number; maxRecords: number } {
+  return {
+    days: Math.min(3650, Math.max(1, Math.round(days) || 1)),
+    maxRecords: Math.min(100000, Math.max(1, Math.round(maxRecords) || 1)),
+  };
+}
+
+function readWebhookRetentionConfig(): WebhookRetentionConfig {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_RETENTION_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as WebhookRetentionConfig;
+      return {
+        retentionDays: parsed.retentionDays,
+        maxRecords: parsed.maxRecords,
+        autoCleanup: parsed.autoCleanup !== false,
+        updatedAt: parsed.updatedAt ?? 0,
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return { retentionDays: 30, maxRecords: 200, autoCleanup: true, updatedAt: 0 };
+}
+
+function applyWebhookRetention(
+  deliveries: WebhookDelivery[],
+  config: WebhookRetentionConfig,
+): { deliveries: WebhookDelivery[]; removedByAge: number; removedByCount: number } {
+  const now = Date.now();
+  const cutoff = now - config.retentionDays * 86_400_000;
+  const terminal = (d: WebhookDelivery) => d.status === 'success' || d.status === 'dead';
+  let removedByAge = 0;
+  let removedByCount = 0;
+  let kept: WebhookDelivery[] = [];
+  for (const delivery of deliveries) {
+    if (terminal(delivery) && delivery.createdAt < cutoff) {
+      removedByAge += 1;
+    } else {
+      kept.push(delivery);
+    }
+  }
+  const terminalKept = kept.filter(terminal);
+  const excess = Math.max(0, terminalKept.length - config.maxRecords);
+  if (excess > 0) {
+    const ids = new Set(
+      terminalKept
+        .slice()
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, excess)
+        .map((d) => d.id),
+    );
+    kept = kept.filter((d) => !ids.has(d.id));
+    removedByCount = excess;
+  }
+  return { deliveries: kept, removedByAge, removedByCount };
+}
+
+export async function getWebhookRetentionConfig(): Promise<WebhookRetentionConfig> {
+  if (isTauri()) {
+    return invoke<WebhookRetentionConfig>('get_webhook_retention_config');
+  }
+  return readWebhookRetentionConfig();
+}
+
+export async function setWebhookRetentionConfig(
+  retentionDays: number,
+  maxRecords: number,
+  autoCleanup: boolean,
+): Promise<WebhookRetentionConfig> {
+  if (isTauri()) {
+    return invoke<WebhookRetentionConfig>('set_webhook_retention_config', {
+      retentionDays,
+      maxRecords,
+      autoCleanup,
+    });
+  }
+  const clamped = clampRetention(retentionDays, maxRecords);
+  const config: WebhookRetentionConfig = {
+    retentionDays: clamped.days,
+    maxRecords: clamped.maxRecords,
+    autoCleanup,
+    updatedAt: Date.now(),
+  };
+  localStorage.setItem(WEBHOOK_RETENTION_LS_KEY, JSON.stringify(config));
+  return config;
+}
+
+export async function pruneWebhookDeliveries(): Promise<WebhookPruneResult> {
+  if (isTauri()) {
+    return invoke<WebhookPruneResult>('prune_webhook_deliveries');
+  }
+  const config = readWebhookRetentionConfig();
+  const result = applyWebhookRetention(readWebhookDeliveries(), config);
+  writeWebhookDeliveries(result.deliveries);
+  return {
+    removedByAge: result.removedByAge,
+    removedByCount: result.removedByCount,
+    totalRemoved: result.removedByAge + result.removedByCount,
+  };
+}
+
+export async function getWebhookDeliveryStats(): Promise<WebhookDeliveryStats> {
+  if (isTauri()) {
+    return invoke<WebhookDeliveryStats>('get_webhook_delivery_stats');
+  }
+  const stats: WebhookDeliveryStats = {
+    total: 0,
+    queued: 0,
+    delivering: 0,
+    success: 0,
+    dead: 0,
+    failed: 0,
+  };
+  for (const delivery of readWebhookDeliveries()) {
+    stats.total += 1;
+    if (delivery.status === 'queued') stats.queued += 1;
+    else if (delivery.status === 'delivering') stats.delivering += 1;
+    else if (delivery.status === 'success') stats.success += 1;
+    else if (delivery.status === 'dead') stats.dead += 1;
+    else stats.failed += 1;
+  }
+  return stats;
 }
 
 export async function runProviderStreamSmokeTest(providerId: string): Promise<StreamSmokeResult> {
