@@ -153,16 +153,17 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 ## AI 流式输出
 
 - Rust 后台调用 OpenAI 兼容接口与 Ollama 时使用 `stream: true`，逐块解析 SSE / NDJSON。
-- 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error, cancelled }`，`id` 为前端生成的 `runId`。
-- MOA 模式对前 3 个启用 Provider 并发请求，每路以 `## Provider` 标题分路聚合为单流；单路失败仅插入错误片段，全部结束后统一 emit `done` 事件收尾。
-- 前端 AI Studio 监听 `stream-chunk`，assistant 消息增量追加；浏览器 fallback 用分块模拟流，保证 UI 验证可运行。
+- 每个块通过 `stream-chunk` 事件推送：`{ id, delta, done, error, cancelled }`；单流请求 `id` 为前端生成的 `runId`，MOA 子流为 `{runId}-p{index}` / `{runId}-s{index}` / `{runId}-c`。
+- MOA 模式对前 3 个启用 Provider 并发请求，每路独立 emit `done`，全部结束后 emit `## MOA Consensus` 子流收尾。
+- 前端 AI Studio 监听 `stream-chunk`，assistant 消息增量追加；浏览器 fallback 用分块模拟流与真实 SSE 双路径，保证 UI 验证可运行。
 
 ## AI 流式取消 / 中断
 
 - Rust 后台维护 `StreamCancellation` 状态，`cancel_ai_stream(run_id)` 命令登记取消标记；流式函数逐块检查标记，命中后停止 emit。
 - `stream-chunk` 的 done 事件在取消时带 `cancelled: true`，结束后清理该 run 的取消标记。
-- AI Studio busy 时输入区显示 Stop 按钮，点击后调用取消命令、立即标记消息 `[stopped]`，并忽略旧 run 的后续块。
-- 浏览器 fallback 使用本地取消集合中断分块模拟流，保证 UI 验证可运行。
+- MOA 每条流卡片提供独立 Stop，只取消对应子流；失败/停止的单路提供 Retry，只重跑该 Provider 并重算 Consensus。
+- AI Studio busy 时输入区显示全局 Stop 按钮，点击后取消全部活动流、立即标记消息 `[stopped]`，并忽略旧 run 的后续块。
+- 浏览器 fallback 使用本地取消集合 + `AbortController` 注册表，取消时直接中断真实 fetch，保证单路取消对暂停流也生效。
 
 ## 系统采集
 
@@ -882,3 +883,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `projects.material` 保存逐卡材质记忆：空串表示自动（按索引循环预设），cyan / original / rain / chrome 表示显式记忆；`update_project_material` 在 Rust 侧校验合法值并返回最新 Project。
 - ProjectCarousel 渲染时用 `resolveMaterial` 合并显式记忆与默认循环，卡片保留 `data-carousel-material` 与新增 `data-carousel-material-memory`；选中卡详情条提供 Auto + 4 色 swatch，点击后经 store 持久化并刷新。
 - 浏览器 fallback 复用 `ai-workbench:db:v1` 的 `projects` 数组（项目对象新增可选 `material`），不新增 localStorage key；`verify:ui` 新增 `carouselMaterialMemory` lane，并在 lane 末尾还原 Auto 状态。
+
+## Sprint 149：MOA 子流独立取消与单路重试
+
+- `stream_ai_message` 的 MOA Parallel 为每个 Provider 分配 `{run_id}-p{index}`，Chain 分配 `{run_id}-s{index}`，Consensus 使用 `{run_id}-c`；每条子流在结束时各自 emit done / error / cancelled，父 runId 仅收尾。
+- MOA Chain 中途取消（单路 Stop 或全局 Stop）时，尚未开始的后续步骤由 Rust 与浏览器 fallback 统一 emit `done + cancelled`，保证前端 busy 及时退出、后续占位卡收尾为 `[stopped]`。
+- AI Studio 为每个 MOA 子流维护独立 runsRef / meta / results：流卡片 streaming 时提供 `data-moa-lane-stop`，失败或停止后提供 `data-moa-lane-retry`；单路重试通过 `truncateChatMessages` 重建该用户消息之后的会话并只重跑目标 Provider，再调用 `buildMoaConsensus` 刷新摘要。
+- Chain 单路重试只重跑目标步骤并截断其后旧步骤，避免保留伪造的链式结果；Parallel 单路重试则保留其它路并重算 Consensus。
+- 浏览器 fallback 用 `localStreamControllers` 注册每条真实流的 `AbortController`，`cancelAiStream` 同时登记标记并 abort；非 MOA 单 Provider 请求严格按 `providerIds[0]` 路由，保证重试精确命中。

@@ -10709,6 +10709,12 @@ try {
       if (!moaBtn) return { ok: false, reason: "moa button missing" };
       moaBtn.click();
       await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
       const chainBtn = document.querySelector('[data-moa-chain-mode="chain"]');
       if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
       chainBtn.click();
@@ -10731,18 +10737,26 @@ try {
       let busyEnded = false;
       let text = "";
       for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const allMessages = [...document.querySelectorAll('[data-message-id]')];
+        const startIdx = allMessages.findIndex((el) =>
+          el.textContent?.includes("chain moa check"),
+        );
+        const laneTexts = allMessages
+          .slice(startIdx >= 0 ? startIdx + 1 : 0)
+          .map((el) => el.textContent ?? '')
+          .join(String.fromCharCode(10));
         text =
           [...document.querySelectorAll('[data-message-id]')].at(-1)?.textContent ?? '';
-        const bodyText = document.body.innerText;
         allSeen =
-          text.includes("## Alpha AI") &&
-          text.includes("Alpha answer chain") &&
-          text.includes("## Beta AI") &&
-          text.includes("Beta answer chain") &&
-          text.includes("## Gamma AI") &&
-          text.includes("Gamma answer chain");
+          laneTexts.includes("## Alpha AI") &&
+          laneTexts.includes("Alpha answer chain") &&
+          laneTexts.includes("## Beta AI") &&
+          laneTexts.includes("Beta answer chain") &&
+          laneTexts.includes("## Gamma AI") &&
+          laneTexts.includes("Gamma answer chain");
         chainBadgeSeen = bodyText.includes("Alpha AI → Beta AI → Gamma AI");
-        consensusAbsent = !text.includes("## MOA Consensus");
+        consensusAbsent = !laneTexts.includes("## MOA Consensus");
         busyEnded =
           !document.querySelector(".stream-caret") &&
           !document.querySelector(".thinking-dot");
@@ -10794,6 +10808,449 @@ try {
     laneLog('moaChain ok');
   } finally {
     if (chainServer) chainServer.close();
+  }
+
+  let laneServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const laneRequests = new Map();
+    laneServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      req.on('data', () => {});
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const key = route.includes('lane-a')
+          ? 'lane-a'
+          : route.includes('lane-b')
+            ? 'lane-b'
+            : 'lane-c';
+        const tag = key === 'lane-a' ? 'Alpha' : key === 'lane-b' ? 'Beta' : 'Gamma';
+        const count = (laneRequests.get(key) ?? 0) + 1;
+        laneRequests.set(key, count);
+        if (key === 'lane-b' && count === 1) {
+          res.writeHead(500);
+          res.end('boom');
+          active -= 1;
+          return;
+        }
+        if (key === 'lane-c') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Gamma slow "}}]}\n\n`);
+          const timer = setInterval(() => {
+            res.write(': keepalive\n\n');
+          }, 100);
+          req.on('close', () => {
+            clearInterval(timer);
+            active -= 1;
+          });
+          return;
+        }
+        const answer = `${tag} answer${key === 'lane-b' && count > 1 ? ' retry' : ''}`;
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${answer} "}}]}\n\n`);
+        setTimeout(() => {
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 120);
+      });
+    });
+    await new Promise((resolve) => laneServer.listen(0, '127.0.0.1', resolve));
+    const lanePort = laneServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "lane-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          priority: 3,
+          isActive: true,
+        },
+        {
+          id: "lane-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "lane-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const laneUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "lane cancel retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let alphaSeen = false;
+      let betaFailed = false;
+      let gammaStopSeen = false;
+      let gammaLaneKey = "";
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const gammaMsg = messages.find((el) => el.textContent?.includes("## Gamma AI"));
+        const stopBtn = gammaMsg?.querySelector('[data-moa-lane-stop]');
+        alphaSeen = bodyText.includes("Alpha answer");
+        betaFailed = !!document.querySelector('[data-moa-lane-retry]');
+        gammaStopSeen = !!stopBtn;
+        gammaLaneKey = stopBtn?.getAttribute("data-moa-lane-stop") ?? "";
+        if (alphaSeen && betaFailed && gammaStopSeen) break;
+        await sleep(100);
+      }
+      if (!alphaSeen || !betaFailed || !gammaStopSeen) {
+        return {
+          ok: false,
+          reason: "lane setup incomplete",
+          alphaSeen,
+          betaFailed,
+          gammaStopSeen,
+          gammaLaneKey,
+        };
+      }
+      const gammaMessage = [...document.querySelectorAll('[data-message-id]')].find((el) =>
+        el.textContent?.includes("## Gamma AI"),
+      );
+      const gammaStop = gammaMessage?.querySelector('[data-moa-lane-stop]');
+      if (!gammaStop) return { ok: false, reason: "gamma stop button missing" };
+      gammaStop.click();
+      let stoppedSeen = false;
+      let consensusSeen = false;
+      let busyEnded = false;
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const currentGamma = messages.find((el) => el.textContent?.includes("## Gamma AI"));
+        const gammaText = currentGamma?.textContent ?? "";
+        stoppedSeen = gammaText.includes("[stopped]");
+        consensusSeen = bodyText.includes("## MOA Consensus");
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot") &&
+          !currentGamma?.querySelector('[data-moa-lane-stop]');
+        if (stoppedSeen && consensusSeen && busyEnded) break;
+        await sleep(100);
+      }
+      if (!stoppedSeen || !consensusSeen || !busyEnded) {
+        return {
+          ok: false,
+          reason: "lane cancel incomplete",
+          stoppedSeen,
+          consensusSeen,
+          busyEnded,
+          gammaLaneKey,
+          stopCount: document.querySelectorAll('[data-moa-lane-stop]').length,
+          retryCount: document.querySelectorAll('[data-moa-lane-retry]').length,
+          laneTexts: [...document.querySelectorAll('[data-message-id]')]
+            .map((el) => el.textContent ?? "")
+            .slice(-6),
+        };
+      }
+      const retryBtn = document.querySelector('[data-moa-lane-retry]');
+      if (!retryBtn) return { ok: false, reason: "retry button missing after failure" };
+      retryBtn.click();
+      let betaRetried = false;
+      let consensusRetried = false;
+      let alphaIntact = false;
+      let gammaStillStopped = false;
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const betaText = messages.find((el) => el.textContent?.includes("Beta answer retry"))?.textContent ?? "";
+        const consensusText = messages.find((el) => el.textContent?.includes("## MOA Consensus"))?.textContent ?? "";
+        betaRetried = betaText.includes("Beta answer retry");
+        consensusRetried = consensusText.includes("Beta answer retry");
+        alphaIntact = bodyText.includes("Alpha answer");
+        gammaStillStopped = !!messages.find((el) => el.textContent?.includes("## Gamma AI") && el.textContent?.includes("[stopped]"));
+        if (
+          betaRetried &&
+          consensusRetried &&
+          alphaIntact &&
+          gammaStillStopped &&
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot")
+        ) {
+          break;
+        }
+        await sleep(100);
+      }
+      return {
+        ok: betaRetried && consensusRetried && alphaIntact && gammaStillStopped,
+        alphaSeen,
+        betaFailed,
+        gammaStopSeen,
+        stoppedSeen,
+        consensusSeen,
+        betaRetried,
+        consensusRetried,
+        alphaIntact,
+        gammaStillStopped,
+      };
+    })()`);
+    await clickDock('System');
+    const laneCancelRetry = {
+      ...laneUi,
+      maxActive,
+      laneRequests: Object.fromEntries(laneRequests),
+    };
+    if (
+      !laneCancelRetry.ok ||
+      laneCancelRetry.maxActive < 2 ||
+      laneCancelRetry.laneRequests['lane-a'] !== 1 ||
+      laneCancelRetry.laneRequests['lane-c'] !== 1 ||
+      laneCancelRetry.laneRequests['lane-b'] !== 2 ||
+      !laneCancelRetry.betaRetried ||
+      !laneCancelRetry.consensusRetried ||
+      !laneCancelRetry.alphaIntact ||
+      !laneCancelRetry.gammaStillStopped
+    ) {
+      throw new Error(
+        `Stream lane cancel/retry assertion failed: ${JSON.stringify(laneCancelRetry)}`,
+      );
+    }
+    results.streamLaneCancelRetry = laneCancelRetry;
+    laneLog('streamLaneCancelRetry ok');
+  } finally {
+    if (laneServer) laneServer.close();
+  }
+
+  let chainCancelServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const chainCancelRequests = new Map();
+    chainCancelServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      req.on('data', () => {});
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const key = route.includes('chaincancel-a')
+          ? 'chaincancel-a'
+          : route.includes('chaincancel-b')
+            ? 'chaincancel-b'
+            : 'chaincancel-c';
+        const tag = key === 'chaincancel-a' ? 'Alpha' : key === 'chaincancel-b' ? 'Beta' : 'Gamma';
+        const count = (chainCancelRequests.get(key) ?? 0) + 1;
+        chainCancelRequests.set(key, count);
+        if (key === 'chaincancel-a') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Alpha slow "}}]}\n\n`);
+          const timer = setInterval(() => {
+            res.write(': keepalive\n\n');
+          }, 100);
+          req.on('close', () => {
+            clearInterval(timer);
+            active -= 1;
+          });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+        setTimeout(() => {
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 120);
+      });
+    });
+    await new Promise((resolve) => chainCancelServer.listen(0, '127.0.0.1', resolve));
+    const chainCancelPort = chainCancelServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "chaincancel-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          priority: 3,
+          isActive: true,
+        },
+        {
+          id: "chaincancel-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "chaincancel-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const chainCancelUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
+      const chainBtn = document.querySelector('[data-moa-chain-mode="chain"]');
+      if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
+      chainBtn.click();
+      await sleep(120);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "chain cancel check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let alphaStop = null;
+      for (let i = 0; i < 80; i++) {
+        const alphaMessage = [...document.querySelectorAll('[data-message-id]')].find((el) =>
+          el.textContent?.includes("## Alpha AI"),
+        );
+        alphaStop = alphaMessage?.querySelector('[data-moa-lane-stop]') ?? null;
+        if (alphaStop) break;
+        await sleep(100);
+      }
+      if (!alphaStop) return { ok: false, reason: "alpha lane stop missing" };
+      alphaStop.click();
+      let allStopped = false;
+      let busyEnded = false;
+      for (let i = 0; i < 80; i++) {
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const userIdx = messages.findIndex((el) => el.textContent?.includes("chain cancel check"));
+        const lanes = messages.slice(userIdx >= 0 ? userIdx + 1 : 0);
+        allStopped = lanes.length >= 3 && lanes.every((el) => el.textContent?.includes("[stopped]"));
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot") &&
+          !document.querySelector('[data-moa-lane-stop]');
+        if (allStopped && busyEnded) break;
+        await sleep(100);
+      }
+      const laneTexts = [...document.querySelectorAll('[data-message-id]')]
+        .map((el) => el.textContent ?? '')
+        .slice(-4);
+      return {
+        ok: allStopped && busyEnded,
+        allStopped,
+        busyEnded,
+        consensusAbsent: !document.body.innerText.includes("## MOA Consensus"),
+        laneTexts,
+      };
+    })()`);
+    await clickDock('System');
+    const streamLaneChainCancel = {
+      ...chainCancelUi,
+      maxActive,
+      chainCancelRequests: Object.fromEntries(chainCancelRequests),
+    };
+    if (
+      !streamLaneChainCancel.ok ||
+      !streamLaneChainCancel.consensusAbsent ||
+      streamLaneChainCancel.maxActive > 1 ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-a'] !== 1 ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-b'] !== undefined ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-c'] !== undefined
+    ) {
+      throw new Error(
+        `MOA chain cancel assertion failed: ${JSON.stringify(streamLaneChainCancel)}`,
+      );
+    }
+    results.streamLaneChainCancel = streamLaneChainCancel;
+    laneLog('streamLaneChainCancel ok');
+  } finally {
+    if (chainCancelServer) chainCancelServer.close();
   }
 
   let fallbackServer = null;

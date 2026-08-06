@@ -2,11 +2,12 @@
 
 终点定义：冻结范围后的全部候选项完成 + `npm run build` / `npm run lint` / `npx prettier --check .` / `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib` / `verify:ui` / `verify:preview` 全绿 + v1.0 发布文档。
 
+已由用户确认：2026-08-06。
+
 规则：每个 Sprint 从候选中选一项完成，验收后从池中移除；每完成一个 Sprint 接着进入下一个，直到候选池清空。
 
 ## 候选池（待开发）
 
-- [ ] AI Studio：每条流独立取消与单路重试。
 - [ ] System：Provider 批量导入导出与 API Key 加密落库；流式请求超时配置与自动重试。
 - [ ] System：模型能力元数据（context window / 价格 / 速率）、模型收藏与最近使用排序、`/models` 缓存与自动刷新。
 - [ ] Sync：口令强度提示与确认框、多设备口令交换、密钥轮换与 salt 入库。
@@ -17,6 +18,7 @@
 
 ## 已完成（从候选池移除）
 
+- AI Studio：每条流独立取消与单路重试（Sprint 149）。
 - Projects / Material：逐卡独立配色记忆（Sprint 148）。
 - Projects：轮播拖拽排序与速度滑杆（Sprint 147）。
 - Knowledge：语义聚类 / 文档去重（Sprint 146）。
