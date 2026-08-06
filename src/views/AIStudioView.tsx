@@ -54,6 +54,12 @@ import {
   recordTokenUsage,
   type TokenBudgetStatus,
 } from '../lib/tokenBudget';
+import {
+  loadRecapDraft,
+  markRecapDraftSaved,
+  saveRecapDraft,
+  type RecapDraft,
+} from '../lib/recapDraft';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import ModelBadge from '../components/ui/ModelBadge';
@@ -224,6 +230,8 @@ export default function AIStudioView() {
   const [recapReady, setRecapReady] = useState(false);
   const [recapSaving, setRecapSaving] = useState(false);
   const [recapSaveResult, setRecapSaveResult] = useState<string | null>(null);
+  const [recapDraft, setRecapDraft] = useState<RecapDraft | null>(() => loadRecapDraft());
+  const recapArmedRef = useRef(false);
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
@@ -378,6 +386,11 @@ export default function AIStudioView() {
           }
           runsRef.current.delete(chunk.id);
           if (!chunk.error && sessionIdRef.current && run.content) {
+            if (recapArmedRef.current) {
+              const today = new Date().toISOString().slice(0, 10);
+              setRecapDraft(saveRecapDraft(today, run.content));
+              recapArmedRef.current = false;
+            }
             void db
               .saveChatMessage(sessionIdRef.current, 'assistant', run.content)
               .then((saved) => {
@@ -1161,12 +1174,30 @@ export default function AIStudioView() {
 
   const runDailyRecap = async () => {
     if (busy) return;
+    recapArmedRef.current = true;
     await sendText(buildDailyRecapPrompt(tasks, habits, scheduleEvents));
+    recapArmedRef.current = false;
     setRecapReady(true);
   };
 
+  const persistRecapNote = async (content: string, date: string) => {
+    if (recapSaving) return;
+    setRecapSaving(true);
+    setRecapSaveResult(null);
+    try {
+      await addThought(`# 今日复盘 ${date}\n\n${content}`, '#daily,#recap', 'note');
+      const draft = loadRecapDraft() ?? saveRecapDraft(date, content);
+      setRecapDraft(markRecapDraftSaved(draft));
+      setRecapSaveResult(`Saved recap note (${date})`);
+    } catch (error) {
+      setRecapSaveResult(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRecapSaving(false);
+    }
+  };
+
   const saveRecapNote = async () => {
-    if (!recapReady || recapSaving) return;
+    if (!recapReady || recapSaving || recapDraft?.saved) return;
     const reply = [...messages]
       .reverse()
       .find(
@@ -1177,17 +1208,15 @@ export default function AIStudioView() {
           !m.content.includes('Ready. Ask anything'),
       )?.content;
     if (!reply) return;
-    setRecapSaving(true);
-    setRecapSaveResult(null);
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      await addThought(`# 今日复盘 ${today}\n\n${reply}`, '#daily,#recap', 'note');
-      setRecapSaveResult(`Saved recap note (${today})`);
-    } catch (error) {
-      setRecapSaveResult(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRecapSaving(false);
+    const date = recapDraft?.date ?? new Date().toISOString().slice(0, 10);
+    await persistRecapNote(reply, date);
+  };
+
+  const saveRecapMessage = async (message: Message) => {
+    if (!recapDraft || recapDraft.saved || recapSaving || message.content !== recapDraft.content) {
+      return;
     }
+    await persistRecapNote(message.content, recapDraft.date);
   };
 
   const startEdit = (message: Message) => {
@@ -1811,6 +1840,23 @@ export default function AIStudioView() {
                   </div>
                 ) : m.id && m.content !== '__stream__' ? (
                   <div className="absolute -right-9 top-1 hidden items-center gap-0.5 group-hover:flex">
+                    {recapDraft && m.content === recapDraft.content && (
+                      <button
+                        type="button"
+                        aria-label="Save recap message"
+                        data-ai-recap-message-save
+                        onClick={() => void saveRecapMessage(m)}
+                        disabled={recapDraft.saved || recapSaving}
+                        title={recapDraft.saved ? 'Recap saved' : 'Save recap note'}
+                        className={`flex h-6 w-6 items-center justify-center rounded-md ${
+                          recapDraft.saved
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : 'bg-white/5 text-slate-500 hover:text-blue-300'
+                        }`}
+                      >
+                        <Save size={11} />
+                      </button>
+                    )}
                     <button
                       type="button"
                       aria-label="Regenerate message"
@@ -2128,11 +2174,12 @@ export default function AIStudioView() {
               type="button"
               data-ai-recap-save
               onClick={() => void saveRecapNote()}
-              disabled={!recapReady || recapSaving}
+              data-recap-saved={recapDraft?.saved ? 'true' : 'false'}
+              disabled={!recapReady || recapSaving || !!recapDraft?.saved}
               className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-500 transition-colors hover:border-blue-500/30 hover:bg-blue-500/10 hover:text-blue-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Save size={10} />
-              {recapSaving ? 'Saving' : '保存复盘'}
+              {recapSaving ? 'Saving' : recapDraft?.saved ? '已保存' : '保存复盘'}
             </button>
             {recapSaveResult && (
               <span

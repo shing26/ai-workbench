@@ -123,6 +123,8 @@ Sprint 112 扩展 `stream_ai_message`：新增 `moa_chain` 链式路由，前 3 
 
 Sprint 113 升级 System Sync audit Activity 图：merge / resolve / other 分层堆叠 + 累计趋势线，图例与过滤条件联动。
 
+Sprint 114 新增复盘草稿共享与多入口一键保存：AI Studio 消息级保存 + Knowledge Thought Inbox 存档。
+
 Sprint 63 新增命令：`list_knowledge_files`；Knowledge 新增 Document status 面板，按 vault 过滤展示每份索引文档的路径、标签与索引时间。
 
 Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`，磁盘文件缺失或索引后过期会在 Document status 面板显示徽标。
@@ -296,6 +298,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Sync audit Activity 图每个日 / 周 bucket 按 merge / resolve / other 三色堆叠，`data-sync-audit-segment` 带 `data-audit-kind` / `data-audit-count`；保留 `data-sync-audit-bar` 桶总数锚点。
 - 图例 `data-sync-audit-legend` 展示三类合计；桶数 > 1 时 `data-sync-audit-trend-line` 累计折线叠加在时间轴上方，Day / Week 与过滤条件联动不变。
 - `verify:ui` / `verify:preview` 的 `syncAuditChart` lane 新增分段 / 图例合计与趋势线存在性断言。
+
+## Sprint 114：AI 复盘结果一键保存更多入口
+
+- 新增 `src/lib/recapDraft.ts`：`loadRecapDraft` / `saveRecapDraft` / `markRecapDraftSaved`，localStorage key `ai-workbench:recap-draft:v1` 保存最近复盘日期 / 内容 / 保存状态。
+- AI Studio 复盘流完成后自动写入草稿，assistant 消息新增 `data-ai-recap-message-save` 按钮直接保存该消息；Quick Prompt 行按钮与消息按钮共享已保存状态。
+- Knowledge Thought Inbox 新增 `data-knowledge-recap-save` 复盘草稿一键存档，保存后状态变 saved 并在 AI Studio 回显。
+- `verify:ui` / `verify:preview` 新增 `recapSaveEntries` / `recapSaveKnowledge` / `recapSaveMessageState` lane 断言。
 
 ## Sprint 63：RAG 文档状态面板
 

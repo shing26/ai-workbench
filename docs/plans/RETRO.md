@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 114
+
+### What went well?
+
+- 新增 `src/lib/recapDraft.ts`：`loadRecapDraft` / `saveRecapDraft` / `markRecapDraftSaved`，localStorage key `ai-workbench:recap-draft:v1` 跨视图共享最近复盘草稿。
+- AI Studio 复盘回复完成后自动写入草稿，对应 assistant 消息新增 `data-ai-recap-message-save` 一键保存按钮；保存后消息按钮、Quick Prompt 行按钮与 Knowledge 入口同步显示已保存。
+- Knowledge Thought Inbox 新增 `data-knowledge-recap-save`：有未保存草稿时一键写入 `#daily,#recap` 笔记，状态从 draft 变 saved，无草稿显示提示。
+- `verify:ui` / `verify:preview` 新增 `recapSaveEntries` / `recapSaveKnowledge` / `recapSaveMessageState` 三段断言：消息入口存在可点、Knowledge 入口完成保存且笔记数 +1、返回 AI Studio 后已保存状态回显。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（122 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞；preview 端验证一次全绿，无需重跑。
+
+### Action Items
+
+- 下一 Sprint 候选：真实 Provider 端到端流式联调，或继续围绕 5 大主视图补日常高频能力。
+- 保留 `recapSaveEntries` lane，修改复盘生成、草稿持久化或保存入口时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

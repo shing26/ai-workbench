@@ -1,7 +1,8 @@
-import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as db from '../lib/db';
+import { loadRecapDraft, markRecapDraftSaved, type RecapDraft } from '../lib/recapDraft';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import BentoCard from '../components/ui/BentoCard';
 import ModelBadge from '../components/ui/ModelBadge';
@@ -42,6 +43,7 @@ export default function KnowledgeView() {
   const [indexProgress, setIndexProgress] = useState<db.IndexProgress | null>(null);
   const [indexQueueStatus, setIndexQueueStatus] = useState<db.VaultIndexQueueStatus | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [recapDraft, setRecapDraft] = useState<RecapDraft | null>(() => loadRecapDraft());
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -228,6 +230,16 @@ export default function KnowledgeView() {
     if (!content.trim()) return;
     await addThought(content.trim(), tags, 'inbox');
     setContent('');
+  };
+
+  const saveRecapDraftNote = async () => {
+    if (!recapDraft || recapDraft.saved) return;
+    await addThought(
+      `# 今日复盘 ${recapDraft.date}\n\n${recapDraft.content}`,
+      '#daily,#recap',
+      'note',
+    );
+    setRecapDraft(markRecapDraftSaved(recapDraft));
   };
 
   const runSearch = async () => {
@@ -477,6 +489,23 @@ export default function KnowledgeView() {
           >
             <Plus size={14} /> Add
           </button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            data-knowledge-recap-save
+            onClick={() => void saveRecapDraftNote()}
+            disabled={!recapDraft || recapDraft.saved}
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save size={11} />
+            {!recapDraft ? '暂无复盘草稿' : recapDraft.saved ? '复盘已保存' : '保存最近复盘'}
+          </button>
+          <span data-knowledge-recap-status className="text-[9px] text-slate-500">
+            {recapDraft
+              ? `${recapDraft.date} · ${recapDraft.saved ? 'saved' : 'draft'}`
+              : '完成 AI Studio 今日复盘后可一键存档'}
+          </span>
         </div>
       </BentoCard>
 
