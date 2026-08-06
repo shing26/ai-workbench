@@ -626,6 +626,10 @@ CREATE INDEX IF NOT EXISTS idx_webhook_rule_runs_rule_created
 - 新表由 SCHEMA 自动创建，无旧库迁移；`record_webhook_rule_run` 写入后按 `rule_id` 裁剪保留最近 50 条，`list_webhook_rule_runs` 按 `created_at DESC` 返回。
 - `run_webhook_rule_inner` 写 `manual` 运行，delivery worker 终态写 `scheduled` / `event` 运行；浏览器 fallback 使用 `ai-workbench:webhook-rule-runs:v1` 保存同一模型，不写入 SQLite。
 
+## Sprint 140：Knowledge 双链补全编辑器提示
+
+无表结构变更。双链补全候选由 `db.ts` 从 `thoughts` 的 `content` 首行标题与 `tags` 运行时派生，不新增 SQLite 表、索引或字段；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 无表结构变更。会话摘要是运行时派生数据：`buildSessionSummary` 复用 `chat_messages`（前端 `chatMessages`）的 role / content 生成问题数、关键词与问答要点；`buildSessionMarkdown` 只是导出文本，摘要不新增 SQLite 字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `chatMessages`，不新增 localStorage key。

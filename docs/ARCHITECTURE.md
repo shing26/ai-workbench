@@ -477,6 +477,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 卡片新增 Run log 区：`data-webhook-rule-runs` 列表、`data-webhook-rule-run-item` 行与 status / http / attempts / message / time 徽标；最近 24h 有失败时展示 `data-webhook-rule-fail-alert` 告警条，Run now / 事件触发 / 删除规则都会即时刷新日志。
 - `db.ts` 新增 `WebhookRuleRun` / `listWebhookRuleRuns`，浏览器 fallback 用 `ai-workbench:webhook-rule-runs:v1` 持久化并在 `runWebhookRule` / `triggerWebhookEvent` 写入同构记录；`verify:ui` / `verify:preview` 新增 `webhookRuleRunLog` lane，Rust 单测增至 144 条。
 
+## Sprint 140：Knowledge 双链补全编辑器提示
+
+- `db.ts` 新增 `WikiLinkSuggestion` 与 `suggestWikiLinkTargets`：按首行标题 / 标签过滤，精确 > 前缀 > 包含 > 标签排序，默认返回最多 6 条并排除当前笔记；补全候选为运行时派生数据，不新增持久化字段。
+- Knowledge 正文编辑器输入未闭合 `[[...` 时弹出 `data-wiki-link-suggestions` 列表：`data-wiki-link-suggestion` 支持鼠标点击与 ArrowUp / ArrowDown 高亮，Enter / Tab 插入 `[[Title]]`，Esc 关闭；保存 / 取消 / Preview / 跳转笔记时清理联想状态。
+- `verify:ui` / `verify:preview` 新增 `wikiLinkAutocomplete` / `wikiLinkPersisted` lane：种子 4 条笔记，覆盖候选排序、方向键高亮、点击 / Enter / Tab / Esc 与保存重载持久化；纯前端改动，无新增 Rust 命令与表结构。
+
 ## Sprint 137：AI Studio 会话摘要与关键词
 
 - `db.ts` 新增 `buildSessionSummary`：questionCount、keywords（中文 2-3 字 n-gram + 英文词，过滤停用词，top 6）、points（user 消息配对下一条 assistant 回复，各取首行截断），纯运行时派生。

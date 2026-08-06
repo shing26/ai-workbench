@@ -58,6 +58,13 @@ export type WikiLinkRef = {
   alias: string;
 };
 
+export type WikiLinkSuggestion = {
+  id: string;
+  title: string;
+  tags: string;
+  type: ThoughtType;
+};
+
 export type ThoughtLinkRef = {
   id: string;
   title: string;
@@ -1466,6 +1473,47 @@ export function resolveWikiLinkTarget(thoughts: Thought[], target: string): Thou
   const direct = thoughts.find((t) => thoughtTitle(t).trim().toLowerCase() === normalized);
   if (direct) return direct;
   return thoughts.find((t) => thoughtTitle(t).trim().toLowerCase().includes(normalized));
+}
+
+export function suggestWikiLinkTargets(
+  thoughts: Thought[],
+  query: string,
+  limit = 6,
+  excludeId?: string,
+): WikiLinkSuggestion[] {
+  const normalized = query.replace(/^#/, '').trim().toLowerCase();
+  const candidates = thoughts.filter((t) => t.id !== excludeId);
+  if (!normalized) {
+    return candidates
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((t) => ({ id: t.id, title: thoughtTitle(t), tags: t.tags, type: t.type }));
+  }
+  return candidates
+    .map((thought) => {
+      const title = thoughtTitle(thought);
+      const titleLower = title.trim().toLowerCase();
+      const tagHit = thought.tags
+        .split(',')
+        .map((tag) => tag.trim().replace(/^#/, '').toLowerCase())
+        .some((tag) => tag.includes(normalized));
+      let rank = -1;
+      if (titleLower === normalized) rank = 0;
+      else if (titleLower.startsWith(normalized)) rank = 1;
+      else if (titleLower.includes(normalized)) rank = 2;
+      else if (tagHit) rank = 3;
+      return { thought, title, rank };
+    })
+    .filter((entry) => entry.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || b.thought.createdAt - a.thought.createdAt)
+    .slice(0, limit)
+    .map(({ thought, title }) => ({
+      id: thought.id,
+      title,
+      tags: thought.tags,
+      type: thought.type,
+    }));
 }
 
 export function buildThoughtLinkGraph(thoughts: Thought[]): ThoughtBacklinkGraph {

@@ -6,7 +6,6 @@
 
 ## 候选池（待开发）
 
-- [ ] Knowledge：双链补全编辑器提示（输入 `[[` 时联想笔记标题）。
 - [ ] Actions：周计划模板（一键把本周计划写入 Focus / Schedule）。
 - [ ] Webhook：复杂触发器条件表达式（cron / 事件匹配）与签名校验收发端 UI。
 - [ ] Webhook：多通道投递（邮件 / 系统通知）与熔断恢复指数退避调度。
@@ -26,6 +25,7 @@
 
 ## 已完成（从候选池移除）
 
+- Knowledge 双链补全编辑器提示（Sprint 140）。
 - Webhook 规则执行日志与投递失败告警（Sprint 139）。
 - Webhook 自动熔断（Sprint 138）。
 - Webhook 投递保留策略（Sprint 134）、收益聚合展示（Sprint 136）、会话摘要（Sprint 137）。
