@@ -2724,6 +2724,16 @@ struct StreamSmokeResult {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ProviderE2eResult {
+    ok: bool,
+    chunks: usize,
+    chars: usize,
+    duration_ms: u128,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WebhookDeliveryResult {
     ok: bool,
     status: u16,
@@ -3054,6 +3064,89 @@ fn run_provider_stream_smoke_test(
         Err(err) => Ok(StreamSmokeResult {
             ok: false,
             chunks,
+            message: err,
+        }),
+    }
+}
+
+#[tauri::command]
+fn run_provider_e2e_stream(
+    state: State<'_, db::Db>,
+    provider_id: String,
+) -> Result<ProviderE2eResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let provider = db::get_provider(&conn, &provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Provider not found".to_string())?;
+    drop(conn);
+    let messages_json =
+        serde_json::json!([{ "role": "user", "content": "Ping stream e2e" }]).to_string();
+    let mut chunks = 0usize;
+    let mut chars = 0usize;
+    let started = std::time::Instant::now();
+    let is_cancelled = || false;
+    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+        let model = if provider.model.is_empty() {
+            "qwen2.5:3b"
+        } else {
+            &provider.model
+        };
+        let mut emit = |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                chunks += 1;
+                chars += chunk.delta.chars().count();
+            }
+        };
+        stream_ollama_with(
+            "e2e",
+            &provider.base_url,
+            &messages_json,
+            model,
+            &is_cancelled,
+            &mut emit,
+        )
+    } else {
+        let key_ref = if provider.api_key.is_empty() {
+            "OPENAI_API_KEY"
+        } else {
+            &provider.api_key
+        };
+        let api_key = get_api_key(key_ref)?;
+        let mut emit = |chunk: &StreamChunk| {
+            if !chunk.delta.is_empty() {
+                chunks += 1;
+                chars += chunk.delta.chars().count();
+            }
+        };
+        let model = if provider.model.is_empty() {
+            "gpt-4o-mini"
+        } else {
+            &provider.model
+        };
+        stream_openai_compatible_with(
+            "e2e",
+            &provider.base_url,
+            &api_key,
+            &messages_json,
+            model,
+            &is_cancelled,
+            &mut emit,
+        )
+    };
+    let duration_ms = started.elapsed().as_millis();
+    match result {
+        Ok(text) => Ok(ProviderE2eResult {
+            ok: true,
+            chunks,
+            chars,
+            duration_ms,
+            message: text.chars().take(120).collect(),
+        }),
+        Err(err) => Ok(ProviderE2eResult {
+            ok: false,
+            chunks,
+            chars,
+            duration_ms,
             message: err,
         }),
     }
@@ -5349,7 +5442,8 @@ pub fn run() {
             retry_webhook_delivery,
             delete_webhook_delivery,
             clear_webhook_deliveries,
-            run_provider_stream_smoke_test
+            run_provider_stream_smoke_test,
+            run_provider_e2e_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

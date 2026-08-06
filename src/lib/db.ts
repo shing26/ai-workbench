@@ -408,6 +408,14 @@ export type StreamSmokeResult = {
   message: string;
 };
 
+export type ProviderE2eResult = {
+  ok: boolean;
+  chunks: number;
+  chars: number;
+  durationMs: number;
+  message: string;
+};
+
 export type WebhookDeliveryResult = {
   ok: boolean;
   status: number;
@@ -4248,7 +4256,11 @@ async function streamProviderLive(
     moa: boolean;
     runId: string;
   },
-  opts: { final?: boolean; manageCancel?: boolean } = {},
+  opts: {
+    final?: boolean;
+    manageCancel?: boolean;
+    onChunk?: (delta: string) => void;
+  } = {},
 ): Promise<string> {
   const final = opts.final !== false;
   const manageCancel = opts.manageCancel !== false;
@@ -4294,6 +4306,7 @@ async function streamProviderLive(
           error: null,
           cancelled: false,
         });
+        opts.onChunk?.(json.message.content);
       }
       if (json.done === true) finished = true;
       return;
@@ -4315,6 +4328,7 @@ async function streamProviderLive(
         error: null,
         cancelled: false,
       });
+      opts.onChunk?.(delta);
     }
   };
   try {
@@ -5216,6 +5230,58 @@ export async function runProviderStreamSmokeTest(providerId: string): Promise<St
     return invoke<StreamSmokeResult>('run_provider_stream_smoke_test', { providerId });
   }
   return { ok: true, chunks: 2, message: 'Streamed 2 chunk(s)' };
+}
+
+export async function runProviderE2EStream(providerId: string): Promise<ProviderE2eResult> {
+  if (isTauri()) {
+    return invoke<ProviderE2eResult>('run_provider_e2e_stream', { providerId });
+  }
+  const provider = readLocal().providers.find((p) => p.id === providerId);
+  if (!provider || !canRealStream(provider)) {
+    return {
+      ok: true,
+      chunks: 2,
+      chars: 26,
+      durationMs: 120,
+      message: 'Streamed 2 chunk(s) · 26 chars · 120ms',
+    };
+  }
+  const runId = `e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let chunks = 0;
+  const started = performance.now();
+  try {
+    const collected = await streamProviderLive(
+      provider,
+      {
+        providerIds: [provider.id],
+        messages: [{ role: 'user', content: 'Ping stream e2e' }],
+        moa: false,
+        runId,
+      },
+      {
+        final: false,
+        manageCancel: false,
+        onChunk: () => {
+          chunks += 1;
+        },
+      },
+    );
+    return {
+      ok: true,
+      chunks,
+      chars: collected.length,
+      durationMs: Math.max(1, Math.round(performance.now() - started)),
+      message: collected.slice(0, 120),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      chunks,
+      chars: 0,
+      durationMs: Math.max(1, Math.round(performance.now() - started)),
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export async function buildTeamSummary(contents: string[]): Promise<string> {

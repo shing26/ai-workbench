@@ -306,6 +306,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Knowledge Thought Inbox 新增 `data-knowledge-recap-save` 复盘草稿一键存档，保存后状态变 saved 并在 AI Studio 回显。
 - `verify:ui` / `verify:preview` 新增 `recapSaveEntries` / `recapSaveKnowledge` / `recapSaveMessageState` lane 断言。
 
+## Sprint 115：Provider 端到端流式联调
+
+- Rust 新增 Tauri 命令 `run_provider_e2e_stream(provider_id)`：按 Provider 类型复用 `stream_openai_compatible_with` / `stream_ollama_with` 真实流式链路，逐块计数 chunk / chars 并计时，返回 `ProviderE2eResult { ok, chunks, chars, durationMs, message }`。
+- `src/lib/db.ts` 新增同构 `runProviderE2EStream`：真实 Provider 走 `streamProviderLive`（新增 `onChunk` 计数回调），无真实链路时返回确定性 mock，浏览器与 Rust 指标一致。
+- System Provider 卡片新增 `data-provider-e2e-test` 按钮与 `data-provider-e2e-result` 结果展示（`ok · chunks · chars · ms`）。
+- `verify:ui` / `verify:preview` 新增 `providerE2EStream` lane：本地 SSE mock 覆盖完整链路并断言 chunk / chars / duration。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
