@@ -281,7 +281,7 @@ export type ErrorLogBucket = {
 };
 
 export type ErrorLogSummary = {
-  granularity: 'day' | 'week';
+  granularity: 'hour' | 'day' | 'week';
   total: number;
   buckets: ErrorLogBucket[];
 };
@@ -3104,24 +3104,54 @@ export async function getSyncAuditSummary(
   return summarizeSyncAudit(readSyncAudit(), granularity, event, since, until, deviceId);
 }
 
+function errorBucketStart(updatedAt: number, granularity: 'hour' | 'day' | 'week'): number {
+  const dayMs = AUDIT_DAY_MS;
+  if (granularity === 'hour') {
+    const hourMs = 60 * 60 * 1000;
+    return Math.floor(updatedAt / hourMs) * hourMs;
+  }
+  if (granularity === 'week') {
+    const days = Math.floor(updatedAt / dayMs);
+    const weekIndex = Math.floor((days + 3) / 7);
+    return (weekIndex * 7 - 3) * dayMs;
+  }
+  return Math.floor(updatedAt / dayMs) * dayMs;
+}
+
+function errorBucketStep(granularity: 'hour' | 'day' | 'week'): number {
+  if (granularity === 'hour') return 60 * 60 * 1000;
+  return granularity === 'week' ? AUDIT_DAY_MS * 7 : AUDIT_DAY_MS;
+}
+
+function errorBucketLabel(startAt: number, granularity: 'hour' | 'day' | 'week'): string {
+  const isoDate = isoDateFromEpochMs(startAt);
+  if (granularity !== 'hour') return isoDate;
+  const hour = Math.floor((startAt / (60 * 60 * 1000)) % 24);
+  return `${isoDate} ${String(hour).padStart(2, '0')}:00`;
+}
+
 function summarizeErrorLogs(
   logs: ErrorLog[],
-  granularity: 'day' | 'week',
+  granularity: 'hour' | 'day' | 'week',
   source?: string,
   severity?: string,
   deviceId?: string,
+  sinceMs?: number,
+  untilMs?: number,
 ): ErrorLogSummary {
   const filtered = logs
     .filter((log) => !source || log.source === source)
     .filter((log) => !severity || log.severity === severity)
-    .filter((log) => !deviceId || log.deviceId === deviceId);
+    .filter((log) => !deviceId || log.deviceId === deviceId)
+    .filter(
+      (log) =>
+        (sinceMs === undefined || log.updatedAt >= sinceMs) &&
+        (untilMs === undefined || log.updatedAt <= untilMs),
+    );
   const grouped = new Map<number, { error: number; warning: number; info: number }>();
   let total = 0;
   for (const log of filtered) {
-    const startAt =
-      granularity === 'week'
-        ? (Math.floor((Math.floor(log.updatedAt / AUDIT_DAY_MS) + 3) / 7) * 7 - 3) * AUDIT_DAY_MS
-        : Math.floor(log.updatedAt / AUDIT_DAY_MS) * AUDIT_DAY_MS;
+    const startAt = errorBucketStart(log.updatedAt, granularity);
     const slot = grouped.get(startAt) ?? { error: 0, warning: 0, info: 0 };
     if (log.severity === 'error') slot.error += 1;
     else if (log.severity === 'warning') slot.warning += 1;
@@ -3131,7 +3161,7 @@ function summarizeErrorLogs(
   }
   let buckets: ErrorLogBucket[] = [...grouped.entries()]
     .map(([startAt, counts]) => ({
-      bucket: isoDateFromEpochMs(startAt),
+      bucket: errorBucketLabel(startAt, granularity),
       startAt,
       count: counts.error + counts.warning + counts.info,
       error: counts.error,
@@ -3140,13 +3170,13 @@ function summarizeErrorLogs(
     }))
     .sort((a, b) => a.startAt - b.startAt);
   if (buckets.length > 0 && buckets.length <= 62) {
-    const step = granularity === 'week' ? AUDIT_DAY_MS * 7 : AUDIT_DAY_MS;
+    const step = errorBucketStep(granularity);
     const filled: ErrorLogBucket[] = [];
     let cursor = buckets[0].startAt;
     for (const bucket of buckets) {
       while (cursor < bucket.startAt) {
         filled.push({
-          bucket: isoDateFromEpochMs(cursor),
+          bucket: errorBucketLabel(cursor, granularity),
           startAt: cursor,
           count: 0,
           error: 0,
@@ -3164,10 +3194,12 @@ function summarizeErrorLogs(
 }
 
 export async function getErrorLogSummary(
-  granularity: 'day' | 'week',
+  granularity: 'hour' | 'day' | 'week',
   source?: string,
   severity?: string,
   deviceId?: string,
+  sinceMs?: number,
+  untilMs?: number,
 ): Promise<ErrorLogSummary> {
   if (isTauri()) {
     return invoke<ErrorLogSummary>('get_error_log_summary', {
@@ -3175,9 +3207,19 @@ export async function getErrorLogSummary(
       source: source ?? null,
       severity: severity ?? null,
       deviceId: deviceId ?? null,
+      sinceMs: sinceMs ?? null,
+      untilMs: untilMs ?? null,
     });
   }
-  return summarizeErrorLogs(readLocal().logs, granularity, source, severity, deviceId);
+  return summarizeErrorLogs(
+    readLocal().logs,
+    granularity,
+    source,
+    severity,
+    deviceId,
+    sinceMs,
+    untilMs,
+  );
 }
 
 export async function exportSyncAudit(

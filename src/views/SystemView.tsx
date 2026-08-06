@@ -62,6 +62,33 @@ function resolveAuditRange(
   return {};
 }
 
+type ErrorLogRange = '24h' | '7d' | '30d';
+
+const ERROR_LOG_RANGE_MS: Record<ErrorLogRange, number> = {
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+};
+
+function resolveErrorLogRange(range: ErrorLogRange): { sinceMs: number; untilMs: number } {
+  const now = Date.now();
+  return { sinceMs: now - ERROR_LOG_RANGE_MS[range], untilMs: now + 60 * 1000 };
+}
+
+function errorLogRangeGranularity(range: ErrorLogRange): 'hour' | 'day' {
+  return range === '24h' ? 'hour' : 'day';
+}
+
+function deriveErrorLogPeak(buckets: db.ErrorLogBucket[] | undefined) {
+  if (!buckets || buckets.length < 2) return null;
+  const top = [...buckets].sort((a, b) => b.count - a.count)[0];
+  const mean = buckets.reduce((sum, bucket) => sum + bucket.count, 0) / buckets.length;
+  const ratio = top.count / Math.max(mean, 1);
+  return ratio >= 3 && top.count >= 3
+    ? { bucket: top.bucket, count: top.count, ratio: Math.round(ratio * 10) / 10 }
+    : null;
+}
+
 function syncErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
@@ -133,7 +160,8 @@ export default function SystemView() {
   const [auditSummary, setAuditSummary] = useState<db.SyncAuditSummary | null>(null);
   const [auditGranularity, setAuditGranularity] = useState<'day' | 'week'>('day');
   const [errorLogSummary, setErrorLogSummary] = useState<db.ErrorLogSummary | null>(null);
-  const [errorLogGranularity, setErrorLogGranularity] = useState<'day' | 'week'>('day');
+  const [errorLogGranularity, setErrorLogGranularity] = useState<'hour' | 'day' | 'week'>('day');
+  const [errorLogRange, setErrorLogRange] = useState<ErrorLogRange>('7d');
   const [errorSeverityFilter, setErrorSeverityFilter] = useState('all');
   const [errorSourceFilter, setErrorSourceFilter] = useState('all');
   const [errorDeviceFilter, setErrorDeviceFilter] = useState('all');
@@ -189,7 +217,18 @@ export default function SystemView() {
     void db.listSyncConflicts('unresolved').then(setSyncConflicts);
     void db.listSyncAudit(50).then(setSyncAudit);
     void db.getSyncAuditSummary('day').then(setAuditSummary);
-    void db.getErrorLogSummary('day').then(setErrorLogSummary);
+    const defaultRange: ErrorLogRange = '7d';
+    const errorRange = resolveErrorLogRange(defaultRange);
+    void db
+      .getErrorLogSummary(
+        errorLogRangeGranularity(defaultRange),
+        undefined,
+        undefined,
+        undefined,
+        errorRange.sinceMs,
+        errorRange.untilMs,
+      )
+      .then(setErrorLogSummary);
     void db.getSyncAutoConfig().then((config) => {
       setAutoSyncEnabled(config.enabled);
       setAutoSyncInterval(String(config.intervalMs / 1000));
@@ -400,7 +439,10 @@ export default function SystemView() {
       .then(setAuditSummary);
   };
 
-  const changeErrorLogGranularity = (granularity: 'day' | 'week') => {
+  const changeErrorLogRange = (range: ErrorLogRange) => {
+    setErrorLogRange(range);
+    const errorRange = resolveErrorLogRange(range);
+    const granularity = errorLogRangeGranularity(range);
     setErrorLogGranularity(granularity);
     void db
       .getErrorLogSummary(
@@ -412,6 +454,8 @@ export default function SystemView() {
           : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
+        errorRange.sinceMs,
+        errorRange.untilMs,
       )
       .then(setErrorLogSummary);
   };
@@ -428,6 +472,8 @@ export default function SystemView() {
           : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
+        resolveErrorLogRange(errorLogRange).sinceMs,
+        resolveErrorLogRange(errorLogRange).untilMs,
       )
       .then(setErrorLogSummary);
   };
@@ -444,6 +490,8 @@ export default function SystemView() {
           : errorDeviceFilter === 'current'
             ? deviceId
             : errorDeviceFilter,
+        resolveErrorLogRange(errorLogRange).sinceMs,
+        resolveErrorLogRange(errorLogRange).untilMs,
       )
       .then(setErrorLogSummary);
   };
@@ -456,6 +504,8 @@ export default function SystemView() {
         errorSourceFilter === 'all' ? undefined : errorSourceFilter,
         errorSeverityFilter === 'all' ? undefined : errorSeverityFilter,
         device === 'all' ? undefined : device === 'current' ? deviceId : device,
+        resolveErrorLogRange(errorLogRange).sinceMs,
+        resolveErrorLogRange(errorLogRange).untilMs,
       )
       .then(setErrorLogSummary);
   };
@@ -934,7 +984,11 @@ export default function SystemView() {
 
   const errorSources = Array.from(new Set(logs.map((log) => log.source))).sort();
   const errorDevices = Array.from(new Set(logs.map((log) => log.deviceId || 'unknown'))).sort();
+  const errorLogWindow = resolveErrorLogRange(errorLogRange);
   const visibleLogs = logs
+    .filter(
+      (log) => log.updatedAt >= errorLogWindow.sinceMs && log.updatedAt <= errorLogWindow.untilMs,
+    )
     .filter((log) => errorSourceFilter === 'all' || log.source === errorSourceFilter)
     .filter((log) => errorSeverityFilter === 'all' || log.severity === errorSeverityFilter)
     .filter((log) => {
@@ -944,6 +998,7 @@ export default function SystemView() {
         ? logDevice === deviceId
         : logDevice === errorDeviceFilter;
     });
+  const errorLogPeak = deriveErrorLogPeak(errorLogSummary?.buckets);
 
   return (
     <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
@@ -2258,31 +2313,56 @@ export default function SystemView() {
             <div className="flex rounded-md border border-white/10 bg-white/[0.03] p-0.5">
               <button
                 type="button"
-                data-error-granularity-day
-                aria-pressed={errorLogGranularity === 'day'}
-                onClick={() => changeErrorLogGranularity('day')}
+                data-error-range-24h
+                aria-pressed={errorLogRange === '24h'}
+                onClick={() => changeErrorLogRange('24h')}
                 className={`h-5 rounded px-1.5 text-[9px] ${
-                  errorLogGranularity === 'day'
+                  errorLogRange === '24h'
                     ? 'accent-bg-15 accent-text-strong'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
-                Day
+                24h
               </button>
               <button
                 type="button"
-                data-error-granularity-week
-                aria-pressed={errorLogGranularity === 'week'}
-                onClick={() => changeErrorLogGranularity('week')}
+                data-error-range-7d
+                aria-pressed={errorLogRange === '7d'}
+                onClick={() => changeErrorLogRange('7d')}
                 className={`h-5 rounded px-1.5 text-[9px] ${
-                  errorLogGranularity === 'week'
+                  errorLogRange === '7d'
                     ? 'accent-bg-15 accent-text-strong'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
-                Week
+                7d
+              </button>
+              <button
+                type="button"
+                data-error-range-30d
+                aria-pressed={errorLogRange === '30d'}
+                onClick={() => changeErrorLogRange('30d')}
+                className={`h-5 rounded px-1.5 text-[9px] ${
+                  errorLogRange === '30d'
+                    ? 'accent-bg-15 accent-text-strong'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                30d
               </button>
             </div>
+            {errorLogPeak && (
+              <span
+                data-error-peak
+                data-error-peak-bucket={errorLogPeak.bucket}
+                data-error-peak-count={errorLogPeak.count}
+                data-error-peak-ratio={errorLogPeak.ratio}
+                className="flex items-center gap-1 rounded-md border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-300"
+              >
+                <AlertTriangle size={10} />
+                peak {errorLogPeak.count} at {errorLogPeak.ratio}x mean
+              </span>
+            )}
             <select
               data-error-source-filter
               value={errorSourceFilter}
@@ -2377,7 +2457,9 @@ export default function SystemView() {
                     )}
                   </div>
                   <span className="max-w-full truncate text-[7px] text-slate-600">
-                    {bucket.bucket.slice(5)}
+                    {errorLogGranularity === 'hour'
+                      ? bucket.bucket.slice(11)
+                      : bucket.bucket.slice(5)}
                   </span>
                 </div>
               );

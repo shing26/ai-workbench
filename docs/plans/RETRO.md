@@ -1,5 +1,27 @@
 # Sprint Retrospective
 
+## Sprint 111
+
+### What went well?
+
+- Rust `error_log_summary` 扩展为 hour / day / week 三档粒度，并新增 `since_ms` / `until_ms` 范围过滤；Tauri 命令 `get_error_log_summary` 同步透传，单测覆盖 24h 小时分桶、30d 边界、双端范围与旧数据排除。
+- System Error logs 卡片把 Day / Week 切换升级为 24h / 7d / 30d 时间范围，图表按范围自动使用 hour / day 粒度，明细列表与总数徽标跟随同一窗口。
+- 峰值告警按“最高桶 count >= 3 且超过均值 3 倍”触发，`data-error-peak` 徽标展示峰值桶、计数与倍率；24h 小时视图可及时发现单小时异常突增。
+- `verify:ui` / `verify:preview` 的 `errorLogTrend` lane 覆盖 24h / 7d / 30d 过滤与严重度联动，新增 `errorLogPeakAlert` lane 覆盖尖峰徽标出现、倍率正确与切回 7d 后消失。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（121 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 验证种子曾把日志放在 24h / 30d 边界外 1 分钟，导致过滤正确但断言误判；改为安全落在窗口内的相对时间戳后稳定。
+- dev 模式两次出现 CDP `Runtime.evaluate` 超时且集中在较后 lane，加 lane 进度日志定位后重跑即过；preview 双端全绿，属环境抖动而非功能回归。
+- 30d 补零桶数量随 UTC 日界在 20 / 21 之间波动，断言放宽为 20-22 根柱并保留总数与粒度强断言。
+
+### Action Items
+
+- 下一 Sprint 候选：MOA 链式路由、审计跨时间轴图、AI 复盘结果一键保存更多入口、真实 Provider 端到端流式联调。
+- 保留 `errorLogTrend` / `errorLogPeakAlert` lane，修改错误日志聚合、System 卡片或峰值规则时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 110
 
 ### What went well?
