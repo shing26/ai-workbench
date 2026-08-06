@@ -6521,6 +6521,196 @@ try {
   results.webhookSignatureVerify = webhookSignatureVerify;
   laneLog('webhookSignatureVerify ok');
 
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookMultiChannel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const backoffInput = document.querySelector("[data-webhook-rule-backoff]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !triggerInput || !backoffInput || !saveBtn) {
+      return { ok: false, reason: "multi channel controls missing" };
+    }
+    const emailCheck = document.querySelector('[data-webhook-rule-channel="email"]');
+    const notifCheck = document.querySelector('[data-webhook-rule-channel="notification"]');
+    if (!emailCheck || !notifCheck) {
+      return { ok: false, reason: "channel checkboxes missing" };
+    }
+    emailCheck.click();
+    notifCheck.click();
+    await sleep(100);
+    setValue(urlInput, "https://hooks.example.test/multi");
+    setValue(nameInput, "Multi channel hook");
+    setValue(triggerInput, "sync.completed");
+    setValue(backoffInput, "600");
+    await sleep(100);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Multi channel hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "multi channel rule not created" };
+    const channelsBadge = item.querySelector("[data-webhook-rule-channels]")?.textContent ?? "";
+    const backoffBadge = item.querySelector("[data-webhook-rule-backoff]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Multi channel hook");
+    const created =
+      channelsBadge.includes("http+email+notification") &&
+      backoffBadge.includes("600") &&
+      storedRule?.channels?.length === 3 &&
+      storedRule?.recoveryBackoffSeconds === 600;
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let deliveryItems = [];
+    let channels = [];
+    for (let i = 0; i < 20; i++) {
+      deliveryItems = Array.from(document.querySelectorAll("[data-webhook-delivery-item]"));
+      channels = deliveryItems.map(
+        (d) => d.querySelector("[data-webhook-delivery-channel]")?.textContent ?? "",
+      );
+      if (channels.includes("http") && channels.includes("email") && channels.includes("notification")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const storedDeliveries = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]",
+    );
+    const delivered =
+      channels.includes("http") &&
+      channels.includes("email") &&
+      channels.includes("notification") &&
+      storedDeliveries.length === 3 &&
+      storedDeliveries.every((d) => ["http", "email", "notification"].includes(d.channel));
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    return {
+      ok: created && delivered,
+      created,
+      delivered,
+      channelsBadge,
+      backoffBadge,
+      channels,
+      storedChannels: storedRule?.channels,
+      storedBackoff: storedRule?.recoveryBackoffSeconds,
+      deliveries: storedDeliveries.length,
+    };
+  })()`);
+  if (!webhookMultiChannel.ok) {
+    throw new Error(
+      `Webhook multi channel assertion failed: ${JSON.stringify(webhookMultiChannel)}`,
+    );
+  }
+  results.webhookMultiChannel = webhookMultiChannel;
+  laneLog('webhookMultiChannel ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const base = {
+      name: "Recovery",
+      url: "https://hooks.example.test/ok",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      triggerCondition: "",
+      enabled: false,
+      lastRunAt: 0,
+      lastStatus: 500,
+      lastMessage: "Auto-disabled after 3 consecutive failures",
+      createdAt: now - 1000,
+      updatedAt: now - 1000,
+      consecutiveFailures: 3,
+      autoDisableAfter: 3,
+      channels: ["http"],
+      recoveryBackoffSeconds: 5,
+      circuitOpenedAt: now - 60000,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        { ...base, id: "recover-ok", name: "Recover ok", url: "https://hooks.example.test/ok" },
+        { ...base, id: "recover-fail", name: "Recover fail", url: "https://hooks.example.test/fail" },
+        {
+          ...base,
+          id: "recover-skip",
+          name: "Recover skip",
+          recoveryBackoffSeconds: 3600,
+          circuitOpenedAt: now - 1000,
+        },
+      ]),
+    );
+    localStorage.removeItem("ai-workbench:webhook-rule-runs:v1");
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookRecoveryBackoff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    const probeBtn = document.querySelector("[data-webhook-recovery-probe]");
+    if (!probeBtn) return { ok: false, reason: "recovery probe button missing" };
+    probeBtn.click();
+    let resultText = "";
+    for (let i = 0; i < 20; i++) {
+      resultText = document.querySelector("[data-webhook-recovery-result]")?.textContent ?? "";
+      if (resultText.includes("probed 2")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const okRule = stored.find((r) => r.id === "recover-ok");
+    const failRule = stored.find((r) => r.id === "recover-fail");
+    const skipRule = stored.find((r) => r.id === "recover-skip");
+    const probedOk =
+      resultText.includes("probed 2") &&
+      resultText.includes("recovered 1") &&
+      resultText.includes("failed 1");
+    const stateOk =
+      okRule?.enabled === true &&
+      okRule?.circuitOpenedAt === 0 &&
+      okRule?.consecutiveFailures === 0 &&
+      failRule?.enabled === false &&
+      failRule?.circuitOpenedAt > now - 60000 &&
+      failRule?.consecutiveFailures === 4 &&
+      skipRule?.enabled === false &&
+      skipRule?.circuitOpenedAt === skipRule?.updatedAt;
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    return {
+      ok: probedOk && stateOk,
+      resultText,
+      probedOk,
+      stateOk,
+      okEnabled: okRule?.enabled,
+      failFailures: failRule?.consecutiveFailures,
+      skipCircuit: skipRule?.circuitOpenedAt,
+    };
+  })()`);
+  if (!webhookRecoveryBackoff.ok) {
+    throw new Error(
+      `Webhook recovery backoff assertion failed: ${JSON.stringify(webhookRecoveryBackoff)}`,
+    );
+  }
+  results.webhookRecoveryBackoff = webhookRecoveryBackoff;
+  laneLog('webhookRecoveryBackoff ok');
+
   await evaluate(`(() => {
     const now = Date.now();
     const day = 86_400_000;

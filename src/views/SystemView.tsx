@@ -143,7 +143,26 @@ export default function SystemView() {
   const [webhookRuleAutoDisable, setWebhookRuleAutoDisable] = useState('3');
   const [webhookRuleTrigger, setWebhookRuleTrigger] = useState('');
   const [webhookRuleCondition, setWebhookRuleCondition] = useState('');
+  const [webhookRuleChannels, setWebhookRuleChannels] = useState<db.WebhookChannelName[]>(['http']);
+  const [webhookRuleBackoff, setWebhookRuleBackoff] = useState('300');
   const [webhookConditionError, setWebhookConditionError] = useState('');
+  const [webhookChannelConfig, setWebhookChannelConfig] = useState<db.WebhookChannelConfig | null>(
+    null,
+  );
+  const [webhookEmailEnabled, setWebhookEmailEnabled] = useState(false);
+  const [webhookEmailFrom, setWebhookEmailFrom] = useState('');
+  const [webhookEmailTo, setWebhookEmailTo] = useState('');
+  const [webhookSmtpHost, setWebhookSmtpHost] = useState('');
+  const [webhookSmtpPort, setWebhookSmtpPort] = useState('587');
+  const [webhookSmtpUser, setWebhookSmtpUser] = useState('');
+  const [webhookSmtpPassword, setWebhookSmtpPassword] = useState('');
+  const [webhookNotifyEnabled, setWebhookNotifyEnabled] = useState(false);
+  const [webhookNotifyTitle, setWebhookNotifyTitle] = useState('');
+  const [webhookChannelMessage, setWebhookChannelMessage] = useState('');
+  const [webhookChannelBusy, setWebhookChannelBusy] = useState(false);
+  const [webhookRecoveryResult, setWebhookRecoveryResult] =
+    useState<db.WebhookRecoveryResult | null>(null);
+  const [webhookRecoveryBusy, setWebhookRecoveryBusy] = useState(false);
   const [webhookEventContext, setWebhookEventContext] = useState('');
   const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
   const [webhookSigPayload, setWebhookSigPayload] = useState('{"event":"signed.delivery"}');
@@ -875,6 +894,80 @@ export default function SystemView() {
     setWebhookRules(await db.listWebhookRules());
   };
 
+  const toggleWebhookRuleChannel = (channel: db.WebhookChannelName) => {
+    setWebhookRuleChannels((prev) => {
+      if (prev.includes(channel)) {
+        return prev.length > 1 ? prev.filter((item) => item !== channel) : prev;
+      }
+      return [...prev, channel];
+    });
+  };
+
+  const loadWebhookChannelConfig = async () => {
+    const config = await db.getWebhookChannelConfig();
+    setWebhookChannelConfig(config);
+    setWebhookEmailEnabled(config.emailEnabled);
+    setWebhookEmailFrom(config.emailFrom);
+    setWebhookEmailTo(config.emailTo);
+    setWebhookSmtpHost(config.smtpHost);
+    setWebhookSmtpPort(String(config.smtpPort));
+    setWebhookSmtpUser(config.smtpUser);
+    setWebhookSmtpPassword(config.smtpPassword);
+    setWebhookNotifyEnabled(config.notificationEnabled);
+    setWebhookNotifyTitle(config.notificationTitle);
+  };
+
+  const saveWebhookChannelConfig = async () => {
+    setWebhookChannelBusy(true);
+    try {
+      const config = await db.setWebhookChannelConfig(
+        webhookEmailEnabled,
+        webhookEmailFrom,
+        webhookEmailTo,
+        webhookSmtpHost,
+        Number(webhookSmtpPort) || 587,
+        webhookSmtpUser,
+        webhookSmtpPassword,
+        webhookNotifyEnabled,
+        webhookNotifyTitle,
+      );
+      setWebhookChannelConfig(config);
+      setWebhookChannelMessage('Channel settings saved');
+    } catch (err) {
+      setWebhookChannelMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWebhookChannelBusy(false);
+    }
+  };
+
+  const testWebhookNotificationChannel = async () => {
+    try {
+      setWebhookChannelMessage(await db.testWebhookNotification());
+    } catch (err) {
+      setWebhookChannelMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const testWebhookEmailChannel = async () => {
+    try {
+      setWebhookChannelMessage(await db.testWebhookEmail());
+    } catch (err) {
+      setWebhookChannelMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const probeWebhookRecovery = async () => {
+    setWebhookRecoveryBusy(true);
+    try {
+      setWebhookRecoveryResult(await db.probeWebhookRecovery());
+      await loadWebhookRules();
+    } catch (err) {
+      setWebhookChannelMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWebhookRecoveryBusy(false);
+    }
+  };
+
   const loadWebhookRuleRuns = async () => {
     setWebhookRuleRuns(await db.listWebhookRuleRuns());
   };
@@ -906,6 +999,8 @@ export default function SystemView() {
         webhookRuleTrigger.trim(),
         Math.max(0, Number(webhookRuleAutoDisable) || 0),
         webhookRuleCondition.trim(),
+        webhookRuleChannels,
+        Math.max(5, Number(webhookRuleBackoff) || 300),
       );
       await loadWebhookRules();
       await loadWebhookDeliveries();
@@ -915,6 +1010,8 @@ export default function SystemView() {
       setWebhookRuleAutoDisable('3');
       setWebhookRuleTrigger('');
       setWebhookRuleCondition('');
+      setWebhookRuleChannels(['http']);
+      setWebhookRuleBackoff('300');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setWebhookConditionError(message);
@@ -1062,8 +1159,16 @@ export default function SystemView() {
     void loadWebhookDeliveries();
     void loadWebhookRuleRuns();
     void loadWebhookRetention();
+    void loadWebhookChannelConfig();
     const onWebhooksUpdated = () => void loadWebhookDeliveries();
     window.addEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
+    const onWebhookNotification = (event: Event) => {
+      const detail = (event as CustomEvent<{ title?: string; body?: string }>).detail;
+      if (detail?.title || detail?.body) {
+        setWebhookChannelMessage(`Notification: ${detail.title ?? ''} - ${detail.body ?? ''}`);
+      }
+    };
+    window.addEventListener('webhook-notification', onWebhookNotification);
     const timer = window.setInterval(() => {
       void loadWebhookRules();
       void loadWebhookDeliveries();
@@ -1072,6 +1177,7 @@ export default function SystemView() {
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('workbench:webhook-deliveries-updated', onWebhooksUpdated);
+      window.removeEventListener('webhook-notification', onWebhookNotification);
     };
   }, []);
 
@@ -2215,6 +2321,31 @@ export default function SystemView() {
               data-webhook-rule-condition-input
               className="h-7 w-80 rounded-md border border-white/10 bg-white/[0.03] px-2 font-mono text-[10px] text-slate-300 outline-none focus:border-cyan-500/40 placeholder:text-slate-600"
             />
+            <span className="text-[9px] text-slate-500">Channels</span>
+            {(['http', 'email', 'notification'] as db.WebhookChannelName[]).map((channel) => (
+              <label
+                key={channel}
+                className="flex h-7 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300"
+              >
+                <input
+                  type="checkbox"
+                  checked={webhookRuleChannels.includes(channel)}
+                  onChange={() => toggleWebhookRuleChannel(channel)}
+                  data-webhook-rule-channel={channel}
+                  className="accent-emerald-500"
+                />
+                {channel}
+              </label>
+            ))}
+            <input
+              type="number"
+              min={5}
+              value={webhookRuleBackoff}
+              onChange={(e) => setWebhookRuleBackoff(e.target.value)}
+              placeholder="Recovery (s)"
+              data-webhook-rule-backoff
+              className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
             <button
               type="button"
               data-webhook-rule-save
@@ -2302,6 +2433,18 @@ export default function SystemView() {
                   {rule.autoDisableAfter > 0
                     ? `auto-off after ${rule.autoDisableAfter}`
                     : 'no auto-off'}
+                </span>
+                <span
+                  data-webhook-rule-channels
+                  className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300"
+                >
+                  {rule.channels && rule.channels.length > 0 ? rule.channels.join('+') : 'http'}
+                </span>
+                <span
+                  data-webhook-rule-backoff
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  backoff {rule.recoveryBackoffSeconds ?? 300}s
                 </span>
                 {rule.secret && (
                   <span
@@ -2479,6 +2622,12 @@ export default function SystemView() {
                 className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
               >
                 <span
+                  data-webhook-delivery-channel
+                  className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300"
+                >
+                  {delivery.channel || 'http'}
+                </span>
+                <span
                   data-webhook-delivery-status
                   className={`rounded-md px-1.5 py-0.5 text-[9px] ${
                     delivery.status === 'success'
@@ -2530,6 +2679,144 @@ export default function SystemView() {
                 </button>
               </div>
             ))}
+          </div>
+          <div data-webhook-channel-settings className="mt-3 border-t border-white/5 pt-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                Channel settings
+              </span>
+              <label className="flex h-6 items-center gap-1 text-[9px] text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={webhookEmailEnabled}
+                  onChange={(e) => setWebhookEmailEnabled(e.target.checked)}
+                  data-webhook-channel-email-enabled
+                  className="accent-emerald-500"
+                />
+                Email
+              </label>
+              <label className="flex h-6 items-center gap-1 text-[9px] text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={webhookNotifyEnabled}
+                  onChange={(e) => setWebhookNotifyEnabled(e.target.checked)}
+                  data-webhook-channel-notification-enabled
+                  className="accent-emerald-500"
+                />
+                Notification
+              </label>
+              <button
+                type="button"
+                data-webhook-channel-save
+                onClick={() => void saveWebhookChannelConfig()}
+                disabled={webhookChannelBusy}
+                className="flex h-6 items-center rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {webhookChannelBusy ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                data-webhook-channel-test-notification
+                onClick={() => void testWebhookNotificationChannel()}
+                className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+              >
+                Test notification
+              </button>
+              <button
+                type="button"
+                data-webhook-channel-test-email
+                onClick={() => void testWebhookEmailChannel()}
+                className="flex h-6 items-center rounded-md bg-white/5 px-2 text-[9px] text-slate-300 hover:bg-white/10"
+              >
+                Test email
+              </button>
+              <button
+                type="button"
+                data-webhook-recovery-probe
+                onClick={() => void probeWebhookRecovery()}
+                disabled={webhookRecoveryBusy}
+                className="flex h-6 items-center rounded-md bg-amber-500/10 px-2 text-[9px] text-amber-300 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {webhookRecoveryBusy ? 'Probing...' : 'Probe recovery'}
+              </button>
+              {webhookRecoveryResult && (
+                <span
+                  data-webhook-recovery-result
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  probed {webhookRecoveryResult.probed} · recovered{' '}
+                  {webhookRecoveryResult.recovered} · failed {webhookRecoveryResult.failed}
+                </span>
+              )}
+              {webhookChannelMessage && (
+                <span
+                  data-webhook-channel-message
+                  className="max-w-72 truncate rounded-md bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-slate-400"
+                >
+                  {webhookChannelMessage}
+                </span>
+              )}
+            </div>
+            <div className="grid gap-1.5 md:grid-cols-4">
+              <input
+                value={webhookEmailFrom}
+                onChange={(e) => setWebhookEmailFrom(e.target.value)}
+                placeholder="From email"
+                data-webhook-channel-from
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                value={webhookEmailTo}
+                onChange={(e) => setWebhookEmailTo(e.target.value)}
+                placeholder="To email"
+                data-webhook-channel-to
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                value={webhookSmtpHost}
+                onChange={(e) => setWebhookSmtpHost(e.target.value)}
+                placeholder="SMTP host"
+                data-webhook-channel-host
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={webhookSmtpPort}
+                onChange={(e) => setWebhookSmtpPort(e.target.value)}
+                placeholder="SMTP port"
+                data-webhook-channel-port
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                value={webhookSmtpUser}
+                onChange={(e) => setWebhookSmtpUser(e.target.value)}
+                placeholder="SMTP user"
+                data-webhook-channel-user
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                type="password"
+                value={webhookSmtpPassword}
+                onChange={(e) => setWebhookSmtpPassword(e.target.value)}
+                placeholder="SMTP password"
+                data-webhook-channel-password
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <input
+                value={webhookNotifyTitle}
+                onChange={(e) => setWebhookNotifyTitle(e.target.value)}
+                placeholder="Notification title"
+                data-webhook-channel-title
+                className="h-7 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              {webhookChannelConfig && (
+                <span className="flex h-7 items-center rounded-md bg-white/[0.03] px-2 text-[9px] text-slate-500">
+                  saved {formatTime(webhookChannelConfig.updatedAt)}
+                </span>
+              )}
+            </div>
           </div>
           <div data-webhook-retention className="mt-3 border-t border-white/5 pt-2">
             <div className="flex flex-wrap items-center gap-1.5">

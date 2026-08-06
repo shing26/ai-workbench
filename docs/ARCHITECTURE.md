@@ -485,6 +485,16 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - ActionsView 新增 Week Plan 卡片：`data-week-plan-template` 模板选择、`data-week-plan-preview` 7 日预览、`data-week-plan-apply` 一键写入、`data-week-plan-result` 汇总；Schedule Timeline 行新增 `data-schedule-event-row` 并展示日期，手动建事件可自选日期。
 - `verify:ui` / `verify:preview` 新增 `weekPlanTemplate` / `weekPlanPersisted` lane；Rust 单测新增 `schedule_event_date_migration_adds_column_and_orders`，`cargo test --lib` 增至 145 条。
 
+## Sprint 143：Webhook 多通道投递与熔断恢复指数退避
+
+- `webhook_rules` 新增 `channels TEXT NOT NULL DEFAULT '["http"]'`、`recovery_backoff_seconds INTEGER NOT NULL DEFAULT 300`、`circuit_opened_at INTEGER NOT NULL DEFAULT 0`，`webhook_deliveries` 新增 `channel TEXT NOT NULL DEFAULT 'http'`，新增 `webhook_channel_config` 单行表（email / SMTP / notification）；新库 SCHEMA 直接建列建表，旧库 `migrate_webhook_channels_recovery` 幂等补列并加入 `init_connection` 迁移链。
+- 新增 `parse_webhook_channels`、`enqueue_webhook_delivery_channel`、`get/set_webhook_channel_config`、`list_circuit_open_webhook_rules`、`set_webhook_circuit_opened_at`；调度器与 `trigger_webhook_event` 按规则 `channels` 逐通道入队，投递 worker 按 channel 分发到 HTTP / 邮件 / 系统通知。
+- 邮件通道由 `lettre` `SmtpTransport::builder_dangerous` 明文 SMTP 发送，`deliver_webhook_email` 校验 from / to / host；系统通知通过 `webhook-notification` Tauri 事件发出；新增 Tauri 命令 `get_webhook_channel_config` / `set_webhook_channel_config` / `test_webhook_notification` / `test_webhook_email` / `probe_webhook_recovery`。
+- 熔断恢复调度：`webhook_recovery_backoff_ms` 按 `recovery_backoff_seconds * 2^failures`（`.clamp(0, 30)` 指数，封顶 24h）计算，worker 对到期规则做 HTTP 探测，成功恢复 enabled / 清零失败计数，失败重置 `circuit_opened_at` 继续退避；手动 `probe_webhook_recovery` 复用同一逻辑。
+- `db.ts` 新增 `WebhookChannelName` / `WebhookChannelConfig` / `WebhookRecoveryResult`，`WebhookRule` 携带 `channels` / `recoveryBackoffSeconds` / `circuitOpenedAt`，`WebhookDelivery` 携带 `channel`；fallback 用 `ai-workbench:webhook-channel-config:v1` 持久化通道配置，`triggerWebhookEvent` 逐通道入队，`probeWebhookRecovery` 模拟成功 / 失败并按同一退避公式计算。
+- SystemView Webhook 卡片新增通道多选与恢复退避输入（`data-webhook-rule-channel` / `data-webhook-rule-backoff`）、规则行通道 / 退避徽标（`data-webhook-rule-channels` / `data-webhook-rule-backoff`）、投递行通道徽标（`data-webhook-delivery-channel`）、Channel settings 面板（SMTP / 收件人 / 通知标题 / 保存 / 测试）与 `data-webhook-recovery-probe` 按钮。
+- `verify:ui` / `verify:preview` 新增 `webhookMultiChannel` / `webhookRecoveryBackoff` lane；Rust 单测覆盖迁移幂等、通道配置默认 / 钳制、多通道创建与入队、熔断开启列表与恢复重置、SMTP mock 发信、通知事件载荷与退避公式，`cargo test --lib` 增至 161 条。
+
 ## Sprint 142：Webhook 复杂触发器条件与签名校验收发端
 
 - 新增 `src-tauri/src/webhook_condition.rs`：`validate_condition` 校验、`matches_condition(condition, event, context, now)` 求值；DSL 支持 `event == / !=`、`context.field == / != / > / < / >= / <=`、`true / false / null`、`and / or / not / 括号`、裸事件名简写与 `cron(...)`。

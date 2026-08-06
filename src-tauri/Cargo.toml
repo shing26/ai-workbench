@@ -21,6 +21,7 @@ sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"
 keyring = { version = "3", features = ["windows-native"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 notify = "8"

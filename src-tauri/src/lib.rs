@@ -1,5 +1,9 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
+use lettre::message::header::ContentType;
+use lettre::message::{Mailbox, Message};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{SmtpTransport, Transport};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::pbkdf2;
@@ -2710,6 +2714,104 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookNotification {
+    title: String,
+    body: String,
+    rule_id: String,
+    event: String,
+    channel: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookRecoveryResult {
+    probed: i64,
+    recovered: i64,
+    failed: i64,
+}
+
+fn emit_webhook_notification(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    rule_id: &str,
+    event: &str,
+) {
+    let _ = app.emit(
+        "webhook-notification",
+        WebhookNotification {
+            title: title.to_string(),
+            body: body.to_string(),
+            rule_id: rule_id.to_string(),
+            event: event.to_string(),
+            channel: "notification".to_string(),
+        },
+    );
+}
+
+fn webhook_recovery_backoff_ms(rule: &db::WebhookRule) -> i64 {
+    let base = rule.recovery_backoff_seconds.max(5).saturating_mul(1000);
+    let exponent = rule
+        .consecutive_failures
+        .saturating_sub(rule.auto_disable_after.max(1))
+        .clamp(0, 30) as u32;
+    base.saturating_mul(1_i64 << exponent)
+        .min(24 * 60 * 60 * 1000)
+}
+
+fn deliver_webhook_email(
+    config: &db::WebhookChannelConfig,
+    rule_name: &str,
+    event: &str,
+    payload: &str,
+) -> Result<WebhookDeliveryResult, String> {
+    let from_addr = config.email_from.trim();
+    let to_addr = config.email_to.trim();
+    if from_addr.is_empty() || to_addr.is_empty() {
+        return Err("Email from/to addresses are not configured".to_string());
+    }
+    if config.smtp_host.trim().is_empty() {
+        return Err("SMTP host is not configured".to_string());
+    }
+    let from: Mailbox = from_addr
+        .parse()
+        .map_err(|e| format!("Invalid email from address: {}", e))?;
+    let to: Mailbox = to_addr
+        .parse()
+        .map_err(|e| format!("Invalid email to address: {}", e))?;
+    let email = Message::builder()
+        .from(from)
+        .to(to)
+        .subject(format!("Webhook delivered: {}", rule_name))
+        .header(ContentType::TEXT_PLAIN)
+        .body(format!(
+            "Rule: {}\nEvent: {}\nChannel: email\n\nPayload:\n{}",
+            rule_name, event, payload
+        ))
+        .map_err(|e| e.to_string())?;
+    let transport = SmtpTransport::builder_dangerous(config.smtp_host.trim())
+        .port(config.smtp_port.clamp(1, 65_535) as u16)
+        .credentials(Credentials::new(
+            config.smtp_user.clone(),
+            config.smtp_password.clone(),
+        ))
+        .build();
+    let started = std::time::Instant::now();
+    transport
+        .send(&email)
+        .map_err(|e| format!("SMTP delivery failed: {}", e))?;
+    Ok(WebhookDeliveryResult {
+        ok: true,
+        status: 202,
+        duration_ms: started.elapsed().as_millis(),
+        attempts: 1,
+        signed: false,
+        message: "Email queued via SMTP".to_string(),
+    })
+}
+
 fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
@@ -2717,7 +2819,7 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
             continue;
         };
         let now = now_millis();
-        let claimed = {
+        let (claimed, recovery_probes) = {
             let Ok(conn) = state.0.lock() else {
                 continue;
             };
@@ -2738,7 +2840,15 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                 .collect();
             for rule in &due {
                 let payload = render_webhook_payload(&rule.payload, "", None, now);
-                let _ = db::enqueue_webhook_delivery(&conn, rule, "", &payload);
+                let channels: Vec<String> = if rule.channels.is_empty() {
+                    vec!["http".to_string()]
+                } else {
+                    rule.channels.clone()
+                };
+                for channel in channels {
+                    let _ =
+                        db::enqueue_webhook_delivery_channel(&conn, rule, "", &payload, &channel);
+                }
                 let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
             }
             if let Ok(config) = db::get_webhook_retention_config(&conn) {
@@ -2750,11 +2860,26 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                     );
                 }
             }
+            let mut recovery_probes: Vec<(db::WebhookRule, String)> = Vec::new();
+            if let Ok(circuit_open) = db::list_circuit_open_webhook_rules(&conn) {
+                for rule in circuit_open {
+                    if now - rule.circuit_opened_at >= webhook_recovery_backoff_ms(&rule) {
+                        let payload =
+                            render_webhook_payload(&rule.payload, &rule.trigger_event, None, now);
+                        recovery_probes.push((rule, payload));
+                    }
+                }
+            }
             let Ok(claimed) = db::claim_due_webhook_deliveries(&conn, now, 8) else {
                 continue;
             };
-            claimed
+            (claimed, recovery_probes)
         };
+        let channel_config = state
+            .0
+            .lock()
+            .ok()
+            .and_then(|conn| db::get_webhook_channel_config(&conn).ok());
         for delivery in claimed {
             let token = if delivery.token.trim().is_empty() {
                 None
@@ -2766,14 +2891,51 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
             } else {
                 Some(delivery.secret.as_str())
             };
-            let outcome = deliver_webhook_http(
-                &delivery.url,
-                &delivery.payload,
-                &delivery.method,
-                token,
-                secret,
-                0,
-            );
+            let outcome = match delivery.channel.as_str() {
+                "email" => match &channel_config {
+                    Some(config) if config.email_enabled => deliver_webhook_email(
+                        config,
+                        &delivery.rule_id,
+                        &delivery.event,
+                        &delivery.payload,
+                    ),
+                    _ => Err("Email channel not configured".to_string()),
+                },
+                "notification" => {
+                    let title = channel_config
+                        .as_ref()
+                        .map(|config| config.notification_title.clone())
+                        .filter(|title| !title.trim().is_empty())
+                        .unwrap_or_else(|| "AI Workbench webhook".to_string());
+                    let body = format!(
+                        "Rule {} delivered event {}",
+                        delivery.rule_id, delivery.event
+                    );
+                    emit_webhook_notification(
+                        &app,
+                        &title,
+                        &body,
+                        &delivery.rule_id,
+                        &delivery.event,
+                    );
+                    Ok(WebhookDeliveryResult {
+                        ok: true,
+                        status: 200,
+                        duration_ms: 0,
+                        attempts: 1,
+                        signed: false,
+                        message: "System notification delivered".to_string(),
+                    })
+                }
+                _ => deliver_webhook_http(
+                    &delivery.url,
+                    &delivery.payload,
+                    &delivery.method,
+                    token,
+                    secret,
+                    0,
+                ),
+            };
             let (ok, status, message) = match outcome {
                 Ok(result) => (true, result.status as i64, result.message),
                 Err(err) => (false, 0, format!("Webhook delivery failed: {}", err)),
@@ -2824,6 +2986,50 @@ fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
                     run_status,
                     status,
                     attempts,
+                    &message,
+                );
+            }
+        }
+        for (rule, payload) in recovery_probes {
+            let token = if rule.token.trim().is_empty() {
+                None
+            } else {
+                Some(rule.token.as_str())
+            };
+            let secret = if rule.secret.trim().is_empty() {
+                None
+            } else {
+                Some(rule.secret.as_str())
+            };
+            let outcome = deliver_webhook_http(&rule.url, &payload, &rule.method, token, secret, 0);
+            let (ok, status, message) = match outcome {
+                Ok(result) => (true, result.status as i64, result.message),
+                Err(err) => (false, 0, format!("Recovery probe failed: {}", err)),
+            };
+            let Ok(conn) = state.0.lock() else {
+                continue;
+            };
+            let _ = db::record_webhook_rule_outcome(&conn, &rule.id, status, &message);
+            if ok {
+                let _ = db::set_webhook_rule_enabled(&conn, &rule.id, true);
+                let _ = db::record_webhook_rule_run(
+                    &conn,
+                    &rule.id,
+                    "scheduled",
+                    "success",
+                    status,
+                    1,
+                    &format!("Recovery probe succeeded: {}", message),
+                );
+            } else {
+                let _ = db::set_webhook_circuit_opened_at(&conn, &rule.id, now);
+                let _ = db::record_webhook_rule_run(
+                    &conn,
+                    &rule.id,
+                    "scheduled",
+                    "failed",
+                    status,
+                    1,
                     &message,
                 );
             }
@@ -4886,6 +5092,8 @@ struct WebhookRuleRequest {
     interval_seconds: i64,
     trigger_event: Option<String>,
     trigger_condition: Option<String>,
+    channels: Option<Vec<String>>,
+    recovery_backoff_seconds: Option<i64>,
     auto_disable_after: Option<i64>,
 }
 
@@ -4905,6 +5113,18 @@ fn create_webhook_rule(
         webhook_condition::validate_condition(trigger_condition)
             .map_err(|e| format!("Invalid trigger condition: {}", e))?;
     }
+    let channels = request
+        .channels
+        .unwrap_or_default()
+        .into_iter()
+        .map(|channel| channel.trim().to_lowercase())
+        .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
+        .collect::<Vec<_>>();
+    let channels = if channels.is_empty() {
+        vec!["http".to_string()]
+    } else {
+        channels
+    };
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::create_webhook_rule(
         &conn,
@@ -4920,6 +5140,8 @@ fn create_webhook_rule(
             interval_seconds: request.interval_seconds.max(5),
             trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
             trigger_condition,
+            channels,
+            recovery_backoff_seconds: request.recovery_backoff_seconds.unwrap_or(300).max(0),
             auto_disable_after: request.auto_disable_after.unwrap_or(3).max(0),
         },
     )
@@ -4987,9 +5209,17 @@ fn trigger_webhook_event(
     let mut count = 0i64;
     for rule in &rules {
         let payload = render_webhook_payload(&rule.payload, &event, context.as_ref(), now_millis());
-        db::enqueue_webhook_delivery(&conn, rule, &event, &payload).map_err(|e| e.to_string())?;
+        let channels: Vec<String> = if rule.channels.is_empty() {
+            vec!["http".to_string()]
+        } else {
+            rule.channels.clone()
+        };
+        for channel in channels {
+            db::enqueue_webhook_delivery_channel(&conn, rule, &event, &payload, &channel)
+                .map_err(|e| e.to_string())?;
+            count += 1;
+        }
         let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
-        count += 1;
     }
     Ok(count)
 }
@@ -5071,6 +5301,153 @@ fn get_webhook_delivery_stats(
 ) -> Result<db::WebhookDeliveryStats, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_webhook_delivery_stats(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_webhook_channel_config(
+    state: State<'_, db::Db>,
+) -> Result<db::WebhookChannelConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookChannelConfigRequest {
+    email_enabled: bool,
+    email_from: String,
+    email_to: String,
+    smtp_host: String,
+    smtp_port: i64,
+    smtp_user: String,
+    smtp_password: String,
+    notification_enabled: bool,
+    notification_title: String,
+}
+
+#[tauri::command]
+fn set_webhook_channel_config(
+    state: State<'_, db::Db>,
+    request: WebhookChannelConfigRequest,
+) -> Result<db::WebhookChannelConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_webhook_channel_config(
+        &conn,
+        &db::WebhookChannelConfigInput {
+            email_enabled: request.email_enabled,
+            email_from: &request.email_from,
+            email_to: &request.email_to,
+            smtp_host: &request.smtp_host,
+            smtp_port: request.smtp_port,
+            smtp_user: &request.smtp_user,
+            smtp_password: &request.smtp_password,
+            notification_enabled: request.notification_enabled,
+            notification_title: &request.notification_title,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn test_webhook_notification(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+) -> Result<String, String> {
+    let config = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())?
+    };
+    let title = if config.notification_title.trim().is_empty() {
+        "AI Workbench webhook".to_string()
+    } else {
+        config.notification_title.clone()
+    };
+    emit_webhook_notification(
+        &app,
+        &title,
+        "Webhook notification channel test",
+        "test",
+        "notification.test",
+    );
+    Ok("Notification channel test sent".to_string())
+}
+
+#[tauri::command]
+fn test_webhook_email(state: State<'_, db::Db>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let config = db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())?;
+    if !config.email_enabled {
+        return Err("Email channel is not enabled".to_string());
+    }
+    let result = deliver_webhook_email(
+        &config,
+        "AI Workbench channel test",
+        "notification.test",
+        r#"{"event":"notification.test","test":true}"#,
+    )?;
+    Ok(format!("Email channel test sent ({})", result.message))
+}
+
+#[tauri::command]
+fn probe_webhook_recovery(state: State<'_, db::Db>) -> Result<WebhookRecoveryResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let now = now_millis();
+    let rules = db::list_circuit_open_webhook_rules(&conn).map_err(|e| e.to_string())?;
+    let mut result = WebhookRecoveryResult {
+        probed: 0,
+        recovered: 0,
+        failed: 0,
+    };
+    for rule in rules {
+        if now - rule.circuit_opened_at < webhook_recovery_backoff_ms(&rule) {
+            continue;
+        }
+        result.probed += 1;
+        let payload = render_webhook_payload(&rule.payload, &rule.trigger_event, None, now);
+        let token = if rule.token.trim().is_empty() {
+            None
+        } else {
+            Some(rule.token.as_str())
+        };
+        let secret = if rule.secret.trim().is_empty() {
+            None
+        } else {
+            Some(rule.secret.as_str())
+        };
+        let outcome = deliver_webhook_http(&rule.url, &payload, &rule.method, token, secret, 0);
+        let (ok, status, message) = match outcome {
+            Ok(res) => (true, res.status as i64, res.message),
+            Err(err) => (false, 0, format!("Recovery probe failed: {}", err)),
+        };
+        db::record_webhook_rule_outcome(&conn, &rule.id, status, &message)
+            .map_err(|e| e.to_string())?;
+        if ok {
+            db::set_webhook_rule_enabled(&conn, &rule.id, true).map_err(|e| e.to_string())?;
+            let _ = db::record_webhook_rule_run(
+                &conn,
+                &rule.id,
+                "scheduled",
+                "success",
+                status,
+                1,
+                &format!("Recovery probe succeeded: {}", message),
+            );
+            result.recovered += 1;
+        } else {
+            db::set_webhook_circuit_opened_at(&conn, &rule.id, now).map_err(|e| e.to_string())?;
+            let _ = db::record_webhook_rule_run(
+                &conn,
+                &rule.id,
+                "scheduled",
+                "failed",
+                status,
+                1,
+                &message,
+            );
+            result.failed += 1;
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -5736,6 +6113,11 @@ pub fn run() {
             set_webhook_retention_config,
             prune_webhook_deliveries,
             get_webhook_delivery_stats,
+            get_webhook_channel_config,
+            set_webhook_channel_config,
+            test_webhook_notification,
+            test_webhook_email,
+            probe_webhook_recovery,
             run_provider_stream_smoke_test,
             run_provider_e2e_stream
         ])
@@ -7628,6 +8010,8 @@ mod tests {
                 interval_seconds: 60,
                 trigger_event: "",
                 trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
                 auto_disable_after: 3,
             },
         )
@@ -7649,5 +8033,149 @@ mod tests {
         );
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn webhook_recovery_backoff_doubles_and_caps() {
+        let rule = |failures: i64, backoff: i64| db::WebhookRule {
+            id: "recovery".to_string(),
+            name: "Recovery".to_string(),
+            url: "https://example.test".to_string(),
+            payload: "{}".to_string(),
+            method: "POST".to_string(),
+            token: String::new(),
+            secret: String::new(),
+            retries: 1,
+            cooldown_seconds: 0,
+            interval_seconds: 60,
+            trigger_event: String::new(),
+            trigger_condition: String::new(),
+            channels: vec!["http".to_string()],
+            recovery_backoff_seconds: backoff,
+            circuit_opened_at: 1,
+            enabled: false,
+            last_run_at: 0,
+            last_status: 0,
+            last_message: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            consecutive_failures: failures,
+            auto_disable_after: 3,
+        };
+        assert_eq!(webhook_recovery_backoff_ms(&rule(3, 300)), 300_000);
+        assert_eq!(webhook_recovery_backoff_ms(&rule(4, 300)), 600_000);
+        assert_eq!(webhook_recovery_backoff_ms(&rule(5, 300)), 1_200_000);
+        assert_eq!(webhook_recovery_backoff_ms(&rule(20, 300)), 86_400_000);
+        assert_eq!(webhook_recovery_backoff_ms(&rule(0, 0)), 5_000);
+        assert_eq!(webhook_recovery_backoff_ms(&rule(9, 3600)), 86_400_000);
+    }
+
+    #[test]
+    fn webhook_email_delivers_via_mock_smtp() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut saw_mail = false;
+            let mut saw_rcpt = false;
+            let mut saw_data = false;
+            writer.write_all(b"220 mock.local ESMTP\r\n").unwrap();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let command = line.trim();
+                let upper = command.to_uppercase();
+                if upper.starts_with("EHLO") {
+                    writer
+                        .write_all(b"250-mock.local\r\n250 AUTH PLAIN LOGIN\r\n")
+                        .unwrap();
+                } else if upper == "AUTH PLAIN" || upper.starts_with("AUTH PLAIN ") {
+                    let mut payload = String::new();
+                    if upper == "AUTH PLAIN" {
+                        let _ = reader.read_line(&mut payload);
+                    }
+                    writer
+                        .write_all(b"235 2.7.0 Authentication successful\r\n")
+                        .unwrap();
+                } else if upper == "AUTH LOGIN" {
+                    writer.write_all(b"334 VXNlcm5hbWU6\r\n").unwrap();
+                    let mut user = String::new();
+                    let _ = reader.read_line(&mut user);
+                    writer.write_all(b"334 UGFzc3dvcmQ6\r\n").unwrap();
+                    let mut pass = String::new();
+                    let _ = reader.read_line(&mut pass);
+                    writer
+                        .write_all(b"235 2.7.0 Authentication successful\r\n")
+                        .unwrap();
+                } else if upper.starts_with("MAIL FROM") {
+                    saw_mail = true;
+                    writer.write_all(b"250 OK\r\n").unwrap();
+                } else if upper.starts_with("RCPT TO") {
+                    saw_rcpt = true;
+                    writer.write_all(b"250 OK\r\n").unwrap();
+                } else if upper.starts_with("DATA") {
+                    saw_data = true;
+                    writer
+                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
+                        .unwrap();
+                    loop {
+                        let mut data_line = String::new();
+                        if reader.read_line(&mut data_line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        if data_line.trim_end_matches("\r\n") == "." {
+                            break;
+                        }
+                    }
+                    writer.write_all(b"250 2.0.0 OK\r\n").unwrap();
+                } else if upper.starts_with("QUIT") {
+                    writer.write_all(b"221 2.0.0 Bye\r\n").unwrap();
+                    break;
+                } else {
+                    writer.write_all(b"250 OK\r\n").unwrap();
+                }
+            }
+            (saw_mail, saw_rcpt, saw_data)
+        });
+        let config = db::WebhookChannelConfig {
+            email_enabled: true,
+            email_from: "sender@example.test".to_string(),
+            email_to: "recipient@example.test".to_string(),
+            smtp_host: "127.0.0.1".to_string(),
+            smtp_port: addr.port() as i64,
+            smtp_user: "smtp-user".to_string(),
+            smtp_password: "smtp-pass".to_string(),
+            notification_enabled: false,
+            notification_title: "test".to_string(),
+            updated_at: 0,
+        };
+        let result = deliver_webhook_email(&config, "Rule", "sync.completed", "{}").unwrap();
+        let (saw_mail, saw_rcpt, saw_data) = server.join().unwrap();
+        assert!(result.ok);
+        assert_eq!(result.status, 202);
+        assert!(result.message.contains("SMTP"), "{}", result.message);
+        assert!(saw_mail, "expected MAIL FROM");
+        assert!(saw_rcpt, "expected RCPT TO");
+        assert!(saw_data, "expected DATA");
+    }
+
+    #[test]
+    fn webhook_notification_payload_marks_channel() {
+        let notification = WebhookNotification {
+            title: "Title".to_string(),
+            body: "Body".to_string(),
+            rule_id: "rule-1".to_string(),
+            event: "sync.completed".to_string(),
+            channel: "notification".to_string(),
+        };
+        let value = serde_json::to_value(notification).unwrap();
+        assert_eq!(value["channel"], "notification");
+        assert_eq!(value["ruleId"], "rule-1");
+        assert_eq!(value["title"], "Title");
     }
 }

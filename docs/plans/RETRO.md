@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 143
+
+### What went well?
+
+- Webhook 投递升级为 HTTP / 邮件 / 系统通知三通道：`webhook_rules` 新增 `channels` / `recovery_backoff_seconds` / `circuit_opened_at`，`webhook_deliveries` 新增 `channel`，新增 `webhook_channel_config` 单行表，全部走幂等迁移；调度器与事件触发按规则 `channels` 逐通道入队。
+- 邮件通道用 `lettre` SMTP 真实发信并配本地 mock SMTP 单测，系统通知通过 `webhook-notification` Tauri 事件 + 浏览器 Notification API / CustomEvent 双端可触发；`test_webhook_email` / `test_webhook_notification` / `probe_webhook_recovery` 命令与 fallback 同构。
+- 熔断恢复按 `recovery_backoff_seconds * 2^failures`（封顶 24h）指数退避自动探测，成功恢复 enabled 并清零失败计数，失败重置计时继续退避；`verify:ui` / `verify:preview` 新增 `webhookMultiChannel` / `webhookRecoveryBackoff` lane，Rust 单测增至 161 条，全部门禁全绿。
+
+### What went wrong?
+
+- `webhook_recovery_backoff_ms` 首版把指数 `.min(6)` 且负数经 `as u32` 包装，低失败数时移位溢出；改为 `.clamp(0, 30)` 后既避免溢出又让 24h 封顶真实可达。
+- `set_webhook_channel_config` 10 个参数触发 clippy `too-many-arguments`，收敛为 `WebhookChannelConfigInput` 结构体后通过。
+- verify 首两轮在不同 lane 出现 CDP 超时（与本次改动无关的环境性卡顿），重启 Vite dev server 后第三轮双端全绿。
+
+### Action Items
+
+- 下一 Sprint 候选：事件总线持久化 event log、事件 schema 校验与跨设备事件转发。
+- 保留 `webhookMultiChannel` / `webhookRecoveryBackoff` lane，修改投递通道、SMTP、熔断恢复或规则模型时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 142
 
 ### What went well?
