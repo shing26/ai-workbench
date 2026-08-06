@@ -716,6 +716,40 @@ export type VectorRebuildResult = {
   shards: VectorShardRecord[];
 };
 
+export type KnowledgeClusterMember = {
+  id: string;
+  path: string;
+  title: string;
+  similarity: number;
+};
+
+export type KnowledgeClusterRecord = {
+  id: string;
+  documents: number;
+  representative: string;
+  model: string;
+  members: KnowledgeClusterMember[];
+};
+
+export type KnowledgeDedupCandidate = {
+  id: string;
+  docA: string;
+  docB: string;
+  titleA: string;
+  titleB: string;
+  similarity: number;
+  status: 'open' | 'dismissed' | 'merged';
+};
+
+export type KnowledgeClusterStatus = {
+  clusters: KnowledgeClusterRecord[];
+  dedup: KnowledgeDedupCandidate[];
+  clusterThreshold: number;
+  dedupThreshold: number;
+  lastRecomputedAt: number;
+  model: string;
+};
+
 export type KnowledgeIndexStatus = {
   files: number;
   indexedAt: number;
@@ -889,6 +923,9 @@ const EVENT_FORWARDS_LS_KEY = 'ai-workbench:event-forwards:v1';
 const EVENT_BUS_CONFIG_LS_KEY = 'ai-workbench:event-bus-config:v1';
 const EMBEDDING_CONFIG_LS_KEY = 'ai-workbench:embedding-config:v1';
 const VECTOR_SHARDS_LS_KEY = 'ai-workbench:vector-shards:v1';
+const KNOWLEDGE_CLUSTERS_LS_KEY = 'ai-workbench:knowledge-clusters:v1';
+const KNOWLEDGE_CLUSTER_CONFIG_LS_KEY = 'ai-workbench:knowledge-cluster-config:v1';
+const KNOWLEDGE_DEDUP_LS_KEY = 'ai-workbench:knowledge-dedup:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -4609,6 +4646,259 @@ export async function rebuildVectorIndex(force = false): Promise<VectorRebuildRe
     model: target,
     shards: readVectorShards(),
   };
+}
+
+function readKnowledgeClusterConfig(): {
+  clusterThreshold: number;
+  dedupThreshold: number;
+  lastRecomputedAt: number;
+} {
+  try {
+    const raw = localStorage.getItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<{
+        clusterThreshold: number;
+        dedupThreshold: number;
+        lastRecomputedAt: number;
+      }>;
+      return {
+        clusterThreshold: Math.min(1, Math.max(0, parsed.clusterThreshold ?? 0.62)),
+        dedupThreshold: Math.min(1, Math.max(0, parsed.dedupThreshold ?? 0.92)),
+        lastRecomputedAt: parsed.lastRecomputedAt ?? 0,
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return { clusterThreshold: 0.62, dedupThreshold: 0.92, lastRecomputedAt: 0 };
+}
+
+function writeKnowledgeClusterConfig(config: {
+  clusterThreshold: number;
+  dedupThreshold: number;
+  lastRecomputedAt: number;
+}) {
+  localStorage.setItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY, JSON.stringify(config));
+}
+
+type ClusterDoc = {
+  id: string;
+  path: string;
+  title: string;
+  content: string;
+  embedding: number[];
+};
+
+function readClusterDocs(): ClusterDoc[] {
+  return readVaultFiles()
+    .filter((file) => file.embeddingStatus === 'indexed')
+    .map((file) => {
+      let embedding: number[];
+      try {
+        embedding = file.embedding ? (JSON.parse(file.embedding) as number[]) : [];
+      } catch {
+        embedding = [];
+      }
+      if (embedding.length === 0) embedding = embedText(file.content);
+      return {
+        id: file.path,
+        path: file.path,
+        title: file.title,
+        content: file.content,
+        embedding,
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function readKnowledgeClusters(): KnowledgeClusterRecord[] {
+  try {
+    return JSON.parse(
+      localStorage.getItem(KNOWLEDGE_CLUSTERS_LS_KEY) ?? '[]',
+    ) as KnowledgeClusterRecord[];
+  } catch {
+    return [];
+  }
+}
+
+function writeKnowledgeClusters(clusters: KnowledgeClusterRecord[]) {
+  localStorage.setItem(KNOWLEDGE_CLUSTERS_LS_KEY, JSON.stringify(clusters));
+}
+
+function readKnowledgeDedup(): KnowledgeDedupCandidate[] {
+  try {
+    return JSON.parse(
+      localStorage.getItem(KNOWLEDGE_DEDUP_LS_KEY) ?? '[]',
+    ) as KnowledgeDedupCandidate[];
+  } catch {
+    return [];
+  }
+}
+
+function writeKnowledgeDedup(candidates: KnowledgeDedupCandidate[]) {
+  localStorage.setItem(KNOWLEDGE_DEDUP_LS_KEY, JSON.stringify(candidates));
+}
+
+function normalizeVector(vector: number[]): number[] {
+  const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+  return norm > 0 ? vector.map((value) => value / norm) : vector;
+}
+
+export async function getKnowledgeClusterStatus(): Promise<KnowledgeClusterStatus> {
+  if (isTauri()) return invoke<KnowledgeClusterStatus>('get_knowledge_cluster_status');
+  const config = readKnowledgeClusterConfig();
+  const model = embeddingModelKey(readEmbeddingConfig());
+  return {
+    clusters: readKnowledgeClusters(),
+    dedup: readKnowledgeDedup().sort((a, b) => {
+      const order = { open: 0, dismissed: 1, merged: 2 } as const;
+      return order[a.status] - order[b.status] || b.similarity - a.similarity;
+    }),
+    clusterThreshold: config.clusterThreshold,
+    dedupThreshold: config.dedupThreshold,
+    lastRecomputedAt: config.lastRecomputedAt,
+    model,
+  };
+}
+
+export async function recomputeKnowledgeClusters(
+  clusterThreshold?: number,
+  dedupThreshold?: number,
+): Promise<KnowledgeClusterStatus> {
+  if (isTauri()) {
+    return invoke<KnowledgeClusterStatus>('recompute_knowledge_clusters', {
+      clusterThreshold: clusterThreshold ?? null,
+      dedupThreshold: dedupThreshold ?? null,
+    });
+  }
+  const docs = readClusterDocs();
+  const threshold = Math.min(1, Math.max(0, clusterThreshold ?? 0.62));
+  const dedupThresholdValue = Math.min(1, Math.max(0, dedupThreshold ?? 0.92));
+  const clusters: {
+    members: { id: string; similarity: number }[];
+    representative: string;
+    centroid: number[];
+  }[] = [];
+  for (const doc of docs) {
+    const best = clusters.reduce<{ index: number; score: number } | null>(
+      (current, cluster, index) => {
+        if (cluster.members.some((member) => member.id === doc.id)) return current;
+        const score = cosineSimilarity(doc.embedding, cluster.centroid);
+        if (score < threshold) return current;
+        if (!current || score > current.score) return { index, score };
+        return current;
+      },
+      null,
+    );
+    if (best) {
+      const cluster = clusters[best.index];
+      const score = cosineSimilarity(doc.embedding, cluster.centroid);
+      cluster.members.push({ id: doc.id, similarity: score });
+      if (doc.content.length > cluster.representative.length) {
+        cluster.representative = doc.content;
+      }
+      cluster.centroid = normalizeVector(
+        cluster.centroid.map((value, index) => value + doc.embedding[index]),
+      );
+    } else {
+      clusters.push({
+        members: [{ id: doc.id, similarity: 1 }],
+        representative: doc.content,
+        centroid: normalizeVector(doc.embedding),
+      });
+    }
+  }
+  const model = embeddingModelKey(readEmbeddingConfig());
+  const records: KnowledgeClusterRecord[] = clusters
+    .map((cluster, index) => ({
+      id: `cluster-${index + 1}-${cluster.members[0]?.id.slice(0, 6) ?? 'x'}`,
+      documents: cluster.members.length,
+      representative: cluster.representative.slice(0, 500).trim(),
+      model,
+      members: cluster.members.map((member) => {
+        const doc = docs.find((d) => d.id === member.id);
+        return {
+          id: member.id,
+          path: doc?.path ?? member.id,
+          title: doc?.title ?? 'Untitled',
+          similarity: member.similarity,
+        };
+      }),
+    }))
+    .sort((a, b) => b.documents - a.documents);
+  writeKnowledgeClusters(records);
+
+  const existing = new Set(
+    readKnowledgeDedup()
+      .filter((candidate) => candidate.status !== 'open')
+      .map((candidate) => `${candidate.docA}\u0000${candidate.docB}`),
+  );
+  const dedup = readKnowledgeDedup();
+  for (let a = 0; a < docs.length; a += 1) {
+    for (let b = a + 1; b < docs.length; b += 1) {
+      const similarity = cosineSimilarity(docs[a].embedding, docs[b].embedding);
+      if (similarity < dedupThresholdValue) continue;
+      const [left, right] = docs[a].id < docs[b].id ? [docs[a], docs[b]] : [docs[b], docs[a]];
+      const key = `${left.id}\u0000${right.id}`;
+      if (
+        existing.has(key) ||
+        dedup.some((candidate) => candidate.docA === left.id && candidate.docB === right.id)
+      ) {
+        continue;
+      }
+      dedup.push({
+        id: `dup-${Date.now()}-${dedup.length}`,
+        docA: left.id,
+        docB: right.id,
+        titleA: left.title,
+        titleB: right.title,
+        similarity,
+        status: 'open',
+      });
+    }
+  }
+  for (const candidate of dedup) {
+    if (
+      candidate.status === 'open' &&
+      (!docs.some((doc) => doc.id === candidate.docA) ||
+        !docs.some((doc) => doc.id === candidate.docB))
+    ) {
+      candidate.status = 'merged';
+    }
+  }
+  writeKnowledgeDedup(dedup);
+  const config = readKnowledgeClusterConfig();
+  config.clusterThreshold = threshold;
+  config.dedupThreshold = dedupThresholdValue;
+  config.lastRecomputedAt = Date.now();
+  writeKnowledgeClusterConfig(config);
+  return getKnowledgeClusterStatus();
+}
+
+export async function dismissKnowledgeDuplicate(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('dismiss_knowledge_duplicate', { id });
+    return;
+  }
+  const dedup = readKnowledgeDedup();
+  const candidate = dedup.find((item) => item.id === id);
+  if (candidate) candidate.status = 'dismissed';
+  writeKnowledgeDedup(dedup);
+}
+
+export async function mergeKnowledgeDuplicate(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('merge_knowledge_duplicate', { id });
+    return;
+  }
+  const dedup = readKnowledgeDedup();
+  const candidate = dedup.find((item) => item.id === id);
+  if (!candidate) return;
+  const files = readVaultFiles();
+  writeVaultFiles(files.filter((file) => file.path !== candidate.docB));
+  candidate.status = 'merged';
+  writeKnowledgeDedup(dedup);
+  refreshVectorShardStats();
 }
 
 export async function getDocHealthAutoConfig(): Promise<DocHealthAutoConfig> {

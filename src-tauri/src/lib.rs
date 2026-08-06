@@ -2050,6 +2050,37 @@ fn rebuild_vector_index(
 }
 
 #[tauri::command]
+fn get_knowledge_cluster_status(
+    state: State<'_, db::Db>,
+) -> Result<db::KnowledgeClusterStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_knowledge_cluster_status(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recompute_knowledge_clusters(
+    state: State<'_, db::Db>,
+    cluster_threshold: Option<f64>,
+    dedup_threshold: Option<f64>,
+) -> Result<db::KnowledgeClusterStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::recompute_knowledge_clusters(&conn, cluster_threshold, dedup_threshold)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn dismiss_knowledge_duplicate(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::dismiss_knowledge_duplicate(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn merge_knowledge_duplicate(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::merge_knowledge_duplicate(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     index_vault_files(&conn, &vault_path, &[], 4)
@@ -6413,6 +6444,10 @@ pub fn run() {
             set_embedding_config,
             get_vector_index_status,
             rebuild_vector_index,
+            get_knowledge_cluster_status,
+            recompute_knowledge_clusters,
+            dismiss_knowledge_duplicate,
+            merge_knowledge_duplicate,
             index_vault,
             index_vault_ex,
             start_vault_index,

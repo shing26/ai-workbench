@@ -173,6 +173,38 @@ CREATE TABLE IF NOT EXISTS vector_shards (
     updated_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS knowledge_clusters (
+    id TEXT PRIMARY KEY,
+    centroid TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'local',
+    representative TEXT NOT NULL DEFAULT '',
+    documents INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS knowledge_cluster_members (
+    cluster_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    similarity REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (cluster_id, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_cluster_members_doc ON knowledge_cluster_members(doc_id);
+CREATE TABLE IF NOT EXISTS knowledge_cluster_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cluster_threshold REAL NOT NULL DEFAULT 0.62,
+    dedup_threshold REAL NOT NULL DEFAULT 0.92,
+    last_recomputed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS knowledge_dedup_candidates (
+    id TEXT PRIMARY KEY,
+    doc_a TEXT NOT NULL,
+    doc_b TEXT NOT NULL,
+    similarity REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_dedup_status ON knowledge_dedup_candidates(status);
 CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -830,6 +862,48 @@ pub struct VectorRebuildResult {
     pub skipped: i64,
     pub model: String,
     pub shards: Vec<VectorShardRecord>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeClusterRecord {
+    pub id: String,
+    pub documents: i64,
+    pub representative: String,
+    pub model: String,
+    pub members: Vec<KnowledgeClusterMember>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeClusterMember {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub similarity: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeDedupCandidate {
+    pub id: String,
+    pub doc_a: String,
+    pub doc_b: String,
+    pub title_a: String,
+    pub title_b: String,
+    pub similarity: f64,
+    pub status: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeClusterStatus {
+    pub clusters: Vec<KnowledgeClusterRecord>,
+    pub dedup: Vec<KnowledgeDedupCandidate>,
+    pub cluster_threshold: f64,
+    pub dedup_threshold: f64,
+    pub last_recomputed_at: i64,
+    pub model: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -2502,6 +2576,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_knowledge_vault_path(&conn)?;
     migrate_knowledge_embedding(&conn)?;
     migrate_vector_index(&conn)?;
+    migrate_knowledge_clusters(&conn)?;
     migrate_provider_model(&conn)?;
     migrate_provider_priority(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
@@ -2606,6 +2681,15 @@ fn migrate_vector_index(conn: &Connection) -> Result<()> {
         .optional()?;
     let shard_count = shard_count.unwrap_or(8).clamp(1, 64) as usize;
     seed_vector_shards(conn, shard_count, "local", 256)?;
+    Ok(())
+}
+
+fn migrate_knowledge_clusters(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO knowledge_cluster_config (id, cluster_threshold, dedup_threshold, last_recomputed_at)
+         VALUES (1, 0.62, 0.92, 0)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -6063,6 +6147,356 @@ pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
     if let Some(shard_id) = shard_id {
         refresh_shard_stats(conn, &shard_id)?;
     }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ClusterDoc {
+    id: String,
+    content: String,
+    embedding: Vec<f64>,
+}
+
+fn cluster_docs(conn: &Connection) -> Result<Vec<ClusterDoc>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, content, embedding, embedding_status
+         FROM knowledge_files ORDER BY path ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut docs = Vec::new();
+    for row in rows.flatten() {
+        let (id, content, embedding_raw, status) = row;
+        if status != "indexed" {
+            continue;
+        }
+        let embedding = if embedding_raw.is_empty() {
+            embed_text(&content)
+        } else {
+            serde_json::from_str(&embedding_raw).unwrap_or_else(|_| embed_text(&content))
+        };
+        docs.push(ClusterDoc {
+            id,
+            content,
+            embedding,
+        });
+    }
+    Ok(docs)
+}
+
+fn normalize_vector(vector: &[f64]) -> Vec<f64> {
+    let norm = vector.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if norm > 0.0 {
+        vector.iter().map(|v| v / norm).collect()
+    } else {
+        vector.to_vec()
+    }
+}
+
+struct ClusterAcc {
+    members: Vec<(String, f64)>,
+    representative: String,
+    centroid: Vec<f64>,
+}
+
+fn replace_knowledge_clusters(
+    conn: &Connection,
+    clusters: &[ClusterAcc],
+    model: &str,
+) -> Result<()> {
+    conn.execute("DELETE FROM knowledge_clusters", [])?;
+    let now = now_millis();
+    let mut stmt = conn.prepare(
+        "INSERT INTO knowledge_clusters (id, centroid, model, representative, documents, updated_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+    )?;
+    for cluster in clusters {
+        let cluster_id = uid();
+        let centroid_json =
+            serde_json::to_string(&cluster.centroid).unwrap_or_else(|_| "[]".to_string());
+        let representative_text = cluster
+            .representative
+            .chars()
+            .take(500)
+            .collect::<String>()
+            .trim()
+            .to_string();
+        stmt.execute(params![
+            cluster_id,
+            centroid_json,
+            model,
+            representative_text,
+            cluster.members.len() as i64,
+            now,
+        ])?;
+        for (member, member_similarity) in &cluster.members {
+            conn.execute(
+                "INSERT INTO knowledge_cluster_members (cluster_id, doc_id, similarity)
+                 VALUES (?1, ?2, ?3)",
+                params![cluster_id, member, member_similarity],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn recompute_knowledge_clusters(
+    conn: &Connection,
+    cluster_threshold: Option<f64>,
+    dedup_threshold: Option<f64>,
+) -> Result<KnowledgeClusterStatus, String> {
+    let config = get_embedding_config(conn).map_err(|e| e.to_string())?;
+    let model = embedding_target_model(&config);
+    let docs = cluster_docs(conn).map_err(|e| e.to_string())?;
+    let cluster_threshold = cluster_threshold.unwrap_or(0.62).clamp(0.0, 1.0);
+    let dedup_threshold = dedup_threshold.unwrap_or(0.92).clamp(0.0, 1.0);
+
+    let mut clusters: Vec<ClusterAcc> = Vec::new();
+    for doc in &docs {
+        let mut best: Option<(usize, f64)> = None;
+        for (index, cluster) in clusters.iter().enumerate() {
+            if cluster
+                .members
+                .iter()
+                .any(|(member_id, _)| member_id == &doc.id)
+            {
+                continue;
+            }
+            let score = cosine_similarity(&doc.embedding, &cluster.centroid);
+            if score >= cluster_threshold && best.map(|(_, s)| score > s).unwrap_or(true) {
+                best = Some((index, score));
+            }
+        }
+        if let Some((index, _)) = best {
+            let cluster = &mut clusters[index];
+            let score = cosine_similarity(&doc.embedding, &cluster.centroid);
+            cluster.members.push((doc.id.clone(), score));
+            if doc.content.len() > cluster.representative.len() {
+                cluster.representative = doc.content.clone();
+            }
+            cluster.centroid = normalize_vector(
+                &cluster
+                    .centroid
+                    .iter()
+                    .zip(doc.embedding.iter())
+                    .map(|(a, b)| a + b)
+                    .collect::<Vec<f64>>(),
+            );
+        } else {
+            clusters.push(ClusterAcc {
+                members: vec![(doc.id.clone(), 1.0)],
+                representative: doc.content.clone(),
+                centroid: normalize_vector(&doc.embedding),
+            });
+        }
+    }
+
+    replace_knowledge_clusters(conn, &clusters, &model).map_err(|e| e.to_string())?;
+    let _candidate_count =
+        refresh_knowledge_dedup_candidates(conn, dedup_threshold).map_err(|e| e.to_string())?;
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO knowledge_cluster_config (id, cluster_threshold, dedup_threshold, last_recomputed_at)
+         VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+           cluster_threshold = excluded.cluster_threshold,
+           dedup_threshold = excluded.dedup_threshold,
+           last_recomputed_at = excluded.last_recomputed_at",
+        params![cluster_threshold, dedup_threshold, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let mut status = get_knowledge_cluster_status(conn).map_err(|e| e.to_string())?;
+    status
+        .clusters
+        .sort_by_key(|cluster| std::cmp::Reverse(cluster.documents));
+    Ok(status)
+}
+
+fn knowledge_cluster_status_rows(conn: &Connection) -> Result<Vec<KnowledgeClusterRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, representative, model, documents FROM knowledge_clusters ORDER BY documents DESC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut clusters = Vec::new();
+    for row in rows.flatten() {
+        let (id, representative, model, documents) = row;
+        let mut member_stmt = conn.prepare(
+            "SELECT cm.doc_id, f.path, f.title, cm.similarity
+             FROM knowledge_cluster_members cm
+             LEFT JOIN knowledge_files f ON f.id = cm.doc_id
+             WHERE cm.cluster_id = ?1
+             ORDER BY cm.similarity DESC",
+        )?;
+        let member_rows = member_stmt.query_map(params![id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })?;
+        let mut members = Vec::new();
+        for member in member_rows.flatten() {
+            let (doc_id, path, title, similarity) = member;
+            members.push(KnowledgeClusterMember {
+                id: doc_id.clone(),
+                path: path.unwrap_or_else(|| doc_id.clone()),
+                title: title.unwrap_or_else(|| "Untitled".to_string()),
+                similarity,
+            });
+        }
+        clusters.push(KnowledgeClusterRecord {
+            id,
+            documents,
+            representative,
+            model,
+            members,
+        });
+    }
+    Ok(clusters)
+}
+
+fn refresh_knowledge_dedup_candidates(conn: &Connection, dedup_threshold: f64) -> Result<usize> {
+    let docs = cluster_docs(conn)?;
+    let existing: std::collections::HashSet<(String, String)> = conn
+        .prepare("SELECT doc_a, doc_b FROM knowledge_dedup_candidates WHERE status <> 'open'")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    let mut count = 0usize;
+    let now = now_millis();
+    for a in 0..docs.len() {
+        for b in (a + 1)..docs.len() {
+            let similarity = cosine_similarity(&docs[a].embedding, &docs[b].embedding);
+            if similarity < dedup_threshold {
+                continue;
+            }
+            let (left, right) = if docs[a].id < docs[b].id {
+                (&docs[a], &docs[b])
+            } else {
+                (&docs[b], &docs[a])
+            };
+            let key = (left.id.clone(), right.id.clone());
+            if existing.contains(&key) {
+                continue;
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_dedup_candidates
+                   (id, doc_a, doc_b, similarity, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?5)",
+                params![uid(), key.0, key.1, similarity, now],
+            )?;
+            count += 1;
+        }
+    }
+    conn.execute(
+        "UPDATE knowledge_dedup_candidates SET status = 'merged'
+         WHERE status = 'open' AND (
+           NOT EXISTS (SELECT 1 FROM knowledge_files f WHERE f.id = doc_a)
+           OR NOT EXISTS (SELECT 1 FROM knowledge_files f WHERE f.id = doc_b)
+         )",
+        [],
+    )?;
+    Ok(count)
+}
+
+fn list_knowledge_dedup_rows(conn: &Connection) -> Result<Vec<KnowledgeDedupCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.doc_a, d.doc_b, d.similarity, d.status,
+                CAST(COALESCE(a.title, a.path, 'Deleted document') AS TEXT),
+                CAST(COALESCE(b.title, b.path, 'Deleted document') AS TEXT)
+         FROM knowledge_dedup_candidates d
+         LEFT JOIN knowledge_files a ON a.id = d.doc_a
+         LEFT JOIN knowledge_files b ON b.id = d.doc_b
+         ORDER BY CASE d.status WHEN 'open' THEN 0 WHEN 'dismissed' THEN 1 ELSE 2 END, d.similarity DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(KnowledgeDedupCandidate {
+            id: row.get(0)?,
+            doc_a: row.get(1)?,
+            doc_b: row.get(2)?,
+            similarity: row.get(3)?,
+            status: row.get(4)?,
+            title_a: row.get(5)?,
+            title_b: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<KnowledgeDedupCandidate>, _>>()
+}
+
+pub fn get_knowledge_cluster_status(conn: &Connection) -> Result<KnowledgeClusterStatus> {
+    let config = get_embedding_config(conn)?;
+    let model = embedding_target_model(&config);
+    let cluster_threshold: f64 = conn.query_row(
+        "SELECT cluster_threshold FROM knowledge_cluster_config WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let dedup_threshold: f64 = conn.query_row(
+        "SELECT dedup_threshold FROM knowledge_cluster_config WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let last_recomputed_at: i64 = conn.query_row(
+        "SELECT last_recomputed_at FROM knowledge_cluster_config WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(KnowledgeClusterStatus {
+        clusters: knowledge_cluster_status_rows(conn)?,
+        dedup: list_knowledge_dedup_rows(conn)?,
+        cluster_threshold,
+        dedup_threshold,
+        last_recomputed_at,
+        model: model.clone(),
+    })
+}
+
+pub fn dismiss_knowledge_duplicate(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE knowledge_dedup_candidates SET status = 'dismissed', updated_at = ?1 WHERE id = ?2",
+        params![now_millis(), id],
+    )?;
+    Ok(())
+}
+
+pub fn merge_knowledge_duplicate(conn: &Connection, id: &str) -> Result<(), String> {
+    let (doc_b, path_b): (String, String) = conn
+        .query_row(
+            "SELECT d.doc_b, COALESCE(f.path, '')
+             FROM knowledge_dedup_candidates d
+             LEFT JOIN knowledge_files f ON f.id = d.doc_b
+             WHERE d.id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    if !path_b.is_empty() {
+        delete_knowledge_file(conn, &path_b).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute("DELETE FROM knowledge_files WHERE id = ?1", params![doc_b])
+            .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "UPDATE knowledge_dedup_candidates SET status = 'merged', updated_at = ?1 WHERE id = ?2",
+        params![now_millis(), id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -9663,6 +10097,180 @@ mod tests {
             assert!(column_exists(&conn, "knowledge_files", column).unwrap());
         }
         assert_eq!(list_vector_shards(&conn).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn knowledge_cluster_migration_seeds_config_and_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE knowledge_files (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT,
+                tags TEXT,
+                content TEXT NOT NULL,
+                vault_path TEXT NOT NULL DEFAULT '',
+                indexed_at INTEGER,
+                embedding TEXT DEFAULT '',
+                shard_id TEXT NOT NULL DEFAULT '0',
+                embedding_model TEXT NOT NULL DEFAULT '',
+                embedding_dim INTEGER NOT NULL DEFAULT 256,
+                embedding_status TEXT NOT NULL DEFAULT 'indexed',
+                embedding_error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE knowledge_clusters (
+                id TEXT PRIMARY KEY,
+                centroid TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT 'local',
+                representative TEXT NOT NULL DEFAULT '',
+                documents INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE knowledge_cluster_members (
+                cluster_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL,
+                similarity REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (cluster_id, doc_id)
+            );
+            CREATE TABLE knowledge_cluster_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cluster_threshold REAL NOT NULL DEFAULT 0.62,
+                dedup_threshold REAL NOT NULL DEFAULT 0.92,
+                last_recomputed_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE knowledge_dedup_candidates (
+                id TEXT PRIMARY KEY,
+                doc_a TEXT NOT NULL,
+                doc_b TEXT NOT NULL,
+                similarity REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        migrate_knowledge_clusters(&conn).unwrap();
+        let (cluster_threshold, dedup_threshold, last_recomputed_at): (f64, f64, i64) = conn
+            .query_row(
+                "SELECT cluster_threshold, dedup_threshold, last_recomputed_at
+                 FROM knowledge_cluster_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cluster_threshold, 0.62);
+        assert_eq!(dedup_threshold, 0.92);
+        assert_eq!(last_recomputed_at, 0);
+    }
+
+    #[test]
+    fn knowledge_clusters_group_similar_docs_and_keep_distinct() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        for (path, title, content) in [
+            ("C:/vault/a.md", "A", "knowledge graph vector search"),
+            ("C:/vault/b.md", "B", "knowledge graph vector search rerank"),
+            ("C:/vault/c.md", "C", "weather forecast weekend run"),
+        ] {
+            upsert_knowledge_file(&conn, path, title, "", content, "C:/vault").unwrap();
+        }
+        let status = recompute_knowledge_clusters(&conn, Some(0.5), Some(0.99)).unwrap();
+        assert!(!status.clusters.is_empty());
+        assert!(status.clusters.iter().any(|cluster| cluster.documents >= 2));
+        assert!(status.clusters.iter().any(|cluster| cluster.documents == 1));
+        assert_eq!(status.cluster_threshold, 0.5);
+        assert_eq!(status.dedup_threshold, 0.99);
+        assert!(status.last_recomputed_at > 0);
+        assert!(status
+            .clusters
+            .iter()
+            .flat_map(|cluster| cluster.members.iter())
+            .any(|member| member.similarity > 0.0));
+    }
+
+    #[test]
+    fn knowledge_dedup_candidates_dismiss_and_merge() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/original.md",
+            "Original",
+            "",
+            "duplicate duplicate duplicate content",
+            "C:/vault",
+        )
+        .unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/copy.md",
+            "Copy",
+            "",
+            "duplicate duplicate duplicate content",
+            "C:/vault",
+        )
+        .unwrap();
+        let mut status = recompute_knowledge_clusters(&conn, None, Some(0.9)).unwrap();
+        let open: Vec<KnowledgeDedupCandidate> = status
+            .dedup
+            .iter()
+            .filter(|candidate| candidate.status == "open")
+            .cloned()
+            .collect();
+        assert!(!open.is_empty());
+        dismiss_knowledge_duplicate(&conn, &open[0].id).unwrap();
+        status = get_knowledge_cluster_status(&conn).unwrap();
+        assert_eq!(
+            status
+                .dedup
+                .iter()
+                .find(|candidate| candidate.id == open[0].id)
+                .map(|candidate| candidate.status.as_str()),
+            Some("dismissed")
+        );
+
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/original2.md",
+            "Original 2",
+            "",
+            "second duplicate second duplicate",
+            "C:/vault",
+        )
+        .unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/copy2.md",
+            "Copy 2",
+            "",
+            "second duplicate second duplicate",
+            "C:/vault",
+        )
+        .unwrap();
+        status = recompute_knowledge_clusters(&conn, None, Some(0.9)).unwrap();
+        let open2: Vec<KnowledgeDedupCandidate> = status
+            .dedup
+            .iter()
+            .filter(|candidate| candidate.status == "open")
+            .cloned()
+            .collect();
+        assert!(!open2.is_empty());
+        let id = open2[0].id.clone();
+        merge_knowledge_duplicate(&conn, &id).unwrap();
+        status = get_knowledge_cluster_status(&conn).unwrap();
+        assert_eq!(
+            status
+                .dedup
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .map(|candidate| candidate.status.as_str()),
+            Some("merged")
+        );
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(files, 3);
     }
 
     #[test]
