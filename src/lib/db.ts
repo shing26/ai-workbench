@@ -324,6 +324,54 @@ export type SyncStatus = {
   lastSyncedAt: number | null;
 };
 
+export type PassphraseStrength = {
+  score: number;
+  label: string;
+  feedback: string[];
+};
+
+export type SyncCredential = {
+  deviceId: string;
+  encryptionEnabled: boolean;
+  confirmed: boolean;
+  activeKeyVersion: number;
+  rotatedAt: number;
+  updatedAt: number;
+};
+
+export type SyncKeyVersion = {
+  deviceId: string;
+  version: number;
+  salt: string;
+  fingerprint: string;
+  algorithm: string;
+  iterations: number;
+  active: boolean;
+  createdAt: number;
+  rotatedAt: number;
+};
+
+export type SyncPairedDevice = {
+  deviceId: string;
+  fingerprint: string;
+  pairingCode: string;
+  version: number;
+  pairedAt: number;
+};
+
+export type SyncKeyStatus = {
+  deviceId: string;
+  encryptionEnabled: boolean;
+  confirmed: boolean;
+  activeKeyVersion: number;
+  activeSalt: string;
+  activeFingerprint: string;
+  iterations: number;
+  rotatedAt: number;
+  updatedAt: number;
+  pairedDevices: SyncPairedDevice[];
+};
+
 export type SyncAuditEntry = {
   id: number;
   event: string;
@@ -3243,6 +3291,34 @@ const SYNC_ENCRYPTED_LS_KEY = 'ai-workbench:sync-encrypted:v1';
 const SYNC_AUTO_LS_KEY = 'ai-workbench:sync-auto:v1';
 const SYNC_CONFLICTS_LS_KEY = 'ai-workbench:sync-conflicts:v1';
 const SYNC_AUDIT_LS_KEY = 'ai-workbench:sync-audit:v1';
+const SYNC_KEYS_LS_KEY = 'ai-workbench:sync-keys:v1';
+
+type SyncKeysStore = {
+  credential: SyncCredential | null;
+  versions: SyncKeyVersion[];
+  pairedDevices: SyncPairedDevice[];
+};
+
+function readSyncKeysStore(): SyncKeysStore {
+  try {
+    const raw = localStorage.getItem(SYNC_KEYS_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SyncKeysStore>;
+      return {
+        credential: parsed.credential ?? null,
+        versions: parsed.versions ?? [],
+        pairedDevices: parsed.pairedDevices ?? [],
+      };
+    }
+  } catch {
+    // fall through to empty store
+  }
+  return { credential: null, versions: [], pairedDevices: [] };
+}
+
+function writeSyncKeysStore(store: SyncKeysStore) {
+  localStorage.setItem(SYNC_KEYS_LS_KEY, JSON.stringify(store));
+}
 
 export type SyncAutoConfig = {
   enabled: boolean;
@@ -3263,6 +3339,298 @@ export async function getSyncAutoConfig(): Promise<SyncAutoConfig> {
 export async function setSyncAutoConfig(config: SyncAutoConfig): Promise<SyncAutoConfig> {
   localStorage.setItem(SYNC_AUTO_LS_KEY, JSON.stringify(config));
   return config;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value: string): Uint8Array {
+  const padded = value.replace(/-/g, '+').replace(/_/g, '/');
+  return base64ToBytes(padded);
+}
+
+async function syncKeyFingerprint(key: CryptoKey): Promise<string> {
+  const raw = await crypto.subtle.exportKey('raw', key);
+  const digest = await crypto.subtle.digest('SHA-256', raw);
+  return bytesToHex(new Uint8Array(digest).slice(0, 8));
+}
+
+function assessPassphraseStrengthBrowser(passphrase: string): PassphraseStrength {
+  const trimmed = passphrase.trim();
+  const length = [...trimmed].length;
+  const hasLower = /[a-z]/.test(trimmed);
+  const hasUpper = /[A-Z]/.test(trimmed);
+  const hasDigit = /\d/.test(trimmed);
+  const hasSymbol = /[^a-zA-Z0-9\s]/.test(trimmed);
+  const variety = [hasLower, hasUpper, hasDigit, hasSymbol].filter(Boolean).length;
+  let score = length * 4 + variety * 8;
+  if (length >= 16) score += 10;
+  else if (length >= 12) score += 6;
+  else if (length >= 8) score += 3;
+  if (trimmed.length > 24) score += 8;
+  if (hasLower && hasUpper && hasDigit && hasSymbol) score += 8;
+  score = Math.min(100, score);
+  const feedback: string[] = [];
+  if (length < 8) feedback.push('at least 8 characters');
+  if (!hasDigit) feedback.push('add digits');
+  if (!hasUpper || !hasLower) feedback.push('mix upper and lower case');
+  if (!hasSymbol) feedback.push('add symbols');
+  if (feedback.length === 0 && length < 12) {
+    feedback.push('lengthen to 12+ characters for strong protection');
+  }
+  const label = score < 40 ? 'weak' : score < 70 ? 'fair' : score < 90 ? 'strong' : 'excellent';
+  return { score, label, feedback };
+}
+
+function buildPairingCode(
+  deviceId: string,
+  saltHex: string,
+  fingerprint: string,
+  version: number,
+): string {
+  const prefix = (deviceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4) || 'WB01').toUpperCase();
+  const salt = new Uint8Array(
+    saltHex.match(/.{2}/g)?.map((part) => Number.parseInt(part, 16)) ?? [],
+  );
+  return `WB-${prefix}-${base64UrlEncode(salt)}.${fingerprint}.${version}.${base64UrlEncode(
+    new TextEncoder().encode(deviceId),
+  )}`;
+}
+
+function parsePairingCode(code: string): {
+  remoteDeviceId: string;
+  salt: Uint8Array;
+  fingerprint: string;
+  version: number;
+} {
+  const trimmed = code.trim();
+  const parts = trimmed.split('.');
+  if (parts.length !== 4 || !trimmed.startsWith('WB-')) {
+    throw new Error('Invalid pairing code format');
+  }
+  const header = parts[0].slice(3);
+  if (header.length < 5) throw new Error('Invalid pairing code header');
+  if (header[4] !== '-') throw new Error('Invalid pairing code header delimiter');
+  const saltB64 = header.slice(5);
+  const salt = base64UrlDecode(saltB64);
+  const fingerprint = parts[1].toLowerCase();
+  const version = Number(parts[2]);
+  const remoteDeviceId = (() => {
+    try {
+      return new TextDecoder().decode(base64UrlDecode(parts[3]));
+    } catch {
+      return '';
+    }
+  })();
+  if (
+    salt.length !== 16 ||
+    fingerprint.length !== 16 ||
+    !Number.isInteger(version) ||
+    version < 1
+  ) {
+    throw new Error('Invalid pairing code fields');
+  }
+  return { remoteDeviceId, salt, fingerprint, version };
+}
+
+export async function syncPassphraseStrength(passphrase: string): Promise<PassphraseStrength> {
+  if (isTauri()) {
+    return invoke<PassphraseStrength>('sync_passphrase_strength', { passphrase });
+  }
+  return assessPassphraseStrengthBrowser(passphrase);
+}
+
+export async function getSyncKeyStatus(): Promise<SyncKeyStatus> {
+  if (isTauri()) {
+    return invoke<SyncKeyStatus>('get_sync_key_status');
+  }
+  const store = readSyncKeysStore();
+  const credential = store.credential;
+  const activeVersion = credential?.activeKeyVersion
+    ? store.versions.find((item) => item.version === credential.activeKeyVersion)
+    : null;
+  return {
+    deviceId: readLocal().syncDeviceId || credential?.deviceId || '',
+    encryptionEnabled: credential?.encryptionEnabled ?? false,
+    confirmed: credential?.confirmed ?? false,
+    activeKeyVersion: credential?.activeKeyVersion ?? 0,
+    activeSalt: activeVersion?.salt ?? '',
+    activeFingerprint: activeVersion?.fingerprint ?? '',
+    iterations: activeVersion?.iterations ?? 100_000,
+    rotatedAt: credential?.rotatedAt ?? 0,
+    updatedAt: credential?.updatedAt ?? 0,
+    pairedDevices: store.pairedDevices,
+  };
+}
+
+export async function listSyncKeyVersions(): Promise<SyncKeyVersion[]> {
+  if (isTauri()) {
+    return invoke<SyncKeyVersion[]>('list_sync_key_versions');
+  }
+  return readSyncKeysStore().versions;
+}
+
+export async function registerSyncPassphrase(
+  deviceId: string,
+  passphrase: string,
+): Promise<SyncCredential> {
+  if (!passphrase.trim()) throw new Error('Passphrase is required');
+  const strength = assessPassphraseStrengthBrowser(passphrase);
+  if (strength.score < 40)
+    throw new Error('Passphrase is too weak; use at least 8 characters with mixed cases');
+  if (isTauri()) {
+    return invoke<SyncCredential>('register_sync_passphrase', { deviceId, passphrase });
+  }
+  const resolvedDeviceId = deviceId.trim() || readLocal().syncDeviceId || makeId();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveBrowserSyncKey(passphrase, salt);
+  const fingerprint = await syncKeyFingerprint(key);
+  const store = readSyncKeysStore();
+  const now = Date.now();
+  const version = (store.credential?.activeKeyVersion ?? 0) + 1;
+  const versionRecord: SyncKeyVersion = {
+    deviceId: resolvedDeviceId,
+    version,
+    salt: bytesToHex(salt),
+    fingerprint,
+    algorithm: 'AES-256-GCM',
+    iterations: 100_000,
+    active: true,
+    createdAt: now,
+    rotatedAt: now,
+  };
+  store.versions = [
+    versionRecord,
+    ...store.versions.map((item) => ({ ...item, active: false, rotatedAt: now })),
+  ];
+  store.credential = {
+    deviceId: resolvedDeviceId,
+    encryptionEnabled: true,
+    confirmed: true,
+    activeKeyVersion: version,
+    rotatedAt: now,
+    updatedAt: now,
+  };
+  writeSyncKeysStore(store);
+  return store.credential;
+}
+
+export async function confirmSyncPassphrase(passphrase: string): Promise<SyncCredential> {
+  if (!passphrase.trim()) throw new Error('Passphrase is required');
+  if (isTauri()) {
+    return invoke<SyncCredential>('confirm_sync_passphrase', { passphrase });
+  }
+  const store = readSyncKeysStore();
+  const credential = store.credential;
+  if (!credential || credential.activeKeyVersion === 0) {
+    throw new Error('Register a sync passphrase before confirming');
+  }
+  const version = store.versions.find((item) => item.version === credential.activeKeyVersion);
+  if (!version) throw new Error('Active sync key version missing');
+  const salt = new Uint8Array(
+    version.salt.match(/.{2}/g)?.map((part) => Number.parseInt(part, 16)) ?? [],
+  );
+  const key = await deriveBrowserSyncKey(passphrase, salt);
+  const fingerprint = await syncKeyFingerprint(key);
+  if (fingerprint !== version.fingerprint) {
+    throw new Error('Passphrase does not match the registered sync key');
+  }
+  credential.confirmed = true;
+  credential.updatedAt = Date.now();
+  writeSyncKeysStore(store);
+  return credential;
+}
+
+export async function rotateSyncPassphrase(
+  deviceId: string,
+  passphrase: string,
+): Promise<SyncCredential> {
+  if (!passphrase.trim()) throw new Error('Passphrase is required');
+  const strength = assessPassphraseStrengthBrowser(passphrase);
+  if (strength.score < 40)
+    throw new Error('Passphrase is too weak; use at least 8 characters with mixed cases');
+  if (isTauri()) {
+    return invoke<SyncCredential>('rotate_sync_passphrase', { deviceId, passphrase });
+  }
+  const current = readSyncKeysStore().credential;
+  if (!current || current.activeKeyVersion === 0) {
+    throw new Error('Register a sync passphrase before rotating');
+  }
+  return registerSyncPassphrase(deviceId, passphrase);
+}
+
+export async function getSyncPairingCode(): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>('get_sync_pairing_code');
+  }
+  const store = readSyncKeysStore();
+  const credential = store.credential;
+  if (!credential || credential.activeKeyVersion === 0) {
+    throw new Error('Register a sync passphrase before generating a pairing code');
+  }
+  const version = store.versions.find((item) => item.version === credential.activeKeyVersion);
+  if (!version) throw new Error('Active sync key version missing');
+  return buildPairingCode(
+    credential.deviceId || readLocal().syncDeviceId,
+    version.salt,
+    version.fingerprint,
+    version.version,
+  );
+}
+
+export async function verifySyncPairingCode(
+  pairingCode: string,
+  passphrase: string,
+): Promise<SyncPairedDevice> {
+  if (!passphrase.trim()) throw new Error('Passphrase is required');
+  if (isTauri()) {
+    return invoke<SyncPairedDevice>('verify_sync_pairing_code', { pairingCode, passphrase });
+  }
+  const parsed = parsePairingCode(pairingCode);
+  const key = await deriveBrowserSyncKey(passphrase, parsed.salt);
+  const expected = await syncKeyFingerprint(key);
+  if (expected !== parsed.fingerprint) {
+    throw new Error('Pairing code does not match this passphrase');
+  }
+  const store = readSyncKeysStore();
+  const now = Date.now();
+  const deviceId = parsed.remoteDeviceId || `remote-${parsed.fingerprint.slice(0, 8)}`;
+  const record: SyncPairedDevice = {
+    deviceId,
+    fingerprint: parsed.fingerprint,
+    pairingCode: pairingCode.trim(),
+    version: parsed.version,
+    pairedAt: now,
+  };
+  store.pairedDevices = [
+    record,
+    ...store.pairedDevices.filter((item) => item.deviceId !== deviceId),
+  ];
+  writeSyncKeysStore(store);
+  return record;
+}
+
+export async function listSyncPairedDevices(): Promise<SyncPairedDevice[]> {
+  if (isTauri()) {
+    return invoke<SyncPairedDevice[]>('list_sync_paired_devices');
+  }
+  return readSyncKeysStore().pairedDevices;
+}
+
+export async function removeSyncPairedDevice(remoteDeviceId: string): Promise<number> {
+  if (isTauri()) {
+    return invoke<number>('remove_sync_paired_device', { remoteDeviceId });
+  }
+  const store = readSyncKeysStore();
+  const before = store.pairedDevices.length;
+  store.pairedDevices = store.pairedDevices.filter((item) => item.deviceId !== remoteDeviceId);
+  writeSyncKeysStore(store);
+  return before - store.pairedDevices.length;
 }
 
 function readQuickPromptUsageEntriesLocal(): QuickPromptUsageEntry[] {
@@ -3329,7 +3697,7 @@ async function deriveBrowserSyncKey(passphrase: string, salt: Uint8Array): Promi
     { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
     material,
     { name: 'AES-GCM', length: 256 },
-    false,
+    true,
     ['encrypt', 'decrypt'],
   );
 }

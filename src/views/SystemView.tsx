@@ -2,14 +2,17 @@ import {
   Activity,
   AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clipboard,
   CloudUpload,
+  Copy,
   Database,
   Download,
   HeartPulse,
   History,
+  KeyRound,
   List,
   Pencil,
   Plus,
@@ -261,6 +264,15 @@ export default function SystemView() {
   const [remoteToken, setRemoteToken] = useState('');
   const [syncEncryptEnabled, setSyncEncryptEnabled] = useState(false);
   const [syncPassphrase, setSyncPassphrase] = useState('');
+  const [syncStrength, setSyncStrength] = useState<db.PassphraseStrength | null>(null);
+  const [syncKeyStatus, setSyncKeyStatus] = useState<db.SyncKeyStatus | null>(null);
+  const [syncKeyVersions, setSyncKeyVersions] = useState<db.SyncKeyVersion[]>([]);
+  const [syncConfirmed, setSyncConfirmed] = useState(false);
+  const [syncPairingCode, setSyncPairingCode] = useState('');
+  const [syncPairInput, setSyncPairInput] = useState('');
+  const [syncPairMessage, setSyncPairMessage] = useState('');
+  const [syncRotateMessage, setSyncRotateMessage] = useState('');
+  const [syncPairBusy, setSyncPairBusy] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
   const [autoSyncInterval, setAutoSyncInterval] = useState('60');
   const [syncConflicts, setSyncConflicts] = useState<db.SyncConflictRecord[]>([]);
@@ -296,6 +308,7 @@ export default function SystemView() {
   const [budgetConfig, setBudgetConfig] = useState<TokenBudgetConfig>(() => getBudgetStatus());
   const [budgetStatus, setBudgetStatusState] = useState<TokenBudgetStatus>(() => getBudgetStatus());
   const runAutoSyncRef = useRef<() => Promise<void>>(async () => {});
+  const strengthTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const status = getBudgetStatus();
@@ -331,6 +344,10 @@ export default function SystemView() {
     void db.getSyncStatus().then((status) => {
       setDeviceId(status.deviceId);
       setLastSyncedAt(status.lastSyncedAt);
+    });
+    void db.getSyncKeyStatus().then((status) => {
+      setSyncKeyStatus(status);
+      setSyncConfirmed(status.confirmed && status.activeKeyVersion > 0);
     });
     void db.listSyncConflicts('unresolved').then(setSyncConflicts);
     void db.listSyncAudit(50).then(setSyncAudit);
@@ -369,6 +386,107 @@ export default function SystemView() {
     };
   }, []);
 
+  const refreshSyncKeyStatus = async () => {
+    const status = await db.getSyncKeyStatus();
+    setSyncKeyStatus(status);
+    setSyncConfirmed(status.confirmed && status.activeKeyVersion > 0);
+    void db.listSyncKeyVersions().then(setSyncKeyVersions);
+    if (status.confirmed && status.activeKeyVersion > 0) {
+      void db
+        .getSyncPairingCode()
+        .then(setSyncPairingCode)
+        .catch(() => setSyncPairingCode(''));
+    }
+  };
+
+  const handleSyncPassphraseChange = (value: string) => {
+    setSyncPassphrase(value);
+    setSyncConfirmed(false);
+    if (strengthTimerRef.current !== null) {
+      window.clearTimeout(strengthTimerRef.current);
+    }
+    if (!value.trim()) {
+      setSyncStrength(null);
+      return;
+    }
+    strengthTimerRef.current = window.setTimeout(() => {
+      void db.syncPassphraseStrength(value).then(setSyncStrength);
+    }, 220);
+  };
+
+  const confirmSyncPassphrase = async () => {
+    setSyncError(false);
+    setSyncPairMessage('');
+    try {
+      if (!syncConfirmed) {
+        if (syncKeyStatus?.activeKeyVersion) {
+          await db.confirmSyncPassphrase(syncPassphrase.trim());
+        } else {
+          await db.registerSyncPassphrase(deviceId, syncPassphrase.trim());
+        }
+        setSyncConfirmed(true);
+        setSyncMessage(
+          syncKeyStatus?.activeKeyVersion
+            ? 'Sync passphrase re-confirmed'
+            : 'Sync passphrase confirmed',
+        );
+      }
+      await refreshSyncKeyStatus();
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(syncErrorMessage(err));
+    }
+  };
+
+  const rotateSyncPassphrase = async () => {
+    setSyncError(false);
+    setSyncRotateMessage('');
+    try {
+      const credential = await db.rotateSyncPassphrase(deviceId, syncPassphrase.trim());
+      await refreshSyncKeyStatus();
+      setSyncRotateMessage(
+        `Rotated to key version ${credential.activeKeyVersion} with a fresh salt`,
+      );
+      setSyncMessage(`Rotated sync key to version ${credential.activeKeyVersion}`);
+    } catch (err) {
+      setSyncError(true);
+      setSyncMessage(syncErrorMessage(err));
+    }
+  };
+
+  const copySyncPairingCode = async () => {
+    try {
+      await navigator.clipboard.writeText(syncPairingCode);
+      setSyncPairMessage('Pairing code copied');
+    } catch {
+      setSyncPairMessage('Select and copy the pairing code manually');
+    }
+  };
+
+  const verifySyncPairingCode = async () => {
+    if (!syncPairInput.trim()) {
+      setSyncPairMessage('Paste the other device pairing code first');
+      return;
+    }
+    setSyncPairBusy(true);
+    setSyncPairMessage('');
+    try {
+      const paired = await db.verifySyncPairingCode(syncPairInput.trim(), syncPassphrase.trim());
+      setSyncPairMessage(`Paired with ${paired.deviceId.slice(0, 8)}`);
+      setSyncPairInput('');
+      await refreshSyncKeyStatus();
+    } catch (err) {
+      setSyncPairMessage(syncErrorMessage(err));
+    } finally {
+      setSyncPairBusy(false);
+    }
+  };
+
+  const removeSyncPairedDevice = async (remoteDeviceId: string) => {
+    await db.removeSyncPairedDevice(remoteDeviceId);
+    await refreshSyncKeyStatus();
+  };
+
   const createAgentItem = async () => {
     if (!agentDeptId || !agentName.trim()) return;
     await db.createAgent(agentDeptId, agentName.trim(), agentRole.trim(), 'openai', null, '');
@@ -403,7 +521,12 @@ export default function SystemView() {
 
   const exportSync = async () => {
     setSyncError(false);
-    if (syncEncryptEnabled && syncPassphrase.trim()) {
+    if (syncEncryptEnabled && !syncConfirmed) {
+      setSyncError(true);
+      setSyncMessage('Confirm the passphrase before using encrypted sync');
+      return;
+    }
+    if (syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed) {
       await db.exportEncryptedSyncSnapshot(syncPassphrase.trim());
       setSyncMessage('Exported encrypted snapshot');
     } else {
@@ -414,8 +537,13 @@ export default function SystemView() {
 
   const importSync = async () => {
     try {
+      if (syncEncryptEnabled && !syncConfirmed) {
+        setSyncError(true);
+        setSyncMessage('Confirm the passphrase before using encrypted sync');
+        return;
+      }
       const result =
-        syncEncryptEnabled && syncPassphrase.trim()
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
           ? await db.importEncryptedSyncSnapshot(syncPassphrase.trim())
           : await db.importSyncSnapshot();
       await refreshSystem();
@@ -425,7 +553,7 @@ export default function SystemView() {
       setLastSyncedAt(result.syncedAt);
       setLastRemoteDevice(result.deviceId);
       setSyncMessage(
-        syncEncryptEnabled && syncPassphrase.trim()
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
           ? `Merged encrypted +${result.clipboardAdded} clips +${result.logsAdded} logs`
           : `Merged +${result.clipboardAdded} clips +${result.logsAdded} logs`,
       );
@@ -442,10 +570,17 @@ export default function SystemView() {
       return;
     }
     try {
+      if (syncEncryptEnabled && !syncConfirmed) {
+        setSyncError(true);
+        setSyncMessage('Confirm the passphrase before using encrypted sync');
+        return;
+      }
       const result = await db.pushSyncSnapshot(
         remoteUrl.trim(),
         remoteToken,
-        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
+          ? syncPassphrase.trim()
+          : undefined,
       );
       setSyncError(false);
       setLastSyncedAt(result.syncedAt);
@@ -463,10 +598,17 @@ export default function SystemView() {
       return;
     }
     try {
+      if (syncEncryptEnabled && !syncConfirmed) {
+        setSyncError(true);
+        setSyncMessage('Confirm the passphrase before using encrypted sync');
+        return;
+      }
       const result = await db.pullSyncSnapshot(
         remoteUrl.trim(),
         remoteToken,
-        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
+          ? syncPassphrase.trim()
+          : undefined,
       );
       await refreshSystem();
       await loadConflicts();
@@ -484,10 +626,17 @@ export default function SystemView() {
   const runAutoSync = async () => {
     if (!remoteUrl.trim()) return;
     try {
+      if (syncEncryptEnabled && !syncConfirmed) {
+        setSyncError(true);
+        setSyncMessage('Confirm the passphrase before using encrypted sync');
+        return;
+      }
       const pulled = await db.pullSyncSnapshot(
         remoteUrl.trim(),
         remoteToken,
-        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
+          ? syncPassphrase.trim()
+          : undefined,
       );
       await refreshSystem();
       await loadConflicts();
@@ -495,7 +644,9 @@ export default function SystemView() {
       const pushed = await db.pushSyncSnapshot(
         remoteUrl.trim(),
         remoteToken,
-        syncEncryptEnabled && syncPassphrase.trim() ? syncPassphrase.trim() : undefined,
+        syncEncryptEnabled && syncPassphrase.trim() && syncConfirmed
+          ? syncPassphrase.trim()
+          : undefined,
       );
       setSyncError(false);
       setLastSyncedAt(pushed.syncedAt);
@@ -2105,31 +2256,187 @@ export default function SystemView() {
               type="checkbox"
               data-sync-e2e-toggle
               checked={syncEncryptEnabled}
-              onChange={(e) => setSyncEncryptEnabled(e.target.checked)}
+              onChange={(e) => {
+                setSyncEncryptEnabled(e.target.checked);
+                if (!e.target.checked) setSyncConfirmed(false);
+              }}
               className="h-3 w-3 accent-violet-400"
             />
             E2E encrypt
           </label>
           {syncEncryptEnabled && (
-            <input
-              type="password"
-              value={syncPassphrase}
-              onChange={(e) => setSyncPassphrase(e.target.value)}
-              placeholder="Passphrase"
-              data-sync-passphrase
-              className="h-7 w-52 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-violet-500/40 placeholder:text-slate-600"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="password"
+                value={syncPassphrase}
+                onChange={(e) => handleSyncPassphraseChange(e.target.value)}
+                placeholder="Passphrase"
+                data-sync-passphrase
+                className="h-7 w-52 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-violet-500/40 placeholder:text-slate-600"
+              />
+              <button
+                type="button"
+                onClick={() => void confirmSyncPassphrase()}
+                disabled={!syncPassphrase.trim()}
+                data-sync-confirm
+                className="flex h-7 items-center gap-1 rounded-lg bg-violet-500/15 px-2 text-[10px] text-violet-300 hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ShieldCheck size={11} />
+                {syncConfirmed ? 'Confirmed' : 'Confirm'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void rotateSyncPassphrase()}
+                disabled={!syncConfirmed || !syncPassphrase.trim()}
+                data-sync-rotate
+                className="flex h-7 items-center gap-1 rounded-lg bg-amber-500/15 px-2 text-[10px] text-amber-300 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <KeyRound size={11} />
+                Rotate
+              </button>
+            </div>
+          )}
+          {syncEncryptEnabled && syncStrength && (
+            <div className="flex w-full items-center gap-2" data-sync-strength>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div
+                  data-sync-strength-bar
+                  className={`h-full rounded-full transition-all ${
+                    syncStrength.score < 40
+                      ? 'bg-rose-500'
+                      : syncStrength.score < 70
+                        ? 'bg-amber-400'
+                        : syncStrength.score < 90
+                          ? 'bg-emerald-400'
+                          : 'bg-cyan-300'
+                  }`}
+                  style={{ width: `${Math.max(4, syncStrength.score)}%` }}
+                />
+              </div>
+              <span data-sync-strength-score className="text-[10px] font-medium text-slate-300">
+                {syncStrength.score}
+              </span>
+              <span
+                data-sync-strength-label
+                className="text-[9px] uppercase tracking-normal text-slate-500"
+              >
+                {syncStrength.label}
+              </span>
+              {syncStrength.feedback.length > 0 && (
+                <span className="text-[9px] text-slate-600">
+                  {syncStrength.feedback.join(' / ')}
+                </span>
+              )}
+            </div>
+          )}
+          {syncEncryptEnabled && syncKeyStatus && syncKeyStatus.activeKeyVersion > 0 && (
+            <>
+              <div
+                data-sync-key-status
+                className="flex flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5 text-[9px] text-slate-500"
+              >
+                <span className="inline-flex items-center gap-1 text-emerald-400">
+                  <CheckCircle2 size={10} />
+                  {syncConfirmed ? 'confirmed' : 'registered'}
+                </span>
+                <span>
+                  key v{syncKeyStatus.activeKeyVersion} · {syncKeyStatus.iterations} PBKDF2 ·{' '}
+                  {syncKeyStatus.activeFingerprint.slice(0, 10)}…
+                </span>
+                <span>
+                  salt {syncKeyStatus.activeSalt.slice(0, 10)}… ·{' '}
+                  {syncKeyStatus.pairedDevices.length} paired
+                </span>
+                {syncRotateMessage && <span className="text-amber-300">{syncRotateMessage}</span>}
+              </div>
+              {syncKeyVersions.length > 1 && (
+                <div data-sync-key-versions className="flex w-full flex-wrap gap-1.5">
+                  {syncKeyVersions.map((version) => (
+                    <span
+                      key={version.version}
+                      className={`rounded-md px-1.5 py-0.5 font-mono text-[9px] ${
+                        version.active
+                          ? 'bg-emerald-500/10 text-emerald-300'
+                          : 'bg-white/[0.03] text-slate-600'
+                      }`}
+                    >
+                      v{version.version} {version.active ? 'active' : 'rotated'} ·{' '}
+                      {version.fingerprint.slice(0, 8)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           <span
             data-sync-e2e-status
             className={
-              syncEncryptEnabled && syncPassphrase.trim()
+              syncEncryptEnabled && syncConfirmed
                 ? 'rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300'
                 : 'text-[9px] text-slate-600'
             }
           >
-            {syncEncryptEnabled && syncPassphrase.trim() ? 'encrypted' : 'plain'}
+            {syncEncryptEnabled && syncConfirmed ? 'encrypted' : 'plain'}
           </span>
+          {syncEncryptEnabled && syncConfirmed && syncPairingCode && (
+            <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5">
+              <span className="text-[9px] text-slate-500">Pairing code</span>
+              <code
+                data-sync-pairing-code
+                className="rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-[9px] text-emerald-300"
+              >
+                {syncPairingCode}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copySyncPairingCode()}
+                data-sync-pair-copy
+                className="flex h-6 items-center gap-1 rounded-md bg-white/[0.05] px-1.5 text-[9px] text-slate-400 hover:bg-white/[0.1]"
+              >
+                <Copy size={10} /> Copy
+              </button>
+              <input
+                value={syncPairInput}
+                onChange={(e) => setSyncPairInput(e.target.value)}
+                placeholder="Paste other device pairing code"
+                data-sync-pair-input
+                className="h-6 w-56 rounded-md border border-white/10 bg-white/[0.03] px-2 font-mono text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+              />
+              <button
+                type="button"
+                onClick={() => void verifySyncPairingCode()}
+                disabled={syncPairBusy || !syncPairInput.trim() || !syncPassphrase.trim()}
+                data-sync-pair-verify
+                className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-400 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check size={10} /> Verify
+              </button>
+              {syncPairMessage && (
+                <span className="text-[9px] text-slate-400">{syncPairMessage}</span>
+              )}
+            </div>
+          )}
+          {syncEncryptEnabled && syncKeyStatus && syncKeyStatus.pairedDevices.length > 0 && (
+            <div data-sync-paired-list className="flex w-full flex-wrap gap-1.5">
+              {syncKeyStatus.pairedDevices.map((paired) => (
+                <span
+                  key={paired.deviceId}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  <Users size={9} />
+                  {paired.deviceId.slice(0, 12)} · {paired.fingerprint.slice(0, 8)}
+                  <button
+                    type="button"
+                    onClick={() => void removeSyncPairedDevice(paired.deviceId)}
+                    className="text-slate-600 hover:text-rose-400"
+                    aria-label={`Remove paired device ${paired.deviceId}`}
+                  >
+                    <X size={9} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
           <span className="rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5">

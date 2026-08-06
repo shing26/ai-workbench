@@ -1,3 +1,4 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
 use lettre::message::header::ContentType;
@@ -8,6 +9,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::pbkdf2;
 use ring::rand::{SecureRandom, SystemRandom};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -3494,6 +3496,81 @@ fn decrypt_sync_payload(envelope: &str, passphrase: &str) -> Result<String, Stri
         .map_err(|_| "Decrypted payload is not valid UTF-8".to_string())
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
+}
+
+fn sync_key_fingerprint(key: &[u8; 32]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    let digest = hasher.finalize();
+    hex_encode(&digest[..8])
+}
+
+fn build_sync_pairing_code(
+    device_id: &str,
+    salt: &[u8],
+    fingerprint: &str,
+    version: i64,
+) -> String {
+    let device_prefix = if device_id.is_empty() {
+        "WB01".to_string()
+    } else {
+        device_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(4)
+            .collect::<String>()
+            .to_ascii_uppercase()
+    };
+    let device_b64 = BASE64_URL.encode(device_id.as_bytes());
+    format!(
+        "WB-{}-{}.{}.{}.{}",
+        device_prefix,
+        BASE64_URL.encode(salt),
+        fingerprint,
+        version,
+        device_b64
+    )
+}
+
+fn parse_sync_pairing_code(code: &str) -> Result<(String, Vec<u8>, String, i64), String> {
+    let trimmed = code.trim();
+    let parts: Vec<&str> = trimmed.split('.').collect();
+    if parts.len() != 4 || !trimmed.starts_with("WB-") {
+        return Err("Invalid pairing code format".to_string());
+    }
+    let header = parts[0].strip_prefix("WB-").unwrap_or_default();
+    if header.len() < 5 {
+        return Err("Invalid pairing code header".to_string());
+    }
+    let device_prefix = &header[..4];
+    if !header[4..].starts_with('-') {
+        return Err("Invalid pairing code header delimiter".to_string());
+    }
+    let salt_b64 = &header[5..];
+    let salt = BASE64_URL
+        .decode(salt_b64)
+        .map_err(|_| "Invalid pairing code salt".to_string())?;
+    let fingerprint = parts[1].to_lowercase();
+    let version = parts[2]
+        .parse::<i64>()
+        .map_err(|_| "Invalid pairing code version".to_string())?;
+    let remote_device_id = BASE64_URL
+        .decode(parts[3])
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    if device_prefix.len() != 4 || fingerprint.len() != 16 || version < 1 {
+        return Err("Invalid pairing code fields".to_string());
+    }
+    Ok((remote_device_id, salt, fingerprint, version))
+}
+
 static PROVIDER_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
 const PROVIDER_KEY_NONCE_LEN: usize = 12;
 
@@ -6320,6 +6397,203 @@ fn import_encrypted_sync_snapshot(
 }
 
 #[tauri::command]
+fn sync_passphrase_strength(passphrase: String) -> db::PassphraseStrength {
+    db::assess_passphrase_strength(&passphrase)
+}
+
+#[tauri::command]
+fn get_sync_key_status(state: State<'_, db::Db>) -> Result<db::SyncKeyStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_sync_key_status(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_sync_key_versions(state: State<'_, db::Db>) -> Result<Vec<db::SyncKeyVersion>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_sync_key_versions(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn register_sync_passphrase(
+    state: State<'_, db::Db>,
+    device_id: String,
+    passphrase: String,
+) -> Result<db::SyncCredential, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let strength = db::assess_passphrase_strength(&passphrase);
+    if strength.score < 40 {
+        return Err(
+            "Passphrase is too weak; use at least 8 characters with mixed cases".to_string(),
+        );
+    }
+    let rng = SystemRandom::new();
+    let mut salt = [0u8; SYNC_SALT_LEN];
+    rng.fill(&mut salt)
+        .map_err(|e| format!("Random salt failed: {}", e))?;
+    let key = derive_sync_key(&passphrase, &salt)?;
+    let fingerprint = sync_key_fingerprint(&key);
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::register_sync_key_version(
+        &conn,
+        &device_id,
+        &hex_encode(&salt),
+        &fingerprint,
+        "AES-256-GCM",
+        SYNC_PBKDF2_ITERATIONS as i64,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn confirm_sync_passphrase(
+    state: State<'_, db::Db>,
+    passphrase: String,
+) -> Result<db::SyncCredential, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let credential = db::get_sync_credential(&conn, "").map_err(|e| e.to_string())?;
+    if credential.active_key_version == 0 {
+        return Err("Register a sync passphrase before confirming".to_string());
+    }
+    let row = conn
+        .query_row(
+            "SELECT salt FROM sync_key_versions
+             WHERE device_id = ?1 AND version = ?2",
+            params![credential.device_id, credential.active_key_version],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let salt = hex_to_bytes(&row)?;
+    let key = derive_sync_key(&passphrase, &salt)?;
+    let fingerprint = sync_key_fingerprint(&key);
+    db::confirm_sync_credential(&conn, &fingerprint).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rotate_sync_passphrase(
+    state: State<'_, db::Db>,
+    device_id: String,
+    passphrase: String,
+) -> Result<db::SyncCredential, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let strength = db::assess_passphrase_strength(&passphrase);
+    if strength.score < 40 {
+        return Err(
+            "Passphrase is too weak; use at least 8 characters with mixed cases".to_string(),
+        );
+    }
+    let rng = SystemRandom::new();
+    let mut salt = [0u8; SYNC_SALT_LEN];
+    rng.fill(&mut salt)
+        .map_err(|e| format!("Random salt failed: {}", e))?;
+    let key = derive_sync_key(&passphrase, &salt)?;
+    let fingerprint = sync_key_fingerprint(&key);
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let credential = db::get_sync_credential(&conn, &device_id).map_err(|e| e.to_string())?;
+    if credential.active_key_version == 0 {
+        return Err("Register a sync passphrase before rotating".to_string());
+    }
+    db::register_sync_key_version(
+        &conn,
+        &device_id,
+        &hex_encode(&salt),
+        &fingerprint,
+        "AES-256-GCM",
+        SYNC_PBKDF2_ITERATIONS as i64,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_sync_pairing_code(state: State<'_, db::Db>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let credential = db::get_sync_credential(&conn, "").map_err(|e| e.to_string())?;
+    if credential.active_key_version == 0 {
+        return Err("Register a sync passphrase before generating a pairing code".to_string());
+    }
+    let row = conn.query_row(
+        "SELECT salt, fingerprint FROM sync_key_versions
+         WHERE device_id = ?1 AND version = ?2",
+        params![credential.device_id, credential.active_key_version],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    );
+    let (salt_hex, fingerprint) = row.map_err(|e| e.to_string())?;
+    let salt = hex_to_bytes(&salt_hex)?;
+    Ok(build_sync_pairing_code(
+        &credential.device_id,
+        &salt,
+        &fingerprint,
+        credential.active_key_version,
+    ))
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.len().is_multiple_of(2) {
+        return Err("Invalid salt hex".to_string());
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    for index in (0..hex.len()).step_by(2) {
+        let byte = u8::from_str_radix(&hex[index..index + 2], 16)
+            .map_err(|_| "Invalid salt hex".to_string())?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn verify_sync_pairing_code(
+    state: State<'_, db::Db>,
+    pairing_code: String,
+    passphrase: String,
+) -> Result<db::SyncPairedDevice, String> {
+    if passphrase.trim().is_empty() {
+        return Err("Passphrase is required".to_string());
+    }
+    let (remote_device_id, remote_salt, remote_fingerprint, remote_version) =
+        parse_sync_pairing_code(&pairing_code)?;
+    let remote_key = derive_sync_key(&passphrase, &remote_salt)?;
+    let expected = sync_key_fingerprint(&remote_key);
+    if expected != remote_fingerprint {
+        return Err("Pairing code does not match this passphrase".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let remote_device_id = if remote_device_id.trim().is_empty() {
+        format!("remote-{}", &remote_fingerprint[..8])
+    } else {
+        remote_device_id.trim().to_string()
+    };
+    db::upsert_sync_paired_device(
+        &conn,
+        &remote_device_id,
+        &remote_fingerprint,
+        pairing_code.trim(),
+        remote_version,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_sync_paired_devices(state: State<'_, db::Db>) -> Result<Vec<db::SyncPairedDevice>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_sync_paired_devices(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_sync_paired_device(
+    state: State<'_, db::Db>,
+    remote_device_id: String,
+) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::remove_sync_paired_device(&conn, &remote_device_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn resolve_sync_conflict(
     state: State<'_, db::Db>,
     conflict: db::SyncConflictItem,
@@ -6832,6 +7106,16 @@ pub fn run() {
             decrypt_sync_payload_command,
             export_encrypted_sync_snapshot,
             import_encrypted_sync_snapshot,
+            sync_passphrase_strength,
+            get_sync_key_status,
+            list_sync_key_versions,
+            register_sync_passphrase,
+            confirm_sync_passphrase,
+            rotate_sync_passphrase,
+            get_sync_pairing_code,
+            verify_sync_pairing_code,
+            list_sync_paired_devices,
+            remove_sync_paired_device,
             push_sync_snapshot,
             pull_sync_snapshot,
             resolve_sync_conflict,
@@ -8471,6 +8755,134 @@ mod tests {
         let envelope = encrypt_sync_payload("secret sync content", "right-pass").unwrap();
         let err = decrypt_sync_payload(&envelope, "wrong-pass").unwrap_err();
         assert!(err.contains("Decryption failed"), "{}", err);
+    }
+
+    #[test]
+    fn sync_passphrase_strength_scores_weak_and_strong() {
+        let weak = db::assess_passphrase_strength("short");
+        assert!(weak.score < 40, "weak score {}", weak.score);
+        assert_eq!(weak.label, "weak");
+        assert!(!weak.feedback.is_empty());
+
+        let strong = db::assess_passphrase_strength("Tr0ub4dor&3-Life");
+        assert!(strong.score >= 70, "strong score {}", strong.score);
+        assert!(
+            strong.label == "strong" || strong.label == "excellent",
+            "unexpected label {}",
+            strong.label
+        );
+    }
+
+    #[test]
+    fn sync_key_register_rotate_persists_salt_and_versions() {
+        let conn = db::new_test_connection();
+        let first = db::register_sync_key_version(
+            &conn,
+            "device-a",
+            "a1b2c3d4e5f60718",
+            "0011223344556677",
+            "AES-256-GCM",
+            100_000,
+        )
+        .unwrap();
+        assert_eq!(first.active_key_version, 1);
+        assert!(first.confirmed);
+        assert!(first.encryption_enabled);
+
+        let rotated = db::register_sync_key_version(
+            &conn,
+            "device-a",
+            "ffeeddccbbaa9988",
+            "8899aabbccddeeff",
+            "AES-256-GCM",
+            100_000,
+        )
+        .unwrap();
+        assert_eq!(rotated.active_key_version, 2);
+
+        let versions = db::list_sync_key_versions(&conn).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert!(versions[0].active);
+        assert_eq!(versions[0].version, 2);
+        assert_eq!(versions[0].salt, "ffeeddccbbaa9988");
+        assert!(!versions[1].active);
+
+        let status = db::get_sync_key_status(&conn).unwrap();
+        assert_eq!(status.active_key_version, 2);
+        assert_eq!(status.active_salt, "ffeeddccbbaa9988");
+        assert_eq!(status.active_fingerprint, "8899aabbccddeeff");
+        assert_eq!(status.device_id, "device-a");
+    }
+
+    #[test]
+    fn sync_key_confirm_does_not_rotate_and_rejects_wrong_fingerprint() {
+        let conn = db::new_test_connection();
+        db::register_sync_key_version(
+            &conn,
+            "device-c",
+            "a1b2c3d4e5f60718",
+            "0011223344556677",
+            "AES-256-GCM",
+            100_000,
+        )
+        .unwrap();
+        let confirmed = db::confirm_sync_credential(&conn, "0011223344556677").unwrap();
+        assert!(confirmed.confirmed);
+        assert_eq!(confirmed.active_key_version, 1);
+
+        let wrong = db::confirm_sync_credential(&conn, "ffffffffffffffff");
+        assert!(wrong.is_err());
+
+        let versions = db::list_sync_key_versions(&conn).unwrap();
+        assert_eq!(versions.len(), 1);
+        let status = db::get_sync_key_status(&conn).unwrap();
+        assert!(status.confirmed);
+        assert_eq!(status.active_key_version, 1);
+    }
+
+    #[test]
+    fn sync_pairing_code_roundtrip_and_verify() {
+        let mut salt = [0u8; SYNC_SALT_LEN];
+        for (index, byte) in salt.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let key = derive_sync_key("Tr0ub4dor&3-Life", &salt).unwrap();
+        let fingerprint = sync_key_fingerprint(&key);
+        let code = build_sync_pairing_code("device-a", &salt, &fingerprint, 1);
+        let (device_id, parsed_salt, parsed_fingerprint, version) =
+            parse_sync_pairing_code(&code).unwrap();
+        assert_eq!(device_id, "device-a");
+        assert_eq!(parsed_salt, salt);
+        assert_eq!(parsed_fingerprint, fingerprint);
+        assert_eq!(version, 1);
+
+        let wrong = "WB-DEVB-AAECAwQFBgcICQoLDA0ODw.0000000000000000.1.dGVzdA";
+        let (wrong_device, wrong_salt, wrong_fingerprint, wrong_version) =
+            parse_sync_pairing_code(wrong).unwrap();
+        assert_eq!(wrong_device, "test");
+        assert_eq!(wrong_salt, salt);
+        assert_eq!(wrong_fingerprint, "0000000000000000");
+        assert_eq!(wrong_version, 1);
+        assert_ne!(wrong_fingerprint, fingerprint);
+    }
+
+    #[test]
+    fn sync_key_versions_reject_weak_passphrase_flow() {
+        let conn = db::new_test_connection();
+        let weak = db::assess_passphrase_strength("short");
+        assert!(weak.score < 40);
+        let strong = db::assess_passphrase_strength("Tr0ub4dor&3-Life");
+        assert!(strong.score >= 70);
+        let first = db::register_sync_key_version(
+            &conn,
+            "device-b",
+            "0102030405060708",
+            "0102030405060708",
+            "AES-256-GCM",
+            100_000,
+        )
+        .unwrap();
+        assert_eq!(first.active_key_version, 1);
     }
 
     #[test]

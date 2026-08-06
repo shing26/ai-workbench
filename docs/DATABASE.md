@@ -1196,3 +1196,42 @@ CREATE INDEX IF NOT EXISTS idx_model_metadata_sort
 - 新库 SCHEMA 直接建表；旧库由 `init_connection` 的 `CREATE TABLE IF NOT EXISTS` 自动补齐，无需额外迁移函数。
 - `refresh_provider_models` 把真实 `/models` / `/api/tags` 探测结果 upsert 进 `model_metadata`，仅更新 `owned_by / fetched_at / updated_at`；`update_model_meta` / `set_model_favorite` / `touch_model_usage` 对缺失行自动 INSERT，保留其余字段。
 - `list_cached_provider_models` 按 `is_favorite DESC, last_used_at DESC, model_id ASC` 返回完整模型目录；浏览器 fallback 使用 `ai-workbench:db:v1` 的 `modelCache`（按 providerId 分组）同构实现，TTL 24 小时，不新增独立 localStorage key。
+
+## Sprint 152：Sync 口令安全、多设备配对与密钥轮换
+
+```sql
+CREATE TABLE IF NOT EXISTS sync_credentials (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    device_id TEXT NOT NULL DEFAULT '',
+    encryption_enabled INTEGER NOT NULL DEFAULT 0,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    active_key_version INTEGER NOT NULL DEFAULT 0,
+    rotated_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sync_key_versions (
+    device_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    salt TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    algorithm TEXT NOT NULL DEFAULT 'AES-256-GCM',
+    iterations INTEGER NOT NULL DEFAULT 100000,
+    active INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    rotated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, version)
+);
+CREATE TABLE IF NOT EXISTS sync_paired_devices (
+    device_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    pairing_code TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
+    paired_at INTEGER NOT NULL
+);
+```
+
+- `sync_credentials` 是单行配置表（id=1）：记录当前 device id、加密开关、确认状态、激活密钥版本与轮换时间；口令明文永不落库，只保存派生指纹。
+- `sync_key_versions` 保存每次注册 / 轮换的 salt（16 字节 hex）、密钥指纹（SHA-256 前 8 字节 hex）、算法与迭代次数；注册写 v1，轮换先标记旧版本 `active=0` 再写新版本，`active_key_version` 指向当前版本。
+- `sync_paired_devices` 保存已校验的多设备配对：device id、远端指纹、配对码、版本与配对时间；重复配对按 device id upsert。
+- 新增 DB 函数：`get_sync_credential` / `register_sync_key_version` / `confirm_sync_credential` / `list_sync_key_versions` / `upsert_sync_paired_device` / `list_sync_paired_devices` / `remove_sync_paired_device` / `get_sync_key_status` / `assess_passphrase_strength`；`confirm_sync_credential` 只校验当前版本指纹并置 `confirmed=1`，不创建新密钥版本。
+- 浏览器 fallback 使用 `ai-workbench:sync-keys:v1` 保存 `{ credential, versions, pairedDevices }`，与 Tauri 链路同构；Web Crypto 使用相同 PBKDF2 100k 次 / SHA-256 / AES-GCM 语义。
