@@ -23,6 +23,8 @@ export default function KnowledgeView() {
   const addThought = useWorkbenchStore((s) => s.addThought);
   const updateThoughtTags = useWorkbenchStore((s) => s.updateThoughtTags);
   const updateThoughtContent = useWorkbenchStore((s) => s.updateThoughtContent);
+  const updateThoughtType = useWorkbenchStore((s) => s.updateThoughtType);
+  const deleteThought = useWorkbenchStore((s) => s.deleteThought);
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useState('all');
@@ -65,6 +67,9 @@ export default function KnowledgeView() {
   const [bodyDraft, setBodyDraft] = useState('');
   const [bodyPreview, setBodyPreview] = useState(false);
   const [bodyEditResults, setBodyEditResults] = useState<Record<string, string>>({});
+  const [typeEditResults, setTypeEditResults] = useState<Record<string, string>>({});
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deleteResults, setDeleteResults] = useState<Record<string, string>>({});
 
   const loadWatchEvents = useCallback(async (vaultPath?: string) => {
     setWatchEvents(await db.listVaultWatchEvents(vaultPath, 50));
@@ -325,6 +330,31 @@ export default function KnowledgeView() {
     setBodyPreview(false);
   };
 
+  const convertType = async (thought: db.Thought, type: db.ThoughtType) => {
+    if (thought.type === type) return;
+    await updateThoughtType(thought.id, type);
+    setTypeEditResults((prev) => ({ ...prev, [thought.id]: 'Saved' }));
+  };
+
+  const requestDelete = (thought: db.Thought) => {
+    setDeleteConfirmId(thought.id);
+    setDeleteResults((prev) => ({ ...prev, [thought.id]: '' }));
+  };
+
+  const cancelDelete = () => {
+    setDeleteConfirmId(null);
+  };
+
+  const confirmDeleteThought = async (thought: db.Thought) => {
+    await deleteThought(thought.id);
+    setDeleteConfirmId(null);
+    setTagEditId(null);
+    setBodyEditId(null);
+    setResults(null);
+    setSelectedId(null);
+    setDeleteResults((prev) => ({ ...prev, [thought.id]: 'Deleted' }));
+  };
+
   const runSearch = async () => {
     if (!query.trim()) {
       setResults(null);
@@ -556,6 +586,7 @@ export default function KnowledgeView() {
               }
             }}
             rows={2}
+            data-thought-inbox-input
             placeholder="Capture a thought..."
             className="min-h-0 flex-1 resize-none rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
           />
@@ -567,6 +598,7 @@ export default function KnowledgeView() {
           />
           <button
             type="button"
+            data-thought-inbox-add
             onClick={() => void add()}
             className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
           >
@@ -1350,7 +1382,7 @@ export default function KnowledgeView() {
             <button
               key={t.id}
               type="button"
-              data-rag-result
+              data-rag-result={t.id}
               data-rag-vector-score={
                 'vectorScore' in t && typeof t.vectorScore === 'number'
                   ? t.vectorScore.toFixed(2)
@@ -1388,7 +1420,40 @@ export default function KnowledgeView() {
           {selected ? (
             <>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-medium text-slate-200">{selected.type}</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <div
+                    data-thought-type-select={selected.id}
+                    data-thought-type-current={selected.type}
+                    className="flex h-6 items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.03] p-0.5"
+                  >
+                    {(['inbox', 'note', 'doc'] as const).map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        data-thought-type-option={type}
+                        data-thought-type-active={selected.type === type ? 'true' : 'false'}
+                        onClick={() => {
+                          if (selectedLocal) void convertType(selectedLocal, type);
+                        }}
+                        className={`h-5 rounded px-2 text-[9px] transition-colors ${
+                          selected.type === type
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'text-slate-500 hover:text-slate-300'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                  {selectedLocal && typeEditResults[selectedLocal.id] && (
+                    <span
+                      data-thought-type-result={selectedLocal.id}
+                      className="inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                    >
+                      {typeEditResults[selectedLocal.id]}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-1.5">
                   <ModelBadge label={selected.tags} tone="green" />
                   {selectedLocal && (
@@ -1412,6 +1477,44 @@ export default function KnowledgeView() {
                     >
                       <Pencil size={10} /> Edit body
                     </button>
+                  )}
+                  {selectedLocal &&
+                    (deleteConfirmId === selectedLocal.id ? (
+                      <>
+                        <button
+                          type="button"
+                          data-thought-delete-confirm={selectedLocal.id}
+                          onClick={() => void confirmDeleteThought(selectedLocal)}
+                          className="flex h-6 items-center gap-1 rounded-lg bg-rose-500/25 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/35"
+                        >
+                          <Trash2 size={10} /> Sure?
+                        </button>
+                        <button
+                          type="button"
+                          data-thought-delete-cancel={selectedLocal.id}
+                          onClick={cancelDelete}
+                          className="h-6 rounded-lg border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        data-thought-delete={selectedLocal.id}
+                        onClick={() => requestDelete(selectedLocal)}
+                        className="flex h-6 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-400 hover:bg-rose-500/10 hover:text-rose-300"
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                    ))}
+                  {selectedLocal && deleteResults[selectedLocal.id] && (
+                    <span
+                      data-thought-delete-result={selectedLocal.id}
+                      className="inline-block rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-300"
+                    >
+                      {deleteResults[selectedLocal.id]}
+                    </span>
                   )}
                 </div>
               </div>

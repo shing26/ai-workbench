@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 127
+
+### What went well?
+
+- Rust 与浏览器 fallback 同构支持笔记类型转换与删除：新增 `update_thought_type` / `delete_thought` 命令，Tauri 层对类型做 inbox / note / doc 白名单校验，缺失 id 返回 `QueryReturnedNoRows`。
+- Knowledge 详情头部新增类型分段控件与删除二次确认：切换类型后徽标、Tag Library 类型分布同步刷新；删除后清除编辑状态并自动落到下一条笔记，列表、统计与 RAG 结果同步移除。
+- `verify:ui` / `verify:preview` 新增 `thoughtTypeConvert` / `thoughtTypeConvertPersisted` / `thoughtTypeConvertRestored` / `thoughtDelete` / `thoughtDeleteCancel` / `thoughtDeletePersisted` 六条 lane；`cargo test --lib` 增至 134 条。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 的删除断言把“详情自动落到下一条笔记”误判为空态，改为断言被删笔记不再出现在详情面板后一次通过。
+- 首轮 `verify:preview` 在 System 区域出现 CDP `Runtime.evaluate` 超时，重跑一次后全绿，判定为既有 lane 偶发抖动，与本 Sprint 改动无关。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 会话分组、Projects 收益趋势、Actions 习惯周目标统计或快速归档。
+- 保留 `thoughtTypeConvert` 系列与 `thoughtDelete` 系列 lane，修改笔记模型、详情面板或 RAG 搜索时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 126
 
 ### What went well?

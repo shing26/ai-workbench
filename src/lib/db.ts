@@ -1304,6 +1304,28 @@ export async function updateThoughtContent(id: string, content: string): Promise
   return thought;
 }
 
+export async function updateThoughtType(id: string, type: ThoughtType): Promise<Thought> {
+  if (isTauri()) return invoke<Thought>('update_thought_type', { id, type });
+  const shape = readLocal();
+  const thought = shape.thoughts.find((t) => t.id === id);
+  if (!thought) throw new Error('thought not found');
+  thought.type = type;
+  writeLocal(shape);
+  return thought;
+}
+
+export async function deleteThought(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_thought', { id });
+    return;
+  }
+  const shape = readLocal();
+  const exists = shape.thoughts.some((t) => t.id === id);
+  if (!exists) throw new Error('thought not found');
+  shape.thoughts = shape.thoughts.filter((t) => t.id !== id);
+  writeLocal(shape);
+}
+
 export async function listProviders(): Promise<Provider[]> {
   if (isTauri()) return invoke<Provider[]>('list_providers');
   return (readLocal().providers ?? [])

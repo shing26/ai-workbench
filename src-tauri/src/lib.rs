@@ -1427,6 +1427,25 @@ fn update_thought_content(
 }
 
 #[tauri::command]
+fn update_thought_type(
+    state: State<'_, db::Db>,
+    id: String,
+    kind: String,
+) -> Result<db::Thought, String> {
+    if !matches!(kind.as_str(), "inbox" | "note" | "doc") {
+        return Err("invalid thought type".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_thought_type(&conn, &id, &kind).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_thought(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_thought(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_quick_prompts(state: State<'_, db::Db>) -> Result<Vec<db::QuickPrompt>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_quick_prompts(&conn).map_err(|e| e.to_string())
@@ -5401,6 +5420,8 @@ pub fn run() {
             create_thought,
             update_thought_tags,
             update_thought_content,
+            update_thought_type,
+            delete_thought,
             list_quick_prompts,
             add_custom_quick_prompt,
             update_custom_quick_prompt,

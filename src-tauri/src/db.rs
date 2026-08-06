@@ -1786,6 +1786,30 @@ pub fn update_thought_content(conn: &Connection, id: &str, content: &str) -> Res
         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
+pub fn update_thought_type(conn: &Connection, id: &str, kind: &str) -> Result<Thought> {
+    conn.execute(
+        "UPDATE thoughts SET type = ?1 WHERE id = ?2",
+        params![kind, id],
+    )?;
+    list_thoughts(conn)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_thought(conn: &Connection, id: &str) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM thoughts WHERE id = ?1)",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn list_quick_prompts(conn: &Connection) -> Result<Vec<QuickPrompt>> {
     let mut stmt = conn.prepare(
         "SELECT id, label, category, text, custom, sort_order, updated_at, created_at FROM quick_prompts ORDER BY created_at ASC",
@@ -5644,6 +5668,61 @@ mod tests {
 
         let missing = update_thought_content(&conn, "missing-thought", "nope");
         assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn thought_type_update_persists_and_missing_id_errors() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-thought-type-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let thought = create_thought(&conn, "convert me", "#work", "inbox").unwrap();
+        let updated = update_thought_type(&conn, &thought.id, "doc").unwrap();
+        assert_eq!(updated.kind, "doc");
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let saved = list_thoughts(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == thought.id)
+            .expect("updated thought should be listed");
+        assert_eq!(saved.kind, "doc");
+
+        let missing = update_thought_type(&conn, "missing-thought", "note");
+        assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn thought_delete_removes_row_and_missing_id_errors() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-thought-delete-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let thought = create_thought(&conn, "delete me", "#work", "inbox").unwrap();
+        delete_thought(&conn, &thought.id).unwrap();
+        assert!(list_thoughts(&conn)
+            .unwrap()
+            .iter()
+            .all(|t| t.id != thought.id));
+
+        let missing = delete_thought(&conn, &thought.id);
+        assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        assert!(list_thoughts(&conn)
+            .unwrap()
+            .iter()
+            .all(|t| t.id != thought.id));
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
