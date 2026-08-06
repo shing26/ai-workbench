@@ -786,6 +786,8 @@ export type EmbeddingConfig = {
   dimension: number;
   shardCount: number;
   autoRebuild: boolean;
+  annEnabled: boolean;
+  probeCount: number;
   updatedAt: number;
 };
 
@@ -795,6 +797,7 @@ export type VectorShardRecord = {
   dimension: number;
   documents: number;
   status: string;
+  centroid: string;
   updatedAt: number;
   createdAt: number;
 };
@@ -806,6 +809,9 @@ export type VectorIndexStatus = {
   indexed: number;
   model: string;
   autoRebuild: boolean;
+  annEnabled: boolean;
+  probeCount: number;
+  centroidsReady: boolean;
   shards: VectorShardRecord[];
 };
 
@@ -5235,6 +5241,8 @@ function readEmbeddingConfig(): EmbeddingConfig {
         dimension: Math.min(4096, Math.max(64, parsed.dimension || 256)),
         shardCount: Math.min(64, Math.max(1, parsed.shardCount || 8)),
         autoRebuild: parsed.autoRebuild !== false,
+        annEnabled: parsed.annEnabled !== false,
+        probeCount: Math.min(64, Math.max(1, parsed.probeCount || 2)),
         updatedAt: parsed.updatedAt ?? 0,
       };
     }
@@ -5250,6 +5258,8 @@ function readEmbeddingConfig(): EmbeddingConfig {
     dimension: 256,
     shardCount: 8,
     autoRebuild: true,
+    annEnabled: true,
+    probeCount: 2,
     updatedAt: 0,
   };
 }
@@ -5288,6 +5298,7 @@ function seedVectorShards(shardCount: number, model: string, dimension: number) 
             dimension,
             documents: 0,
             status: 'idle',
+            centroid: '',
             updatedAt: now,
             createdAt: now,
           },
@@ -5302,20 +5313,49 @@ function seedVectorShards(shardCount: number, model: string, dimension: number) 
 
 function refreshVectorShardStats() {
   const counts = new Map<string, number>();
+  const vectors = new Map<string, number[][]>();
   for (const file of readVaultFiles()) {
     if (file.embeddingStatus === 'indexed') {
       const shardId = file.shardId ?? '0';
       counts.set(shardId, (counts.get(shardId) ?? 0) + 1);
+      if (file.embedding) {
+        try {
+          const vector = JSON.parse(file.embedding) as number[];
+          if (vector.length > 0) {
+            const list = vectors.get(shardId) ?? [];
+            list.push(vector);
+            vectors.set(shardId, list);
+          }
+        } catch {
+          // skip malformed embeddings
+        }
+      }
     }
   }
   const now = Date.now();
   writeVectorShards(
     readVectorShards().map((shard) => {
       const documents = counts.get(shard.shardId) ?? 0;
+      const vectorsInShard = vectors.get(shard.shardId) ?? [];
+      let centroid = '';
+      if (vectorsInShard.length > 0) {
+        const dimension = vectorsInShard[0].length;
+        const sum = new Array<number>(dimension).fill(0);
+        for (const vector of vectorsInShard) {
+          for (let index = 0; index < dimension; index += 1) {
+            sum[index] += vector[index] ?? 0;
+          }
+        }
+        const norm = Math.sqrt(sum.reduce((acc, value) => acc + value * value, 0));
+        if (norm > 0) {
+          centroid = JSON.stringify(sum.map((value) => value / norm));
+        }
+      }
       return {
         ...shard,
         documents,
-        status: documents > 0 ? 'ready' : 'idle',
+        status: documents > 0 && centroid ? 'ready' : documents > 0 ? 'partial' : 'idle',
+        centroid,
         updatedAt: now,
       };
     }),
@@ -5336,10 +5376,13 @@ export async function setEmbeddingConfig(input: {
   dimension: number;
   shardCount: number;
   autoRebuild: boolean;
+  annEnabled: boolean;
+  probeCount: number;
 }): Promise<EmbeddingConfig> {
   if (isTauri()) {
     return invoke<EmbeddingConfig>('set_embedding_config', { request: input });
   }
+  const shardCount = Math.min(64, Math.max(1, Math.round(input.shardCount) || 8));
   const config: EmbeddingConfig = {
     mode: input.mode === 'openai' || input.mode === 'ollama' ? input.mode : 'local',
     providerId: input.providerId.trim(),
@@ -5347,12 +5390,14 @@ export async function setEmbeddingConfig(input: {
     apiKey: input.apiKey.trim(),
     model: input.model.trim(),
     dimension: Math.min(4096, Math.max(64, Math.round(input.dimension) || 256)),
-    shardCount: Math.min(64, Math.max(1, Math.round(input.shardCount) || 8)),
+    shardCount,
     autoRebuild: input.autoRebuild,
+    annEnabled: input.annEnabled,
+    probeCount: Math.min(shardCount, Math.max(1, Math.round(input.probeCount) || 2)),
     updatedAt: Date.now(),
   };
   localStorage.setItem(EMBEDDING_CONFIG_LS_KEY, JSON.stringify(config));
-  seedVectorShards(config.shardCount, embeddingModelKey(config), config.dimension);
+  seedVectorShards(shardCount, embeddingModelKey(config), config.dimension);
   refreshVectorShardStats();
   return config;
 }
@@ -5385,6 +5430,11 @@ export async function getVectorIndexStatus(): Promise<VectorIndexStatus> {
     indexed,
     model: target,
     autoRebuild: config.autoRebuild,
+    annEnabled: config.annEnabled,
+    probeCount: config.probeCount,
+    centroidsReady: readVectorShards().every(
+      (shard) => shard.documents === 0 || shard.centroid.length > 0,
+    ),
     shards: readVectorShards(),
   };
 }
@@ -6295,12 +6345,43 @@ export async function searchThoughts(
   } catch {
     queryEmbedding = embedText(query);
   }
+  const shards = readVectorShards();
+  const annReady =
+    config.annEnabled &&
+    config.probeCount > 1 &&
+    config.probeCount < shards.length &&
+    docs.some((doc) => doc.sourceKind === 'file' && !!doc.shardId);
+  let activeShardIds: string[] | null = null;
+  if (annReady) {
+    const ranked = shards
+      .filter((shard) => shard.centroid.length > 0)
+      .map((shard) => {
+        try {
+          return {
+            shard,
+            similarity: cosineSimilarity(queryEmbedding, JSON.parse(shard.centroid) as number[]),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry): entry is { shard: VectorShardRecord; similarity: number } => entry !== null);
+    if (ranked.length >= config.probeCount) {
+      activeShardIds = ranked
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, config.probeCount)
+        .map((entry) => entry.shard.shardId);
+    }
+  }
   const scored = docs
     .filter(
       (doc) =>
-        !activePref ||
-        doc.sourceKind !== 'file' ||
-        activePref.filePaths.includes(doc.sourceFile ?? ''),
+        (!activePref ||
+          doc.sourceKind !== 'file' ||
+          activePref.filePaths.includes(doc.sourceFile ?? '')) &&
+        (!activeShardIds ||
+          doc.sourceKind !== 'file' ||
+          (doc.shardId !== undefined && activeShardIds.includes(doc.shardId))),
     )
     .map((t) => {
       const hay = tokenizeSearch(t.content);

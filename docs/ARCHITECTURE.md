@@ -927,6 +927,15 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 确认面板按来源文件分组勾选（`data-rag-source-option`），勾选 “Remember this source selection”（`data-rag-source-remember`）后写入偏好并显示 `data-rag-source-summary` 徽标；`data-rag-source-reset` 一键清除；New chat / 切换会话 / Cancel 清理临时来源状态。
 - `verify:ui` / `verify:preview` 新增 `ragSourceSelector` / `ragSourcePersisted` lane：种子两个 vault 文件、取消一个来源、记住选择、reload 后偏好仍生效且搜索只命中记住的文件、Reset 清除；Rust 单测覆盖 selected / all / 空路径语义，总数增至 189 条。
 
+## Sprint 156：向量分片质心与近似索引（ANN）搜索
+
+- SQLite 为 `embedding_config` 新增 `ann_enabled / probe_count`，为 `vector_shards` 新增 `centroid`；`migrate_vector_index` 幂等补列，`set_embedding_config` 读写新字段并把 `probe_count` 钳制到 `1..=shard_count`。
+- `refresh_shard_stats` 聚合 shard 内已索引向量并归一化质心，`status` 支持 `ready / partial / idle`；`get_vector_index_status` 返回 `annEnabled / probeCount / centroidsReady`。
+- `search_thoughts` 先收集 `thought_docs / file_docs`，满足 `ann_enabled && 1 < probe_count < shard_count` 时按查询向量与各 shard 质心余弦相似度保留 top probe shard，BM25 IDF 按 term 预计算避免剪枝后统计漂移；关闭 ANN 或 `probe_count == shard_count` 时全量返回。
+- `db.ts` 浏览器 fallback 同构：`EmbeddingConfig / VectorShardRecord / VectorIndexStatus` 补齐新字段，`readEmbeddingConfig / setEmbeddingConfig` 读写与 clamp，`seedVectorShards / refreshVectorShardStats` 计算并保存质心，`searchThoughts` 按 shard 质心过滤文件集合。
+- KnowledgeView Vector index 卡片新增 `data-vector-ann-enabled` 开关与 `data-vector-probe-count` 输入，shard 卡片带 `data-vector-shard-centroid` 并显示 `centroid ready` 徽标，配置页脚显示 probe 与 ANN 状态。
+- `verify:ui` / `verify:preview` 新增 `vectorAnnSearch` lane：重建索引后断言 4 个 shard 质心就绪、ANN 开启时结果只命中 top probe shard、关闭后恢复 4 个 shard；Rust 单测新增质心归一化与 ANN 剪枝用例。
+
 ## Sprint 155：会话复制携带版本历史，导出内嵌 RAG / Inspector Trace
 
 - SQLite 新增 `message_aux` 表：`message_id` 主键、`payload` JSON、`updated_at`；新增 Tauri 命令 `save_message_aux` / `list_message_aux`，浏览器 fallback 在 `ai-workbench:db:v1` 的 `messageAux` 数组同构读写。

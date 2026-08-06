@@ -192,6 +192,8 @@ CREATE TABLE IF NOT EXISTS embedding_config (
     dimension INTEGER NOT NULL DEFAULT 256,
     shard_count INTEGER NOT NULL DEFAULT 8,
     auto_rebuild INTEGER NOT NULL DEFAULT 1,
+    ann_enabled INTEGER NOT NULL DEFAULT 1,
+    probe_count INTEGER NOT NULL DEFAULT 2,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS vector_shards (
@@ -200,6 +202,7 @@ CREATE TABLE IF NOT EXISTS vector_shards (
     dimension INTEGER NOT NULL DEFAULT 256,
     documents INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'idle',
+    centroid TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT 0
 );
@@ -1009,6 +1012,8 @@ pub struct EmbeddingConfig {
     pub dimension: usize,
     pub shard_count: usize,
     pub auto_rebuild: bool,
+    pub ann_enabled: bool,
+    pub probe_count: usize,
     pub updated_at: i64,
 }
 
@@ -1023,6 +1028,8 @@ pub struct EmbeddingConfigInput {
     pub dimension: usize,
     pub shard_count: usize,
     pub auto_rebuild: bool,
+    pub ann_enabled: bool,
+    pub probe_count: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -1033,6 +1040,7 @@ pub struct VectorShardRecord {
     pub dimension: usize,
     pub documents: i64,
     pub status: String,
+    pub centroid: String,
     pub updated_at: i64,
     pub created_at: i64,
 }
@@ -1046,6 +1054,9 @@ pub struct VectorIndexStatus {
     pub indexed: i64,
     pub model: String,
     pub auto_rebuild: bool,
+    pub ann_enabled: bool,
+    pub probe_count: usize,
+    pub centroids_ready: bool,
     pub shards: Vec<VectorShardRecord>,
 }
 
@@ -2979,6 +2990,27 @@ fn migrate_vector_index(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_knowledge_files_shard ON knowledge_files(shard_id, embedding_status)",
         [],
     )?;
+    for (table, column, definition) in [
+        (
+            "embedding_config",
+            "ann_enabled",
+            "ALTER TABLE embedding_config ADD COLUMN ann_enabled INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "embedding_config",
+            "probe_count",
+            "ALTER TABLE embedding_config ADD COLUMN probe_count INTEGER NOT NULL DEFAULT 2",
+        ),
+        (
+            "vector_shards",
+            "centroid",
+            "ALTER TABLE vector_shards ADD COLUMN centroid TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !column_exists(conn, table, column)? {
+            conn.execute_batch(definition)?;
+        }
+    }
     let shard_count: Option<i64> = conn
         .query_row(
             "SELECT shard_count FROM embedding_config WHERE id = 1",
@@ -6649,6 +6681,8 @@ fn default_embedding_config() -> EmbeddingConfig {
         dimension: 256,
         shard_count: 8,
         auto_rebuild: true,
+        ann_enabled: true,
+        probe_count: 2,
         updated_at: 0,
     }
 }
@@ -6663,7 +6697,7 @@ fn embedding_target_model(config: &EmbeddingConfig) -> String {
 
 pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
     let row = conn.query_row(
-        "SELECT mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, updated_at
+        "SELECT mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, ann_enabled, probe_count, updated_at
          FROM embedding_config WHERE id = 1",
         [],
         |row| {
@@ -6677,6 +6711,8 @@ pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
                 row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         },
     );
@@ -6690,6 +6726,8 @@ pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
             dimension,
             shard_count,
             auto_rebuild,
+            ann_enabled,
+            probe_count,
             updated_at,
         )) => Ok(EmbeddingConfig {
             mode,
@@ -6700,6 +6738,8 @@ pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
             dimension: dimension.max(1) as usize,
             shard_count: shard_count.clamp(1, 64) as usize,
             auto_rebuild: auto_rebuild != 0,
+            ann_enabled: ann_enabled != 0,
+            probe_count: probe_count.clamp(1, 64) as usize,
             updated_at,
         }),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_embedding_config()),
@@ -6715,6 +6755,7 @@ pub fn set_embedding_config(
         "openai" | "ollama" => input.mode.trim().to_string(),
         _ => "local".to_string(),
     };
+    let shard_count = input.shard_count.clamp(1, 64);
     let config = EmbeddingConfig {
         mode,
         provider_id: input.provider_id.trim().to_string(),
@@ -6722,13 +6763,15 @@ pub fn set_embedding_config(
         api_key: input.api_key.trim().to_string(),
         model: input.model.trim().to_string(),
         dimension: input.dimension.clamp(64, 4096),
-        shard_count: input.shard_count.clamp(1, 64),
+        shard_count,
         auto_rebuild: input.auto_rebuild,
+        ann_enabled: input.ann_enabled,
+        probe_count: input.probe_count.clamp(1, shard_count),
         updated_at: now_millis(),
     };
     conn.execute(
-        "INSERT INTO embedding_config (id, mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO embedding_config (id, mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, ann_enabled, probe_count, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
            mode = excluded.mode,
            provider_id = excluded.provider_id,
@@ -6738,6 +6781,8 @@ pub fn set_embedding_config(
            dimension = excluded.dimension,
            shard_count = excluded.shard_count,
            auto_rebuild = excluded.auto_rebuild,
+           ann_enabled = excluded.ann_enabled,
+           probe_count = excluded.probe_count,
            updated_at = excluded.updated_at",
         params![
             config.mode,
@@ -6748,6 +6793,8 @@ pub fn set_embedding_config(
             config.dimension as i64,
             config.shard_count as i64,
             config.auto_rebuild as i64,
+            config.ann_enabled as i64,
+            config.probe_count as i64,
             config.updated_at
         ],
     )?;
@@ -6794,11 +6841,52 @@ pub fn refresh_shard_stats(conn: &Connection, shard_id: &str) -> Result<()> {
         params![shard_id],
         |row| row.get(0),
     )?;
+    let mut centroid_sum: Vec<f64> = Vec::new();
+    let mut centroid_count = 0usize;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT embedding FROM knowledge_files
+             WHERE shard_id = ?1 AND embedding_status = 'indexed' AND embedding <> ''",
+        )?;
+        let rows = stmt.query_map(params![shard_id], |row| row.get::<_, String>(0))?;
+        for raw in rows.flatten() {
+            if let Ok(vector) = serde_json::from_str::<Vec<f64>>(&raw) {
+                if centroid_sum.is_empty() {
+                    centroid_sum = vec![0.0; vector.len()];
+                }
+                if centroid_sum.len() == vector.len() {
+                    for (sum, value) in centroid_sum.iter_mut().zip(vector) {
+                        *sum += value;
+                    }
+                    centroid_count += 1;
+                }
+            }
+        }
+    }
+    let centroid = if centroid_count > 0 {
+        let norm = centroid_sum.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            for value in &mut centroid_sum {
+                *value /= norm;
+            }
+        }
+        serialize_embedding(&centroid_sum)
+    } else {
+        String::new()
+    };
+    let status = if documents > 0 && !centroid.is_empty() {
+        "ready"
+    } else if documents > 0 {
+        "partial"
+    } else {
+        "idle"
+    };
     conn.execute(
-        "UPDATE vector_shards SET documents = ?1, status = ?2, updated_at = ?3 WHERE shard_id = ?4",
+        "UPDATE vector_shards SET documents = ?1, status = ?2, centroid = ?3, updated_at = ?4 WHERE shard_id = ?5",
         params![
             documents,
-            if documents > 0 { "ready" } else { "idle" },
+            status,
+            centroid,
             now_millis(),
             shard_id
         ],
@@ -6899,7 +6987,7 @@ pub fn embed_with_config(config: &EmbeddingConfig, text: &str) -> Result<Vec<f64
 
 pub fn list_vector_shards(conn: &Connection) -> Result<Vec<VectorShardRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT shard_id, model, dimension, documents, status, updated_at, created_at
+        "SELECT shard_id, model, dimension, documents, status, centroid, updated_at, created_at
          FROM vector_shards ORDER BY CAST(shard_id AS INTEGER) ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -6909,8 +6997,9 @@ pub fn list_vector_shards(conn: &Connection) -> Result<Vec<VectorShardRecord>> {
             dimension: row.get::<_, i64>(2)?.max(1) as usize,
             documents: row.get(3)?,
             status: row.get(4)?,
-            updated_at: row.get(5)?,
-            created_at: row.get(6)?,
+            centroid: row.get(5)?,
+            updated_at: row.get(6)?,
+            created_at: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -6937,6 +7026,10 @@ pub fn get_vector_index_status(conn: &Connection) -> Result<VectorIndexStatus> {
         params![target],
         |row| row.get(0),
     )?;
+    let shards = list_vector_shards(conn)?;
+    let centroids_ready = shards
+        .iter()
+        .all(|shard| shard.documents == 0 || !shard.centroid.is_empty());
     Ok(VectorIndexStatus {
         total,
         pending,
@@ -6944,7 +7037,10 @@ pub fn get_vector_index_status(conn: &Connection) -> Result<VectorIndexStatus> {
         indexed,
         model: target,
         auto_rebuild: config.auto_rebuild,
-        shards: list_vector_shards(conn)?,
+        ann_enabled: config.ann_enabled,
+        probe_count: config.probe_count,
+        centroids_ready,
+        shards,
     })
 }
 
@@ -7758,7 +7854,7 @@ pub fn search_thoughts(
             row.get::<_, String>(3)?,
         ))
     })?;
-    let mut docs: Vec<SearchDoc> = rows
+    let thought_docs: Vec<SearchDoc> = rows
         .filter_map(Result::ok)
         .map(|(id, content, tags, kind)| {
             let tokens = tokenize(&content);
@@ -7794,6 +7890,7 @@ pub fn search_thoughts(
             row.get::<_, Option<String>>(7)?,
         ))
     })?;
+    let mut file_docs: Vec<SearchDoc> = Vec::new();
     for file in file_rows.flatten() {
         let (id, path, content, tags, embedding_raw, shard_id, embedding_model, vault_path) = file;
         let tokens = tokenize(&content);
@@ -7802,7 +7899,7 @@ pub fn search_thoughts(
         } else {
             serde_json::from_str(&embedding_raw).unwrap_or_else(|_| embed_text(&content))
         };
-        docs.push(SearchDoc {
+        file_docs.push(SearchDoc {
             id: id.clone(),
             content,
             tags,
@@ -7816,11 +7913,53 @@ pub fn search_thoughts(
             embedding_model,
         });
     }
+    let ann_ready = config.ann_enabled
+        && config.probe_count > 1
+        && config.probe_count < config.shard_count
+        && file_docs.len() > 1;
+    if ann_ready {
+        let shards = list_vector_shards(conn)?;
+        let mut ranked: Vec<(String, f64)> = shards
+            .iter()
+            .filter_map(|shard| {
+                if shard.centroid.is_empty() {
+                    return None;
+                }
+                let centroid: Vec<f64> = serde_json::from_str(&shard.centroid).ok()?;
+                Some((
+                    shard.shard_id.clone(),
+                    cosine_similarity(&query_embedding, &centroid),
+                ))
+            })
+            .collect();
+        if ranked.len() >= config.probe_count {
+            ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let top: Vec<String> = ranked
+                .into_iter()
+                .take(config.probe_count)
+                .map(|(shard_id, _)| shard_id)
+                .collect();
+            file_docs.retain(|doc| top.contains(&doc.shard_id));
+        }
+    }
+    let mut docs = thought_docs;
+    docs.extend(file_docs);
     if docs.is_empty() {
         return Ok(Vec::new());
     }
     let doc_count = docs.len() as f64;
     let avg_len = docs.iter().map(|d| d.tokens.len() as f64).sum::<f64>() / doc_count;
+    let mut idf: HashMap<String, f64> = HashMap::new();
+    for term in &query_tokens {
+        let doc_freq = docs
+            .iter()
+            .filter(|d| d.tokens.iter().any(|t| t == term))
+            .count() as f64;
+        idf.insert(
+            term.clone(),
+            ((doc_count - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln(),
+        );
+    }
 
     let mut scored: Vec<(f64, RagSearchResult)> = Vec::new();
     for doc in &docs {
@@ -7839,18 +7978,14 @@ pub fn search_thoughts(
                 }
             }
         }
-        let doc_freq: f64 = docs
-            .iter()
-            .filter(|d| d.tokens.iter().any(|t| query_tokens.contains(t)))
-            .count() as f64;
-        let idf = ((doc_count - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
         let mut bm25 = 0.0;
         for term in &query_tokens {
             let tf = doc.tokens.iter().filter(|t| *t == term).count() as f64;
             if tf > 0.0 {
                 let norm = doc.tokens.len() as f64;
-                bm25 +=
-                    idf * (tf * 1.5) / (tf + 1.5 * (1.0 - 0.75 + 0.75 * (norm / avg_len.max(1.0))));
+                let term_idf = idf.get(term).copied().unwrap_or(0.0);
+                bm25 += term_idf * (tf * 1.5)
+                    / (tf + 1.5 * (1.0 - 0.75 + 0.75 * (norm / avg_len.max(1.0))));
             }
         }
         let vector_score = cosine_similarity(&query_embedding, &doc.embedding);
@@ -11474,6 +11609,8 @@ mod tests {
                 dimension: 768,
                 shard_count: 16,
                 auto_rebuild: false,
+                ann_enabled: true,
+                probe_count: 2,
             },
         )
         .unwrap();
@@ -11481,6 +11618,8 @@ mod tests {
         assert_eq!(saved.dimension, 768);
         assert_eq!(saved.shard_count, 16);
         assert!(!saved.auto_rebuild);
+        assert!(saved.ann_enabled);
+        assert_eq!(saved.probe_count, 2);
         let clamped = set_embedding_config(
             &conn,
             EmbeddingConfigInput {
@@ -11492,15 +11631,162 @@ mod tests {
                 dimension: 8,
                 shard_count: 999,
                 auto_rebuild: true,
+                ann_enabled: false,
+                probe_count: 999,
             },
         )
         .unwrap();
         assert_eq!(clamped.mode, "local");
         assert_eq!(clamped.dimension, 64);
         assert_eq!(clamped.shard_count, 64);
+        assert!(!clamped.ann_enabled);
+        assert_eq!(clamped.probe_count, 64);
         let reloaded = get_embedding_config(&conn).unwrap();
         assert_eq!(reloaded.shard_count, 64);
+        assert_eq!(reloaded.probe_count, 64);
         assert_eq!(list_vector_shards(&conn).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn vector_shards_compute_normalized_centroid() {
+        let conn = new_test_connection();
+        migrate_vector_index(&conn).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/centroid-a.md",
+            "A",
+            "#work",
+            "alpha plan with vector search",
+            "C:/vault",
+        )
+        .unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/centroid-b.md",
+            "B",
+            "#work",
+            "alpha plan with vector search again",
+            "C:/vault",
+        )
+        .unwrap();
+        conn.execute("UPDATE knowledge_files SET shard_id = '2'", [])
+            .unwrap();
+        refresh_shard_stats(&conn, "2").unwrap();
+        let shards = list_vector_shards(&conn).unwrap();
+        let shard = shards.iter().find(|shard| shard.shard_id == "2").unwrap();
+        assert_eq!(shard.status, "ready");
+        assert_eq!(shard.documents, 2);
+        let centroid: Vec<f64> = serde_json::from_str(&shard.centroid).unwrap();
+        assert!(!centroid.is_empty());
+        let norm = centroid
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
+        let status = get_vector_index_status(&conn).unwrap();
+        assert!(status.centroids_ready);
+    }
+
+    #[test]
+    fn ann_search_prunes_to_top_shards() {
+        let conn = new_test_connection();
+        set_embedding_config(
+            &conn,
+            EmbeddingConfigInput {
+                mode: "local".to_string(),
+                provider_id: String::new(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: String::new(),
+                dimension: 256,
+                shard_count: 8,
+                auto_rebuild: true,
+                ann_enabled: true,
+                probe_count: 2,
+            },
+        )
+        .unwrap();
+        for (index, content) in [
+            "alpha shard zero",
+            "alpha shard one",
+            "alpha shard two",
+            "alpha shard three",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = format!("C:/vault/ann-{index}.md");
+            upsert_knowledge_file(&conn, &path, "ANN", "#work", content, "C:/vault").unwrap();
+            conn.execute(
+                "UPDATE knowledge_files SET shard_id = ?1 WHERE path = ?2",
+                params![index.to_string(), path],
+            )
+            .unwrap();
+        }
+        refresh_all_shard_stats(&conn).unwrap();
+        let pruned = search_thoughts(&conn, "alpha", 10, None).unwrap();
+        let pruned_shards: std::collections::HashSet<String> = pruned
+            .iter()
+            .map(|result| result.shard_id.clone())
+            .collect();
+        assert_eq!(
+            pruned_shards.len(),
+            2,
+            "ANN should keep only the two closest shards"
+        );
+
+        set_embedding_config(
+            &conn,
+            EmbeddingConfigInput {
+                mode: "local".to_string(),
+                provider_id: String::new(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: String::new(),
+                dimension: 256,
+                shard_count: 8,
+                auto_rebuild: true,
+                ann_enabled: true,
+                probe_count: 8,
+            },
+        )
+        .unwrap();
+        let full = search_thoughts(&conn, "alpha", 10, None).unwrap();
+        let full_shards: std::collections::HashSet<String> =
+            full.iter().map(|result| result.shard_id.clone()).collect();
+        assert_eq!(
+            full_shards.len(),
+            4,
+            "probe=shard_count should disable pruning"
+        );
+
+        set_embedding_config(
+            &conn,
+            EmbeddingConfigInput {
+                mode: "local".to_string(),
+                provider_id: String::new(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: String::new(),
+                dimension: 256,
+                shard_count: 8,
+                auto_rebuild: true,
+                ann_enabled: false,
+                probe_count: 2,
+            },
+        )
+        .unwrap();
+        let disabled = search_thoughts(&conn, "alpha", 10, None).unwrap();
+        let disabled_shards: std::collections::HashSet<String> = disabled
+            .iter()
+            .map(|result| result.shard_id.clone())
+            .collect();
+        assert_eq!(
+            disabled_shards.len(),
+            4,
+            "disabled ANN should search all shards"
+        );
     }
 
     #[test]
@@ -11549,6 +11835,13 @@ mod tests {
             "embedding_error",
         ] {
             assert!(column_exists(&conn, "knowledge_files", column).unwrap());
+        }
+        for (table, column) in [
+            ("embedding_config", "ann_enabled"),
+            ("embedding_config", "probe_count"),
+            ("vector_shards", "centroid"),
+        ] {
+            assert!(column_exists(&conn, table, column).unwrap());
         }
         assert_eq!(list_vector_shards(&conn).unwrap().len(), 8);
     }
