@@ -20,7 +20,7 @@
 - [x] 最近 24h 失败运行以告警条提示，Run now 会即时追加日志。
 - [x] `verify:ui` / `verify:preview` 的 `webhookRuleRunLog` lane 双端通过。
 - [x] `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib` 全绿。
-- [ ] PR 合并到 develop，RETRO / ARCHITECTURE / DATABASE / BACKLOG 已更新。
+- [x] PR 合并到 develop，RETRO / ARCHITECTURE / DATABASE / BACKLOG 已更新。
 
 ## 范围外（Backlog）
 
