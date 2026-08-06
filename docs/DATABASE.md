@@ -587,6 +587,10 @@ CREATE TABLE IF NOT EXISTS webhook_retention_config (
 - `prune_webhook_deliveries` 只按年龄删除 `status IN ('success','dead')` 的过期记录，条数裁剪也只作用于终态记录；queued / delivering 不受保留策略影响，避免误删待投递工作。
 - 浏览器 fallback 使用 `ai-workbench:webhook-retention:v1` 保存同一模型，不写入 SQLite。
 
+## Sprint 135：Knowledge 笔记双链与回溯
+
+无表结构变更。双链图是运行时派生数据：`db.ts` 从 `thoughts` 的 `content` 中解析 `[[...]]`，按首行标题匹配生成 outgoing / incoming，不新增表、索引或字段。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

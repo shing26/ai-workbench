@@ -2,6 +2,7 @@ import {
   BookOpen,
   Clock,
   FolderOpen,
+  Link2,
   Pencil,
   Plus,
   RefreshCw,
@@ -10,7 +11,7 @@ import {
   Tags,
   Trash2,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as db from '../lib/db';
 import { loadRecapDraft, markRecapDraftSaved, type RecapDraft } from '../lib/recapDraft';
@@ -268,6 +269,32 @@ export default function KnowledgeView() {
   const visibleThoughts = filteredResults ?? filtered;
   const selected = visibleThoughts.find((t) => t.id === selectedId) ?? visibleThoughts[0] ?? null;
   const selectedLocal = selected ? (thoughts.find((t) => t.id === selected.id) ?? null) : null;
+  const linkGraph = useMemo(() => db.buildThoughtLinkGraph(thoughts), [thoughts]);
+  const selectedOutgoing = selectedLocal ? (linkGraph.outgoing[selectedLocal.id] ?? []) : [];
+  const selectedIncoming = selectedLocal ? (linkGraph.incoming[selectedLocal.id] ?? []) : [];
+  const totalLinks = useMemo(
+    () => Object.values(linkGraph.outgoing).reduce((sum, refs) => sum + refs.length, 0),
+    [linkGraph],
+  );
+  const missingLinks = useMemo(() => {
+    let count = 0;
+    for (const thought of thoughts) {
+      for (const link of db.extractWikiLinks(thought.content)) {
+        if (!db.resolveWikiLinkTarget(thoughts, link.target)) count += 1;
+      }
+    }
+    return count;
+  }, [thoughts]);
+
+  const navigateToThought = (id: string) => {
+    setResults(null);
+    setCrossFileFilter(null);
+    setFilter('all');
+    setSelectedTag('all');
+    setBodyEditId(null);
+    setTagEditId(null);
+    setSelectedId(id);
+  };
 
   const add = async () => {
     if (!content.trim()) return;
@@ -1649,6 +1676,84 @@ export default function KnowledgeView() {
                   {bodyEditResults[selectedLocal.id]}
                 </span>
               )}
+              <div
+                data-thought-links
+                className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-2"
+              >
+                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                  <Link2 size={10} className="text-slate-500" />
+                  <span className="text-[9px] text-slate-500">Wiki links</span>
+                  <span
+                    data-knowledge-graph-stats
+                    className="ml-auto rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                  >
+                    {totalLinks} links · {selectedIncoming.length} backlinks · {missingLinks}{' '}
+                    missing
+                  </span>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div data-thought-links-outgoing>
+                    <div className="mb-1 text-[9px] text-slate-600">
+                      Outgoing ({selectedOutgoing.length})
+                    </div>
+                    {selectedOutgoing.length === 0 && (
+                      <div className="text-[9px] text-slate-700">No outgoing links</div>
+                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {selectedOutgoing.map((ref) => (
+                        <button
+                          key={`${ref.id}-${ref.target}`}
+                          type="button"
+                          data-thought-link-out
+                          data-thought-link-target={ref.target}
+                          data-thought-link-alias={ref.alias}
+                          onClick={() => navigateToThought(ref.id)}
+                          className="flex h-6 items-center rounded-md bg-sky-500/10 px-2 text-[9px] text-sky-300 hover:bg-sky-500/20"
+                        >
+                          {ref.alias}
+                        </button>
+                      ))}
+                      {selectedLocal &&
+                        db
+                          .extractWikiLinks(selectedLocal.content)
+                          .filter((link) => !db.resolveWikiLinkTarget(thoughts, link.target))
+                          .map((link) => (
+                            <span
+                              key={link.target}
+                              data-thought-link-missing
+                              data-thought-link-target={link.target}
+                              className="flex h-6 items-center rounded-md bg-amber-500/10 px-2 text-[9px] text-amber-300/80"
+                            >
+                              {link.alias} ?
+                            </span>
+                          ))}
+                    </div>
+                  </div>
+                  <div data-thought-links-incoming>
+                    <div className="mb-1 text-[9px] text-slate-600">
+                      Backlinks ({selectedIncoming.length})
+                    </div>
+                    {selectedIncoming.length === 0 && (
+                      <div className="text-[9px] text-slate-700">No backlinks</div>
+                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {selectedIncoming.map((ref) => (
+                        <button
+                          key={`${ref.id}-${ref.target}`}
+                          type="button"
+                          data-thought-link-back
+                          data-thought-link-target={ref.target}
+                          data-thought-link-source={ref.id}
+                          onClick={() => navigateToThought(ref.id)}
+                          className="flex h-6 items-center rounded-md bg-emerald-500/10 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/20"
+                        >
+                          {ref.alias} · {ref.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </>
           ) : (
             <div className="py-10 text-center text-xs text-slate-600">Select a thought</div>

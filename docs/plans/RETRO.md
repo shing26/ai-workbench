@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 135
+
+### What went well?
+
+- `db.ts` 新增 `extractWikiLinks` / `thoughtTitle` / `resolveWikiLinkTarget` / `buildThoughtLinkGraph`：正则解析 `[[target]]` 与 `[[target|alias]]`，按首行 Markdown 标题提取笔记名，先精确匹配再子串兜底，纯前端派生无需落库。
+- Knowledge 详情新增 `data-thought-links` 区：Outgoing / Backlinks / Missing 三组，`data-knowledge-graph-stats` 展示 links / backlinks / missing 统计；点击出链或回链会清空搜索与标签过滤并跳转到目标笔记。
+- `verify:ui` / `verify:preview` 新增 `knowledgeBacklinks` lane：种子 Alpha / Beta / Gamma 三篇笔记，断言 Beta / Gamma 出链、Beta 回链、Missing Note 未解析、3 links / 1 backlinks / 1 missing 统计，并验证点击回链跳到 Beta、再从 Beta 出链回到 Alpha。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（140 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 验证种子里的 `\n\n` 写在 evaluate 模板字符串内，首次运行被解释成真实换行导致 SyntaxError；改为 `\\n\\n` 双反斜杠转义后通过，与 Sprint 133 的 CSV 转义问题同类。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 收益端聚合展示、System 自动化规则补强、AI Studio 会话摘要。
+- 保留 `knowledgeBacklinks` lane，修改双链解析、详情面板或 Knowledge 列表渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 134
 
 ### What went well?
