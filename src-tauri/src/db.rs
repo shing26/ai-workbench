@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     token TEXT NOT NULL DEFAULT '',
     secret TEXT NOT NULL DEFAULT '',
     retries INTEGER NOT NULL DEFAULT 1,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 0,
     interval_seconds INTEGER NOT NULL DEFAULT 60,
     trigger_event TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 0,
@@ -728,6 +729,7 @@ pub struct WebhookRule {
     pub token: String,
     pub secret: String,
     pub retries: i64,
+    pub cooldown_seconds: i64,
     pub interval_seconds: i64,
     pub trigger_event: String,
     pub enabled: bool,
@@ -746,6 +748,7 @@ pub struct WebhookRuleInput<'a> {
     pub token: &'a str,
     pub secret: &'a str,
     pub retries: i64,
+    pub cooldown_seconds: i64,
     pub interval_seconds: i64,
     pub trigger_event: &'a str,
 }
@@ -851,7 +854,7 @@ fn uid() -> String {
 }
 
 const WEBHOOK_RULE_COLUMNS: &str =
-    "id, name, url, payload, method, token, secret, retries, interval_seconds, enabled, \
+    "id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, enabled, \
      last_run_at, last_status, last_message, created_at, updated_at, trigger_event";
 
 fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
@@ -864,14 +867,15 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         token: row.get(5)?,
         secret: row.get(6)?,
         retries: row.get(7)?,
-        interval_seconds: row.get(8)?,
-        enabled: row.get::<_, i64>(9)? != 0,
-        last_run_at: row.get(10)?,
-        last_status: row.get(11)?,
-        last_message: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
-        trigger_event: row.get(15)?,
+        cooldown_seconds: row.get(8)?,
+        interval_seconds: row.get(9)?,
+        enabled: row.get::<_, i64>(10)? != 0,
+        last_run_at: row.get(11)?,
+        last_status: row.get(12)?,
+        last_message: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        trigger_event: row.get(16)?,
     })
 }
 
@@ -910,9 +914,10 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
         input.payload.trim().to_string()
     };
     let interval = input.interval_seconds.max(5);
+    let cooldown = input.cooldown_seconds.max(0);
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, interval_seconds, trigger_event, enabled, last_run_at, last_status, last_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, 0, 0, '', ?11, ?11)",
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, enabled, last_run_at, last_status, last_message, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 0, 0, '', ?12, ?12)",
         params![
             id,
             input.name,
@@ -922,6 +927,7 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
             input.token,
             input.secret,
             input.retries,
+            cooldown,
             interval,
             input.trigger_event,
             now,
@@ -965,14 +971,19 @@ pub fn list_due_webhook_rules(conn: &Connection, now_ms: i64) -> Result<Vec<Webh
     rows.collect()
 }
 
-pub fn list_event_webhook_rules(conn: &Connection, event: &str) -> Result<Vec<WebhookRule>> {
+pub fn list_event_webhook_rules(
+    conn: &Connection,
+    event: &str,
+    now_ms: i64,
+) -> Result<Vec<WebhookRule>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM webhook_rules
          WHERE enabled = 1 AND trigger_event = ?1
+           AND (last_run_at = 0 OR ?2 - last_run_at >= cooldown_seconds * 1000)
          ORDER BY created_at ASC",
         WEBHOOK_RULE_COLUMNS
     ))?;
-    let rows = stmt.query_map(params![event], map_webhook_rule)?;
+    let rows = stmt.query_map(params![event, now_ms], map_webhook_rule)?;
     rows.collect()
 }
 
@@ -1172,6 +1183,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_quick_prompt_order(&conn)?;
     migrate_webhook_secret_retries(&conn)?;
     migrate_webhook_trigger_event(&conn)?;
+    migrate_webhook_cooldown(&conn)?;
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
@@ -1306,6 +1318,15 @@ fn migrate_webhook_trigger_event(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "webhook_rules", "trigger_event")? {
         conn.execute_batch(
             "ALTER TABLE webhook_rules ADD COLUMN trigger_event TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_webhook_cooldown(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "cooldown_seconds")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     Ok(())
@@ -7458,6 +7479,7 @@ mod tests {
                 token: "secret-token",
                 secret: "hook-secret",
                 retries: 2,
+                cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
             },
@@ -7469,6 +7491,7 @@ mod tests {
         assert_eq!(rule.token, "secret-token");
         assert_eq!(rule.secret, "hook-secret");
         assert_eq!(rule.retries, 2);
+        assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.trigger_event, "");
 
         let due = list_due_webhook_rules(&conn, now).unwrap();
@@ -7697,6 +7720,101 @@ mod tests {
     }
 
     #[test]
+    fn webhook_cooldown_migration_adds_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                trigger_event TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_webhook_cooldown(&conn).unwrap();
+        assert!(column_exists(&conn, "webhook_rules", "cooldown_seconds").unwrap());
+        conn.execute(
+            "INSERT INTO webhook_rules (id, name, url, created_at, updated_at)
+             VALUES ('legacy-cooled', 'Legacy', 'https://example.test', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let cooldown: i64 = conn
+            .query_row(
+                "SELECT cooldown_seconds FROM webhook_rules WHERE id = 'legacy-cooled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cooldown, 0);
+    }
+
+    #[test]
+    fn webhook_event_cooldown_suppresses_repeat_triggers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let now = now_millis();
+        let cooled = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Cooled hook",
+                url: "https://example.test/cooled",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 30,
+                interval_seconds: 60,
+                trigger_event: "error.reported",
+            },
+        )
+        .unwrap();
+        let instant = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Instant hook",
+                url: "https://example.test/instant",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "error.reported",
+            },
+        )
+        .unwrap();
+
+        let first = list_event_webhook_rules(&conn, "error.reported", now).unwrap();
+        assert!(first.iter().any(|r| r.id == cooled.id));
+        assert!(first.iter().any(|r| r.id == instant.id));
+
+        mark_webhook_rule_run(&conn, &cooled.id, 202, "Queued for delivery").unwrap();
+        mark_webhook_rule_run(&conn, &instant.id, 202, "Queued for delivery").unwrap();
+
+        let suppressed = list_event_webhook_rules(&conn, "error.reported", now + 1000).unwrap();
+        assert!(!suppressed.iter().any(|r| r.id == cooled.id));
+        assert!(suppressed.iter().any(|r| r.id == instant.id));
+
+        let restored = list_event_webhook_rules(&conn, "error.reported", now + 31_000).unwrap();
+        assert!(restored.iter().any(|r| r.id == cooled.id));
+    }
+
+    #[test]
     fn webhook_delivery_queue_lifecycle() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -7710,6 +7828,7 @@ mod tests {
                 token: "",
                 secret: "",
                 retries: 2,
+                cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
             },
@@ -7725,6 +7844,7 @@ mod tests {
                 token: "",
                 secret: "",
                 retries: 1,
+                cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
             },
@@ -7741,6 +7861,7 @@ mod tests {
                 token: "",
                 secret: "",
                 retries: 1,
+                cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
             },

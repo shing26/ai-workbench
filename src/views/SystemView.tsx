@@ -137,6 +137,7 @@ export default function SystemView() {
   const [webhookRules, setWebhookRules] = useState<db.WebhookRule[]>([]);
   const [webhookRuleName, setWebhookRuleName] = useState('');
   const [webhookRuleInterval, setWebhookRuleInterval] = useState('60');
+  const [webhookRuleCooldown, setWebhookRuleCooldown] = useState('0');
   const [webhookRuleTrigger, setWebhookRuleTrigger] = useState('');
   const [webhookEventContext, setWebhookEventContext] = useState('');
   const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
@@ -846,11 +847,13 @@ export default function SystemView() {
       Number(webhookRuleInterval) || 60,
       webhookSecret,
       Math.max(0, Number(webhookRetries) || 0),
+      Math.max(0, Number(webhookRuleCooldown) || 0),
       webhookRuleTrigger.trim(),
     );
     await loadWebhookRules();
     await loadWebhookDeliveries();
     setWebhookRuleName('');
+    setWebhookRuleCooldown('0');
     setWebhookRuleTrigger('');
   };
 
@@ -2009,6 +2012,15 @@ export default function SystemView() {
               className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
             />
             <input
+              type="number"
+              min={0}
+              value={webhookRuleCooldown}
+              onChange={(e) => setWebhookRuleCooldown(e.target.value)}
+              placeholder="Cooldown (s)"
+              data-webhook-rule-cooldown
+              className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <input
               value={webhookRuleTrigger}
               onChange={(e) => setWebhookRuleTrigger(e.target.value)}
               placeholder="Trigger event"
@@ -2052,6 +2064,14 @@ export default function SystemView() {
                 ) : (
                   <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
                     every {rule.intervalSeconds}s
+                  </span>
+                )}
+                {rule.triggerEvent && rule.cooldownSeconds > 0 && (
+                  <span
+                    data-webhook-rule-cooldown-badge
+                    className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-300"
+                  >
+                    cooldown {rule.cooldownSeconds}s
                   </span>
                 )}
                 <span

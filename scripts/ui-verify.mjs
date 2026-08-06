@@ -5656,6 +5656,85 @@ try {
   }
   results.webhookPayloadTemplate = webhookPayloadTemplate;
 
+  const webhookRuleCooldown = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const cooldownInput = document.querySelector("[data-webhook-rule-cooldown]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !cooldownInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "cooldown controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/cooldown");
+    setValue(nameInput, "Cooldown sync hook");
+    setValue(cooldownInput, "60");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Cooldown sync hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "cooldown rule not created" };
+    const cooldownBadge =
+      item.querySelector("[data-webhook-rule-cooldown-badge]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Cooldown sync hook");
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let firstCount = 0;
+    for (let i = 0; i < 20; i++) {
+      firstCount = document.querySelectorAll("[data-webhook-delivery-item]").length;
+      if (firstCount >= 1) break;
+      await sleep(100);
+    }
+    await sleep(250);
+    triggerBtn.click();
+    await sleep(600);
+    const secondCount = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedFired = storedAfter.find((r) => r.name === "Cooldown sync hook");
+    const deliveries = JSON.parse(localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]");
+    const ok =
+      cooldownBadge.includes("60") &&
+      storedRule?.cooldownSeconds === 60 &&
+      firstCount === 1 &&
+      secondCount === 1 &&
+      (storedFired?.lastRunAt ?? 0) > 0 &&
+      deliveries.length === 1;
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    await sleep(200);
+    return {
+      ok,
+      cooldownBadge,
+      storedCooldown: storedRule?.cooldownSeconds,
+      firstCount,
+      secondCount,
+      lastRunAt: storedFired?.lastRunAt ?? 0,
+      deliveries: deliveries.length,
+    };
+  })()`);
+  if (!webhookRuleCooldown.ok) {
+    throw new Error(
+      `Webhook rule cooldown assertion failed: ${JSON.stringify(webhookRuleCooldown)}`,
+    );
+  }
+  results.webhookRuleCooldown = webhookRuleCooldown;
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

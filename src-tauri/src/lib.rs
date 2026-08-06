@@ -4779,6 +4779,7 @@ struct WebhookRuleRequest {
     token: Option<String>,
     secret: Option<String>,
     retries: Option<i64>,
+    cooldown_seconds: Option<i64>,
     interval_seconds: i64,
     trigger_event: Option<String>,
 }
@@ -4805,6 +4806,7 @@ fn create_webhook_rule(
             token: request.token.as_deref().unwrap_or(""),
             secret: request.secret.as_deref().unwrap_or(""),
             retries: request.retries.unwrap_or(1).max(0),
+            cooldown_seconds: request.cooldown_seconds.unwrap_or(0).max(0),
             interval_seconds: request.interval_seconds.max(5),
             trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
         },
@@ -4845,11 +4847,13 @@ fn trigger_webhook_event(
     context: Option<Value>,
 ) -> Result<i64, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let rules = db::list_event_webhook_rules(&conn, &event).map_err(|e| e.to_string())?;
+    let now = now_millis();
+    let rules = db::list_event_webhook_rules(&conn, &event, now).map_err(|e| e.to_string())?;
     let mut count = 0i64;
     for rule in &rules {
         let payload = render_webhook_payload(&rule.payload, &event, context.as_ref(), now_millis());
         db::enqueue_webhook_delivery(&conn, rule, &event, &payload).map_err(|e| e.to_string())?;
+        let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
         count += 1;
     }
     Ok(count)
@@ -7415,6 +7419,7 @@ mod tests {
                 token: "rule-token",
                 secret: "rule-secret",
                 retries: 2,
+                cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
             },

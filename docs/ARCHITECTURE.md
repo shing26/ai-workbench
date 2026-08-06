@@ -420,6 +420,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 `data-week-review-archive` 一键快速归档：本周 done 任务顺序执行 `setTaskToday(false)` + `setTaskDueDate(null)`，结果写入 `data-week-review-archived`，reload 后保持归档结果。
 - `verify:ui` / `verify:preview` 新增 `weekReviewStats` / `weekReviewArchive` / `weekReviewArchivePersisted` 三条 lane；纯前端改动，无新增 Rust 命令与表结构。
 
+## Sprint 131：Webhook 事件规则冷却期
+
+- `webhook_rules` 新增 `cooldown_seconds INTEGER NOT NULL DEFAULT 0`：新库 SCHEMA 建列，旧库 `migrate_webhook_cooldown` 幂等补列；`WebhookRule` / `WebhookRuleInput` / `WebhookRuleRequest` 全程携带 `cooldownSeconds`，创建时 clamp >= 0。
+- `list_event_webhook_rules` 增加 `now_ms` 参数并按 `(last_run_at = 0 OR now - last_run_at >= cooldown_seconds * 1000)` 过滤；`trigger_webhook_event` 命中后更新规则 `last_run_at`，冷却期内重复事件不再入队。
+- System 规则编辑区新增 `data-webhook-rule-cooldown` 输入，事件规则列表展示 `data-webhook-rule-cooldown-badge`（`cooldown Ns`）；浏览器 fallback 在 `triggerWebhookEvent` 中按 `lastRunAt` 过滤并写回规则，`readWebhookRules` 对旧数据默认补 0。
+- `verify:ui` / `verify:preview` 新增 `webhookRuleCooldown` lane；Rust 新增 `webhook_cooldown_migration_adds_column` / `webhook_event_cooldown_suppresses_repeat_triggers` 单测，`cargo test --lib` 增至 137 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
