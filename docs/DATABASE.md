@@ -1142,3 +1142,13 @@ ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
 - 新库 SCHEMA 的 `projects` 建表语句已直接包含 `sort_order INTEGER NOT NULL DEFAULT 0`；旧库由幂等 `migrate_project_sort_order` 补列并按 `created_at` 倒序回填（最新项目 sort_order=0），已加入 `init_connection` 迁移链。
 - `list_projects` 按 `sort_order ASC, created_at DESC` 返回；`create_project` 以 `MAX(sort_order)+1` 追加到末尾；`reorder_projects(ids)` 按传入 id 顺序把 sort_order 重编号为 0..n-1。
 - 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `projects` 数组，项目对象新增可选 `sortOrder`，reorder 时按传入 id 顺序重排并写回；速度偏好单独存 `ai-workbench:carousel-speed:v1`，不写入 SQLite。
+
+## Sprint 148：Projects 逐卡材质记忆
+
+```sql
+ALTER TABLE projects ADD COLUMN material TEXT NOT NULL DEFAULT '';
+```
+
+- 新库 SCHEMA 的 `projects` 建表语句已直接包含 `material TEXT NOT NULL DEFAULT ''`；旧库由幂等 `migrate_project_material` 补列，已加入 `init_connection` 迁移链。
+- `update_project_material(id, material)` 只接受 cyan / original / rain / chrome，其余值统一写空串；空串表示卡片回到按索引循环的默认材质，显式值表示逐卡记忆。
+- 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `projects` 数组，项目对象新增可选 `material`，`updateProjectMaterial` 同构写回；不新增 localStorage key。

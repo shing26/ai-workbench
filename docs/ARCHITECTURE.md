@@ -876,3 +876,9 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 新增 Tauri 命令 `reorder_projects(ids)`，单次调用按传入 id 顺序写回 0..n-1；`db.ts` 浏览器 fallback 对 `ai-workbench:db:v1` 的 `projects` 数组做同构重排，不新增 localStorage key。
 - ProjectCarousel 拖拽使用 pointer 事件：拖动超过约一张卡片宽度即换位，拖拽期间暂停 autoplay 并抑制 click 跳转；`moveDrag` 在提交后重置 committed 并更新基准点，支持同一手势内连续换位。
 - 速度滑杆 1~10 以 `0.00055 * speed` 推进 autoplay，持久化到 `ai-workbench:carousel-speed:v1`，reload 后恢复；`verify:ui` 新增 `carouselReorder` lane，并保证 lane 结束还原 fixture 状态。
+
+## Sprint 148：Projects / Material 逐卡独立配色记忆
+
+- `projects.material` 保存逐卡材质记忆：空串表示自动（按索引循环预设），cyan / original / rain / chrome 表示显式记忆；`update_project_material` 在 Rust 侧校验合法值并返回最新 Project。
+- ProjectCarousel 渲染时用 `resolveMaterial` 合并显式记忆与默认循环，卡片保留 `data-carousel-material` 与新增 `data-carousel-material-memory`；选中卡详情条提供 Auto + 4 色 swatch，点击后经 store 持久化并刷新。
+- 浏览器 fallback 复用 `ai-workbench:db:v1` 的 `projects` 数组（项目对象新增可选 `material`），不新增 localStorage key；`verify:ui` 新增 `carouselMaterialMemory` lane，并在 lane 末尾还原 Auto 状态。

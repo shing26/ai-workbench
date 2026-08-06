@@ -1,5 +1,23 @@
 # Sprint Retrospective
 
+## Sprint 148
+
+### What went well?
+
+- `projects` 新增 `material TEXT NOT NULL DEFAULT ''`：新库 SCHEMA 直接建列，旧库 `migrate_project_material` 幂等补列；`update_project_material` Tauri 命令只接受 cyan / original / rain / chrome / 空串，非法值回落为空串。
+- 轮播卡片 `data-carousel-material` 优先读取 `project.material`，空值继续按索引循环默认；选中卡详情条新增 Auto + 4 个材质 swatch，点击即时生效并持久化，reload 后恢复。
+- `verify:ui` / `verify:preview` 新增 `carouselMaterialMemory` lane：切换 rain、持久化、reload 恢复、Auto 还原并校验存储回空串；Rust 单测增至 177 条，覆盖迁移、非法值钳制与 create 默认空材质。
+
+### What went wrong?
+
+- `project_sort_order_migrates_and_reorders` 模拟旧库未包含 material 列，调用 `create_project` 时因缺列失败；补调 `migrate_project_material` 后迁移链完整。
+
+### Action Items
+
+- 下一 Sprint 候选：AI Studio 每条流独立取消与单路重试。
+- 保留 `carouselMaterialMemory` lane，修改逐卡材质、Auto 回退或 material 迁移时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 147
 
 ### What went well?

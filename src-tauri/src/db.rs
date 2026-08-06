@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS projects (
     revenue REAL DEFAULT 0.0,
     status TEXT DEFAULT 'active',
     created_at INTEGER,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    material TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS project_revenue_history (
     id TEXT PRIMARY KEY,
@@ -447,6 +448,7 @@ pub struct Project {
     pub status: String,
     pub created_at: i64,
     pub sort_order: i64,
+    pub material: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -2572,6 +2574,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     migrate_updated_at(&conn)?;
     migrate_project_sort_order(&conn)?;
+    migrate_project_material(&conn)?;
     migrate_error_log_device(&conn)?;
     migrate_version_parent(&conn)?;
     migrate_vault_watch_targets(&conn)?;
@@ -2867,6 +2870,13 @@ fn migrate_project_sort_order(conn: &Connection) -> Result<()> {
                    OR (p2.created_at = projects.created_at AND p2.rowid > projects.rowid)
             );",
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_project_material(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "projects", "material")? {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN material TEXT NOT NULL DEFAULT '';")?;
     }
     Ok(())
 }
@@ -3212,7 +3222,7 @@ pub fn set_task_due_date(conn: &Connection, id: &str, due_date: Option<&str>) ->
 
 pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, path, revenue, status, created_at, sort_order
+        "SELECT id, name, path, revenue, status, created_at, sort_order, material
          FROM projects ORDER BY sort_order ASC, created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -3224,6 +3234,7 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
             status: row.get(4)?,
             created_at: row.get(5)?,
             sort_order: row.get(6)?,
+            material: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -3238,8 +3249,8 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         |row| row.get(0),
     )?;
     conn.execute(
-        "INSERT INTO projects (id, name, path, revenue, status, created_at, sort_order)
-         VALUES (?1, ?2, ?3, 0.0, 'active', ?4, ?5)",
+        "INSERT INTO projects (id, name, path, revenue, status, created_at, sort_order, material)
+         VALUES (?1, ?2, ?3, 0.0, 'active', ?4, ?5, '')",
         params![
             id,
             name,
@@ -3264,6 +3275,7 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         status: "active".to_string(),
         created_at: now,
         sort_order,
+        material: String::new(),
     })
 }
 
@@ -3295,6 +3307,23 @@ pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -
     conn.execute(
         "INSERT INTO project_revenue_history (id, project_id, revenue, recorded_at) VALUES (?1, ?2, ?3, ?4)",
         params![uid(), id, revenue, now_millis()],
+    )?;
+    list_projects(conn)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn update_project_material(conn: &Connection, id: &str, material: &str) -> Result<Project> {
+    const PROJECT_MATERIALS: [&str; 4] = ["cyan", "original", "rain", "chrome"];
+    let material = if PROJECT_MATERIALS.contains(&material) {
+        material.to_string()
+    } else {
+        String::new()
+    };
+    conn.execute(
+        "UPDATE projects SET material = ?1 WHERE id = ?2",
+        params![material, id],
     )?;
     list_projects(conn)?
         .into_iter()
@@ -8019,6 +8048,7 @@ mod tests {
             )
             .unwrap();
             migrate_project_sort_order(&conn).unwrap();
+            migrate_project_material(&conn).unwrap();
             let order: Vec<(String, i64)> = conn
                 .prepare("SELECT id, sort_order FROM projects ORDER BY sort_order ASC")
                 .unwrap()
@@ -8043,6 +8073,55 @@ mod tests {
             assert_eq!(all[0].name, "Alpha");
             assert_eq!(all[1].name, "Beta");
             assert_eq!(all[2].name, "Gamma");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_material_migrates_and_persists() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-material-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT,
+                    revenue REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'active',
+                    created_at INTEGER,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE project_revenue_history (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    revenue REAL NOT NULL,
+                    recorded_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, sort_order) VALUES (?1, ?2, ?3, 0)",
+                params!["a", "Alpha", 1000],
+            )
+            .unwrap();
+            migrate_project_material(&conn).unwrap();
+            let initial: String = conn
+                .query_row("SELECT material FROM projects WHERE id = 'a'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(initial, "");
+            let updated = update_project_material(&conn, "a", "rain").unwrap();
+            assert_eq!(updated.material, "rain");
+            let invalid = update_project_material(&conn, "a", "neon").unwrap();
+            assert_eq!(invalid.material, "");
+            let created = create_project(&conn, "Gamma", "").unwrap();
+            assert_eq!(created.material, "");
+            let all = list_projects(&conn).unwrap();
+            assert_eq!(all[0].material, "");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

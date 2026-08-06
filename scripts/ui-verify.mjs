@@ -1710,6 +1710,90 @@ try {
   results.carouselReorder = carouselReorder;
   laneLog('carouselReorder ok');
 
+  const carouselMaterialMemoryBefore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const controls = document.querySelector("[data-carousel-material-controls]");
+    const optionRain = document.querySelector('[data-carousel-material-option="rain"]');
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    const scene = document.querySelector("[data-carousel-scene]");
+    if (!controls || !optionRain || !autoBtn || !scene) {
+      return { ok: false, reason: "carousel material controls missing" };
+    }
+    const firstCard = scene.querySelector('[data-carousel-project="AI Workbench"]');
+    const initialMemory = firstCard?.getAttribute("data-carousel-material-memory") ?? "missing";
+    optionRain.click();
+    await sleep(350);
+    const afterMaterial = firstCard?.getAttribute("data-carousel-material") ?? "";
+    const afterMemory = firstCard?.getAttribute("data-carousel-material-memory") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedProject = (stored.projects ?? []).find((p) => p.name === "AI Workbench");
+    return {
+      initialMemory,
+      afterMaterial,
+      afterMemory,
+      storedMaterial: storedProject?.material ?? "missing",
+      rainPressed: optionRain.getAttribute("aria-pressed") ?? "false",
+    };
+  })()`);
+  if (
+    carouselMaterialMemoryBefore.afterMaterial !== 'rain' ||
+    carouselMaterialMemoryBefore.afterMemory !== 'rain' ||
+    carouselMaterialMemoryBefore.storedMaterial !== 'rain' ||
+    carouselMaterialMemoryBefore.rainPressed !== 'true'
+  ) {
+    throw new Error(
+      `Carousel material memory assertion failed: ${JSON.stringify(carouselMaterialMemoryBefore)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  await delay(250);
+  const carouselMaterialMemoryAfter = await evaluate(`(() => {
+    const scene = document.querySelector("[data-carousel-scene]");
+    const card = scene?.querySelector('[data-carousel-project="AI Workbench"]');
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    const restoredMaterial = card?.getAttribute("data-carousel-material") ?? "";
+    const restoredMemory = card?.getAttribute("data-carousel-material-memory") ?? "";
+    autoBtn?.click();
+    return { restoredMaterial, restoredMemory };
+  })()`);
+  await delay(350);
+  const carouselMaterialMemoryReset = await evaluate(`(() => {
+    const scene = document.querySelector("[data-carousel-scene]");
+    const card = scene?.querySelector('[data-carousel-project="AI Workbench"]');
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedProject = (stored.projects ?? []).find((p) => p.name === "AI Workbench");
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    return {
+      resetMaterial: card?.getAttribute("data-carousel-material") ?? "",
+      resetMemory: card?.getAttribute("data-carousel-material-memory") ?? "",
+      storedMaterial: storedProject?.material ?? "missing",
+      autoPressed: autoBtn?.getAttribute("aria-pressed") ?? "false",
+    };
+  })()`);
+  if (
+    carouselMaterialMemoryAfter.restoredMaterial !== 'rain' ||
+    carouselMaterialMemoryAfter.restoredMemory !== 'rain' ||
+    carouselMaterialMemoryReset.resetMemory !== 'auto' ||
+    carouselMaterialMemoryReset.storedMaterial !== '' ||
+    carouselMaterialMemoryReset.autoPressed !== 'true'
+  ) {
+    throw new Error(
+      `Carousel material restore assertion failed: ${JSON.stringify({
+        after: carouselMaterialMemoryAfter,
+        reset: carouselMaterialMemoryReset,
+      })}`,
+    );
+  }
+  const carouselMaterialMemory = {
+    ...carouselMaterialMemoryBefore,
+    ...carouselMaterialMemoryAfter,
+    ...carouselMaterialMemoryReset,
+    ok: true,
+  };
+  results.carouselMaterialMemory = carouselMaterialMemory;
+  laneLog('carouselMaterialMemory ok');
+
   const gitGraph = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 20; i++) {
