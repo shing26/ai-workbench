@@ -1411,6 +1411,16 @@ fn update_thought_tags(
 }
 
 #[tauri::command]
+fn update_thought_content(
+    state: State<'_, db::Db>,
+    id: String,
+    content: String,
+) -> Result<db::Thought, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_thought_content(&conn, &id, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_quick_prompts(state: State<'_, db::Db>) -> Result<Vec<db::QuickPrompt>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_quick_prompts(&conn).map_err(|e| e.to_string())
@@ -5383,6 +5393,7 @@ pub fn run() {
             list_thoughts,
             create_thought,
             update_thought_tags,
+            update_thought_content,
             list_quick_prompts,
             add_custom_quick_prompt,
             update_custom_quick_prompt,

@@ -2947,6 +2947,139 @@ try {
       `Thought tag edit restore assertion failed: ${JSON.stringify(results.thoughtTagEditRestored)}`,
     );
   }
+  const thoughtBodyEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing for body edit" };
+    noteBtn.click();
+    await sleep(300);
+    const editBtn = document.querySelector("[data-thought-body-edit]");
+    if (!editBtn) return { ok: false, reason: "body edit button missing" };
+    const thoughtId = editBtn.getAttribute("data-thought-body-edit");
+    const originalBody = editBtn.getAttribute("data-thought-body-current") || "";
+    const editedBody = "# Sprint 3 笔记\\n\\n## 编辑正文\\n\\nbody edit check phrase 124";
+    editBtn.click();
+    await sleep(150);
+    const textarea = document.querySelector('[data-thought-body-input="' + thoughtId + '"]');
+    if (!textarea) return { ok: false, reason: "body input missing", thoughtId, originalBody };
+    const setTextarea = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setTextarea.call(textarea, editedBody);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-thought-body-mode="preview"]')?.click();
+    let previewOk = false;
+    for (let i = 0; i < 20; i++) {
+      const preview = document.querySelector('[data-thought-body-preview="' + thoughtId + '"]');
+      previewOk = !!preview && preview.textContent?.includes("body edit check phrase 124");
+      if (previewOk) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-thought-body-mode="edit"]')?.click();
+    await sleep(100);
+    const draftPreserved =
+      document.querySelector('[data-thought-body-input="' + thoughtId + '"]')?.value === editedBody;
+    document.querySelector('[data-thought-body-save="' + thoughtId + '"]')?.click();
+    let saved = false;
+    let current = "";
+    for (let i = 0; i < 30; i++) {
+      current =
+        document.querySelector('[data-thought-body-edit="' + thoughtId + '"]')
+          ?.getAttribute("data-thought-body-current") ?? "";
+      const result = document.querySelector('[data-thought-body-result="' + thoughtId + '"]')
+        ?.textContent ?? "";
+      saved = current.includes("body edit check phrase 124") && result.includes("Saved");
+      if (saved) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedUpdated = (shape.thoughts.find((t) => t.id === thoughtId)?.content ?? "").includes(
+      "body edit check phrase 124",
+    );
+    return {
+      ok: previewOk && draftPreserved && saved && storedUpdated,
+      thoughtId,
+      originalBody,
+      current,
+      previewOk,
+      draftPreserved,
+      saved,
+      storedUpdated,
+    };
+  })()`);
+  results.thoughtBodyEdit = thoughtBodyEdit;
+  if (!results.thoughtBodyEdit.ok) {
+    throw new Error(
+      `Thought body edit assertion failed: ${JSON.stringify(results.thoughtBodyEdit)}`,
+    );
+  }
+  const thoughtBodyEditId = results.thoughtBodyEdit.thoughtId ?? '';
+  const thoughtBodyOriginal = results.thoughtBodyEdit.originalBody ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtBodyEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtBodyEditId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let editBtn = null;
+    for (let i = 0; i < 20; i++) {
+      editBtn = document.querySelector('[data-thought-body-edit="' + id + '"]');
+      if (editBtn) break;
+      await sleep(100);
+    }
+    if (!editBtn) return { ok: false, reason: "body edit missing after reload" };
+    const current = editBtn.getAttribute("data-thought-body-current") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-body-input="' + id + '"]');
+    const inputValue = input?.value ?? "";
+    const ok = current.includes("body edit check phrase 124") && inputValue.includes("body edit check phrase 124");
+    return { ok, current, inputValue };
+  })()`);
+  results.thoughtBodyEditPersisted = thoughtBodyEditPersisted;
+  if (!results.thoughtBodyEditPersisted?.ok) {
+    throw new Error(
+      `Thought body edit persistence assertion failed: ${JSON.stringify(
+        results.thoughtBodyEditPersisted,
+      )}`,
+    );
+  }
+  const thoughtBodyEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtBodyEditId)};
+    const original = ${JSON.stringify(thoughtBodyOriginal)};
+    const textarea = document.querySelector('[data-thought-body-input="' + id + '"]');
+    const saveBtn = document.querySelector('[data-thought-body-save="' + id + '"]');
+    if (!textarea || !saveBtn) return { ok: false, reason: "body editor missing for restore" };
+    const setTextarea = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setTextarea.call(textarea, original);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    let current = "";
+    for (let i = 0; i < 30; i++) {
+      current =
+        document.querySelector('[data-thought-body-edit="' + id + '"]')
+          ?.getAttribute("data-thought-body-current") ?? "";
+      if (current === original) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedRestored = (shape.thoughts.find((t) => t.id === id)?.content ?? "") === original;
+    return { ok: current === original && storedRestored, current, original, storedRestored };
+  })()`);
+  results.thoughtBodyEditRestored = thoughtBodyEditRestored;
+  if (!results.thoughtBodyEditRestored?.ok) {
+    throw new Error(
+      `Thought body edit restore assertion failed: ${JSON.stringify(
+        results.thoughtBodyEditRestored,
+      )}`,
+    );
+  }
   const ragSearch = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="RAG search..."]');
     if (!input) return { ok: false, reason: "no rag input" };
