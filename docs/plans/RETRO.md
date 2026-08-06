@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 156
+
+### What went well?
+
+- SQLite 为 `embedding_config` 新增 `ann_enabled / probe_count`，为 `vector_shards` 新增 `centroid`；`migrate_vector_index` 按列存在性幂等补列，旧库升级后可继续使用，无需重建数据。
+- `refresh_shard_stats` 按 shard 聚合文档向量并归一化质心，`get_vector_index_status` 新增 `centroidsReady`；`search_thoughts` 在满足 `ann_enabled && 1 < probe_count < shard_count` 时按查询向量与质心余弦相似度剪枝到 top probe shard，BM25 IDF 提前按 term 预计算，避免剪枝后统计漂移。
+- `db.ts` 浏览器 fallback 与 Rust 同构：`readEmbeddingConfig / setEmbeddingConfig / seedVectorShards / refreshVectorShardStats / searchThoughts` 全部补齐 ANN 字段、质心计算与 top-shard 过滤。
+- KnowledgeView 新增 `data-vector-ann-enabled` 开关与 `data-vector-probe-count` 输入，shard 卡片显示 `data-vector-shard-centroid` 与 `centroid ready` 徽标；`verify:ui` 新增 `vectorAnnSearch` lane，验证开启 ANN 后结果只命中 probe 内 shard、关闭后恢复全量。
+- Rust 单测新增质心归一化与 ANN 剪枝覆盖，`cargo test --lib` 全部通过；八道质量门全绿后合并 develop，Backlog 候选池清空。
+
+### What went wrong?
+
+- 浏览器 fallback 的 `searchThoughts` 在剪枝前需要同时拿到 config、shard 质心与 vault 文件三份本地状态，首版直接复用旧 `docs` 数组导致文件集合未按 shard 过滤；改为先构建 `thought_docs / file_docs` 再统一参与 IDF 与评分后行为与 Rust 一致。
+- `verify:ui` 的向量 lane 依赖真实 rebuild 才能生成 256 维质心，新增 `vectorAnnSearch` 时先种空 embedding 再点击 Rebuild，避免手工构造与本地哈希向量不一致。
+
+### Action Items
+
+- 候选池已清空，下一步完成 v1.0 发布文档并复验八道质量门。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 155
 
 ### What went well?

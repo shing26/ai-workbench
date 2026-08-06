@@ -8,10 +8,11 @@
 
 ## 候选池（待开发）
 
-- [ ] Knowledge：向量分片 / 近似索引。
+候选池已清空：冻结范围内的全部候选项均已完成。
 
 ## 已完成（从候选池移除）
 
+- Knowledge：向量分片 / 近似索引（Sprint 156）。
 - AI Studio：复制会话携带消息版本历史；导出包含 RAG / Inspector Trace 辅助上下文（Sprint 155）。
 - Webhook：payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理（Sprint 154）。
 - RAG：命中来源跨文件选择器与“记住选择”偏好（Sprint 153）。

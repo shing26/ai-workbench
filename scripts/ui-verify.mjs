@@ -4334,12 +4334,28 @@ try {
     localStorage.setItem(
       "ai-workbench:vector-shards:v1",
       JSON.stringify(
-        Array.from({ length: 4 }, (_, index) => ({
+        [
+          { shardId: "0", centroid: "" },
+          { shardId: "1", centroid: "" },
+          {
+            shardId: "2",
+            centroid: JSON.stringify(
+              Array.from({ length: 8 }, (_, i) => i + 1).map((v) => v / Math.sqrt(204)),
+            ),
+          },
+          {
+            shardId: "3",
+            centroid: JSON.stringify(
+              Array.from({ length: 8 }, (_, i) => (i + 1) * 2).map((v) => v / Math.sqrt(816)),
+            ),
+          },
+        ].map((extra, index) => ({
           shardId: String(index),
           model: "local",
-          dimension: 256,
-          documents: 0,
-          status: "idle",
+          dimension: 8,
+          documents: index >= 2 ? 1 : 0,
+          status: index >= 2 ? "ready" : "idle",
+          centroid: extra.centroid,
           updatedAt: now,
           createdAt: now,
         })),
@@ -4353,9 +4369,11 @@ try {
         baseUrl: "",
         apiKey: "",
         model: "local",
-        dimension: 256,
+        dimension: 8,
         shardCount: 4,
         autoRebuild: false,
+        annEnabled: true,
+        probeCount: 2,
         updatedAt: now,
       }),
     );
@@ -4372,12 +4390,20 @@ try {
     const shardsInput = document.querySelector("[data-embedding-shards]")?.value ?? "";
     const shardItems = [...document.querySelectorAll("[data-vector-shard-item]")];
     const shardIds = shardItems.map((el) => el.getAttribute("data-vector-shard-id") ?? "");
+    const annChecked = document.querySelector("[data-vector-ann-enabled]")?.checked === true;
+    const probeValue = document.querySelector("[data-vector-probe-count]")?.value ?? "";
+    const centroidReady = shardItems.filter(
+      (el) => el.getAttribute("data-vector-shard-centroid") === "ready",
+    ).length;
     const total = Number(document.querySelector("[data-vector-total]")?.textContent ?? -1);
     const indexed = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
     if (
       mode !== "local" ||
       shardsInput !== "4" ||
       shardItems.length !== 4 ||
+      !annChecked ||
+      probeValue !== "2" ||
+      centroidReady !== 2 ||
       total !== 4 ||
       indexed !== 4
     ) {
@@ -4388,6 +4414,9 @@ try {
         shardsInput,
         shardCount: shardItems.length,
         shardIds,
+        annChecked,
+        probeValue,
+        centroidReady,
         total,
         indexed,
       };
@@ -4409,7 +4438,9 @@ try {
       saved.mode === "local" &&
       saved.model === "local-verify" &&
       Number(saved.shardCount) === 4 &&
-      saved.autoRebuild === false;
+      saved.autoRebuild === false &&
+      saved.annEnabled === true &&
+      Number(saved.probeCount) === 2;
     for (let i = 0; i < 30; i += 1) {
       if (
         (document.querySelector("[data-embedding-model]")?.value ?? "") === "local-verify"
@@ -4548,6 +4579,151 @@ try {
   }
   results.vectorShardSearch = vectorShardSearch;
   laneLog('vectorShardSearch ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "ai-workbench:vault:before-ann:v1",
+      localStorage.getItem("ai-workbench:vault:v1") ?? "[]",
+    );
+    const vault = Array.from({ length: 4 }, (_, index) => ({
+      path: "C:/vault/ann-" + index + ".md",
+      title: "ANN Probe " + index,
+      tags: "#work,#ann",
+      content:
+        "# ANN Probe " + index + "\\n\\nAnnVectorProbe shard " + index + " for approximate search.",
+      indexedAt: now - 1000 * index,
+      exists: true,
+      stale: false,
+      embedding: "",
+      shardId: String(index),
+      embeddingModel: "",
+      embeddingDim: 0,
+      embeddingStatus: "pending",
+      embeddingError: "",
+    }));
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    localStorage.setItem(
+      "ai-workbench:vector-shards:v1",
+      JSON.stringify(
+        Array.from({ length: 4 }, (_, index) => ({
+          shardId: String(index),
+          model: "local",
+          dimension: 256,
+          documents: 0,
+          status: "idle",
+          centroid: "",
+          updatedAt: now,
+          createdAt: now,
+        })),
+      ),
+    );
+    localStorage.setItem(
+      "ai-workbench:embedding-config:v1",
+      JSON.stringify({
+        mode: "local",
+        providerId: "",
+        baseUrl: "",
+        apiKey: "",
+        model: "local",
+        dimension: 256,
+        shardCount: 4,
+        autoRebuild: true,
+        annEnabled: true,
+        probeCount: 2,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorAnnSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rebuild = document.querySelector("[data-vector-rebuild]");
+    if (!rebuild) return { ok: false, reason: "no rebuild button" };
+    rebuild.click();
+    for (let i = 0; i < 40; i += 1) {
+      const pending = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+      const indexed = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+      if (pending === 0 && indexed === 4) break;
+      await sleep(100);
+    }
+    const centroidReady = [...document.querySelectorAll("[data-vector-shard-item]")].filter(
+      (el) => el.getAttribute("data-vector-shard-centroid") === "ready",
+    ).length;
+    const runSearch = async (term) => {
+      const search = document.querySelector('input[placeholder="RAG search..."]');
+      if (!search) return { ok: false, reason: "no rag search input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      const clearBtn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Clear",
+      );
+      if (clearBtn) clearBtn.click();
+      await sleep(80);
+      setter.call(search, term);
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const searchBtn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Search",
+      );
+      if (!searchBtn) return { ok: false, reason: "no search button" };
+      searchBtn.click();
+      for (let i = 0; i < 30; i += 1) {
+        if (document.body.innerText.includes("RAG matches")) break;
+        await sleep(100);
+      }
+      return [
+        ...new Set(
+          [...document.querySelectorAll("[data-rag-result][data-rag-file]")]
+            .map((el) => el.getAttribute("data-rag-shard") ?? "")
+            .filter(Boolean),
+        ),
+      ];
+    };
+    const annShards = await runSearch("AnnVectorProbe");
+    const annToggle = document.querySelector("[data-vector-ann-enabled]");
+    if (!annToggle) return { ok: false, reason: "no ann toggle", annShards, centroidReady };
+    annToggle.click();
+    for (let i = 0; i < 30; i += 1) {
+      if (document.querySelector("[data-vector-ann-enabled]")?.checked === false) break;
+      await sleep(50);
+    }
+    document.querySelector("[data-embedding-save]")?.click();
+    let annDisabledSaved = false;
+    for (let i = 0; i < 30; i += 1) {
+      const raw = JSON.parse(localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}");
+      if (raw.annEnabled === false) {
+        annDisabledSaved = true;
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(120);
+    const fullShards = await runSearch("AnnVectorProbe");
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      localStorage.getItem("ai-workbench:vault:before-ann:v1") ?? "[]",
+    );
+    localStorage.removeItem("ai-workbench:vault:before-ann:v1");
+    return {
+      ok:
+        annDisabledSaved &&
+        centroidReady === 4 &&
+        annShards.length >= 1 &&
+        annShards.length <= 2 &&
+        fullShards.length === 4,
+      annDisabledSaved,
+      centroidReady,
+      annShards,
+      fullShards,
+    };
+  })()`);
+  if (!vectorAnnSearch.ok) {
+    throw new Error(`Vector ANN search assertion failed: ${JSON.stringify(vectorAnnSearch)}`);
+  }
+  results.vectorAnnSearch = vectorAnnSearch;
+  laneLog('vectorAnnSearch ok');
 
   await evaluate(`(() => {
     const now = Date.now();
@@ -10769,9 +10945,14 @@ try {
       if (!dock) return { ok: false, reason: "dock missing for catalog" };
       dock.click();
       await sleep(400);
-      let detect = document.querySelector(
-        '[data-provider-id="catalog-provider"] [data-provider-models-detect]',
-      );
+      let detect = null;
+      for (let i = 0; i < 30; i += 1) {
+        detect = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-provider-models-detect]',
+        );
+        if (detect) break;
+        await sleep(100);
+      }
       if (!detect) return { ok: false, reason: "no detect button for catalog" };
       detect.click();
       let options = [];
@@ -10878,9 +11059,9 @@ try {
       };
     })()`);
     providerModelCatalog.catalogHits = catalogHits;
-    const initialOrder = providerModelCatalog.options.join(',');
-    const favoriteOrder = providerModelCatalog.orderAfterFavorite.join(',');
-    const pickOrder = providerModelCatalog.orderAfterPick.join(',');
+    const initialOrder = providerModelCatalog.options?.join(',') ?? '';
+    const favoriteOrder = providerModelCatalog.orderAfterFavorite?.join(',') ?? '';
+    const pickOrder = providerModelCatalog.orderAfterPick?.join(',') ?? '';
     if (
       !providerModelCatalog.ok ||
       initialOrder !== 'catalog-c,catalog-b,catalog-a,catalog-meta' ||

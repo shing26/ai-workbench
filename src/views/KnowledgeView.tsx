@@ -84,6 +84,8 @@ export default function KnowledgeView() {
   const [embeddingModel, setEmbeddingModel] = useState('');
   const [embeddingShards, setEmbeddingShards] = useState('8');
   const [embeddingAuto, setEmbeddingAuto] = useState(true);
+  const [embeddingAnn, setEmbeddingAnn] = useState(true);
+  const [embeddingProbe, setEmbeddingProbe] = useState('2');
   const [vectorStatus, setVectorStatus] = useState<db.VectorIndexStatus | null>(null);
   const [vectorRebuildBusy, setVectorRebuildBusy] = useState(false);
   const [vectorRebuildForce, setVectorRebuildForce] = useState(false);
@@ -121,6 +123,8 @@ export default function KnowledgeView() {
     setEmbeddingModel(config.model);
     setEmbeddingShards(String(config.shardCount));
     setEmbeddingAuto(config.autoRebuild);
+    setEmbeddingAnn(config.annEnabled);
+    setEmbeddingProbe(String(config.probeCount));
     setVectorStatus(status);
   }, []);
 
@@ -172,6 +176,8 @@ export default function KnowledgeView() {
         dimension: 256,
         shardCount: Number(embeddingShards) || 8,
         autoRebuild: embeddingAuto,
+        annEnabled: embeddingAnn,
+        probeCount: Number(embeddingProbe) || 2,
       });
       setEmbeddingConfigState(config);
       setVectorMessage('Embedding config saved');
@@ -1540,7 +1546,7 @@ export default function KnowledgeView() {
           />
         </div>
 
-        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto]">
           <input
             value={embeddingApiKey}
             onChange={(e) => setEmbeddingApiKey(e.target.value)}
@@ -1559,6 +1565,26 @@ export default function KnowledgeView() {
             data-embedding-shards
             className="h-8 w-20 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
           />
+          <input
+            value={embeddingProbe}
+            onChange={(e) => setEmbeddingProbe(e.target.value)}
+            type="number"
+            min={1}
+            max={64}
+            aria-label="ANN probe count"
+            data-vector-probe-count
+            className="h-8 w-16 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+          />
+          <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
+            <input
+              type="checkbox"
+              data-vector-ann-enabled
+              checked={embeddingAnn}
+              onChange={(e) => setEmbeddingAnn(e.target.checked)}
+              className="accent-emerald-500"
+            />
+            ANN
+          </label>
           <label className="flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.03] px-2 text-[9px] text-slate-400">
             <input
               type="checkbox"
@@ -1612,7 +1638,8 @@ export default function KnowledgeView() {
           {embeddingConfig && (
             <span className="ml-auto text-[9px] text-slate-600">
               config {embeddingConfig.mode} · {embeddingConfig.dimension}d ·{' '}
-              {embeddingConfig.shardCount} shards
+              {embeddingConfig.shardCount} shards | probe {embeddingConfig.probeCount} | ANN{' '}
+              {embeddingConfig.annEnabled ? 'on' : 'off'}
             </span>
           )}
         </div>
@@ -1626,6 +1653,7 @@ export default function KnowledgeView() {
               key={shard.shardId}
               data-vector-shard-item
               data-vector-shard-id={shard.shardId}
+              data-vector-shard-centroid={shard.centroid ? 'ready' : ''}
               className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
             >
               <div className="flex items-center justify-between gap-1">
@@ -1645,6 +1673,7 @@ export default function KnowledgeView() {
                 data-vector-shard-docs={shard.documents}
                 className="mt-1 text-[9px] text-slate-500"
               >
+                {shard.centroid ? 'centroid ready' : ''}
                 {shard.documents} docs · {shard.dimension}d
               </p>
             </div>

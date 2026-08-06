@@ -1280,3 +1280,16 @@ CREATE INDEX IF NOT EXISTS idx_message_aux_message ON message_aux(message_id);
 - 新表由 SCHEMA 的 `CREATE TABLE IF NOT EXISTS` 自动补齐，无需 ALTER 迁移；`payload` 必须是 JSON 对象，`save_message_aux` 校验后 upsert，`list_message_aux` 按会话 JOIN `chat_messages` 返回。
 - `duplicate_session` 复制消息时同步复制 `message_versions`（重映射新消息 ID 与 `parent_version_id`）和 `message_aux`；`delete_session` / `truncate_chat_messages` 显式清理对应 aux 与版本记录。
 - 浏览器 fallback 不新增独立 localStorage key，继续使用 `ai-workbench:db:v1` 的 `messageAux` 数组（`messageId / payload / updatedAt`），复制 / 删除 / 截断逻辑与 Tauri 链路同构。
+
+## Sprint 156：向量分片质心与近似索引（ANN）
+
+```sql
+ALTER TABLE embedding_config ADD COLUMN ann_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE embedding_config ADD COLUMN probe_count INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE vector_shards ADD COLUMN centroid TEXT NOT NULL DEFAULT '';
+```
+
+- `migrate_vector_index` 按列存在性幂等补齐以上三列，新库 SCHEMA 直接包含；`set_embedding_config` upsert 时写入 `ann_enabled / probe_count`，`probe_count` 钳制到 `1..=shard_count`。
+- `vector_shards.centroid` 保存 shard 内已索引文档向量的均值并归一化；`refresh_shard_stats` 聚合后把 `status` 设为 `ready`（有文档且质心非空）/ `partial`（有文档但质心缺失）/ `idle`，`get_vector_index_status.centroids_ready` 表示所有非空 shard 均具备质心。
+- `search_thoughts` 在 `ann_enabled && 1 < probe_count < shard_count` 时按查询向量与各 shard 质心余弦相似度保留 top probe shard，再对剩余文档做 BM25 + 向量混合评分；关闭 ANN 或 `probe_count == shard_count` 时全量返回，保证关闭后无召回损失。
+- 浏览器 fallback 使用 `ai-workbench:embedding-config:v1` 的 `annEnabled / probeCount` 与 `ai-workbench:vector-shards:v1` 的 `centroid` 同构持久化，`refreshVectorShardStats` 在 rebuild / config 保存后重新计算质心。
