@@ -433,6 +433,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 打开 / 关闭导出面板时清空保存状态与结果，避免旧状态残留；浏览器 fallback 与 Tauri 共用 `createThought` 链路，无需新增命令。
 - `verify:ui` / `verify:preview` 新增 `sessionSaveKnowledge` / `sessionSaveKnowledgePersisted` 两条 lane；纯前端改动，无新增表结构。
 
+## Sprint 133：Projects 收益历史 CSV 导出
+
+- ProjectsView 新增 `csvCell` 与 `revenueCsv` 派生：遍历 `projects` 与 `revenueTrends` 汇总全部趋势点为 `Project,ProjectId,Status,RecordedAt,Revenue`，CSV 字段做引号转义，无历史项目的行用当前 `revenue` 兜底。
+- Portfolio summary 卡片新增 `data-project-revenue-export` 开关、`data-project-revenue-csv-preview` 预览、`data-project-revenue-csv-copy` 复制与 `data-project-revenue-csv-download` 下载；结果写入 `data-project-revenue-export-result`，复制成功后按钮显示 Copied。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueExport` lane：断言 CSV 表头、AI Workbench / Hermes Station 项目名、行数、复制状态与结果文本；纯前端改动，无新增 Rust 命令与表结构。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

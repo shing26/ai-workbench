@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 133
+
+### What went well?
+
+- Projects Portfolio summary 新增收益历史 CSV 导出：由 `projects` + `revenueTrends` 派生 `revenueCsv`，字段统一做引号转义，无历史项目的行用当前 `revenue` 兜底，表头为 `Project,ProjectId,Status,RecordedAt,Revenue`。
+- 导出面板提供 `data-project-revenue-export` 开关、`data-project-revenue-csv-preview` 预览、`data-project-revenue-csv-copy` 复制与 `data-project-revenue-csv-download` 下载；复制成功后按钮显示 Copied，结果区显示 `N rows`。
+- `verify:ui` / `verify:preview` 新增 `projectRevenueExport` lane：断言表头、AI Workbench / Hermes Station 项目名、行数、复制状态与结果文本；修复了验证脚本中 `preview.split("\\n")` 在模板字符串内被格式化破坏的问题。
+- 纯前端改动，无新增 Rust 命令与表结构；`npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（137 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 在 `projectRevenueExport` lane 报 SyntaxError：模板字符串内的 `split("\\n")` 被 Prettier 改写后变成真实换行，导致 evaluate 的代码语法错误；改回双反斜杠转义并保留 Prettier 兼容格式后通过。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 收益端聚合展示或导出增强、Knowledge 笔记双链 / 回溯、System 投递保留策略与自动化规则补强。
+- 保留 `projectRevenueExport` lane，修改收益模型、CSV 生成或 Portfolio summary 渲染时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 132
 
 ### What went well?

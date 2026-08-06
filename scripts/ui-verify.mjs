@@ -1646,6 +1646,48 @@ try {
     };
   })()`);
   results.portfolioSummaryExport = portfolioSummaryExport;
+  const projectRevenueExport = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-project-revenue-export]");
+    if (!btn) return { ok: false, reason: "revenue export button missing" };
+    btn.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-project-revenue-csv-preview]")?.textContent ?? "";
+      if (preview.includes("Project,ProjectId,Status,RecordedAt,Revenue")) break;
+      await sleep(100);
+    }
+    const result =
+      document.querySelector("[data-project-revenue-export-result]")?.textContent ?? "";
+    const copyBtn = document.querySelector("[data-project-revenue-csv-copy]");
+    if (!copyBtn) return { ok: false, reason: "revenue csv copy missing", preview };
+    copyBtn.click();
+    await sleep(250);
+    const copied = copyBtn.textContent.includes("Copied");
+    const rows = preview.split("\\n").length;
+    const ok =
+      preview.includes("Project,ProjectId,Status,RecordedAt,Revenue") &&
+      preview.includes("AI Workbench") &&
+      preview.includes("Hermes Station") &&
+      rows >= 3 &&
+      result.includes("rows") &&
+      copied;
+    return {
+      ok,
+      rows,
+      result,
+      copied,
+      header: preview.split("\\n")[0] ?? "",
+      hasWorkbench: preview.includes("AI Workbench"),
+      hasHermes: preview.includes("Hermes Station"),
+    };
+  })()`);
+  if (!projectRevenueExport.ok) {
+    throw new Error(
+      `Project revenue CSV export assertion failed: ${JSON.stringify(projectRevenueExport)}`,
+    );
+  }
+  results.projectRevenueExport = projectRevenueExport;
   const projectEdit = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const edit = document.querySelector("[data-project-edit]");

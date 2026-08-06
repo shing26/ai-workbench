@@ -567,6 +567,10 @@ ALTER TABLE webhook_rules ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 0
 
 无表结构变更。导出按钮复用 `thoughts` 表与 `create_thought` 命令，把 `buildSessionMarkdown` 生成的 Markdown 作为 `content`，tags 为 `#chat,#session`，type 为 `note`；浏览器 fallback 写入 `ai-workbench:db:v1` 的 `thoughts` 数组，不新增表、字段或 localStorage key。
 
+## Sprint 133：Projects 收益历史 CSV 导出
+
+无表结构变更。CSV 是运行时派生数据：`ProjectsView` 把 `projects` 与 `project_revenue_history`（前端 `revenueTrends`）汇总为文本，预览 / 复制 / 下载都不落库；浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `projects` / `projectRevenueHistory`，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
