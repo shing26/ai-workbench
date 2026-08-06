@@ -488,6 +488,8 @@ export type WebhookRule = {
   lastMessage: string;
   createdAt: number;
   updatedAt: number;
+  consecutiveFailures: number;
+  autoDisableAfter: number;
 };
 
 export type WebhookDeliveryStatus = 'queued' | 'delivering' | 'success' | 'failed' | 'dead';
@@ -5507,7 +5509,12 @@ function readWebhookRules(): WebhookRule[] {
   try {
     const raw = localStorage.getItem(WEBHOOK_RULES_LS_KEY);
     const rules: WebhookRule[] = raw ? (JSON.parse(raw) as WebhookRule[]) : [];
-    return rules.map((rule) => ({ ...rule, cooldownSeconds: rule.cooldownSeconds ?? 0 }));
+    return rules.map((rule) => ({
+      ...rule,
+      cooldownSeconds: rule.cooldownSeconds ?? 0,
+      consecutiveFailures: rule.consecutiveFailures ?? 0,
+      autoDisableAfter: rule.autoDisableAfter ?? 3,
+    }));
   } catch {
     return [];
   }
@@ -5533,6 +5540,7 @@ export async function createWebhookRule(
   retries = 1,
   cooldownSeconds = 0,
   triggerEvent = '',
+  autoDisableAfter = 3,
 ): Promise<WebhookRule> {
   if (isTauri()) {
     return invoke<WebhookRule>('create_webhook_rule', {
@@ -5547,6 +5555,7 @@ export async function createWebhookRule(
         cooldownSeconds: Math.max(0, cooldownSeconds),
         intervalSeconds: Math.max(5, intervalSeconds),
         triggerEvent: triggerEvent.trim(),
+        autoDisableAfter: Math.max(0, autoDisableAfter),
       },
     });
   }
@@ -5569,6 +5578,8 @@ export async function createWebhookRule(
     lastMessage: '',
     createdAt: now,
     updatedAt: now,
+    consecutiveFailures: 0,
+    autoDisableAfter: Math.max(0, autoDisableAfter),
   };
   writeWebhookRules([...readWebhookRules(), rule]);
   return rule;
@@ -5582,6 +5593,7 @@ export async function setWebhookRuleEnabled(id: string, enabled: boolean): Promi
   const rule = rules.find((r) => r.id === id);
   if (!rule) throw new Error('Webhook rule not found');
   rule.enabled = enabled;
+  if (enabled) rule.consecutiveFailures = 0;
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
   return rule;
@@ -5601,17 +5613,29 @@ export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult>
   const rules = readWebhookRules();
   const rule = rules.find((r) => r.id === id);
   if (!rule) throw new Error('Webhook rule not found');
+  const simulatedFailure =
+    /\/fail|\/broken/i.test(rule.url) || rule.payload.includes('"fail":true');
   const result: WebhookDeliveryResult = {
-    ok: true,
-    status: 200,
+    ok: !simulatedFailure,
+    status: simulatedFailure ? 500 : 200,
     durationMs: 12,
     attempts: Math.max(1, rule.retries + 1),
     signed: !!rule.secret,
-    message: 'HTTP 200 delivered',
+    message: simulatedFailure ? 'HTTP 500 simulated failure' : 'HTTP 200 delivered',
   };
   rule.lastRunAt = Date.now();
   rule.lastStatus = result.status;
   rule.lastMessage = result.message;
+  const failed = result.status >= 400 || result.status === 0;
+  rule.consecutiveFailures = failed ? (rule.consecutiveFailures ?? 0) + 1 : 0;
+  if (
+    failed &&
+    (rule.autoDisableAfter ?? 3) > 0 &&
+    rule.consecutiveFailures >= (rule.autoDisableAfter ?? 3)
+  ) {
+    rule.enabled = false;
+    rule.lastMessage = `Auto-disabled after ${rule.consecutiveFailures} consecutive failures`;
+  }
   rule.updatedAt = Date.now();
   writeWebhookRules(rules);
   return result;

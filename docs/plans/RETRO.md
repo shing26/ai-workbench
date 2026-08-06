@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 138
+
+### What went well?
+
+- `webhook_rules` 新增 `consecutive_failures` / `auto_disable_after`：新库 SCHEMA 建列，旧库 `migrate_webhook_circuit_breaker` 幂等补列；`record_webhook_rule_outcome` 统一处理真实投递终态，2xx 清零、失败累加、达到阈值自动停用，手动重新启用时重置计数。
+- 定时调度与事件投递的 success / dead 终态都接入同一熔断函数，202 入队标记只更新 `last_run_at`；`run_webhook_rule_inner` 在网络错误时也回写失败状态。
+- SystemView 新增 `data-webhook-rule-auto-disable` 表单输入与 `data-webhook-rule-failures` / `data-webhook-rule-auto-disable` 徽标；`db.ts` fallback 与 Rust 同构，按 URL 含 `/fail` 模拟失败。
+- `verify:ui` / `verify:preview` 新增 `webhookRuleCircuitBreaker` lane，覆盖累计停用、成功清零、重新启用重置与表单创建；Rust 单测覆盖迁移与状态机，`cargo test --lib` 增至 143 条，全部门禁全绿。
+
+### What went wrong?
+
+- lane 首轮失败：`runWebhookRule` 写 localStorage 后 React DOM 刷新晚于轮询，断言读到旧行徽标并点击了旧按钮。改为先等 DOM 文本反映新状态，再读徽标 / 操作最新行；新增 `waitForDomText` 后双端通过。
+
+### Action Items
+
+- 下一 Sprint 候选：System 自动化规则补强（投递失败告警 / 规则日志）、Knowledge 双链补全编辑器提示、Actions 周计划模板。
+- 保留 `webhookRuleCircuitBreaker` lane，修改熔断语义、规则行渲染或 fallback 时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 137
 
 ### What went well?

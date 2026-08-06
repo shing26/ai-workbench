@@ -138,6 +138,7 @@ export default function SystemView() {
   const [webhookRuleName, setWebhookRuleName] = useState('');
   const [webhookRuleInterval, setWebhookRuleInterval] = useState('60');
   const [webhookRuleCooldown, setWebhookRuleCooldown] = useState('0');
+  const [webhookRuleAutoDisable, setWebhookRuleAutoDisable] = useState('3');
   const [webhookRuleTrigger, setWebhookRuleTrigger] = useState('');
   const [webhookEventContext, setWebhookEventContext] = useState('');
   const [webhookPayloadPreview, setWebhookPayloadPreview] = useState('');
@@ -857,11 +858,13 @@ export default function SystemView() {
       Math.max(0, Number(webhookRetries) || 0),
       Math.max(0, Number(webhookRuleCooldown) || 0),
       webhookRuleTrigger.trim(),
+      Math.max(0, Number(webhookRuleAutoDisable) || 0),
     );
     await loadWebhookRules();
     await loadWebhookDeliveries();
     setWebhookRuleName('');
     setWebhookRuleCooldown('0');
+    setWebhookRuleAutoDisable('3');
     setWebhookRuleTrigger('');
   };
 
@@ -2063,6 +2066,15 @@ export default function SystemView() {
               className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
             />
             <input
+              type="number"
+              min={0}
+              value={webhookRuleAutoDisable}
+              onChange={(e) => setWebhookRuleAutoDisable(e.target.value)}
+              placeholder="Auto-off after"
+              data-webhook-rule-auto-disable
+              className="h-7 w-24 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+            />
+            <input
               value={webhookRuleTrigger}
               onChange={(e) => setWebhookRuleTrigger(e.target.value)}
               placeholder="Trigger event"
@@ -2121,6 +2133,24 @@ export default function SystemView() {
                   className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
                 >
                   {rule.retries} retry(ies)
+                </span>
+                <span
+                  data-webhook-rule-failures
+                  className={`rounded-md px-1.5 py-0.5 text-[9px] ${
+                    (rule.consecutiveFailures || 0) > 0
+                      ? 'bg-rose-500/10 text-rose-300'
+                      : 'bg-white/5 text-slate-400'
+                  }`}
+                >
+                  {rule.consecutiveFailures || 0} failure(s)
+                </span>
+                <span
+                  data-webhook-rule-auto-disable
+                  className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-300"
+                >
+                  {rule.autoDisableAfter > 0
+                    ? `auto-off after ${rule.autoDisableAfter}`
+                    : 'no auto-off'}
                 </span>
                 {rule.secret && (
                   <span

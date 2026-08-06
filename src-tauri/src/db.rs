@@ -241,7 +241,9 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     last_status INTEGER NOT NULL DEFAULT 0,
     last_message TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    auto_disable_after INTEGER NOT NULL DEFAULT 3
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
@@ -745,6 +747,8 @@ pub struct WebhookRule {
     pub last_message: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub consecutive_failures: i64,
+    pub auto_disable_after: i64,
 }
 
 pub struct WebhookRuleInput<'a> {
@@ -758,6 +762,7 @@ pub struct WebhookRuleInput<'a> {
     pub cooldown_seconds: i64,
     pub interval_seconds: i64,
     pub trigger_event: &'a str,
+    pub auto_disable_after: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -890,7 +895,8 @@ fn uid() -> String {
 
 const WEBHOOK_RULE_COLUMNS: &str =
     "id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, enabled, \
-     last_run_at, last_status, last_message, created_at, updated_at, trigger_event";
+     last_run_at, last_status, last_message, created_at, updated_at, trigger_event, \
+     consecutive_failures, auto_disable_after";
 
 fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
     Ok(WebhookRule {
@@ -911,6 +917,8 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
         trigger_event: row.get(16)?,
+        consecutive_failures: row.get(17)?,
+        auto_disable_after: row.get(18)?,
     })
 }
 
@@ -951,8 +959,8 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
     let interval = input.interval_seconds.max(5);
     let cooldown = input.cooldown_seconds.max(0);
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, enabled, last_run_at, last_status, last_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 0, 0, '', ?12, ?12)",
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 0, 0, '', ?12, ?12, 0, ?13)",
         params![
             id,
             input.name,
@@ -966,6 +974,7 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
             interval,
             input.trigger_event,
             now,
+            input.auto_disable_after.max(0),
         ],
     )?;
     get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
@@ -973,7 +982,11 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
 
 pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<WebhookRule> {
     let updated = conn.execute(
-        "UPDATE webhook_rules SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE webhook_rules
+         SET enabled = ?1,
+             consecutive_failures = CASE WHEN ?1 = 1 THEN 0 ELSE consecutive_failures END,
+             updated_at = ?2
+         WHERE id = ?3",
         params![enabled as i64, now_millis(), id],
     )?;
     if updated == 0 {
@@ -1031,6 +1044,38 @@ pub fn mark_webhook_rule_run(
     let now = now_millis();
     conn.execute(
         "UPDATE webhook_rules SET last_run_at = ?1, last_status = ?2, last_message = ?3, updated_at = ?1 WHERE id = ?4",
+        params![now, status, message, id],
+    )?;
+    Ok(())
+}
+
+pub fn record_webhook_rule_outcome(
+    conn: &Connection,
+    id: &str,
+    status: i64,
+    message: &str,
+) -> Result<()> {
+    let now = now_millis();
+    conn.execute(
+        "UPDATE webhook_rules
+         SET last_run_at = ?1,
+             last_status = ?2,
+             consecutive_failures = CASE
+                 WHEN ?2 >= 200 AND ?2 < 300 THEN 0
+                 ELSE consecutive_failures + 1
+             END,
+             last_message = CASE
+                 WHEN ?2 >= 200 AND ?2 < 300 THEN ?3
+                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after
+                     THEN 'Auto-disabled after ' || (consecutive_failures + 1) || ' consecutive failures'
+                 ELSE ?3
+             END,
+             enabled = CASE
+                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after THEN 0
+                 ELSE enabled
+             END,
+             updated_at = ?1
+         WHERE id = ?4",
         params![now, status, message, id],
     )?;
     Ok(())
@@ -1346,6 +1391,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_webhook_secret_retries(&conn)?;
     migrate_webhook_trigger_event(&conn)?;
     migrate_webhook_cooldown(&conn)?;
+    migrate_webhook_circuit_breaker(&conn)?;
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
@@ -1489,6 +1535,20 @@ fn migrate_webhook_cooldown(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "webhook_rules", "cooldown_seconds")? {
         conn.execute_batch(
             "ALTER TABLE webhook_rules ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_webhook_circuit_breaker(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "consecutive_failures")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !column_exists(conn, "webhook_rules", "auto_disable_after")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN auto_disable_after INTEGER NOT NULL DEFAULT 3;",
         )?;
     }
     Ok(())
@@ -7644,6 +7704,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -7655,6 +7716,8 @@ mod tests {
         assert_eq!(rule.retries, 2);
         assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.trigger_event, "");
+        assert_eq!(rule.consecutive_failures, 0);
+        assert_eq!(rule.auto_disable_after, 3);
 
         let due = list_due_webhook_rules(&conn, now).unwrap();
         assert!(due.iter().any(|r| r.id == rule.id));
@@ -7924,6 +7987,142 @@ mod tests {
     }
 
     #[test]
+    fn webhook_circuit_breaker_migration_adds_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                trigger_event TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        migrate_webhook_circuit_breaker(&conn).unwrap();
+        migrate_webhook_circuit_breaker(&conn).unwrap();
+        assert!(column_exists(&conn, "webhook_rules", "consecutive_failures").unwrap());
+        assert!(column_exists(&conn, "webhook_rules", "auto_disable_after").unwrap());
+        conn.execute(
+            "INSERT INTO webhook_rules (id, name, url, created_at, updated_at)
+             VALUES ('legacy-circuit', 'Legacy', 'https://example.test', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let failures: i64 = conn
+            .query_row(
+                "SELECT consecutive_failures FROM webhook_rules WHERE id = 'legacy-circuit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let threshold: i64 = conn
+            .query_row(
+                "SELECT auto_disable_after FROM webhook_rules WHERE id = 'legacy-circuit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failures, 0);
+        assert_eq!(threshold, 3);
+    }
+
+    #[test]
+    fn webhook_circuit_breaker_tracks_failures_and_disables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Circuit hook",
+                url: "https://example.test/circuit",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+                auto_disable_after: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(rule.consecutive_failures, 0);
+        assert_eq!(rule.auto_disable_after, 2);
+
+        record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500 boom").unwrap();
+        let after_one = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after_one.consecutive_failures, 1);
+        assert!(after_one.enabled);
+        assert_eq!(after_one.last_status, 500);
+
+        record_webhook_rule_outcome(&conn, &rule.id, 0, "Webhook delivery failed: timeout")
+            .unwrap();
+        let after_two = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after_two.consecutive_failures, 2);
+        assert!(!after_two.enabled);
+        assert!(
+            after_two
+                .last_message
+                .contains("Auto-disabled after 2 consecutive failures"),
+            "{}",
+            after_two.last_message
+        );
+
+        let restored = set_webhook_rule_enabled(&conn, &rule.id, true).unwrap();
+        assert!(restored.enabled);
+        assert_eq!(restored.consecutive_failures, 0);
+
+        record_webhook_rule_outcome(&conn, &rule.id, 200, "HTTP 200 delivered").unwrap();
+        let after_success = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after_success.consecutive_failures, 0);
+        assert!(after_success.enabled);
+        assert!(after_success.last_message.contains("HTTP 200"));
+    }
+
+    #[test]
+    fn webhook_circuit_breaker_zero_threshold_never_disables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "No auto-off hook",
+                url: "https://example.test/no-auto-off",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+                auto_disable_after: 0,
+            },
+        )
+        .unwrap();
+        for _ in 0..5 {
+            record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500").unwrap();
+        }
+        let after = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(after.consecutive_failures, 5);
+        assert!(after.enabled);
+    }
+
+    #[test]
     fn webhook_event_cooldown_suppresses_repeat_triggers() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -7941,6 +8140,7 @@ mod tests {
                 cooldown_seconds: 30,
                 interval_seconds: 60,
                 trigger_event: "error.reported",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -7957,6 +8157,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "error.reported",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -7993,6 +8194,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -8009,6 +8211,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -8026,6 +8229,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "sync.completed",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -8119,6 +8323,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
@@ -8184,6 +8389,7 @@ mod tests {
                 cooldown_seconds: 0,
                 interval_seconds: 60,
                 trigger_event: "",
+                auto_disable_after: 3,
             },
         )
         .unwrap();
