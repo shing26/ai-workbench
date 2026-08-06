@@ -370,9 +370,21 @@ CREATE TABLE IF NOT EXISTS webhook_rules (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    auto_disable_after INTEGER NOT NULL DEFAULT 3
+    auto_disable_after INTEGER NOT NULL DEFAULT 3,
+    template_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_rules_enabled ON webhook_rules(enabled, interval_seconds);
+CREATE TABLE IF NOT EXISTS webhook_template_versions (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE (rule_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_template_versions_rule
+    ON webhook_template_versions(rule_id, version DESC);
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id TEXT PRIMARY KEY,
     rule_id TEXT NOT NULL DEFAULT '',
@@ -1163,6 +1175,7 @@ pub struct WebhookRule {
     pub updated_at: i64,
     pub consecutive_failures: i64,
     pub auto_disable_after: i64,
+    pub template_version: i64,
 }
 
 pub struct WebhookRuleInput<'a> {
@@ -1180,6 +1193,17 @@ pub struct WebhookRuleInput<'a> {
     pub channels: Vec<String>,
     pub recovery_backoff_seconds: i64,
     pub auto_disable_after: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookTemplateVersion {
+    pub id: String,
+    pub rule_id: String,
+    pub version: i64,
+    pub payload: String,
+    pub note: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1428,7 +1452,7 @@ const WEBHOOK_RULE_COLUMNS: &str =
     "id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, enabled, \
      last_run_at, last_status, last_message, created_at, updated_at, trigger_event, \
      trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, \
-     consecutive_failures, auto_disable_after";
+     consecutive_failures, auto_disable_after, template_version";
 
 fn parse_webhook_channels(text: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(text)
@@ -1463,6 +1487,7 @@ fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
         circuit_opened_at: row.get(20)?,
         consecutive_failures: row.get(21)?,
         auto_disable_after: row.get(22)?,
+        template_version: row.get(23)?,
     })
 }
 
@@ -1520,8 +1545,8 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
     let channels_json =
         serde_json::to_string(&channels).unwrap_or_else(|_| "[\"http\"]".to_string());
     conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, 1, 0, 0, '', ?15, ?15, 0, ?16)",
+        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after, template_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, 1, 0, 0, '', ?15, ?15, 0, ?16, 1)",
         params![
             id,
             input.name,
@@ -1541,7 +1566,100 @@ pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> R
             input.auto_disable_after.max(0),
         ],
     )?;
+    conn.execute(
+        "INSERT INTO webhook_template_versions (id, rule_id, version, payload, note, created_at)
+         VALUES (?1, ?2, 1, ?3, '', ?4)",
+        params![uid(), id, payload, now],
+    )?;
     get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn next_webhook_template_version(conn: &Connection, rule_id: &str) -> Result<i64> {
+    let current: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM webhook_template_versions WHERE rule_id = ?1",
+        params![rule_id],
+        |row| row.get(0),
+    )?;
+    Ok(current + 1)
+}
+
+pub fn save_webhook_template_version(
+    conn: &Connection,
+    rule_id: &str,
+    payload: &str,
+    note: &str,
+) -> Result<WebhookTemplateVersion> {
+    let version = next_webhook_template_version(conn, rule_id)?;
+    let now = now_millis();
+    let id = uid();
+    let updated = conn.execute(
+        "UPDATE webhook_rules
+         SET payload = ?1, template_version = ?2, updated_at = ?3
+         WHERE id = ?4",
+        params![payload, version, now, rule_id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    conn.execute(
+        "INSERT INTO webhook_template_versions (id, rule_id, version, payload, note, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, rule_id, version, payload, note, now],
+    )?;
+    Ok(WebhookTemplateVersion {
+        id,
+        rule_id: rule_id.to_string(),
+        version,
+        payload: payload.to_string(),
+        note: note.to_string(),
+        created_at: now,
+    })
+}
+
+pub fn list_webhook_template_versions(
+    conn: &Connection,
+    rule_id: &str,
+) -> Result<Vec<WebhookTemplateVersion>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, rule_id, version, payload, note, created_at
+         FROM webhook_template_versions
+         WHERE rule_id = ?1
+         ORDER BY version DESC",
+    )?;
+    let rows = stmt.query_map(params![rule_id], |row| {
+        Ok(WebhookTemplateVersion {
+            id: row.get(0)?,
+            rule_id: row.get(1)?,
+            version: row.get(2)?,
+            payload: row.get(3)?,
+            note: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn restore_webhook_template_version(
+    conn: &Connection,
+    rule_id: &str,
+    version: i64,
+) -> Result<WebhookRule> {
+    let payload: String = conn.query_row(
+        "SELECT payload FROM webhook_template_versions
+         WHERE rule_id = ?1 AND version = ?2",
+        params![rule_id, version],
+        |row| row.get(0),
+    )?;
+    let updated = conn.execute(
+        "UPDATE webhook_rules
+         SET payload = ?1, template_version = ?2, updated_at = ?3
+         WHERE id = ?4",
+        params![payload, version, now_millis(), rule_id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_webhook_rule(conn, rule_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<WebhookRule> {
@@ -2760,6 +2878,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_webhook_circuit_breaker(&conn)?;
     migrate_webhook_trigger_condition(&conn)?;
     migrate_webhook_channels_recovery(&conn)?;
+    migrate_webhook_template_version(&conn)?;
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
@@ -3016,6 +3135,19 @@ fn migrate_webhook_channels_recovery(conn: &Connection) -> Result<()> {
             "ALTER TABLE webhook_deliveries ADD COLUMN channel TEXT NOT NULL DEFAULT 'http';",
         )?;
     }
+    Ok(())
+}
+
+fn migrate_webhook_template_version(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "webhook_rules", "template_version")? {
+        conn.execute_batch(
+            "ALTER TABLE webhook_rules ADD COLUMN template_version INTEGER NOT NULL DEFAULT 1;",
+        )?;
+    }
+    conn.execute(
+        "UPDATE webhook_rules SET template_version = 1 WHERE template_version IS NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -10859,6 +10991,89 @@ mod tests {
 
         delete_webhook_rule(&conn, &rule.id).unwrap();
         assert!(get_webhook_rule(&conn, &rule.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn webhook_template_version_lifecycle() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Versioned",
+                url: "https://example.test/hook",
+                payload: "{\"v\":1}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "sync.completed",
+                trigger_condition: "",
+                channels: vec!["http".to_string()],
+                recovery_backoff_seconds: 300,
+                auto_disable_after: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(rule.template_version, 1);
+        let versions = list_webhook_template_versions(&conn, &rule.id).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(versions[0].payload, "{\"v\":1}");
+
+        let v2 = save_webhook_template_version(&conn, &rule.id, "{\"v\":2}", "second").unwrap();
+        assert_eq!(v2.version, 2);
+        let updated = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
+        assert_eq!(updated.payload, "{\"v\":2}");
+        assert_eq!(updated.template_version, 2);
+
+        let restored = restore_webhook_template_version(&conn, &rule.id, 1).unwrap();
+        assert_eq!(restored.payload, "{\"v\":1}");
+        assert_eq!(restored.template_version, 1);
+        assert_eq!(
+            list_webhook_template_versions(&conn, &rule.id)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn webhook_template_version_migration_adds_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhook_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                method TEXT NOT NULL DEFAULT 'POST',
+                token TEXT NOT NULL DEFAULT '',
+                secret TEXT NOT NULL DEFAULT '',
+                retries INTEGER NOT NULL DEFAULT 1,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                trigger_event TEXT NOT NULL DEFAULT '',
+                trigger_condition TEXT NOT NULL DEFAULT '',
+                channels TEXT NOT NULL DEFAULT '[\"http\"]',
+                recovery_backoff_seconds INTEGER NOT NULL DEFAULT 300,
+                circuit_opened_at INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_run_at INTEGER NOT NULL DEFAULT 0,
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                auto_disable_after INTEGER NOT NULL DEFAULT 3
+            );",
+        )
+        .unwrap();
+        migrate_webhook_template_version(&conn).unwrap();
+        migrate_webhook_template_version(&conn).unwrap();
+        assert!(column_exists(&conn, "webhook_rules", "template_version").unwrap());
     }
 
     #[test]

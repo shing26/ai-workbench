@@ -27,6 +27,7 @@ use tauri::{Emitter, Manager, State};
 
 mod db;
 mod webhook_condition;
+mod webhook_template;
 
 #[derive(Default)]
 struct StreamCancellation {
@@ -5515,36 +5516,8 @@ fn render_webhook_payload(
     context: Option<&Value>,
     now_ms: i64,
 ) -> String {
-    let mut out = String::with_capacity(template.len() + 64);
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else {
-            out.push_str(&rest[start..]);
-            break;
-        };
-        let key = after[..end].trim();
-        let replacement = match key {
-            "event" => Some(serde_json::Value::String(event.to_string()).to_string()),
-            "ts" => Some(serde_json::Value::String(now_ms.to_string()).to_string()),
-            _ if key.starts_with("context.") => {
-                let field = &key["context.".len()..];
-                context
-                    .and_then(|ctx| ctx.get(field))
-                    .map(|value| value.to_string())
-                    .or_else(|| Some("null".to_string()))
-            }
-            _ => None,
-        };
-        match replacement {
-            Some(value) => out.push_str(&value),
-            None => out.push_str(&rest[start..=end + 1]),
-        }
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    out
+    webhook_template::render_template(template, event, context, now_ms)
+        .unwrap_or_else(|_| template.to_string())
 }
 
 fn run_webhook_rule_inner(
@@ -5692,6 +5665,59 @@ fn set_webhook_rule_enabled(
 ) -> Result<db::WebhookRule, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::set_webhook_rule_enabled(&conn, &id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_webhook_template_versions(
+    state: State<'_, db::Db>,
+    rule_id: String,
+) -> Result<Vec<db::WebhookTemplateVersion>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_webhook_template_versions(&conn, &rule_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_webhook_template_version(
+    state: State<'_, db::Db>,
+    rule_id: String,
+    payload: String,
+    note: String,
+) -> Result<db::WebhookTemplateVersion, String> {
+    if rule_id.trim().is_empty() {
+        return Err("Webhook rule id is required".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::save_webhook_template_version(&conn, &rule_id, &payload, &note).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_webhook_template_version(
+    state: State<'_, db::Db>,
+    rule_id: String,
+    version: i64,
+) -> Result<db::WebhookRule, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::restore_webhook_template_version(&conn, &rule_id, version).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn validate_webhook_payload_template(
+    template: String,
+    context_json: Option<String>,
+) -> Result<webhook_template::TemplateValidation, String> {
+    let context = match context_json.as_deref().map(str::trim) {
+        Some(json) if !json.is_empty() => Some(
+            serde_json::from_str::<Value>(json)
+                .map_err(|e| format!("Context JSON invalid: {e}"))?,
+        ),
+        _ => None,
+    };
+    Ok(webhook_template::validate_template(
+        &template,
+        "sync.completed",
+        context.as_ref(),
+        now_millis(),
+    ))
 }
 
 #[tauri::command]
@@ -7188,6 +7214,10 @@ pub fn run() {
             list_webhook_rules,
             create_webhook_rule,
             set_webhook_rule_enabled,
+            list_webhook_template_versions,
+            save_webhook_template_version,
+            restore_webhook_template_version,
+            validate_webhook_payload_template,
             delete_webhook_rule,
             run_webhook_rule,
             list_webhook_rule_runs,
@@ -7340,6 +7370,41 @@ mod tests {
             render_webhook_payload(template, "sync.completed", None, 123),
             template
         );
+    }
+
+    #[test]
+    fn webhook_payload_template_supports_condition_and_loop() {
+        let context = serde_json::json!({
+            "status": "ready",
+            "items": [{"name": "alpha"}, {"name": "beta"}]
+        });
+        let rendered = render_webhook_payload(
+            r#"{"ready":{{#if context.status == "ready"}}true{{#else}}false{{/if}},"items":[{{#each context.items}}{"name":{{this.name}}}{{#if @last}}{{#else}},{{/if}}{{/each}}]}"#,
+            "sync.completed",
+            Some(&context),
+            12345,
+        );
+        assert_eq!(
+            rendered,
+            r#"{"ready":true,"items":[{"name":"alpha"},{"name":"beta"}]}"#
+        );
+    }
+
+    #[test]
+    fn webhook_template_validation_reports_blocks_and_json() {
+        let template = r#"{"items":[{{#each context.items}}{{this}}{{/each}}]}"#;
+        let result = webhook_template::validate_template(template, "sync.completed", None, 1);
+        assert!(result.ok);
+        assert!(result.blocks.iter().any(|block| block.starts_with("#each")));
+        assert!(result.rendered_json_ok);
+
+        let broken = webhook_template::validate_template(
+            r#"{"items":[{{#each context.items}}{{this}}"#,
+            "sync.completed",
+            None,
+            1,
+        );
+        assert!(!broken.ok);
     }
 
     #[test]
@@ -9313,6 +9378,7 @@ mod tests {
             updated_at: 0,
             consecutive_failures: failures,
             auto_disable_after: 3,
+            template_version: 1,
         };
         assert_eq!(webhook_recovery_backoff_ms(&rule(3, 300)), 300_000);
         assert_eq!(webhook_recovery_backoff_ms(&rule(4, 300)), 600_000);

@@ -926,3 +926,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 浏览器 `db.ts` 新增 `RagSourcePreference` 与 `ai-workbench:rag-source-preference:v1`；`get/setRagSourcePreference`、`searchThoughts(query, limit, sourcePref?)` 同构实现来源过滤。
 - AI Studio 确认面板按来源文件分组勾选（`data-rag-source-option`），勾选 “Remember this source selection”（`data-rag-source-remember`）后写入偏好并显示 `data-rag-source-summary` 徽标；`data-rag-source-reset` 一键清除；New chat / 切换会话 / Cancel 清理临时来源状态。
 - `verify:ui` / `verify:preview` 新增 `ragSourceSelector` / `ragSourcePersisted` lane：种子两个 vault 文件、取消一个来源、记住选择、reload 后偏好仍生效且搜索只命中记住的文件、Reset 清除；Rust 单测覆盖 selected / all / 空路径语义，总数增至 189 条。
+
+## Sprint 154：Webhook payload 高级模板与版本管理
+
+- Rust 新增 `webhook_template.rs`：`{{event}} / {{ts}} / {{context.*}} / {{this.*}}` 变量展开，`{{#if}} / {{#else}} / {{/if}}` 条件分支，`{{#each}} / {{/each}}` 循环与 `{{@index}} / {{@first}} / {{@last}}` 元数据；未知变量保留原文，`render_webhook_payload` 改由该模块渲染。
+- 新增 `validate_template`，返回 `{ ok, errors, variables, blocks, rendered, renderedJsonOk }`；Tauri 命令 `validate_webhook_payload_template` 接受可选 `contextJson` 并真正解析 JSON。
+- SQLite 新增 `webhook_template_versions` 版本表与 `webhook_rules.template_version` 列；`create_webhook_rule` 自动写 v1，`next/save/list/restore_webhook_template_version` 提供版本生命周期管理。
+- `db.ts` 提供与 Rust 同构的高级渲染器与 `validateWebhookPayloadTemplate`，版本记录持久化到 `ai-workbench:webhook-template-versions:v1`，`readWebhookRules` 自动补 `templateVersion ?? 1`。
+- SystemView payload 编辑区新增模板片段按钮（event / ts / context / if / each）与 Validate schema；每条规则下方新增模板编辑器、保存版本、版本下拉与 Restore，锚点 `data-webhook-template-snippet` / `data-webhook-template-validation` / `data-webhook-rule-payload-input` / `data-webhook-rule-version-save` / `data-webhook-rule-version-count` / `data-webhook-rule-version-select` / `data-webhook-rule-version-restore` / `data-webhook-rule-version-note`。
+- `verify:ui` / `verify:preview` 新增 `webhookTemplateVersioning` / `webhookTemplateValidationUi` lane；Rust 单测覆盖条件、循环、未知变量、块收集与版本生命周期，总数增至 199 条。

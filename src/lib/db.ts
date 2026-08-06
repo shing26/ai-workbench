@@ -579,6 +579,7 @@ export type WebhookRule = {
   updatedAt: number;
   consecutiveFailures: number;
   autoDisableAfter: number;
+  templateVersion: number;
 };
 
 export type WebhookChannelName = 'http' | 'email' | 'notification';
@@ -592,6 +593,24 @@ export type WebhookRuleRun = {
   attempts: number;
   message: string;
   createdAt: number;
+};
+
+export type WebhookTemplateVersion = {
+  id: string;
+  ruleId: string;
+  version: number;
+  payload: string;
+  note: string;
+  createdAt: number;
+};
+
+export type WebhookTemplateValidation = {
+  ok: boolean;
+  errors: string[];
+  variables: string[];
+  blocks: string[];
+  rendered: string;
+  renderedJsonOk: boolean;
 };
 
 export type WebhookDeliveryStatus = 'queued' | 'delivering' | 'success' | 'failed' | 'dead';
@@ -1016,6 +1035,7 @@ const makeId = () =>
 const WEBHOOK_RULES_LS_KEY = 'ai-workbench:webhook-rules:v1';
 const WEBHOOK_RULE_RUNS_LS_KEY = 'ai-workbench:webhook-rule-runs:v1';
 const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
+const WEBHOOK_TEMPLATE_VERSIONS_LS_KEY = 'ai-workbench:webhook-template-versions:v1';
 const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
 const WEBHOOK_CHANNEL_CONFIG_LS_KEY = 'ai-workbench:webhook-channel-config:v1';
 const EVENT_LOGS_LS_KEY = 'ai-workbench:event-logs:v1';
@@ -7127,6 +7147,7 @@ function readWebhookRules(): WebhookRule[] {
       cooldownSeconds: rule.cooldownSeconds ?? 0,
       consecutiveFailures: rule.consecutiveFailures ?? 0,
       autoDisableAfter: rule.autoDisableAfter ?? 3,
+      templateVersion: rule.templateVersion ?? 1,
       triggerCondition: rule.triggerCondition ?? '',
       channels: Array.isArray(rule.channels)
         ? rule.channels.filter(
@@ -7279,8 +7300,22 @@ export async function createWebhookRule(
     updatedAt: now,
     consecutiveFailures: 0,
     autoDisableAfter: Math.max(0, autoDisableAfter),
+    templateVersion: 1,
   };
   writeWebhookRules([...readWebhookRules(), rule]);
+  writeWebhookTemplateVersions({
+    ...readWebhookTemplateVersions(),
+    [rule.id]: [
+      {
+        id: makeId(),
+        ruleId: rule.id,
+        version: 1,
+        payload: rule.payload,
+        note: '',
+        createdAt: now,
+      },
+    ],
+  });
   return rule;
 }
 
@@ -7389,23 +7424,438 @@ export async function listWebhookDeliveries(
   return filtered.slice(0, limit);
 }
 
+type WebhookTemplateScope = {
+  event: string;
+  context: Record<string, unknown>;
+  now: number;
+  current: unknown;
+  index: number;
+  count: number;
+};
+
+function templateGetPath(value: unknown, path: string): unknown {
+  let current: unknown = value;
+  for (const segment of path.split('.')) {
+    if (current === null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function templateStringify(value: unknown): string {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function templateResolve(
+  path: string,
+  scope: WebhookTemplateScope,
+): { value: unknown; known: boolean } {
+  const trimmed = path.trim();
+  if (trimmed === 'this') return { value: scope.current, known: true };
+  if (trimmed === '@index') return { value: scope.index, known: true };
+  if (trimmed === '@first') return { value: scope.index === 0, known: true };
+  if (trimmed === '@last') return { value: scope.index + 1 === scope.count, known: true };
+  if (trimmed.startsWith('this.')) {
+    return { value: templateGetPath(scope.current, trimmed.slice(5)), known: true };
+  }
+  if (trimmed === 'event') return { value: scope.event, known: true };
+  if (trimmed === 'ts') return { value: String(scope.now), known: true };
+  if (trimmed.startsWith('context.')) {
+    return {
+      value: templateGetPath(scope.context, trimmed.slice('context.'.length)),
+      known: true,
+    };
+  }
+  return { value: undefined, known: false };
+}
+
+function templateFindMatchingClose(
+  segment: string,
+  openPrefix: string,
+  closeTag: string,
+): [number, number] | null {
+  let depth = 0;
+  let cursor = 0;
+  while (cursor < segment.length) {
+    const start = segment.indexOf('{{', cursor);
+    if (start < 0) break;
+    const after = segment.slice(start + 2);
+    const relEnd = after.indexOf('}}');
+    if (relEnd < 0) break;
+    const inner = after.slice(0, relEnd).trim();
+    const end = start + 2 + relEnd + 2;
+    if (inner.startsWith(openPrefix)) {
+      if (depth === 0) depth = 1;
+      else depth += 1;
+    } else if (inner === closeTag) {
+      if (depth === 1) return [start, end];
+      depth -= 1;
+    }
+    cursor = end;
+  }
+  return null;
+}
+
+function templateFindTopLevelElse(body: string, closeStart: number): number {
+  let depth = 0;
+  let cursor = 0;
+  while (cursor < closeStart) {
+    const start = body.indexOf('{{', cursor);
+    if (start < 0 || start >= closeStart) break;
+    const after = body.slice(start + 2);
+    const relEnd = after.indexOf('}}');
+    if (relEnd < 0) break;
+    const inner = after.slice(0, relEnd).trim();
+    const end = start + 2 + relEnd + 2;
+    if (inner.startsWith('#if') || inner.startsWith('#each')) depth += 1;
+    else if (inner === '/if' || inner === '/each') depth -= 1;
+    else if (inner === '#else' && depth === 0) return start;
+    cursor = end;
+  }
+  return -1;
+}
+
+function templateParseLiteral(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null') return null;
+  if (trimmed !== '' && !Number.isNaN(Number(trimmed))) return Number(trimmed);
+  return trimmed;
+}
+
+function templateCompare(left: unknown, right: unknown, op: string): boolean {
+  switch (op) {
+    case '==':
+      return left === right;
+    case '!=':
+      return left !== right;
+    case '>':
+      return Number(left) > Number(right);
+    case '>=':
+      return Number(left) >= Number(right);
+    case '<':
+      return Number(left) < Number(right);
+    case '<=':
+      return Number(left) <= Number(right);
+    default:
+      return false;
+  }
+}
+
+function templateIsTruthy(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return false;
+}
+
+function templateEvalIf(expr: string, scope: WebhookTemplateScope): boolean {
+  const trimmed = expr.trim();
+  for (const op of ['==', '!=', '>=', '<=', '>', '<']) {
+    const pos = trimmed.indexOf(op);
+    if (pos > 0) {
+      const left = trimmed.slice(0, pos).trim();
+      const right = trimmed.slice(pos + op.length).trim();
+      if (left && right) {
+        return templateCompare(templateResolve(left, scope).value, templateParseLiteral(right), op);
+      }
+    }
+  }
+  return templateIsTruthy(templateResolve(trimmed, scope).value);
+}
+
+function templateExpand(segment: string, scope: WebhookTemplateScope, errors: string[]): string {
+  let out = '';
+  let rest = segment;
+  while (rest.length > 0) {
+    const start = rest.indexOf('{{');
+    if (start < 0) {
+      out += rest;
+      break;
+    }
+    out += rest.slice(0, start);
+    const after = rest.slice(start + 2);
+    const relEnd = after.indexOf('}}');
+    if (relEnd < 0) {
+      out += rest.slice(start);
+      break;
+    }
+    const inner = after.slice(0, relEnd).trim();
+    const end = start + 2 + relEnd + 2;
+    if (inner.startsWith('#if')) {
+      const close = templateFindMatchingClose(rest, '#if', '/if');
+      if (!close) {
+        errors.push(`Unclosed #if block at ${inner}`);
+        out += rest.slice(start);
+        break;
+      }
+      const [closeStart, closeEnd] = close;
+      const body = rest.slice(end, closeStart);
+      const elseAt = templateFindTopLevelElse(body, body.length);
+      const trueBody = elseAt === -1 ? body : body.slice(0, elseAt);
+      const falseBody = elseAt === -1 ? '' : body.slice(elseAt + 9);
+      if (templateEvalIf(inner.slice(3).trim(), scope)) {
+        out += templateExpand(trueBody, scope, errors);
+      } else {
+        out += templateExpand(falseBody, scope, errors);
+      }
+      rest = rest.slice(closeEnd);
+      continue;
+    }
+    if (inner.startsWith('#each')) {
+      const close = templateFindMatchingClose(rest, '#each', '/each');
+      if (!close) {
+        errors.push(`Unclosed #each block at ${inner}`);
+        out += rest.slice(start);
+        break;
+      }
+      const [closeStart, closeEnd] = close;
+      const body = rest.slice(end, closeStart);
+      const items = templateResolve(inner.slice(5).trim(), scope).value;
+      if (Array.isArray(items)) {
+        for (let index = 0; index < items.length; index += 1) {
+          out += templateExpand(
+            body,
+            { ...scope, current: items[index], index, count: items.length },
+            errors,
+          );
+        }
+      }
+      rest = rest.slice(closeEnd);
+      continue;
+    }
+    if (inner === '#else' || inner === '/if' || inner === '/each') {
+      errors.push(`Unexpected template tag: ${inner}`);
+    } else {
+      const { value, known } = templateResolve(inner, scope);
+      if (value === undefined && !known) out += `{{${inner}}}`;
+      else out += templateStringify(value);
+    }
+    rest = rest.slice(end);
+  }
+  return out;
+}
+
 export function renderWebhookPayload(
   template: string,
   event: string,
   context: Record<string, unknown> = {},
   now = Date.now(),
 ): string {
-  return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (raw, key: string) => {
-    if (key === 'event') return JSON.stringify(event);
-    if (key === 'ts') return JSON.stringify(String(now));
-    if (key.startsWith('context.')) {
-      const field = key.slice('context.'.length);
-      const value = context[field];
-      if (value !== undefined) return JSON.stringify(value);
-      return 'null';
+  const errors: string[] = [];
+  const rendered = templateExpand(
+    template,
+    { event, context, now, current: undefined, index: 0, count: 1 },
+    errors,
+  );
+  return errors.length > 0 ? template : rendered;
+}
+
+function templateCollectMeta(
+  segment: string,
+  variables: string[],
+  blocks: string[],
+  errors: string[],
+): void {
+  let rest = segment;
+  while (rest.length > 0) {
+    const start = rest.indexOf('{{');
+    if (start < 0) break;
+    const after = rest.slice(start + 2);
+    const relEnd = after.indexOf('}}');
+    if (relEnd < 0) break;
+    const inner = after.slice(0, relEnd).trim();
+    const end = start + 2 + relEnd + 2;
+    if (inner.startsWith('#if')) {
+      const close = templateFindMatchingClose(rest, '#if', '/if');
+      if (!close) {
+        errors.push(`Unclosed #if block at ${inner}`);
+        return;
+      }
+      const [closeStart, closeEnd] = close;
+      blocks.push(`#if ${inner.slice(3).trim()}`);
+      const body = rest.slice(end, closeStart);
+      const elseAt = templateFindTopLevelElse(body, body.length);
+      if (elseAt === -1) {
+        templateCollectMeta(body, variables, blocks, errors);
+      } else {
+        templateCollectMeta(body.slice(0, elseAt), variables, blocks, errors);
+        templateCollectMeta(body.slice(elseAt + 9), variables, blocks, errors);
+      }
+      rest = rest.slice(closeEnd);
+      continue;
     }
-    return raw;
-  });
+    if (inner.startsWith('#each')) {
+      const close = templateFindMatchingClose(rest, '#each', '/each');
+      if (!close) {
+        errors.push(`Unclosed #each block at ${inner}`);
+        return;
+      }
+      const [closeStart, closeEnd] = close;
+      blocks.push(`#each ${inner.slice(5).trim()}`);
+      templateCollectMeta(rest.slice(end, closeStart), variables, blocks, errors);
+      rest = rest.slice(closeEnd);
+      continue;
+    }
+    if (inner === '#else' || inner === '/if' || inner === '/each') {
+      errors.push(`Unexpected template tag: ${inner}`);
+    } else if (!inner.startsWith('#')) {
+      if (!variables.includes(inner)) variables.push(inner);
+    }
+    rest = rest.slice(end);
+  }
+}
+
+export async function validateWebhookPayloadTemplate(
+  template: string,
+  contextJson = '',
+): Promise<WebhookTemplateValidation> {
+  if (isTauri()) {
+    return invoke<WebhookTemplateValidation>('validate_webhook_payload_template', {
+      template,
+      contextJson: contextJson.trim() ? contextJson.trim() : null,
+    });
+  }
+  let context: Record<string, unknown> = {};
+  const trimmedContext = contextJson.trim();
+  if (trimmedContext) {
+    try {
+      context = JSON.parse(trimmedContext) as Record<string, unknown>;
+    } catch {
+      return {
+        ok: false,
+        errors: ['Event context JSON is invalid'],
+        variables: [],
+        blocks: [],
+        rendered: '',
+        renderedJsonOk: false,
+      };
+    }
+  }
+  const variables: string[] = [];
+  const blocks: string[] = [];
+  const errors: string[] = [];
+  templateCollectMeta(template, variables, blocks, errors);
+  const rendered = templateExpand(
+    template,
+    {
+      event: 'sync.completed',
+      context,
+      now: Date.now(),
+      current: undefined,
+      index: 0,
+      count: 1,
+    },
+    errors,
+  );
+  let renderedJsonOk = true;
+  const trimmedRendered = rendered.trim();
+  if (trimmedRendered) {
+    try {
+      JSON.parse(trimmedRendered);
+    } catch {
+      renderedJsonOk = false;
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    variables,
+    blocks,
+    rendered,
+    renderedJsonOk,
+  };
+}
+
+function readWebhookTemplateVersions(): Record<string, WebhookTemplateVersion[]> {
+  try {
+    const raw = localStorage.getItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, WebhookTemplateVersion[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeWebhookTemplateVersions(versions: Record<string, WebhookTemplateVersion[]>) {
+  localStorage.setItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY, JSON.stringify(versions));
+}
+
+export async function listWebhookTemplateVersions(
+  ruleId: string,
+): Promise<WebhookTemplateVersion[]> {
+  if (isTauri()) {
+    return invoke<WebhookTemplateVersion[]>('list_webhook_template_versions', { ruleId });
+  }
+  const versions = readWebhookTemplateVersions()[ruleId] ?? [];
+  return [...versions].sort((a, b) => b.version - a.version);
+}
+
+export async function saveWebhookTemplateVersion(
+  ruleId: string,
+  payload: string,
+  note = '',
+): Promise<WebhookTemplateVersion> {
+  if (isTauri()) {
+    return invoke<WebhookTemplateVersion>('save_webhook_template_version', {
+      ruleId,
+      payload,
+      note,
+    });
+  }
+  const rules = readWebhookRules();
+  const rule = rules.find((r) => r.id === ruleId);
+  if (!rule) throw new Error('Webhook rule not found');
+  const versionsByRule = readWebhookTemplateVersions();
+  const ruleVersions = [...(versionsByRule[ruleId] ?? [])].sort((a, b) => b.version - a.version);
+  const version: WebhookTemplateVersion = {
+    id: makeId(),
+    ruleId,
+    version: (ruleVersions[0]?.version ?? 0) + 1,
+    payload,
+    note,
+    createdAt: Date.now(),
+  };
+  versionsByRule[ruleId] = [version, ...ruleVersions];
+  writeWebhookTemplateVersions(versionsByRule);
+  rule.payload = payload;
+  rule.templateVersion = version.version;
+  rule.updatedAt = Date.now();
+  writeWebhookRules(rules);
+  return version;
+}
+
+export async function restoreWebhookTemplateVersion(
+  ruleId: string,
+  version: number,
+): Promise<WebhookRule> {
+  if (isTauri()) {
+    return invoke<WebhookRule>('restore_webhook_template_version', { ruleId, version });
+  }
+  const rules = readWebhookRules();
+  const rule = rules.find((r) => r.id === ruleId);
+  if (!rule) throw new Error('Webhook rule not found');
+  const target = (readWebhookTemplateVersions()[ruleId] ?? []).find(
+    (item) => item.version === version,
+  );
+  if (!target) throw new Error('Webhook template version not found');
+  rule.payload = target.payload;
+  rule.templateVersion = target.version;
+  rule.updatedAt = Date.now();
+  writeWebhookRules(rules);
+  return rule;
 }
 
 type WebhookConditionToken =

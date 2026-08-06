@@ -8,12 +8,12 @@
 
 ## 候选池（待开发）
 
-- [ ] Webhook：payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理。
 - [ ] AI Studio：复制会话携带消息版本历史；导出包含 RAG / Inspector Trace 辅助上下文。
 - [ ] Knowledge：向量分片 / 近似索引。
 
 ## 已完成（从候选池移除）
 
+- Webhook：payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理（Sprint 154）。
 - RAG：命中来源跨文件选择器与“记住选择”偏好（Sprint 153）。
 - Sync：口令强度提示与确认框、多设备口令交换、密钥轮换与 salt 入库（Sprint 152）。
 - System：模型能力元数据（context window / 价格 / 速率）、模型收藏与最近使用排序、`/models` 缓存与自动刷新（Sprint 151）。

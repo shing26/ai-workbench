@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 154
+
+### What went well?
+
+- 新增 Rust `webhook_template.rs` 高级模板引擎：`{{event}} / {{ts}} / {{context.*}} / {{this.*}}` 变量、`{{#if}} / {{#else}} / {{/if}}` 条件分支、`{{#each}} / {{/each}}` 循环与 `{{@index}} / {{@first}} / {{@last}}` 循环元数据；未知变量保留原文，`render_webhook_payload` 与投递 / 定时 / 事件触发链路统一走该模块。
+- `validate_template` 返回 `{ ok, errors, variables, blocks, rendered, renderedJsonOk }`，SystemView 模板片段按钮 + Validate schema 一次给出变量 / 块 / 渲染预览 / JSON 合法性；Tauri 侧真正解析 `contextJson`，浏览器 fallback 用同构渲染器。
+- SQLite 新增 `webhook_template_versions` 版本表与 `template_version` 列：创建规则自动写 v1，`save / restore / list` 支持版本回溯，浏览器 fallback 用 `ai-workbench:webhook-template-versions:v1` 同构保存。
+- `verify:ui` / `verify:preview` 新增 `webhookTemplateVersioning` / `webhookTemplateValidationUi` 两条 lane，八道质量门全绿；Rust 单测增至 199 条，覆盖条件、循环、未知变量、块收集与版本生命周期。
+
+### What went wrong?
+
+- `cargo clippy -- -D warnings` 首次拦截 `webhook_template.rs` 中 `current: Some(&item)` 的 `needless_borrow`；改成 `Some(item)` 后通过。
+- 并行跑多个 cargo 命令时 build script 偶发 `couldn't get rustc version: program not found`；单独串行执行并以 MSVC toolchain bin 前置 PATH 后稳定复现通过。
+
+### Action Items
+
+- 下一个 Sprint 候选：AI Studio 复制会话携带消息版本历史；导出包含 RAG / Inspector Trace 辅助上下文。
+- 保留 `webhookTemplateVersioning` / `webhookTemplateValidationUi` lane，修改模板语法、版本协议或校验返回时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 153
 
 ### What went well?

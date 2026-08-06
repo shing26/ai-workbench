@@ -198,6 +198,18 @@ export default function SystemView() {
   const [webhookRuleCondition, setWebhookRuleCondition] = useState('');
   const [webhookRuleChannels, setWebhookRuleChannels] = useState<db.WebhookChannelName[]>(['http']);
   const [webhookRuleBackoff, setWebhookRuleBackoff] = useState('300');
+  const [webhookRuleVersions, setWebhookRuleVersions] = useState<
+    Record<string, db.WebhookTemplateVersion[]>
+  >({});
+  const [webhookRuleTemplateDrafts, setWebhookRuleTemplateDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [webhookRuleVersionNotes, setWebhookRuleVersionNotes] = useState<Record<string, string>>(
+    {},
+  );
+  const [webhookRuleVersionPick, setWebhookRuleVersionPick] = useState<Record<string, number>>({});
+  const [webhookTemplateValidation, setWebhookTemplateValidation] =
+    useState<db.WebhookTemplateValidation | null>(null);
   const [webhookConditionError, setWebhookConditionError] = useState('');
   const [webhookChannelConfig, setWebhookChannelConfig] = useState<db.WebhookChannelConfig | null>(
     null,
@@ -309,6 +321,7 @@ export default function SystemView() {
   const [budgetStatus, setBudgetStatusState] = useState<TokenBudgetStatus>(() => getBudgetStatus());
   const runAutoSyncRef = useRef<() => Promise<void>>(async () => {});
   const strengthTimerRef = useRef<number | null>(null);
+  const webhookPayloadRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     const status = getBudgetStatus();
@@ -1113,7 +1126,15 @@ export default function SystemView() {
   };
 
   const loadWebhookRules = async () => {
-    setWebhookRules(await db.listWebhookRules());
+    const rules = await db.listWebhookRules();
+    setWebhookRules(rules);
+    const versionMap: Record<string, db.WebhookTemplateVersion[]> = {};
+    await Promise.all(
+      rules.map(async (rule) => {
+        versionMap[rule.id] = await db.listWebhookTemplateVersions(rule.id);
+      }),
+    );
+    setWebhookRuleVersions(versionMap);
   };
 
   const toggleWebhookRuleChannel = (channel: db.WebhookChannelName) => {
@@ -1314,6 +1335,42 @@ export default function SystemView() {
       }
     }
     setWebhookPayloadPreview(db.renderWebhookPayload(webhookPayload, 'sync.completed', context));
+  };
+
+  const insertWebhookTemplateSnippet = (snippet: string) => {
+    const textarea = webhookPayloadRef.current;
+    setWebhookPayload((prev) => {
+      const start = textarea?.selectionStart ?? prev.length;
+      const end = textarea?.selectionEnd ?? prev.length;
+      const next = prev.slice(0, start) + snippet + prev.slice(end);
+      requestAnimationFrame(() => {
+        textarea?.focus();
+        textarea?.setSelectionRange(start + snippet.length, start + snippet.length);
+      });
+      return next;
+    });
+  };
+
+  const validateWebhookTemplate = async () => {
+    setWebhookTemplateValidation(
+      await db.validateWebhookPayloadTemplate(webhookPayload, webhookEventContext),
+    );
+  };
+
+  const saveRuleTemplateVersion = async (ruleId: string) => {
+    const rule = webhookRules.find((item) => item.id === ruleId);
+    if (!rule) return;
+    const payload = webhookRuleTemplateDrafts[ruleId] ?? rule.payload;
+    await db.saveWebhookTemplateVersion(ruleId, payload, webhookRuleVersionNotes[ruleId] ?? '');
+    setWebhookRuleTemplateDrafts((prev) => ({ ...prev, [ruleId]: payload }));
+    setWebhookRuleVersionNotes((prev) => ({ ...prev, [ruleId]: '' }));
+    await loadWebhookRules();
+  };
+
+  const restoreRuleTemplateVersion = async (ruleId: string, version: number) => {
+    const restored = await db.restoreWebhookTemplateVersion(ruleId, version);
+    setWebhookRuleTemplateDrafts((prev) => ({ ...prev, [ruleId]: restored.payload }));
+    await loadWebhookRules();
   };
 
   const retryWebhookDelivery = async (id: string) => {
@@ -3006,12 +3063,60 @@ export default function SystemView() {
           </select>
         </div>
         <textarea
+          ref={webhookPayloadRef}
           value={webhookPayload}
           onChange={(e) => setWebhookPayload(e.target.value)}
           placeholder="Payload (JSON)"
           data-webhook-payload
           className="mt-2 h-20 w-full resize-none rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 font-mono text-[11px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
         />
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[9px] uppercase tracking-wide text-slate-600">Template</span>
+          {[
+            { label: 'event', insert: '{{event}}' },
+            { label: 'ts', insert: '{{ts}}' },
+            { label: 'context', insert: '{{context.note}}' },
+            {
+              label: 'if',
+              insert: '{{#if context.status == "ok"}}ready{{#else}}busy{{/if}}',
+            },
+            { label: 'each', insert: '{{#each context.items}}{"item":{{this}}}{{/each}}' },
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              data-webhook-template-snippet={item.label}
+              onClick={() => insertWebhookTemplateSnippet(item.insert)}
+              className="flex h-6 items-center rounded-md border border-white/10 bg-white/[0.03] px-1.5 font-mono text-[9px] text-cyan-300 hover:bg-white/10"
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            data-webhook-template-validate
+            onClick={() => void validateWebhookTemplate()}
+            className="flex h-6 items-center rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+          >
+            Validate schema
+          </button>
+        </div>
+        {webhookTemplateValidation && (
+          <div
+            data-webhook-template-validation
+            className={`mt-1 rounded-md px-2 py-1 text-[9px] ${
+              webhookTemplateValidation.ok
+                ? 'bg-emerald-500/10 text-emerald-300'
+                : 'bg-rose-500/10 text-rose-300'
+            }`}
+          >
+            {webhookTemplateValidation.ok ? 'valid' : webhookTemplateValidation.errors.join('; ')}
+            {' · '}
+            {webhookTemplateValidation.variables.length} variable(s) ·{' '}
+            {webhookTemplateValidation.blocks.length} block(s) ·{' '}
+            {webhookTemplateValidation.renderedJsonOk ? 'JSON ok' : 'JSON invalid'}
+          </div>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -3326,6 +3431,86 @@ export default function SystemView() {
                 >
                   Delete
                 </button>
+                <div
+                  data-webhook-rule-template
+                  className="flex w-full flex-wrap items-center gap-1.5 rounded-md bg-white/[0.02] px-1.5 py-1"
+                >
+                  <textarea
+                    value={webhookRuleTemplateDrafts[rule.id] ?? rule.payload}
+                    onChange={(e) =>
+                      setWebhookRuleTemplateDrafts((prev) => ({
+                        ...prev,
+                        [rule.id]: e.target.value,
+                      }))
+                    }
+                    data-webhook-rule-payload-input
+                    className="h-12 w-full resize-none rounded-md border border-white/10 bg-[#18181C] px-1.5 py-1 font-mono text-[9px] text-slate-300 outline-none focus:border-cyan-500/40"
+                  />
+                  <input
+                    value={webhookRuleVersionNotes[rule.id] ?? ''}
+                    onChange={(e) =>
+                      setWebhookRuleVersionNotes((prev) => ({
+                        ...prev,
+                        [rule.id]: e.target.value,
+                      }))
+                    }
+                    placeholder="Version note"
+                    data-webhook-rule-version-note
+                    className="h-6 w-40 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[9px] text-slate-300 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+                  />
+                  <button
+                    type="button"
+                    data-webhook-rule-version-save
+                    onClick={() => void saveRuleTemplateVersion(rule.id)}
+                    className="flex h-6 items-center rounded-md bg-emerald-500/15 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                  >
+                    Save version
+                  </button>
+                  <span
+                    data-webhook-rule-version-count
+                    className="rounded-md bg-cyan-500/10 px-1.5 py-0.5 text-[9px] text-cyan-300"
+                  >
+                    v{rule.templateVersion || 1}
+                  </span>
+                  <select
+                    value={
+                      webhookRuleVersionPick[rule.id] ??
+                      webhookRuleVersions[rule.id]?.[0]?.version ??
+                      rule.templateVersion ??
+                      1
+                    }
+                    onChange={(e) =>
+                      setWebhookRuleVersionPick((prev) => ({
+                        ...prev,
+                        [rule.id]: Number(e.target.value),
+                      }))
+                    }
+                    data-webhook-rule-version-select
+                    className="h-6 rounded-md border border-white/10 bg-white/[0.03] px-1 text-[9px] text-slate-300 outline-none focus:border-cyan-500/40"
+                  >
+                    {(webhookRuleVersions[rule.id] ?? []).map((version) => (
+                      <option key={version.version} value={version.version}>
+                        v{version.version}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    data-webhook-rule-version-restore
+                    onClick={() =>
+                      void restoreRuleTemplateVersion(
+                        rule.id,
+                        webhookRuleVersionPick[rule.id] ??
+                          webhookRuleVersions[rule.id]?.[0]?.version ??
+                          rule.templateVersion ??
+                          1,
+                      )
+                    }
+                    className="flex h-6 items-center rounded-md bg-cyan-500/15 px-2 text-[9px] text-cyan-300 hover:bg-cyan-500/25"
+                  >
+                    Restore
+                  </button>
+                </div>
               </div>
             ))}
           </div>
