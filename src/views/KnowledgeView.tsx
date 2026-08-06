@@ -1,4 +1,14 @@
-import { BookOpen, Clock, FolderOpen, Plus, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
+import {
+  BookOpen,
+  Clock,
+  FolderOpen,
+  Plus,
+  RefreshCw,
+  Save,
+  Search,
+  Tags,
+  Trash2,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as db from '../lib/db';
@@ -13,6 +23,7 @@ export default function KnowledgeView() {
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useState('all');
+  const [selectedTag, setSelectedTag] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
@@ -209,6 +220,22 @@ export default function KnowledgeView() {
       ),
     ),
   );
+  const tagStats = new Map<string, { count: number; inbox: number; note: number; doc: number }>();
+  for (const thought of thoughts) {
+    const tags = thought.tags
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    for (const tag of tags) {
+      const stat = tagStats.get(tag) ?? { count: 0, inbox: 0, note: 0, doc: 0 };
+      stat.count += 1;
+      stat[thought.type] += 1;
+      tagStats.set(tag, stat);
+    }
+  }
+  const tagEntries = [...tagStats.entries()].sort((a, b) => b[1].count - a[1].count);
+  const tagThoughts =
+    selectedTag === 'all' ? thoughts : thoughts.filter((t) => t.tags.includes(selectedTag));
   const filtered = filter === 'all' ? thoughts : thoughts.filter((t) => t.tags.includes(filter));
   const docFiles = results
     ? Array.from(new Set(results.filter((r) => r.type === 'doc').map((r) => r.id)))
@@ -506,6 +533,107 @@ export default function KnowledgeView() {
               ? `${recapDraft.date} · ${recapDraft.saved ? 'saved' : 'draft'}`
               : '完成 AI Studio 今日复盘后可一键存档'}
           </span>
+        </div>
+      </BentoCard>
+
+      <BentoCard
+        title="Tag Library"
+        subtitle="标签云 · 类型分布 · 分类浏览"
+        icon={Tags}
+        colSpan={12}
+      >
+        <div data-knowledge-tag-library className="space-y-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              data-knowledge-tag="all"
+              data-knowledge-tag-active={selectedTag === 'all' ? 'true' : 'false'}
+              data-knowledge-tag-count={thoughts.length}
+              onClick={() => {
+                setSelectedTag('all');
+                setFilter('all');
+              }}
+              className={`flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[11px] transition-colors ${
+                selectedTag === 'all'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                  : 'border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]'
+              }`}
+            >
+              All
+              <span className="font-mono text-[9px] opacity-70">{thoughts.length}</span>
+            </button>
+            {tagEntries.map(([tag, stat]) => (
+              <button
+                key={tag}
+                type="button"
+                data-knowledge-tag={tag}
+                data-knowledge-tag-active={selectedTag === tag ? 'true' : 'false'}
+                data-knowledge-tag-count={stat.count}
+                onClick={() => {
+                  setSelectedTag(tag);
+                  setFilter(tag);
+                }}
+                className={`flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[11px] transition-colors ${
+                  selectedTag === tag
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : 'border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]'
+                }`}
+              >
+                {tag}
+                <span className="font-mono text-[9px] opacity-70">{stat.count}</span>
+              </button>
+            ))}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5">
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">
+                Tags · {tagEntries.length}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {tagEntries.slice(0, 8).map(([tag, stat]) => (
+                  <span
+                    key={tag}
+                    className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400"
+                  >
+                    {tag} · {stat.count}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5">
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">
+                Type distribution
+              </div>
+              <div className="flex flex-col gap-1 text-[10px] text-slate-400">
+                <span>inbox {thoughts.filter((t) => t.type === 'inbox').length}</span>
+                <span>note {thoughts.filter((t) => t.type === 'note').length}</span>
+                <span>doc {thoughts.filter((t) => t.type === 'doc').length}</span>
+              </div>
+            </div>
+            <div
+              data-knowledge-tag-notes
+              className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5"
+            >
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">
+                {selectedTag === 'all' ? 'Recent notes' : selectedTag}
+              </div>
+              <div className="flex flex-col gap-1">
+                {tagThoughts.slice(0, 6).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setSelectedId(t.id)}
+                    className="truncate rounded-md bg-white/[0.03] px-1.5 py-1 text-left text-[10px] text-slate-300 hover:bg-white/[0.06]"
+                  >
+                    {t.content.split('\n')[0].slice(0, 48)}
+                  </button>
+                ))}
+                {tagThoughts.length === 0 && (
+                  <span className="text-[10px] text-slate-600">No notes</span>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </BentoCard>
 

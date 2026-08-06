@@ -2501,6 +2501,56 @@ try {
     const badgeText = [...document.querySelectorAll("main span")].map((s) => s.textContent ?? "").join(" | ");
     return { hasMarkdown: !!preview, heading, code, list, rawText, badgeText };
   })()`);
+  const knowledgeTagLibrary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const library = document.querySelector("[data-knowledge-tag-library]");
+    if (!library) return { ok: false, reason: "tag library missing" };
+    const chips = [...document.querySelectorAll("[data-knowledge-tag]")];
+    const work = chips.find((c) => c.getAttribute("data-knowledge-tag") === "#work");
+    const all = chips.find((c) => c.getAttribute("data-knowledge-tag") === "all");
+    if (!work || !all) {
+      return {
+        ok: false,
+        reason: "tag chips missing",
+        tags: chips.map((c) => c.getAttribute("data-knowledge-tag")),
+      };
+    }
+    const workCount = Number(work.getAttribute("data-knowledge-tag-count") || 0);
+    const allCount = Number(all.getAttribute("data-knowledge-tag-count") || 0);
+    work.click();
+    await sleep(300);
+    const workActive = work.getAttribute("data-knowledge-tag-active") === "true";
+    const sidebar = [...document.querySelectorAll("main button")]
+      .filter((b) => b.textContent.trim() === "#work")
+      .some((b) => b.className.includes("text-emerald-400"));
+    const notesText = document.querySelector("[data-knowledge-tag-notes]")?.textContent ?? "";
+    const filteredVisible =
+      document.querySelectorAll("[data-rag-result]").length === workCount && workCount >= 2;
+    all.click();
+    await sleep(300);
+    const allActive = all.getAttribute("data-knowledge-tag-active") === "true";
+    const restored = [...document.querySelectorAll("[data-rag-result]")].length >= 3;
+    return {
+      ok:
+        workCount >= 2 &&
+        allCount >= 3 &&
+        workActive &&
+        sidebar &&
+        notesText.length > 0 &&
+        filteredVisible &&
+        allActive &&
+        restored,
+      workCount,
+      allCount,
+      workActive,
+      sidebar,
+      filteredVisible,
+      allActive,
+      restored,
+      tags: chips.map((c) => c.getAttribute("data-knowledge-tag")),
+    };
+  })()`);
+  results.knowledgeTagLibrary = knowledgeTagLibrary;
   const ragSearch = await evaluate(`(async () => {
     const input = document.querySelector('input[placeholder="RAG search..."]');
     if (!input) return { ok: false, reason: "no rag input" };

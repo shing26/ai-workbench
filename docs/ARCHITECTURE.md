@@ -328,6 +328,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - 报告为纯前端计算，复用 `projects` 与 `gitActivity` 现有数据，无新增后端命令或持久化字段。
 - `verify:ui` / `verify:preview` 新增 `portfolioSummaryExport` lane：断言汇总数值、导出预览包含项目名与收益、复制成功状态。
 
+## Sprint 118：Knowledge 标签分类视图
+
+- Knowledge 新增 `data-knowledge-tag-library` Tag Library 卡片：标签 chips 按笔记数聚合 `#work` / `#life` / `#daily` / `#recap` 等标签，并展示 inbox / note / doc 类型分布与总标签数。
+- 点击标签 chip 后 `selectedTag` 与侧栏 `filter` 同步，`data-knowledge-tag-notes` 展示该标签下的最近笔记预览；点击 All 恢复全部。
+- Tag Library 为纯前端派生视图，复用 `thoughts.tags` 的逗号分隔标签，无新增后端命令或持久化字段。
+- `verify:ui` / `verify:preview` 新增 `knowledgeTagLibrary` lane：断言标签计数、选中联动、侧栏过滤行数、预览列表与 All 恢复。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
