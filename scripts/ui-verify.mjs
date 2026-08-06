@@ -9315,6 +9315,161 @@ try {
   results.sessionWorkspace = sessionWorkspace;
   laneLog('sessionWorkspace ok');
 
+  // Sprint 155: duplicate keeps message versions + aux, export embeds RAG / Inspector trace.
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = shape.sessions ?? [];
+    if (!shape.sessions.some((s) => s.id === "aux-session")) {
+      shape.sessions.push({
+        id: "aux-session",
+        projectId: null,
+        title: "Aux Session",
+        model: "openai",
+        pinned: false,
+        messageCount: 2,
+        createdAt: now - 5000,
+      });
+    }
+    shape.chatMessages = shape.chatMessages ?? [];
+    shape.chatMessages = shape.chatMessages.filter((m) => m.sessionId !== "aux-session");
+    shape.chatMessages.push(
+      {
+        id: "aux-user",
+        sessionId: "aux-session",
+        role: "user",
+        content: "aux question",
+        createdAt: now - 4000,
+      },
+      {
+        id: "aux-assistant",
+        sessionId: "aux-session",
+        role: "assistant",
+        content: "aux answer",
+        createdAt: now - 3000,
+      },
+    );
+    shape.messageVersions = shape.messageVersions ?? [];
+    shape.messageVersions = shape.messageVersions.filter((v) => v.messageId !== "aux-user");
+    shape.messageVersions.push(
+      {
+        id: "aux-ver-1",
+        messageId: "aux-user",
+        content: "aux original",
+        createdAt: now - 3500,
+        parentVersionId: null,
+      },
+      {
+        id: "aux-ver-2",
+        messageId: "aux-user",
+        content: "aux edited",
+        createdAt: now - 3400,
+        parentVersionId: "aux-ver-1",
+      },
+    );
+    shape.messageAux = shape.messageAux ?? [];
+    shape.messageAux = shape.messageAux.filter((a) => a.messageId !== "aux-user");
+    shape.messageAux.push({
+      messageId: "aux-user",
+      payload: JSON.stringify({
+        rag: [
+          {
+            id: "hit-1",
+            content: "local thought hit",
+            tags: "",
+            type: "note",
+            sourceKind: "file",
+            sourceFile: "C:/vault/Aux Note.md",
+            score: 1,
+          },
+        ],
+        trace: {
+          title: "Agent Trace + RAG",
+          sections: [
+            { label: "Agent", value: "UI Designer" },
+            { label: "RAG context", value: "1 local thought(s) injected" },
+          ],
+        },
+      }),
+      updatedAt: now,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionAuxContext = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .filter((el) => el?.textContent?.includes("Aux Session"));
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      row = rows().find((el) => !el?.textContent?.includes("(copy)")) ?? null;
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "aux session row missing", rendered: rows().length };
+    row.querySelector('button[aria-label="Duplicate session"]')?.click();
+    let copyStored = null;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      copyStored = shape.sessions.find((s) => s.title === "Aux Session (copy)") ?? null;
+      if (copyStored) break;
+      await sleep(100);
+    }
+    const shapeAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const copyMessages = shapeAfter.chatMessages.filter((m) => m.sessionId === copyStored?.id);
+    const copyVersions = (shapeAfter.messageVersions ?? []).filter((v) =>
+      copyMessages.some((m) => m.id === v.messageId),
+    );
+    const copyAux = (shapeAfter.messageAux ?? []).filter((a) =>
+      copyMessages.some((m) => m.id === a.messageId),
+    );
+    const versionsOk =
+      copyVersions.length === 2 &&
+      copyVersions.some((v) => v.content === "aux original") &&
+      copyVersions.some((v) => v.content === "aux edited") &&
+      copyVersions.some((v) => v.parentVersionId);
+    const auxOk =
+      copyAux.length === 1 &&
+      copyAux[0].payload.includes("local thought hit") &&
+      copyAux[0].payload.includes("UI Designer");
+    const originalRow = rows().find((el) => !el?.textContent?.includes("(copy)"));
+    originalRow?.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("Aux Session")) break;
+      await sleep(100);
+    }
+    const exportOk =
+      preview.includes("aux question") &&
+      preview.includes("### RAG context") &&
+      preview.includes("local thought hit") &&
+      preview.includes("### Inspector Trace") &&
+      preview.includes("UI Designer");
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    return {
+      ok: !!copyStored && versionsOk && auxOk && exportOk,
+      copyMessageCount: copyMessages.length,
+      copyVersionCount: copyVersions.length,
+      copyAuxCount: copyAux.length,
+      versionsOk,
+      auxOk,
+      exportOk,
+    };
+  })()`);
+  if (!sessionAuxContext.ok) {
+    throw new Error(
+      `AI Studio session aux context assertion failed: ${JSON.stringify(sessionAuxContext)}`,
+    );
+  }
+  results.sessionAuxContext = sessionAuxContext;
+  laneLog('sessionAuxContext ok');
+
   // Depends on sessionWorkspace leaving Workspace Beta + messages in localStorage.
   const sessionSaveKnowledge = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

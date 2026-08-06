@@ -927,6 +927,14 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - AI Studio 确认面板按来源文件分组勾选（`data-rag-source-option`），勾选 “Remember this source selection”（`data-rag-source-remember`）后写入偏好并显示 `data-rag-source-summary` 徽标；`data-rag-source-reset` 一键清除；New chat / 切换会话 / Cancel 清理临时来源状态。
 - `verify:ui` / `verify:preview` 新增 `ragSourceSelector` / `ragSourcePersisted` lane：种子两个 vault 文件、取消一个来源、记住选择、reload 后偏好仍生效且搜索只命中记住的文件、Reset 清除；Rust 单测覆盖 selected / all / 空路径语义，总数增至 189 条。
 
+## Sprint 155：会话复制携带版本历史，导出内嵌 RAG / Inspector Trace
+
+- SQLite 新增 `message_aux` 表：`message_id` 主键、`payload` JSON、`updated_at`；新增 Tauri 命令 `save_message_aux` / `list_message_aux`，浏览器 fallback 在 `ai-workbench:db:v1` 的 `messageAux` 数组同构读写。
+- `duplicate_session` 按消息 ID 复制全部内容：`chat_messages` 生成新 ID，`message_versions` 保留历史并重映射 `parent_version_id`，`message_aux` 的 RAG / Trace 上下文跟随复制；`delete_session` / `truncate_chat_messages` 同步清理 aux 与版本。
+- AI Studio 普通 / MOA / Team 发送完成后把 `{ rag, trace }` 写入用户消息 aux；`buildSessionMarkdown` 新增可选 `auxByMessageId`，导出 Markdown 在用户消息后内嵌 `### RAG context`（来源 + 摘要）与 `### Inspector Trace`（标题 + label/value 区块）。
+- 浏览器 `duplicateSession` 同构复制版本血缘与 aux；`deleteSession` / `truncateChatMessages` 按剩余消息 ID 过滤 aux。
+- `verify:ui` / `verify:preview` 新增 `sessionAuxContext` lane；Rust 单测覆盖 aux 生命周期、非法 payload、复制版本血缘与 aux，总数增至 201 条。
+
 ## Sprint 154：Webhook payload 高级模板与版本管理
 
 - Rust 新增 `webhook_template.rs`：`{{event}} / {{ts}} / {{context.*}} / {{this.*}}` 变量展开，`{{#if}} / {{#else}} / {{/if}}` 条件分支，`{{#each}} / {{/each}}` 循环与 `{{@index}} / {{@first}} / {{@last}}` 元数据；未知变量保留原文，`render_webhook_payload` 改由该模块渲染。

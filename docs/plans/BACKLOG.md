@@ -8,11 +8,11 @@
 
 ## 候选池（待开发）
 
-- [ ] AI Studio：复制会话携带消息版本历史；导出包含 RAG / Inspector Trace 辅助上下文。
 - [ ] Knowledge：向量分片 / 近似索引。
 
 ## 已完成（从候选池移除）
 
+- AI Studio：复制会话携带消息版本历史；导出包含 RAG / Inspector Trace 辅助上下文（Sprint 155）。
 - Webhook：payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理（Sprint 154）。
 - RAG：命中来源跨文件选择器与“记住选择”偏好（Sprint 153）。
 - Sync：口令强度提示与确认框、多设备口令交换、密钥轮换与 salt 入库（Sprint 152）。

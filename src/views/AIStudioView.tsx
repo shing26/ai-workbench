@@ -917,8 +917,10 @@ export default function AIStudioView() {
 
   const openSessionExport = async (session: db.Session) => {
     const messages = await db.listChatMessages(session.id);
+    const auxList = await db.listMessageAux(session.id);
+    const auxByMessageId = new Map(auxList.map((aux) => [aux.messageId, aux]));
     setExportSession(session);
-    setExportMarkdown(db.buildSessionMarkdown(session, messages));
+    setExportMarkdown(db.buildSessionMarkdown(session, messages, auxByMessageId));
     setExportSummary(db.buildSessionSummary(messages));
     setExportCopied(false);
     setExportKnowledgeBusy(false);
@@ -1048,7 +1050,12 @@ export default function AIStudioView() {
     return session;
   };
 
-  const runStream = async (history: Message[], runId: string, hits: db.RagSearchResult[]) => {
+  const runStream = async (
+    history: Message[],
+    runId: string,
+    hits: db.RagSearchResult[],
+    userMessageId?: string,
+  ) => {
     if (!moa && !runsRef.current.has(runId)) {
       runsRef.current.set(runId, { content: '', index: history.length });
     }
@@ -1256,24 +1263,29 @@ export default function AIStudioView() {
       });
     }
     if (sections.length > 0) {
-      openInspector(
-        selectedAgent
-          ? hits.length > 0
-            ? 'Agent Trace + RAG'
-            : 'Agent Trace'
-          : moa && hits.length > 0
-            ? chain
-              ? 'MOA Chain Trace + RAG'
-              : 'MOA Trace + RAG'
-            : hits.length > 0
-              ? 'RAG Context'
-              : fallbackChainRef.current.length > 0
-                ? 'Router Trace'
-                : chain
-                  ? 'MOA Chain Trace'
-                  : 'MOA Trace',
-        sections,
-      );
+      const traceTitle = selectedAgent
+        ? hits.length > 0
+          ? 'Agent Trace + RAG'
+          : 'Agent Trace'
+        : moa && hits.length > 0
+          ? chain
+            ? 'MOA Chain Trace + RAG'
+            : 'MOA Trace + RAG'
+          : hits.length > 0
+            ? 'RAG Context'
+            : fallbackChainRef.current.length > 0
+              ? 'Router Trace'
+              : chain
+                ? 'MOA Chain Trace'
+                : 'MOA Trace';
+      openInspector(traceTitle, sections);
+      if (userMessageId) {
+        const payload = JSON.stringify({
+          rag: hits,
+          trace: sections.length > 0 ? { title: traceTitle, sections } : null,
+        });
+        await db.saveMessageAux(userMessageId, payload).catch(() => {});
+      }
     }
   };
 
@@ -1372,6 +1384,10 @@ export default function AIStudioView() {
       .filter(Boolean)
       .join(' + ');
     openInspector(traceTitle, sections);
+    if (messageId) {
+      const payload = JSON.stringify({ rag: hits, trace: { title: traceTitle, sections } });
+      await db.saveMessageAux(messageId, payload).catch(() => {});
+    }
   };
 
   const dispatchSend = async (text: string, hits: db.RagSearchResult[]) => {
@@ -1396,7 +1412,7 @@ export default function AIStudioView() {
     const session = await ensureSession(text);
     await db.saveChatMessage(session.id, 'user', text, messageId);
     const history: Message[] = next.slice(0, next.length - placeholders.length);
-    await runStream(history, runId, hits);
+    await runStream(history, runId, hits, messageId);
   };
 
   const sendText = async (text: string) => {
