@@ -900,3 +900,12 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Rust `stream_ai_message` / `call_provider` 与浏览器 `streamProviderLive` / `streamProviderWithRetry` 同构实现超时与重试：超时后回显 `Request timeout: provider did not respond in time`；仅在未 emit 任何 delta 前按 `retry_count` 重试，间隔 `retry_delay_secs`，已开始输出则直接失败。
 - 浏览器 fallback 的 `exportProviders` / `importProviders` 同构：导入把 `apiKeyEncrypted` 强制为 false，配置字段按相同范围钳制后写回 `ai-workbench:db:v1`；不新增 localStorage key。
 - `verify:ui` / `verify:preview` 新增 `providerTimeout` / `providerRetry` / `providerConfigEdit` / `providerExport` / `providerImport` / `importedRetry` lanes；Sprint 149 lane seeding 显式补 `retryCount:0` 保持手动重试语义。
+
+## Sprint 151：模型能力元数据 / 收藏与最近使用 / `/models` 缓存自动刷新
+
+- SQLite 新增 `model_metadata` 模型目录表：`(provider_id, model_id)` 联合主键，字段含 `context_window / input_price_per_mtok / output_price_per_mtok / rate_tpm / rate_rpm / is_favorite / last_used_at / fetched_at / updated_at`；Rust 排序为 `is_favorite DESC, last_used_at DESC, model_id ASC`。
+- 新增 Tauri 命令：`list_cached_provider_models` / `refresh_provider_models` / `update_provider_model_meta`（`ModelMetaPatch` 结构体传参）/ `set_provider_model_favorite` / `touch_provider_model_usage`；`refresh_provider_models` 复用 `fetch_provider_models` 真实探测后 upsert，只覆盖 `owned_by / fetched_at`，保留用户元数据。
+- SystemView 在 Provider 列表变化时自动读取缓存，stale（>24h）时自动 `refreshProviderModels`；Detect 按钮也改为刷新链路，卡片显示 `N · fresh/stale` 缓存状态与 refresh 忙碌徽标。
+- 模型选项行展示 `ctx / $in/$out / TPM` 能力徽标、收藏星标与 5 字段元数据编辑器（contextWindow / inputPricePerMtok / outputPricePerMtok / rateTpm / rateRpm）；选择模型调用 `touchProviderModelUsage` 并即时重排，收藏点击后即时重排。
+- 浏览器 fallback 在 `ai-workbench:db:v1` 新增 `modelCache`（按 providerId 分组的 `ProviderModel[]`），`MODEL_CACHE_TTL_MS` 为 24h；`listCachedProviderModels` / `refreshProviderModels` / 元数据与收藏函数同构，不新增独立 localStorage key。
+- `verify:ui` / `verify:preview` 新增 `providerModelCatalog` lane：种子 stale 缓存触发自动刷新，断言初始排序、收藏重排、选择后最近使用排序、元数据持久化与 fresh 状态；Rust 单测 183 条。

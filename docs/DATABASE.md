@@ -1170,3 +1170,29 @@ ALTER TABLE providers ADD COLUMN retry_delay_secs INTEGER NOT NULL DEFAULT 1;
 - 32 字节 AES-256 密钥保存在 app data dir 的 `provider.key`（hex，不在 SQLite 内）；`api_key` 存 `enc:v1:<base64(nonce+ciphertext+tag)>`，`api_key_encrypted` 标记是否密文。`list_providers / get_provider / create_provider / import_providers` 均读写这些字段，读取链路在 Rust 侧统一解密。
 - `update_provider_stream_config(id, timeoutSecs, retryCount, retryDelaySecs)` 按 1~300 / 0~5 / 0~30 钳制后写库；导入导出走 `export_providers`（解密明文 JSON）与 `import_providers`（重新加密后 `replace_providers` 整体替换）。
 - 浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` 数组，Provider 对象新增可选 `apiKeyEncrypted / timeoutSecs / retryCount / retryDelaySecs`；`exportProviders` / `importProviders` 同构，不新增 localStorage key。
+
+## Sprint 151：模型能力元数据与 `/models` 缓存
+
+```sql
+CREATE TABLE IF NOT EXISTS model_metadata (
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    owned_by TEXT NOT NULL DEFAULT '',
+    context_window INTEGER NOT NULL DEFAULT 0,
+    input_price_per_mtok REAL NOT NULL DEFAULT 0,
+    output_price_per_mtok REAL NOT NULL DEFAULT 0,
+    rate_tpm INTEGER NOT NULL DEFAULT 0,
+    rate_rpm INTEGER NOT NULL DEFAULT 0,
+    is_favorite INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider_id, model_id)
+);
+CREATE INDEX IF NOT EXISTS idx_model_metadata_sort
+    ON model_metadata(provider_id, is_favorite DESC, last_used_at DESC);
+```
+
+- 新库 SCHEMA 直接建表；旧库由 `init_connection` 的 `CREATE TABLE IF NOT EXISTS` 自动补齐，无需额外迁移函数。
+- `refresh_provider_models` 把真实 `/models` / `/api/tags` 探测结果 upsert 进 `model_metadata`，仅更新 `owned_by / fetched_at / updated_at`；`update_model_meta` / `set_model_favorite` / `touch_model_usage` 对缺失行自动 INSERT，保留其余字段。
+- `list_cached_provider_models` 按 `is_favorite DESC, last_used_at DESC, model_id ASC` 返回完整模型目录；浏览器 fallback 使用 `ai-workbench:db:v1` 的 `modelCache`（按 providerId 分组）同构实现，TTL 24 小时，不新增独立 localStorage key。

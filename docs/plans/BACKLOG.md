@@ -8,7 +8,6 @@
 
 ## 候选池（待开发）
 
-- [ ] System：模型能力元数据（context window / 价格 / 速率）、模型收藏与最近使用排序、`/models` 缓存与自动刷新。
 - [ ] Sync：口令强度提示与确认框、多设备口令交换、密钥轮换与 salt 入库。
 - [ ] RAG：命中来源跨文件选择器与“记住选择”偏好。
 - [ ] Webhook：payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理。
@@ -17,6 +16,7 @@
 
 ## 已完成（从候选池移除）
 
+- System：模型能力元数据（context window / 价格 / 速率）、模型收藏与最近使用排序、`/models` 缓存与自动刷新（Sprint 151）。
 - System：Provider 批量导入导出与 API Key 加密落库；流式请求超时配置与自动重试（Sprint 150）。
 - AI Studio：每条流独立取消与单路重试（Sprint 149）。
 - Projects / Material：逐卡独立配色记忆（Sprint 148）。

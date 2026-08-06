@@ -10373,6 +10373,237 @@ try {
     if (modelsServer) modelsServer.close();
   }
 
+  let modelCatalogServer = null;
+  try {
+    let catalogHits = 0;
+    modelCatalogServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === '/v1/models') {
+        catalogHits += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            object: 'list',
+            data: [
+              { id: 'catalog-a', owned_by: 'mockai' },
+              { id: 'catalog-b', owned_by: 'mockai' },
+              { id: 'catalog-c', owned_by: 'mockai' },
+              { id: 'catalog-meta', owned_by: 'mockai' },
+            ],
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => modelCatalogServer.listen(0, '127.0.0.1', resolve));
+    const catalogPort = modelCatalogServer.address().port;
+    const staleAt = Date.now() - 25 * 60 * 60 * 1000;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "catalog-provider",
+        name: "Catalog Mock",
+        baseUrl: "http://127.0.0.1:${catalogPort}/v1",
+        apiKey: "test-key",
+        model: "",
+        isActive: true,
+      }];
+      shape.modelCache = {
+        "catalog-provider": [
+          {
+            id: "catalog-b",
+            ownedBy: "mockai",
+            contextWindow: 8000,
+            inputPricePerMtok: 2,
+            outputPricePerMtok: 6,
+            rateTpm: 200000,
+            rateRpm: 500,
+            isFavorite: false,
+            lastUsedAt: Date.now() - 10000,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+          {
+            id: "catalog-c",
+            ownedBy: "mockai",
+            isFavorite: true,
+            lastUsedAt: 1000,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+          {
+            id: "catalog-meta",
+            ownedBy: "mockai",
+            contextWindow: 128000,
+            inputPricePerMtok: 1,
+            outputPricePerMtok: 3,
+            rateTpm: 1000000,
+            rateRpm: 2000,
+            isFavorite: false,
+            lastUsedAt: 0,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+        ],
+      };
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerModelCatalog = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "dock missing for catalog" };
+      dock.click();
+      await sleep(400);
+      let detect = document.querySelector(
+        '[data-provider-id="catalog-provider"] [data-provider-models-detect]',
+      );
+      if (!detect) return { ok: false, reason: "no detect button for catalog" };
+      detect.click();
+      let options = [];
+      for (let i = 0; i < 40; i++) {
+        options = [
+          ...document.querySelectorAll(
+            '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+          ),
+        ]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (options.length >= 4) break;
+        await sleep(100);
+      }
+      if (options.length < 4) {
+        return { ok: false, reason: "catalog options not loaded", options };
+      }
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-model-favorite="catalog-b"]')
+        ?.click();
+      await sleep(300);
+      const orderAfterFavorite = [
+        ...document.querySelectorAll(
+          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+        ),
+      ]
+        .map((b) => b.getAttribute("data-provider-model-option"))
+        .filter(Boolean);
+      const selectTarget = [
+        ...document.querySelectorAll(
+          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+        ),
+      ].find((b) => b.getAttribute("data-provider-model-option") === "catalog-b");
+      selectTarget?.click();
+      await sleep(300);
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const storedProvider = stored.providers.find((p) => p.id === "catalog-provider");
+      const cachedB = stored.modelCache?.["catalog-provider"]?.find((m) => m.id === "catalog-b");
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-provider-models-detect]')
+        ?.click();
+      await sleep(300);
+      const orderAfterPick = [
+        ...document.querySelectorAll(
+          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+        ),
+      ]
+        .map((b) => b.getAttribute("data-provider-model-option"))
+        .filter(Boolean);
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]')
+        ?.click();
+      await sleep(200);
+      const metaValues = {
+        contextWindow: "256000",
+        inputPricePerMtok: "5",
+        outputPricePerMtok: "15",
+        rateTpm: "2000000",
+        rateRpm: "4000",
+      };
+      for (const [field, value] of Object.entries(metaValues)) {
+        const input = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-input="' + field + '"]',
+        );
+        if (!input) return { ok: false, reason: "meta input missing " + field };
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await sleep(120);
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-model-meta-save="catalog-meta"]')
+        ?.click();
+      await sleep(350);
+      const storedFinal = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const storedMeta = storedFinal.modelCache?.["catalog-provider"]?.find(
+        (m) => m.id === "catalog-meta",
+      );
+      const favStored = storedFinal.modelCache?.["catalog-provider"]?.find(
+        (m) => m.id === "catalog-b",
+      )?.isFavorite;
+      const cacheStatus =
+        document
+          .querySelector('[data-provider-id="catalog-provider"] [data-provider-model-cache-status]')
+          ?.textContent?.trim() ?? "";
+      return {
+        ok: true,
+        options,
+        orderAfterFavorite,
+        orderAfterPick,
+        storedModel: storedProvider?.model ?? "",
+        touched: (cachedB?.lastUsedAt ?? 0) > 0,
+        favStored,
+        metaStored: storedMeta
+          ? {
+              contextWindow: storedMeta.contextWindow,
+              inputPricePerMtok: storedMeta.inputPricePerMtok,
+              outputPricePerMtok: storedMeta.outputPricePerMtok,
+              rateTpm: storedMeta.rateTpm,
+              rateRpm: storedMeta.rateRpm,
+            }
+          : null,
+        cacheStatus,
+      };
+    })()`);
+    providerModelCatalog.catalogHits = catalogHits;
+    const initialOrder = providerModelCatalog.options.join(',');
+    const favoriteOrder = providerModelCatalog.orderAfterFavorite.join(',');
+    const pickOrder = providerModelCatalog.orderAfterPick.join(',');
+    if (
+      !providerModelCatalog.ok ||
+      initialOrder !== 'catalog-c,catalog-b,catalog-a,catalog-meta' ||
+      favoriteOrder !== 'catalog-b,catalog-c,catalog-a,catalog-meta' ||
+      pickOrder !== 'catalog-b,catalog-c,catalog-a,catalog-meta' ||
+      !providerModelCatalog.touched ||
+      providerModelCatalog.favStored !== true ||
+      providerModelCatalog.storedModel !== 'catalog-b' ||
+      providerModelCatalog.metaStored?.contextWindow !== 256000 ||
+      providerModelCatalog.metaStored?.inputPricePerMtok !== 5 ||
+      providerModelCatalog.metaStored?.outputPricePerMtok !== 15 ||
+      providerModelCatalog.metaStored?.rateTpm !== 2000000 ||
+      providerModelCatalog.metaStored?.rateRpm !== 4000 ||
+      !providerModelCatalog.cacheStatus.includes('fresh') ||
+      providerModelCatalog.catalogHits < 1
+    ) {
+      throw new Error(
+        `Provider model catalog assertion failed: ${JSON.stringify(providerModelCatalog)}`,
+      );
+    }
+    results.providerModelCatalog = providerModelCatalog;
+    laneLog('providerModelCatalog ok');
+  } finally {
+    if (modelCatalogServer) modelCatalogServer.close();
+  }
+
   await evaluate(`(() => {
     const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
     shape.providers = [
