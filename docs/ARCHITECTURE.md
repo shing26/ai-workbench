@@ -399,6 +399,13 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Thought Inbox 新增 `data-thought-inbox-input` / `data-thought-inbox-add`，RAG 结果行 `data-rag-result` 携带笔记 id，供双端验证定位。
 - `verify:ui` / `verify:preview` 新增 `thoughtTypeConvert` / `thoughtTypeConvertPersisted` / `thoughtTypeConvertRestored` / `thoughtDelete` / `thoughtDeleteCancel` / `thoughtDeletePersisted`；`cargo test --lib` 增至 134 条。
 
+## Sprint 128：AI Studio 会话分组
+
+- AI Studio 会话侧栏新增分组视图：按 pinned / today / yesterday / 7d / older 顺序分组，pinned 置顶，组内保持原排序；Active / Archived tab 均按同一规则渲染。
+- 分组头新增 `data-session-group-toggle` / `data-session-group-label` / `data-session-group-count` / `data-session-group-collapsed`，点击折叠/展开对应组并隐藏行。
+- 输入查询或 RAG 命中时自动隐藏分组头退化为平铺列表，清空查询后分组恢复；会话行渲染抽为 `renderSessionRow` 复用。
+- `verify:ui` / `verify:preview` 新增 `sessionGrouping` / `sessionGroupingToggle` / `sessionGroupingSearchFlat` 三条 lane。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。

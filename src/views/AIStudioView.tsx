@@ -204,6 +204,7 @@ export default function AIStudioView() {
   const [sessionRange, setSessionRange] = useState('all');
   const [sessionFullText, setSessionFullText] = useState(true);
   const [sessionArchiveTab, setSessionArchiveTab] = useState<'active' | 'archived'>('active');
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [sessionHits, setSessionHits] = useState<db.SessionSearchHit[] | null>(null);
   const [sessionSearchBusy, setSessionSearchBusy] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<SessionSearchHistoryEntry[]>(() =>
@@ -849,6 +850,37 @@ export default function AIStudioView() {
         .map((hit) => hit.session)
     : filteredSessions;
 
+  const sessionDayKey = (ts: number) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  const todayKey = sessionDayKey(Date.now());
+  const yesterdayKey = sessionDayKey(Date.now() - 86_400_000);
+  const sessionGroups =
+    !sessionQuery.trim() && !sessionHits
+      ? (() => {
+          const order = ['pinned', 'today', 'yesterday', '7d', 'older'];
+          const buckets = new Map<string, db.Session[]>();
+          for (const session of visibleSessions) {
+            const label = session.pinned
+              ? 'pinned'
+              : sessionDayKey(session.createdAt) === todayKey
+                ? 'today'
+                : sessionDayKey(session.createdAt) === yesterdayKey
+                  ? 'yesterday'
+                  : Date.now() - session.createdAt <= 7 * 86_400_000
+                    ? '7d'
+                    : 'older';
+            const bucket = buckets.get(label) ?? [];
+            bucket.push(session);
+            buckets.set(label, bucket);
+          }
+          return order
+            .map((label) => ({ label, sessions: buckets.get(label) ?? [] }))
+            .filter((group) => group.sessions.length > 0);
+        })()
+      : null;
+
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
       const existing = sessions.find((s) => s.id === sessionIdRef.current);
@@ -1366,6 +1398,170 @@ export default function AIStudioView() {
     }
   };
 
+  const renderSessionRow = (s: db.Session) =>
+    renamingId === s.id ? (
+      <div
+        key={s.id}
+        className="flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-1"
+      >
+        <input
+          value={renameDraft}
+          onChange={(e) => setRenameDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void submitRename(s.id);
+            if (e.key === 'Escape') {
+              setRenamingId(null);
+              setRenameDraft('');
+            }
+          }}
+          autoFocus
+          aria-label="Rename session input"
+          className="min-w-0 flex-1 bg-transparent px-1 text-[11px] text-slate-200 outline-none"
+        />
+        <button
+          type="button"
+          aria-label="Save session rename"
+          onClick={() => void submitRename(s.id)}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/20 text-emerald-400"
+        >
+          <Check size={11} />
+        </button>
+        <button
+          type="button"
+          aria-label="Cancel session rename"
+          onClick={() => {
+            setRenamingId(null);
+            setRenameDraft('');
+          }}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/5 text-slate-500"
+        >
+          <X size={11} />
+        </button>
+      </div>
+    ) : (
+      <div key={s.id} className="group relative rounded-lg">
+        <button
+          type="button"
+          aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+          data-session-pin={s.id}
+          data-session-pinned={s.pinned ? 'true' : 'false'}
+          onClick={() => void toggleSessionPin(s)}
+          className={`absolute left-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md transition-colors ${
+            s.pinned ? 'text-amber-300 hover:text-amber-200' : 'text-slate-600 hover:text-amber-300'
+          }`}
+        >
+          {s.pinned ? <Pin size={10} /> : <PinOff size={10} />}
+        </button>
+        <button
+          type="button"
+          aria-label="Open session"
+          onClick={() =>
+            void selectSession(
+              s.id,
+              isMessageHit(sessionHitBy.get(s.id))
+                ? (sessionHitBy.get(s.id)?.messageId ?? null)
+                : null,
+            )
+          }
+          data-session-message-id={
+            isMessageHit(sessionHitBy.get(s.id)) ? (sessionHitBy.get(s.id)?.messageId ?? '') : ''
+          }
+          data-session-archived={s.archived ? 'true' : 'false'}
+          className={`w-full rounded-lg border py-1.5 pl-7 pr-16 text-left ${
+            sessionId === s.id
+              ? 'border-emerald-500/30 bg-emerald-500/10'
+              : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
+          }`}
+          data-session-count={s.messageCount}
+        >
+          <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
+          {sessionHitBy.get(s.id) ? (
+            <span
+              data-session-snippet={s.id}
+              data-session-match-type={sessionHitBy.get(s.id)?.matchType ?? ''}
+              className="mt-0.5 block truncate text-[9px] text-cyan-300/80"
+            >
+              {sessionHitBy.get(s.id)?.snippet ?? ''}
+              {isMessageHit(sessionHitBy.get(s.id)) ? '  →' : ''}
+            </span>
+          ) : null}
+          <span
+            className={`${sessionHitBy.get(s.id) ? 'hidden' : ''} mt-0.5 block truncate text-[9px] text-slate-600`}
+          >
+            {s.model} · {s.messageCount} msg(s)
+          </span>
+        </button>
+        {confirmDeleteId === s.id ? (
+          <button
+            type="button"
+            aria-label="Confirm delete session"
+            onClick={() => void confirmDelete(s.id)}
+            className="absolute right-1.5 top-1/2 flex h-5 -translate-y-1/2 items-center gap-1 rounded-md bg-rose-500/25 px-1.5 text-[9px] text-rose-300"
+          >
+            <Trash2 size={10} /> Sure?
+          </button>
+        ) : (
+          <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex">
+            <button
+              type="button"
+              aria-label="Duplicate session"
+              data-session-duplicate={s.id}
+              onClick={() => void duplicateSessionRow(s)}
+              className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-blue-300"
+            >
+              <Copy size={10} />
+            </button>
+            <button
+              type="button"
+              aria-label="Export session"
+              data-session-export={s.id}
+              onClick={() => void openSessionExport(s)}
+              className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+            >
+              <Download size={10} />
+            </button>
+            <button
+              type="button"
+              aria-label="Rename session"
+              onClick={() => startRename(s)}
+              className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+            >
+              <Pencil size={10} />
+            </button>
+            {s.archived ? (
+              <button
+                type="button"
+                aria-label="Restore session"
+                data-session-restore={s.id}
+                onClick={() => void setSessionArchive(s, false)}
+                className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
+              >
+                <ArchiveRestore size={10} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label="Archive session"
+                data-session-archive={s.id}
+                onClick={() => void setSessionArchive(s, true)}
+                className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-cyan-300"
+              >
+                <Archive size={10} />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label="Delete session"
+              onClick={() => void confirmDelete(s.id)}
+              className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-rose-300"
+            >
+              <Trash2 size={10} />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+
   return (
     <div className="view-enter flex h-full flex-col gap-4 p-4">
       <div className="flex shrink-0 items-center justify-between gap-3">
@@ -1711,176 +1907,39 @@ export default function AIStudioView() {
             </div>
           ) : null}
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-            {visibleSessions.map((s) =>
-              renamingId === s.id ? (
-                <div
-                  key={s.id}
-                  className="flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-1"
-                >
-                  <input
-                    value={renameDraft}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void submitRename(s.id);
-                      if (e.key === 'Escape') {
-                        setRenamingId(null);
-                        setRenameDraft('');
-                      }
-                    }}
-                    autoFocus
-                    aria-label="Rename session input"
-                    className="min-w-0 flex-1 bg-transparent px-1 text-[11px] text-slate-200 outline-none"
-                  />
-                  <button
-                    type="button"
-                    aria-label="Save session rename"
-                    onClick={() => void submitRename(s.id)}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/20 text-emerald-400"
-                  >
-                    <Check size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Cancel session rename"
-                    onClick={() => {
-                      setRenamingId(null);
-                      setRenameDraft('');
-                    }}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/5 text-slate-500"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              ) : (
-                <div key={s.id} className="group relative rounded-lg">
-                  <button
-                    type="button"
-                    aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
-                    data-session-pin={s.id}
-                    data-session-pinned={s.pinned ? 'true' : 'false'}
-                    onClick={() => void toggleSessionPin(s)}
-                    className={`absolute left-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md transition-colors ${
-                      s.pinned
-                        ? 'text-amber-300 hover:text-amber-200'
-                        : 'text-slate-600 hover:text-amber-300'
-                    }`}
-                  >
-                    {s.pinned ? <Pin size={10} /> : <PinOff size={10} />}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Open session"
-                    onClick={() =>
-                      void selectSession(
-                        s.id,
-                        isMessageHit(sessionHitBy.get(s.id))
-                          ? (sessionHitBy.get(s.id)?.messageId ?? null)
-                          : null,
-                      )
-                    }
-                    data-session-message-id={
-                      isMessageHit(sessionHitBy.get(s.id))
-                        ? (sessionHitBy.get(s.id)?.messageId ?? '')
-                        : ''
-                    }
-                    data-session-archived={s.archived ? 'true' : 'false'}
-                    className={`w-full rounded-lg border py-1.5 pl-7 pr-16 text-left ${
-                      sessionId === s.id
-                        ? 'border-emerald-500/30 bg-emerald-500/10'
-                        : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
-                    }`}
-                    data-session-count={s.messageCount}
-                  >
-                    <span className="block truncate text-[11px] text-slate-300">{s.title}</span>
-                    {sessionHitBy.get(s.id) ? (
-                      <span
-                        data-session-snippet={s.id}
-                        data-session-match-type={sessionHitBy.get(s.id)?.matchType ?? ''}
-                        className="mt-0.5 block truncate text-[9px] text-cyan-300/80"
-                      >
-                        {sessionHitBy.get(s.id)?.snippet ?? ''}
-                        {isMessageHit(sessionHitBy.get(s.id)) ? '  →' : ''}
-                      </span>
-                    ) : null}
-                    <span
-                      className={`${
-                        sessionHitBy.get(s.id) ? 'hidden' : ''
-                      } mt-0.5 block truncate text-[9px] text-slate-600`}
-                    >
-                      {s.model} · {s.messageCount} msg(s)
-                    </span>
-                  </button>
-                  {confirmDeleteId === s.id ? (
-                    <button
-                      type="button"
-                      aria-label="Confirm delete session"
-                      onClick={() => void confirmDelete(s.id)}
-                      className="absolute right-1.5 top-1/2 flex h-5 -translate-y-1/2 items-center gap-1 rounded-md bg-rose-500/25 px-1.5 text-[9px] text-rose-300"
-                    >
-                      <Trash2 size={10} /> Sure?
-                    </button>
-                  ) : (
-                    <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex">
+            {sessionGroups
+              ? sessionGroups.map((group) => {
+                  const collapsed = !!collapsedGroups[group.label];
+                  return (
+                    <div key={group.label} data-session-group={group.label} className="space-y-1">
                       <button
                         type="button"
-                        aria-label="Duplicate session"
-                        data-session-duplicate={s.id}
-                        onClick={() => void duplicateSessionRow(s)}
-                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-blue-300"
+                        data-session-group-toggle={group.label}
+                        data-session-group-label={group.label}
+                        data-session-group-count={group.sessions.length}
+                        data-session-group-collapsed={collapsed ? 'true' : 'false'}
+                        onClick={() =>
+                          setCollapsedGroups((prev) => ({
+                            ...prev,
+                            [group.label]: !prev[group.label],
+                          }))
+                        }
+                        className="flex h-6 w-full items-center justify-between rounded-md px-1.5 text-[9px] uppercase tracking-wide text-slate-500 hover:text-slate-300"
                       >
-                        <Copy size={10} />
+                        <span>{group.label}</span>
+                        <span className="flex items-center gap-1 font-mono text-[8px] text-slate-600">
+                          {group.sessions.length}
+                          <ChevronDown
+                            size={9}
+                            className={`transition-transform ${collapsed ? '-rotate-90' : ''}`}
+                          />
+                        </span>
                       </button>
-                      <button
-                        type="button"
-                        aria-label="Export session"
-                        data-session-export={s.id}
-                        onClick={() => void openSessionExport(s)}
-                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
-                      >
-                        <Download size={10} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Rename session"
-                        onClick={() => startRename(s)}
-                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
-                      >
-                        <Pencil size={10} />
-                      </button>
-                      {s.archived ? (
-                        <button
-                          type="button"
-                          aria-label="Restore session"
-                          data-session-restore={s.id}
-                          onClick={() => void setSessionArchive(s, false)}
-                          className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-emerald-300"
-                        >
-                          <ArchiveRestore size={10} />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          aria-label="Archive session"
-                          data-session-archive={s.id}
-                          onClick={() => void setSessionArchive(s, true)}
-                          className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-cyan-300"
-                        >
-                          <Archive size={10} />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        aria-label="Delete session"
-                        onClick={() => void confirmDelete(s.id)}
-                        className="flex h-5 w-5 items-center justify-center rounded-md bg-white/5 text-slate-400 hover:text-rose-300"
-                      >
-                        <Trash2 size={10} />
-                      </button>
+                      {!collapsed && group.sessions.map((s) => renderSessionRow(s))}
                     </div>
-                  )}
-                </div>
-              ),
-            )}
+                  );
+                })
+              : visibleSessions.map((s) => renderSessionRow(s))}
             {visibleSessions.length === 0 && (
               <div className="py-6 text-center text-[10px] text-slate-600">
                 {sessionQuery.trim()
