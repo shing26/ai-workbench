@@ -2210,9 +2210,10 @@ fn search_thoughts(
     state: State<'_, db::Db>,
     query: String,
     limit: i64,
+    source_filter: Option<db::RagSourceFilter>,
 ) -> Result<Vec<db::RagSearchResult>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::search_thoughts(&conn, &query, limit).map_err(|e| e.to_string())
+    db::search_thoughts(&conn, &query, limit, source_filter.as_ref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -7816,7 +7817,7 @@ mod tests {
         assert_eq!(result.ignored, 0);
         let status = db::knowledge_index_status(&conn).unwrap();
         assert_eq!(status.files, 2);
-        let results = db::search_thoughts(&conn, "obsidian vault", 5).unwrap();
+        let results = db::search_thoughts(&conn, "obsidian vault", 5, None).unwrap();
         assert!(results.iter().any(|r| r.content.contains("Obsidian")));
         assert!(results.iter().any(|r| r.kind == "doc"));
         drop(conn);
@@ -7842,7 +7843,7 @@ mod tests {
         assert_eq!(result.ignored, 2);
         let status = db::knowledge_index_status(&conn).unwrap();
         assert_eq!(status.files, 2);
-        let search = db::search_thoughts(&conn, "keep deep", 5).unwrap();
+        let search = db::search_thoughts(&conn, "keep deep", 5, None).unwrap();
         assert!(search.iter().any(|r| r.content.contains("Keep")));
         assert!(search.iter().any(|r| r.content.contains("Deep")));
         assert!(!search.iter().any(|r| r.content.contains("skip")));
@@ -8270,9 +8271,9 @@ mod tests {
         );
         let status = db::knowledge_index_status(&conn).unwrap();
         assert_eq!(status.files, 2);
-        let ignored_search = db::search_thoughts(&conn, "ignored", 5).unwrap();
+        let ignored_search = db::search_thoughts(&conn, "ignored", 5, None).unwrap();
         assert!(!ignored_search.iter().any(|r| r.content.contains("ignored")));
-        let indexed_search = db::search_thoughts(&conn, "indexed", 5).unwrap();
+        let indexed_search = db::search_thoughts(&conn, "indexed", 5, None).unwrap();
         assert!(indexed_search.iter().any(|r| r.content.contains("indexed")));
         drop(conn);
         std::fs::remove_dir_all(&temp).unwrap();

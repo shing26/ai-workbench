@@ -1235,3 +1235,9 @@ CREATE TABLE IF NOT EXISTS sync_paired_devices (
 - `sync_paired_devices` 保存已校验的多设备配对：device id、远端指纹、配对码、版本与配对时间；重复配对按 device id upsert。
 - 新增 DB 函数：`get_sync_credential` / `register_sync_key_version` / `confirm_sync_credential` / `list_sync_key_versions` / `upsert_sync_paired_device` / `list_sync_paired_devices` / `remove_sync_paired_device` / `get_sync_key_status` / `assess_passphrase_strength`；`confirm_sync_credential` 只校验当前版本指纹并置 `confirmed=1`，不创建新密钥版本。
 - 浏览器 fallback 使用 `ai-workbench:sync-keys:v1` 保存 `{ credential, versions, pairedDevices }`，与 Tauri 链路同构；Web Crypto 使用相同 PBKDF2 100k 次 / SHA-256 / AES-GCM 语义。
+
+## Sprint 153：RAG 来源过滤与“记住选择”偏好
+
+- 无表结构变更。`search_thoughts` 的 `knowledge_files` 查询改为同时读取 `id / path / content / tags / embedding / shard_id / embedding_model / vault_path`：`id` 继续作为结果主键，`path` 作为 `source_file` 返回，`vault_path` 随结果返回，供前端跨文件来源选择与过滤。
+- 新增 `RagSourceFilter { enabled, mode, file_paths }`：`mode = all` 或 `selected` 且 `file_paths` 为空时不过滤；`mode = selected` 时文件命中仅保留 `path` 在列表中的记录，thoughts 不受影响。
+- 偏好持久化不写入 SQLite，保存在前端 `ai-workbench:rag-source-preference:v1`（`{ enabled, mode, filePaths }`），浏览器 fallback 与 Tauri UI 共用同一偏好协议。

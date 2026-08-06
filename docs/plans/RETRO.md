@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 153
+
+### What went well?
+
+- `RagSearchResult` 补齐 `sourceKind / sourceFile / vaultPath`，Rust 侧文件命中的 `source_file` 改为返回 `knowledge_files.path`（此前误用 UUID id），与浏览器 fallback 的来源语义终于一致；`RagSourceFilter` 支持 `all / selected`，selected 但路径为空时不过滤，双端语义统一。
+- AI Studio 确认面板按来源文件分组勾选，勾选 “Remember this source selection” 后写入 `ai-workbench:rag-source-preference:v1`；reload 后摘要徽标、过滤搜索与 Reset 全部生效，New chat / 切会话 / Cancel 会清理临时状态。
+- `verify:ui` / `verify:preview` 新增 `ragSourceSelector` / `ragSourcePersisted` lane：种子两个 vault 文件、取消一个来源、记住选择、reload 后只命中记住的文件、Reset 清除；Rust 单测新增 selected / all / 空路径语义，总数增至 189。
+
+### What went wrong?
+
+- 首版 `ragSourceSelector` lane 用确认面板容器查找 Send 按钮，但来源面板与 Send 按钮是兄弟节点，导致 Send 从未被点击；改为全局 `document.querySelector("[data-rag-confirm-send]")` 后通过。
+- 持久化 lane 一开始在 reload 后、尚未产生 RAG 命中时就断言摘要徽标，而徽标只在 `ragHits.length > 0` 时渲染；改为发送确认后再断言摘要。
+- Rust 测试首版断言 `all` 命中两个文件失败，原因是 `source_file` 拿到的是 UUID 而非路径；定位后改查 `path` 列并保留 `id` 作为结果主键。
+
+### Action Items
+
+- 下一个 Sprint 候选：Webhook payload 高级模板（条件分支 / 循环）、schema 校验与自动补全、模板版本管理。
+- 保留 `ragSourceSelector` / `ragSourcePersisted` lane，修改 RAG 来源过滤或偏好持久化时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 152
 
 ### What went well?

@@ -725,10 +725,19 @@ export type RagSearchResult = {
   content: string;
   tags: string;
   type: ThoughtType;
+  sourceKind?: 'thought' | 'file';
+  sourceFile?: string;
+  vaultPath?: string;
   score: number;
   vectorScore?: number;
   shardId?: string;
   embeddingModel?: string;
+};
+
+export type RagSourcePreference = {
+  enabled: boolean;
+  mode: 'all' | 'selected';
+  filePaths: string[];
 };
 
 export type RagIndexStatus = {
@@ -940,6 +949,34 @@ const LS_KEY = 'ai-workbench:db:v1';
 const VAULT_LS_KEY = 'ai-workbench:vault:v1';
 const VAULT_WATCH_LS_KEY = 'ai-workbench:vault-watch:v1';
 const VAULT_WATCH_TARGETS_LS_KEY = 'ai-workbench:vault-watch-targets:v1';
+const RAG_SOURCE_PREF_LS_KEY = 'ai-workbench:rag-source-preference:v1';
+
+export function getRagSourcePreference(): RagSourcePreference {
+  try {
+    const raw = localStorage.getItem(RAG_SOURCE_PREF_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<RagSourcePreference>;
+      return {
+        enabled: parsed.enabled ?? false,
+        mode: parsed.mode === 'selected' ? 'selected' : 'all',
+        filePaths: parsed.filePaths ?? [],
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return { enabled: false, mode: 'all', filePaths: [] };
+}
+
+export function setRagSourcePreference(pref: RagSourcePreference): RagSourcePreference {
+  const next: RagSourcePreference = {
+    enabled: !!pref.enabled,
+    mode: pref.mode === 'selected' ? 'selected' : 'all',
+    filePaths: [...new Set(pref.filePaths.filter((p) => p.trim()))],
+  };
+  localStorage.setItem(RAG_SOURCE_PREF_LS_KEY, JSON.stringify(next));
+  return next;
+}
 const VAULT_WATCH_EVENTS_LS_KEY = 'ai-workbench:vault-watch-events:v1';
 const DOC_HEALTH_AUTO_LS_KEY = 'ai-workbench:doc-health-auto:v1';
 const DOC_HEALTH_HISTORY_LS_KEY = 'ai-workbench:doc-health-history:v1';
@@ -4735,6 +4772,7 @@ type VaultFileRecord = {
   title: string;
   tags: string;
   content: string;
+  vaultPath?: string;
   indexedAt?: number;
   exists?: boolean;
   stale?: boolean;
@@ -6065,8 +6103,18 @@ export async function listenVaultWatchUpdated(
   return () => {};
 }
 
-export async function searchThoughts(query: string, limit = 5): Promise<RagSearchResult[]> {
-  if (isTauri()) return invoke<RagSearchResult[]>('search_thoughts', { query, limit });
+export async function searchThoughts(
+  query: string,
+  limit = 5,
+  sourcePref?: RagSourcePreference,
+): Promise<RagSearchResult[]> {
+  if (isTauri()) {
+    return invoke<RagSearchResult[]>('search_thoughts', {
+      query,
+      limit,
+      sourceFilter: sourcePref ?? null,
+    });
+  }
   const shape = readLocal();
   const tokens = tokenizeSearch(query);
   if (tokens.length === 0) return [];
@@ -6075,22 +6123,38 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
     content: string;
     tags: string;
     type: ThoughtType;
+    sourceKind: 'thought' | 'file';
+    sourceFile?: string;
+    vaultPath?: string;
     embedding?: string;
     shardId?: string;
     embeddingModel?: string;
   };
   const docs: SearchDoc[] = [
-    ...shape.thoughts.map((t) => ({ id: t.id, content: t.content, tags: t.tags, type: t.type })),
+    ...shape.thoughts.map((t) => ({
+      id: t.id,
+      content: t.content,
+      tags: t.tags,
+      type: t.type,
+      sourceKind: 'thought' as const,
+    })),
     ...readVaultFiles().map((f) => ({
       id: f.path,
       content: f.content,
       tags: f.tags,
       type: 'doc' as ThoughtType,
+      sourceKind: 'file' as const,
+      sourceFile: f.path,
+      vaultPath: f.vaultPath,
       embedding: f.embedding,
       shardId: f.shardId,
       embeddingModel: f.embeddingModel,
     })),
   ];
+  const activePref =
+    sourcePref?.enabled && sourcePref.mode === 'selected' && sourcePref.filePaths.length > 0
+      ? sourcePref
+      : null;
   const docCount = docs.length;
   const avgDocLength =
     docs.reduce((sum, doc) => sum + tokenizeSearch(doc.content).length, 0) / Math.max(1, docCount);
@@ -6108,6 +6172,12 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
     queryEmbedding = embedText(query);
   }
   const scored = docs
+    .filter(
+      (doc) =>
+        !activePref ||
+        doc.sourceKind !== 'file' ||
+        activePref.filePaths.includes(doc.sourceFile ?? ''),
+    )
     .map((t) => {
       const hay = tokenizeSearch(t.content);
       const docVector = t.embedding
@@ -6129,6 +6199,9 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
         content: t.content,
         tags: t.tags,
         type: t.type,
+        sourceKind: t.sourceKind,
+        sourceFile: t.sourceFile,
+        vaultPath: t.vaultPath,
         score,
         vectorScore,
         shardId: t.shardId ?? '0',

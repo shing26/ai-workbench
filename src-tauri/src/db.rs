@@ -939,10 +939,27 @@ pub struct RagSearchResult {
     pub tags: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(rename = "sourceKind")]
+    pub source_kind: String,
+    #[serde(rename = "sourceFile")]
+    pub source_file: String,
+    #[serde(rename = "vaultPath")]
+    pub vault_path: String,
     pub score: f64,
     pub vector_score: f64,
     pub shard_id: String,
     pub embedding_model: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagSourceFilter {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub file_paths: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -7560,7 +7577,12 @@ pub fn cleanup_knowledge_files(
     })
 }
 
-pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<RagSearchResult>> {
+pub fn search_thoughts(
+    conn: &Connection,
+    query: &str,
+    limit: i64,
+    source_filter: Option<&RagSourceFilter>,
+) -> Result<Vec<RagSearchResult>> {
     let query_tokens = tokenize(query);
     if query_tokens.is_empty() {
         return Ok(Vec::new());
@@ -7572,6 +7594,9 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
         content: String,
         tags: String,
         kind: String,
+        source_kind: String,
+        source_file: String,
+        vault_path: String,
         tokens: Vec<String>,
         embedding: Vec<f64>,
         shard_id: String,
@@ -7596,6 +7621,9 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
                 content,
                 tags,
                 kind,
+                source_kind: "thought".to_string(),
+                source_file: String::new(),
+                vault_path: String::new(),
                 tokens,
                 embedding,
                 shard_id: "0".to_string(),
@@ -7604,7 +7632,8 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
         })
         .collect();
     let mut file_stmt = conn.prepare(
-        "SELECT id, content, tags, embedding, shard_id, embedding_model FROM knowledge_files",
+        "SELECT id, path, content, tags, embedding, shard_id, embedding_model, vault_path
+         FROM knowledge_files",
     )?;
     let file_rows = file_stmt.query_map([], |row| {
         Ok((
@@ -7614,10 +7643,12 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
         ))
     })?;
     for file in file_rows.flatten() {
-        let (id, content, tags, embedding_raw, shard_id, embedding_model) = file;
+        let (id, path, content, tags, embedding_raw, shard_id, embedding_model, vault_path) = file;
         let tokens = tokenize(&content);
         let embedding = if embedding_raw.is_empty() {
             embed_text(&content)
@@ -7625,10 +7656,13 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
             serde_json::from_str(&embedding_raw).unwrap_or_else(|_| embed_text(&content))
         };
         docs.push(SearchDoc {
-            id,
+            id: id.clone(),
             content,
             tags,
             kind: "doc".to_string(),
+            source_kind: "file".to_string(),
+            source_file: path,
+            vault_path: vault_path.unwrap_or_default(),
             tokens,
             embedding,
             shard_id,
@@ -7643,6 +7677,21 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
 
     let mut scored: Vec<(f64, RagSearchResult)> = Vec::new();
     for doc in &docs {
+        if let Some(filter) = source_filter {
+            if filter.enabled && doc.source_kind == "file" {
+                let keep = if filter.mode == "all" || filter.file_paths.is_empty() {
+                    true
+                } else {
+                    filter
+                        .file_paths
+                        .iter()
+                        .any(|path| path == &doc.source_file)
+                };
+                if !keep {
+                    continue;
+                }
+            }
+        }
         let doc_freq: f64 = docs
             .iter()
             .filter(|d| d.tokens.iter().any(|t| query_tokens.contains(t)))
@@ -7666,6 +7715,9 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
                 content: doc.content.clone(),
                 tags: doc.tags.clone(),
                 kind: doc.kind.clone(),
+                source_kind: doc.source_kind.clone(),
+                source_file: doc.source_file.clone(),
+                vault_path: doc.vault_path.clone(),
                 score,
                 vector_score,
                 shard_id: doc.shard_id.clone(),
@@ -10741,7 +10793,7 @@ mod tests {
         .unwrap();
         create_thought(&conn, "Dinner recipe for tomato pasta", "#life", "note").unwrap();
 
-        let results = search_thoughts(&conn, "sqlite migration", 5).unwrap();
+        let results = search_thoughts(&conn, "sqlite migration", 5, None).unwrap();
         assert!(!results.is_empty());
         assert!(results[0].content.contains("SQLite"));
         assert!(results[0].score > 0.0);
@@ -10940,7 +10992,7 @@ mod tests {
             )
             .unwrap();
         assert!(!embedding.is_empty());
-        let results = search_thoughts(&conn, "local vector search", 5).unwrap();
+        let results = search_thoughts(&conn, "local vector search", 5, None).unwrap();
         assert!(!results.is_empty());
         assert!(results[0].vector_score > 0.0);
         let status = rag_index_status(&conn).unwrap();
@@ -11343,10 +11395,72 @@ mod tests {
             "C:/vault",
         )
         .unwrap();
-        let results = search_thoughts(&conn, "local vector search", 5).unwrap();
+        let results = search_thoughts(&conn, "local vector search", 5, None).unwrap();
         let doc = results.iter().find(|result| result.kind == "doc").unwrap();
         assert!(!doc.shard_id.is_empty());
         assert_eq!(doc.embedding_model, "local");
+    }
+
+    #[test]
+    fn search_thoughts_filters_by_remembered_sources() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/alpha.md",
+            "Alpha",
+            "#work",
+            "Alpha sprint plan with local RAG vector search",
+            "C:/vault",
+        )
+        .unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/beta.md",
+            "Beta",
+            "#work",
+            "Beta release notes with local RAG vector search",
+            "C:/vault",
+        )
+        .unwrap();
+
+        let all = search_thoughts(&conn, "local RAG vector search", 5, None).unwrap();
+        assert!(all.iter().any(|r| r.source_file == "C:/vault/alpha.md"));
+        assert!(all.iter().any(|r| r.source_file == "C:/vault/beta.md"));
+
+        let filter = RagSourceFilter {
+            enabled: true,
+            mode: "selected".to_string(),
+            file_paths: vec!["C:/vault/alpha.md".to_string()],
+        };
+        let filtered = search_thoughts(&conn, "local RAG vector search", 5, Some(&filter)).unwrap();
+        assert!(filtered
+            .iter()
+            .all(|r| r.source_file == "C:/vault/alpha.md"));
+        assert!(!filtered.iter().any(|r| r.source_file == "C:/vault/beta.md"));
+
+        let all_mode = RagSourceFilter {
+            enabled: true,
+            mode: "all".to_string(),
+            file_paths: Vec::new(),
+        };
+        let unrestricted =
+            search_thoughts(&conn, "local RAG vector search", 5, Some(&all_mode)).unwrap();
+        assert!(unrestricted.len() >= 2);
+
+        let empty_selected = RagSourceFilter {
+            enabled: true,
+            mode: "selected".to_string(),
+            file_paths: Vec::new(),
+        };
+        let no_restriction =
+            search_thoughts(&conn, "local RAG vector search", 5, Some(&empty_selected)).unwrap();
+        assert!(no_restriction
+            .iter()
+            .any(|r| r.source_file == "C:/vault/alpha.md"));
+        assert!(no_restriction
+            .iter()
+            .any(|r| r.source_file == "C:/vault/beta.md"));
     }
 
     #[test]

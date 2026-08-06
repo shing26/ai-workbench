@@ -208,6 +208,11 @@ export default function AIStudioView() {
   const [useRag, setUseRag] = useState(true);
   const [ragHits, setRagHits] = useState<db.RagSearchResult[]>([]);
   const [ragConfirmMode, setRagConfirmMode] = useState(false);
+  const [ragSourcePref, setRagSourcePref] = useState<db.RagSourcePreference>(() =>
+    db.getRagSourcePreference(),
+  );
+  const [pendingSourceFilter, setPendingSourceFilter] = useState<Set<string> | null>(null);
+  const [rememberRagSources, setRememberRagSources] = useState(false);
   const [pendingSend, setPendingSend] = useState<{
     text: string;
     hits: db.RagSearchResult[];
@@ -742,6 +747,8 @@ export default function AIStudioView() {
     setRagHits([]);
     setPendingSend(null);
     setPendingSelected(null);
+    setPendingSourceFilter(null);
+    setRememberRagSources(false);
     setRecapReady(false);
     setRecapSaveResult(null);
   };
@@ -794,6 +801,8 @@ export default function AIStudioView() {
     setRagHits([]);
     setPendingSend(null);
     setPendingSelected(null);
+    setPendingSourceFilter(null);
+    setRememberRagSources(false);
     if (focusMessageId) focusMessage(focusMessageId);
   };
 
@@ -1397,7 +1406,7 @@ export default function AIStudioView() {
     let hits: db.RagSearchResult[] = [];
     if (useRag) {
       try {
-        hits = await db.searchThoughts(text, 5);
+        hits = await db.searchThoughts(text, 5, ragSourcePref.enabled ? ragSourcePref : undefined);
       } catch {
         hits = [];
       }
@@ -1406,6 +1415,10 @@ export default function AIStudioView() {
     if (useRag && ragConfirmMode && hits.length > 0) {
       setPendingSend({ text, hits });
       setPendingSelected(new Set(hits.map((hit) => hit.id)));
+      setPendingSourceFilter(
+        new Set(hits.map((hit) => hit.sourceFile).filter((path): path is string => !!path)),
+      );
+      setRememberRagSources(false);
       return;
     }
     await dispatchSend(text, hits);
@@ -1423,9 +1436,29 @@ export default function AIStudioView() {
   const confirmRagSend = async () => {
     if (!pendingSend || !pendingSelected) return;
     const { text, hits } = pendingSend;
-    const selected = hits.filter((hit) => pendingSelected.has(hit.id));
+    let selected = hits.filter((hit) => pendingSelected.has(hit.id));
+    if (pendingSourceFilter) {
+      selected = selected.filter(
+        (hit) =>
+          !hit.sourceFile || hit.sourceKind !== 'file' || pendingSourceFilter.has(hit.sourceFile),
+      );
+    }
+    if (rememberRagSources) {
+      const filePaths = hits
+        .map((hit) => hit.sourceFile)
+        .filter((path): path is string => !!path)
+        .filter((path) => pendingSourceFilter?.has(path) ?? true);
+      const pref = db.setRagSourcePreference({
+        enabled: filePaths.length > 0,
+        mode: filePaths.length > 0 ? 'selected' : 'all',
+        filePaths,
+      });
+      setRagSourcePref(pref);
+    }
     setPendingSend(null);
     setPendingSelected(null);
+    setPendingSourceFilter(null);
+    setRememberRagSources(false);
     setRagHits(selected);
     await dispatchSend(text, selected);
   };
@@ -1433,7 +1466,23 @@ export default function AIStudioView() {
   const cancelRagSend = () => {
     setPendingSend(null);
     setPendingSelected(null);
+    setPendingSourceFilter(null);
+    setRememberRagSources(false);
     setRagHits([]);
+  };
+
+  const resetRagSourcePref = () => {
+    const pref = db.setRagSourcePreference({ enabled: false, mode: 'all', filePaths: [] });
+    setRagSourcePref(pref);
+  };
+
+  const togglePendingSource = (path: string) => {
+    setPendingSourceFilter((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   };
 
   const send = async () => {
@@ -2598,6 +2647,26 @@ export default function AIStudioView() {
               <span className="rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-300">
                 RAG +{ragHits.length}
               </span>
+              {ragSourcePref.enabled && (
+                <span
+                  data-rag-source-summary
+                  className="rounded-md border border-violet-500/20 bg-violet-500/10 px-1.5 py-0.5 text-violet-300"
+                >
+                  {ragSourcePref.mode === 'selected'
+                    ? `${ragSourcePref.filePaths.length} source(s) remembered`
+                    : 'all sources'}
+                </span>
+              )}
+              {ragSourcePref.enabled && (
+                <button
+                  type="button"
+                  data-rag-source-reset
+                  onClick={resetRagSourcePref}
+                  className="rounded-md bg-white/[0.05] px-1.5 py-0.5 text-slate-500 hover:text-slate-300"
+                >
+                  Reset
+                </button>
+              )}
               {ragHits.slice(0, 3).map((hit) => (
                 <span
                   key={hit.id}
@@ -2619,6 +2688,40 @@ export default function AIStudioView() {
                   {pendingSelectedCount}/{pendingSend.hits.length} selected
                 </span>
               </div>
+              {pendingSourceFilter && (
+                <div
+                  data-rag-source-panel
+                  className="mb-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1.5"
+                >
+                  <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                    {Array.from(pendingSourceFilter).map((path) => (
+                      <label
+                        key={path}
+                        className="flex cursor-pointer items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400"
+                      >
+                        <input
+                          type="checkbox"
+                          data-rag-source-option={path}
+                          checked={pendingSourceFilter.has(path)}
+                          onChange={() => togglePendingSource(path)}
+                          className="h-2.5 w-2.5 accent-violet-400"
+                        />
+                        <span className="max-w-[180px] truncate">{path.split(/[\\/]/).pop()}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-[9px] text-slate-500">
+                    <input
+                      type="checkbox"
+                      data-rag-source-remember
+                      checked={rememberRagSources}
+                      onChange={(e) => setRememberRagSources(e.target.checked)}
+                      className="h-2.5 w-2.5 accent-emerald-400"
+                    />
+                    Remember this source selection for next RAG search
+                  </label>
+                </div>
+              )}
               <div className="space-y-1">
                 {pendingSend.hits.map((hit) => (
                   <label

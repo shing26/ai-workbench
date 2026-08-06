@@ -918,3 +918,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 新增同构 API 与 `ai-workbench:sync-keys:v1` localStorage key；`deriveBrowserSyncKey` 改为可导出密钥，使浏览器与 Rust 都能计算同一密钥指纹。
 - System Sync card 新增强度条、确认按钮与确认门（未确认时 export / import / push / pull / auto sync 被拦截）、配对码复制 / 粘贴校验、已配对设备列表、Rotate 轮换与版本历史徽标；锚点 `data-sync-strength` / `data-sync-confirm` / `data-sync-pairing-code` / `data-sync-pair-verify` / `data-sync-rotate` / `data-sync-key-status` / `data-sync-key-versions`。
 - `verify:ui` / `verify:preview` 新增 `syncPassphraseSecurity` lane（强度、确认、配对码、轮换、重复确认不轮换），`syncE2e` lane 适配确认门后双端全绿；Rust 单测增至 188 条。
+
+## Sprint 153：RAG 命中来源跨文件选择器与“记住选择”偏好
+
+- `RagSearchResult` 新增 `source_kind / source_file / vault_path`（serde camelCase）；Rust 侧文件命中 `source_file` 返回 `knowledge_files.path` 而非 UUID id，`vault_path` 随行返回，与浏览器 fallback 的来源语义一致。
+- `search_thoughts` 新增 `source_filter: Option<RagSourceFilter>`：`enabled + selected` 时仅返回 `file_paths` 命中的文件；`all` 或 `selected` 但路径为空时不过滤；thought 命中不受过滤影响。
+- 浏览器 `db.ts` 新增 `RagSourcePreference` 与 `ai-workbench:rag-source-preference:v1`；`get/setRagSourcePreference`、`searchThoughts(query, limit, sourcePref?)` 同构实现来源过滤。
+- AI Studio 确认面板按来源文件分组勾选（`data-rag-source-option`），勾选 “Remember this source selection”（`data-rag-source-remember`）后写入偏好并显示 `data-rag-source-summary` 徽标；`data-rag-source-reset` 一键清除；New chat / 切换会话 / Cancel 清理临时来源状态。
+- `verify:ui` / `verify:preview` 新增 `ragSourceSelector` / `ragSourcePersisted` lane：种子两个 vault 文件、取消一个来源、记住选择、reload 后偏好仍生效且搜索只命中记住的文件、Reset 清除；Rust 单测覆盖 selected / all / 空路径语义，总数增至 189 条。
