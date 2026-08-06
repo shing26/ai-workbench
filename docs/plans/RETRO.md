@@ -60,6 +60,26 @@
 - 保留 `focusWeekArchive` lane，修改 Focus 卡片、任务字段或归档逻辑时重跑 `verify:ui` / `verify:preview`。
 - Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
 
+## Sprint 117
+
+### What went well?
+
+- Projects 新增 Portfolio summary 卡片：项目总数、总收益、Active / Paused、提交总数、Dirty 项目与周提交峰值一目了然。
+- `data-portfolio-export` 生成完整 Markdown 报告（组合统计 + 项目表 + Git 活动表 + 提交趋势），内联预览并支持一键复制；复制带 `execCommand` 兜底，headless 验证环境也稳定。
+- 纯前端计算复用 `projects` 与 `gitActivity`，无新增后端命令与持久化字段，改动面小且双端验证一致。
+- `verify:ui` / `verify:preview` 新增 `portfolioSummaryExport` lane：汇总数值、导出预览与复制状态全链路断言；`npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（123 条）、双端验证全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 在 `syncAudit` lane 出现一次 `customOk` 时序抖动（重跑即恢复），与 Sprint 117 改动无关，属既有 lane 的日期范围刷新竞争。
+- 复制按钮首轮在 headless 环境未显示 Copied：`navigator.clipboard` 不可用时改为 `execCommand` 兜底后稳定。
+
+### Action Items
+
+- 下一 Sprint 候选：Knowledge 文档标签分类视图、System Provider 批量测试、AI Studio 会话分组/归档。
+- 保留 `portfolioSummaryExport` lane，修改 Projects 汇总或 Git 活动聚合时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?
