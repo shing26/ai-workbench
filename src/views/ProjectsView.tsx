@@ -42,6 +42,11 @@ const GIT_CHANGE_GROUPS = [
   { key: 'both', label: 'Both' },
 ] as const;
 
+function csvCell(value: string | number): string {
+  const text = String(value ?? '');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 function diffLineClass(kind: DiffLineKind): string {
   switch (kind) {
     case 'file':
@@ -135,6 +140,8 @@ export default function ProjectsView() {
   const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
   const [exportOpen, setExportOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  const [revenueCsvOpen, setRevenueCsvOpen] = useState(false);
+  const [revenueCsvCopied, setRevenueCsvCopied] = useState(false);
   const [projectEdits, setProjectEdits] = useState<
     Record<string, { status: string; revenue: string }>
   >({});
@@ -152,6 +159,28 @@ export default function ProjectsView() {
   const weekCommitPeak = gitActivity
     ? Math.max(0, ...gitActivity.commitTrend.buckets.map((b) => b.count))
     : 0;
+
+  const revenueCsv = (() => {
+    const rows: string[] = ['Project,ProjectId,Status,RecordedAt,Revenue'];
+    for (const p of projects) {
+      const points = revenueTrends[p.id] ?? [];
+      if (points.length === 0) {
+        rows.push(
+          `${csvCell(p.name)},${csvCell(p.id)},${csvCell(p.status)},,${csvCell(p.revenue)}`,
+        );
+        continue;
+      }
+      for (const point of points) {
+        rows.push(
+          `${csvCell(p.name)},${csvCell(p.id)},${csvCell(p.status)},${new Date(
+            point.recordedAt,
+          ).toISOString()},${csvCell(point.revenue)}`,
+        );
+      }
+    }
+    return rows.join('\n');
+  })();
+  const revenueCsvRowCount = revenueCsv.split('\n').length;
 
   const portfolioReport = (() => {
     const rows = projects
@@ -225,6 +254,43 @@ ${trend}
     } catch {
       setCopyState('idle');
     }
+  };
+
+  const copyRevenueCsv = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(revenueCsv);
+        setRevenueCsvCopied(true);
+        setTimeout(() => setRevenueCsvCopied(false), 1600);
+        return;
+      }
+    } catch {
+      /* fall through to legacy copy */
+    }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = revenueCsv;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+      setRevenueCsvCopied(true);
+      setTimeout(() => setRevenueCsvCopied(false), 1600);
+    } catch {
+      setRevenueCsvCopied(false);
+    }
+  };
+
+  const downloadRevenueCsv = () => {
+    const blob = new Blob([revenueCsv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'project-revenue-history.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const toggleGitDiff = (projectId: string, projectPath: string, file: string) => {
@@ -726,6 +792,47 @@ ${trend}
                 {copyState === 'copied' ? 'Copied' : 'Copy'}
               </button>
             )}
+            <button
+              type="button"
+              data-project-revenue-export
+              onClick={() => setRevenueCsvOpen((v) => !v)}
+              className="flex h-8 items-center gap-1.5 rounded-lg bg-blue-500/15 px-2.5 text-[11px] text-blue-300 hover:bg-blue-500/25"
+            >
+              <Download size={12} />
+              {revenueCsvOpen ? 'Hide CSV' : 'Revenue CSV'}
+            </button>
+            {revenueCsvOpen && (
+              <>
+                <button
+                  type="button"
+                  data-project-revenue-csv-copy
+                  onClick={() => void copyRevenueCsv()}
+                  className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] transition-colors ${
+                    revenueCsvCopied
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+                      : 'border-white/10 text-slate-400 hover:bg-white/[0.06] hover:text-slate-300'
+                  }`}
+                >
+                  <Copy size={12} />
+                  {revenueCsvCopied ? 'Copied' : 'Copy'}
+                </button>
+                <button
+                  type="button"
+                  data-project-revenue-csv-download
+                  onClick={downloadRevenueCsv}
+                  className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 px-2.5 text-[11px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-300"
+                >
+                  <Download size={12} />
+                  Download
+                </button>
+                <span
+                  data-project-revenue-export-result
+                  className="font-mono text-[10px] text-slate-500"
+                >
+                  {revenueCsvRowCount} rows
+                </span>
+              </>
+            )}
             <span data-portfolio-week-peak className="font-mono text-[10px] text-slate-500">
               week peak {weekCommitPeak}
             </span>
@@ -736,6 +843,14 @@ ${trend}
               className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-[10px] leading-relaxed text-slate-300"
             >
               {portfolioReport}
+            </pre>
+          )}
+          {revenueCsvOpen && (
+            <pre
+              data-project-revenue-csv-preview
+              className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-[10px] leading-relaxed text-slate-300"
+            >
+              {revenueCsv}
             </pre>
           )}
         </div>
