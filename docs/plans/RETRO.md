@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 130
+
+### What went well?
+
+- Actions 新增 Week Review 卡片：本周 7 天 planned / done 日条、周完成率、最佳日与连续完成天数均由 `tasks` 运行时派生，无新增表结构；无 dueDate 的今日 Focus 任务统一归入今天，空档日不断连 streak。
+- `data-week-review-archive` 一键快速归档：本周 done 任务顺序执行 `setTaskToday(false)` + `setTaskDueDate(null)`，reload 后任务仍留在 Completed archive 且不再出现在今日 Focus。
+- `verify:ui` / `verify:preview` 新增 `weekReviewStats` / `weekReviewArchive` / `weekReviewArchivePersisted` 三条 lane，覆盖统计锚点、归档后移出 Focus 与持久化。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（135 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 无新增阻塞，双端验证一次全绿；唯一注意点是验证 lane 读取 `data-week-review-*` 的 textContent 时包含 StatPill 的 label 前缀，断言按数值形状（`x/y`、`%`、`d`）校验，避免硬编码文案。
+
+### Action Items
+
+- 下一 Sprint 候选：System 自动化规则补强、AI Studio 会话与知识库深度能力、Projects 收益导出。
+- 保留 `weekReviewStats` / `weekReviewArchive` / `weekReviewArchivePersisted` lane，修改任务模型、Focus 渲染或快速归档逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 129
 
 ### What went well?

@@ -3045,6 +3045,109 @@ try {
   })()`);
   results.focusWeekRestored = focusWeekRestored;
 
+  const weekReviewStats = await evaluate(`(() => {
+    const card = document.querySelector("[data-week-review]");
+    if (!card) return { ok: false, reason: "week review card missing" };
+    const days = [...card.querySelectorAll("[data-week-review-day]")];
+    const total = document.querySelector("[data-week-review-total]")?.textContent ?? "";
+    const rate = document.querySelector("[data-week-review-rate]")?.textContent ?? "";
+    const best = document.querySelector("[data-week-review-best]")?.textContent ?? "";
+    const streak = document.querySelector("[data-week-review-streak]")?.textContent ?? "";
+    const archive = document.querySelector("[data-week-review-archive]");
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const selected = days.find((d) => d.getAttribute("data-week-review-day-selected") === "true");
+    const ok =
+      days.length === 7 &&
+      !!archive &&
+      !!selected &&
+      selected.getAttribute("data-week-review-day") === todayKey &&
+      total.includes("/") &&
+      rate.endsWith("%") &&
+      streak.endsWith("d");
+    return {
+      ok,
+      days: days.length,
+      total,
+      rate,
+      best,
+      streak,
+      selectedDay: selected?.getAttribute("data-week-review-day") ?? "",
+    };
+  })()`);
+  results.weekReviewStats = weekReviewStats;
+  if (!results.weekReviewStats.ok) {
+    throw new Error(
+      `Week review stats assertion failed: ${JSON.stringify(results.weekReviewStats)}`,
+    );
+  }
+
+  const weekReviewArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Week review archive check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(400);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Week review archive check"));
+    if (!row) return { ok: false, reason: "week review task row missing" };
+    const toggle = row.querySelector('button[aria-label^="Toggle "]');
+    if (!toggle) return { ok: false, reason: "week review toggle missing" };
+    toggle.click();
+    await sleep(500);
+    const archiveBtn = document.querySelector("[data-week-review-archive]");
+    if (!archiveBtn) return { ok: false, reason: "week review archive button missing" };
+    archiveBtn.click();
+    await sleep(800);
+    const archivedText = document.querySelector("[data-week-review-archived]")?.textContent ?? "";
+    const activeVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    return {
+      ok: archivedText.includes("1") && !activeVisible && archiveRow,
+      archivedText,
+      activeVisible,
+      archiveRow,
+    };
+  })()`);
+  results.weekReviewArchive = weekReviewArchive;
+  if (!results.weekReviewArchive.ok) {
+    throw new Error(
+      `Week review archive assertion failed: ${JSON.stringify(results.weekReviewArchive)}`,
+    );
+  }
+
+  await reloadAndWait();
+  await clickDock('Actions');
+  const weekReviewArchivePersisted = await evaluate(`(() => {
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const activeVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const card = !!document.querySelector("[data-week-review]");
+    return { ok: card && archiveRow && !activeVisible, card, archiveRow, activeVisible };
+  })()`);
+  results.weekReviewArchivePersisted = weekReviewArchivePersisted;
+  if (!results.weekReviewArchivePersisted?.ok) {
+    throw new Error(
+      `Week review archive persistence assertion failed: ${JSON.stringify(
+        results.weekReviewArchivePersisted,
+      )}`,
+    );
+  }
+
   await clickDock('Knowledge');
   const selectedMarkdownThought = await evaluate(`(async () => {
     const btn = [...document.querySelectorAll("main button")]
