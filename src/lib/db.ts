@@ -10,7 +10,15 @@ import {
   type CustomQuickPrompt,
   type QuickPrompt,
 } from './quickPrompts';
-import { cosineSimilarity, embedText, hybridRagScore } from './embed';
+import {
+  cosineSimilarity,
+  embedText,
+  embedTextRemote,
+  hybridRagScore,
+  shardFor,
+  type EmbeddingMode,
+} from './embed';
+export type { EmbeddingMode };
 import { pinyin } from 'pinyin-pro';
 
 export type { CustomQuickPrompt, QuickPrompt };
@@ -656,6 +664,8 @@ export type RagSearchResult = {
   type: ThoughtType;
   score: number;
   vectorScore?: number;
+  shardId?: string;
+  embeddingModel?: string;
 };
 
 export type RagIndexStatus = {
@@ -663,6 +673,47 @@ export type RagIndexStatus = {
   indexed: boolean;
   lastIndexedAt: number;
   vectorIndexed?: boolean;
+};
+
+export type EmbeddingConfig = {
+  mode: EmbeddingMode;
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  dimension: number;
+  shardCount: number;
+  autoRebuild: boolean;
+  updatedAt: number;
+};
+
+export type VectorShardRecord = {
+  shardId: string;
+  model: string;
+  dimension: number;
+  documents: number;
+  status: string;
+  updatedAt: number;
+  createdAt: number;
+};
+
+export type VectorIndexStatus = {
+  total: number;
+  pending: number;
+  failed: number;
+  indexed: number;
+  model: string;
+  autoRebuild: boolean;
+  shards: VectorShardRecord[];
+};
+
+export type VectorRebuildResult = {
+  total: number;
+  rebuilt: number;
+  failed: number;
+  skipped: number;
+  model: string;
+  shards: VectorShardRecord[];
 };
 
 export type KnowledgeIndexStatus = {
@@ -836,6 +887,8 @@ const EVENT_LOGS_LS_KEY = 'ai-workbench:event-logs:v1';
 const EVENT_SCHEMAS_LS_KEY = 'ai-workbench:event-schemas:v1';
 const EVENT_FORWARDS_LS_KEY = 'ai-workbench:event-forwards:v1';
 const EVENT_BUS_CONFIG_LS_KEY = 'ai-workbench:event-bus-config:v1';
+const EMBEDDING_CONFIG_LS_KEY = 'ai-workbench:embedding-config:v1';
+const VECTOR_SHARDS_LS_KEY = 'ai-workbench:vector-shards:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -4014,6 +4067,12 @@ type VaultFileRecord = {
   indexedAt?: number;
   exists?: boolean;
   stale?: boolean;
+  embedding?: string;
+  shardId?: string;
+  embeddingModel?: string;
+  embeddingDim?: number;
+  embeddingStatus?: string;
+  embeddingError?: string;
 };
 
 function readVaultFiles(): VaultFileRecord[] {
@@ -4022,6 +4081,10 @@ function readVaultFiles(): VaultFileRecord[] {
   } catch {
     return [];
   }
+}
+
+function writeVaultFiles(files: VaultFileRecord[]) {
+  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(files));
 }
 
 function sampleVaultFiles(vaultPath: string): VaultFileRecord[] {
@@ -4325,6 +4388,229 @@ export async function cleanupKnowledgeFiles(vaultPath?: string): Promise<Knowled
   };
 }
 
+function readEmbeddingConfig(): EmbeddingConfig {
+  try {
+    const raw = localStorage.getItem(EMBEDDING_CONFIG_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<EmbeddingConfig>;
+      return {
+        mode: parsed.mode === 'openai' || parsed.mode === 'ollama' ? parsed.mode : 'local',
+        providerId: parsed.providerId ?? '',
+        baseUrl: parsed.baseUrl ?? '',
+        apiKey: parsed.apiKey ?? '',
+        model: parsed.model ?? '',
+        dimension: Math.min(4096, Math.max(64, parsed.dimension || 256)),
+        shardCount: Math.min(64, Math.max(1, parsed.shardCount || 8)),
+        autoRebuild: parsed.autoRebuild !== false,
+        updatedAt: parsed.updatedAt ?? 0,
+      };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return {
+    mode: 'local',
+    providerId: '',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    dimension: 256,
+    shardCount: 8,
+    autoRebuild: true,
+    updatedAt: 0,
+  };
+}
+
+function embeddingModelKey(config: EmbeddingConfig): string {
+  return config.mode === 'local' ? 'local' : `${config.mode}:${config.model}`;
+}
+
+function readVectorShards(): VectorShardRecord[] {
+  try {
+    const raw = localStorage.getItem(VECTOR_SHARDS_LS_KEY);
+    return raw ? (JSON.parse(raw) as VectorShardRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeVectorShards(shards: VectorShardRecord[]) {
+  localStorage.setItem(VECTOR_SHARDS_LS_KEY, JSON.stringify(shards));
+}
+
+function seedVectorShards(shardCount: number, model: string, dimension: number) {
+  const count = Math.min(64, Math.max(1, Math.round(shardCount) || 8));
+  const now = Date.now();
+  const byId = new Map(readVectorShards().map((shard) => [shard.shardId, shard]));
+  for (let index = 0; index < count; index += 1) {
+    const shardId = String(index);
+    const existing = byId.get(shardId);
+    byId.set(
+      shardId,
+      existing
+        ? { ...existing, model, dimension }
+        : {
+            shardId,
+            model,
+            dimension,
+            documents: 0,
+            status: 'idle',
+            updatedAt: now,
+            createdAt: now,
+          },
+    );
+  }
+  writeVectorShards(
+    [...byId.values()]
+      .filter((shard) => Number(shard.shardId) < count)
+      .sort((a, b) => Number(a.shardId) - Number(b.shardId)),
+  );
+}
+
+function refreshVectorShardStats() {
+  const counts = new Map<string, number>();
+  for (const file of readVaultFiles()) {
+    if (file.embeddingStatus === 'indexed') {
+      const shardId = file.shardId ?? '0';
+      counts.set(shardId, (counts.get(shardId) ?? 0) + 1);
+    }
+  }
+  const now = Date.now();
+  writeVectorShards(
+    readVectorShards().map((shard) => {
+      const documents = counts.get(shard.shardId) ?? 0;
+      return {
+        ...shard,
+        documents,
+        status: documents > 0 ? 'ready' : 'idle',
+        updatedAt: now,
+      };
+    }),
+  );
+}
+
+export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
+  if (isTauri()) return invoke<EmbeddingConfig>('get_embedding_config');
+  return readEmbeddingConfig();
+}
+
+export async function setEmbeddingConfig(input: {
+  mode: string;
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  dimension: number;
+  shardCount: number;
+  autoRebuild: boolean;
+}): Promise<EmbeddingConfig> {
+  if (isTauri()) {
+    return invoke<EmbeddingConfig>('set_embedding_config', { request: input });
+  }
+  const config: EmbeddingConfig = {
+    mode: input.mode === 'openai' || input.mode === 'ollama' ? input.mode : 'local',
+    providerId: input.providerId.trim(),
+    baseUrl: input.baseUrl.trim(),
+    apiKey: input.apiKey.trim(),
+    model: input.model.trim(),
+    dimension: Math.min(4096, Math.max(64, Math.round(input.dimension) || 256)),
+    shardCount: Math.min(64, Math.max(1, Math.round(input.shardCount) || 8)),
+    autoRebuild: input.autoRebuild,
+    updatedAt: Date.now(),
+  };
+  localStorage.setItem(EMBEDDING_CONFIG_LS_KEY, JSON.stringify(config));
+  seedVectorShards(config.shardCount, embeddingModelKey(config), config.dimension);
+  refreshVectorShardStats();
+  return config;
+}
+
+export async function getVectorIndexStatus(): Promise<VectorIndexStatus> {
+  if (isTauri()) return invoke<VectorIndexStatus>('get_vector_index_status');
+  const config = readEmbeddingConfig();
+  const target = embeddingModelKey(config);
+  const files = readVaultFiles();
+  let indexed = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const file of files) {
+    if (file.embeddingStatus === 'failed') {
+      failed += 1;
+    } else if (
+      file.embeddingStatus === 'indexed' &&
+      file.embedding &&
+      file.embeddingModel === target
+    ) {
+      indexed += 1;
+    } else {
+      pending += 1;
+    }
+  }
+  return {
+    total: files.length,
+    pending,
+    failed,
+    indexed,
+    model: target,
+    autoRebuild: config.autoRebuild,
+    shards: readVectorShards(),
+  };
+}
+
+export async function rebuildVectorIndex(force = false): Promise<VectorRebuildResult> {
+  if (isTauri()) {
+    return invoke<VectorRebuildResult>('rebuild_vector_index', { force });
+  }
+  const config = readEmbeddingConfig();
+  const target = embeddingModelKey(config);
+  const files = readVaultFiles();
+  const targets = files.filter(
+    (file) =>
+      force ||
+      file.embeddingStatus !== 'indexed' ||
+      !file.embedding ||
+      file.embeddingModel !== target,
+  );
+  let rebuilt = 0;
+  let failedCount = 0;
+  for (const file of targets.slice(0, 25)) {
+    try {
+      const vector =
+        config.mode === 'local'
+          ? embedText(file.content)
+          : await embedTextRemote(
+              config.mode,
+              config.baseUrl,
+              config.apiKey,
+              config.model,
+              file.content,
+            );
+      file.embedding = JSON.stringify(vector);
+      file.embeddingModel = target;
+      file.embeddingDim = vector.length;
+      file.embeddingStatus = 'indexed';
+      file.embeddingError = '';
+      file.shardId = shardFor(file.path, config.shardCount);
+      rebuilt += 1;
+    } catch (err) {
+      file.embedding = JSON.stringify(embedText(file.content));
+      file.embeddingStatus = 'failed';
+      file.embeddingError = err instanceof Error ? err.message : String(err);
+      file.shardId = shardFor(file.path, config.shardCount);
+      failedCount += 1;
+    }
+  }
+  writeVaultFiles(files);
+  refreshVectorShardStats();
+  return {
+    total: files.length,
+    rebuilt,
+    failed: failedCount,
+    skipped: files.length - rebuilt - failedCount,
+    model: target,
+    shards: readVectorShards(),
+  };
+}
+
 export async function getDocHealthAutoConfig(): Promise<DocHealthAutoConfig> {
   try {
     const raw = localStorage.getItem(DOC_HEALTH_AUTO_LS_KEY);
@@ -4397,7 +4683,20 @@ export async function indexVault(
     const filtered = merged.filter(
       (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
     );
-    localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
+    const config = readEmbeddingConfig();
+    const target = embeddingModelKey(config);
+    const enriched = filtered.map((file) => ({
+      ...file,
+      shardId: shardFor(file.path, config.shardCount),
+      embedding: file.embedding ?? JSON.stringify(embedText(file.content)),
+      embeddingModel: file.embeddingModel ?? 'local',
+      embeddingDim: file.embeddingDim ?? 256,
+      embeddingStatus: file.embeddingStatus ?? (config.mode === 'local' ? 'indexed' : 'pending'),
+      embeddingError: file.embeddingError ?? '',
+    }));
+    localStorage.setItem(VAULT_LS_KEY, JSON.stringify(enriched));
+    seedVectorShards(config.shardCount, target, config.dimension);
+    refreshVectorShardStats();
     const cores = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
     const concurrencyUsed = Math.min(
       filtered.length || 1,
@@ -4847,13 +5146,25 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
   const shape = readLocal();
   const tokens = tokenizeSearch(query);
   if (tokens.length === 0) return [];
-  const docs = [
+  type SearchDoc = {
+    id: string;
+    content: string;
+    tags: string;
+    type: ThoughtType;
+    embedding?: string;
+    shardId?: string;
+    embeddingModel?: string;
+  };
+  const docs: SearchDoc[] = [
     ...shape.thoughts.map((t) => ({ id: t.id, content: t.content, tags: t.tags, type: t.type })),
     ...readVaultFiles().map((f) => ({
       id: f.path,
       content: f.content,
       tags: f.tags,
       type: 'doc' as ThoughtType,
+      embedding: f.embedding,
+      shardId: f.shardId,
+      embeddingModel: f.embeddingModel,
     })),
   ];
   const docCount = docs.length;
@@ -4862,16 +5173,43 @@ export async function searchThoughts(query: string, limit = 5): Promise<RagSearc
   const docsWithHits = docs.filter((doc) =>
     tokenizeSearch(doc.content).some((token) => tokens.includes(token)),
   ).length;
-  const queryEmbedding = embedText(query);
+  const config = readEmbeddingConfig();
+  let queryEmbedding: number[];
+  try {
+    queryEmbedding =
+      config.mode === 'local'
+        ? embedText(query)
+        : await embedTextRemote(config.mode, config.baseUrl, config.apiKey, config.model, query);
+  } catch {
+    queryEmbedding = embedText(query);
+  }
   const scored = docs
     .map((t) => {
       const hay = tokenizeSearch(t.content);
-      const vectorScore = cosineSimilarity(queryEmbedding, embedText(t.content));
+      const docVector = t.embedding
+        ? (() => {
+            try {
+              return JSON.parse(t.embedding as string) as number[];
+            } catch {
+              return embedText(t.content);
+            }
+          })()
+        : embedText(t.content);
+      const vectorScore = cosineSimilarity(queryEmbedding, docVector);
       const score = hybridRagScore(
         bm25Score(tokens, hay, docCount, avgDocLength, docsWithHits),
         vectorScore,
       );
-      return { id: t.id, content: t.content, tags: t.tags, type: t.type, score, vectorScore };
+      return {
+        id: t.id,
+        content: t.content,
+        tags: t.tags,
+        type: t.type,
+        score,
+        vectorScore,
+        shardId: t.shardId ?? '0',
+        embeddingModel: t.embeddingModel ?? 'local',
+      };
     })
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)

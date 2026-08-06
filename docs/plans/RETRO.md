@@ -1,5 +1,24 @@
 # Sprint Retrospective
 
+## Sprint 145
+
+### What went well?
+
+- Knowledge 向量能力升级为可配置真实 Embedding：`knowledge_files` 新增 `shard_id` / `embedding_model` / `embedding_dim` / `embedding_status` / `embedding_error`，新增 `embedding_config` 单行表与 `vector_shards` 分片表；新库 SCHEMA 直接建列建表，旧库 `migrate_vector_index` 幂等补列并播种分片。
+- `embed_with_config` 支持 `local` / OpenAI `/embeddings` / Ollama `/api/embed`，20s 超时，请求失败回退本地向量并标记 `failed` + 错误原因；`rebuild_vector_index(force)` 只处理待重建 / 模型不匹配 / embedding 为空 / force 的文件，`spawn_vector_rebuild_worker` 在 auto_rebuild 开启时每 30s 后台补齐。
+- `search_thoughts` 使用配置的查询向量并返回 `shardId` / `embeddingModel`；Knowledge 新增 Vector index 卡片（配置表单、Rebuild 按钮、状态统计、分片列表）；Rust 单测增至 172 条，`verify:ui` / `verify:preview` 新增 `vectorIndexConfig` / `vectorIndexRebuild` / `vectorShardSearch` 三条 lane，双端全绿。
+
+### What went wrong?
+
+- 首轮 `vectorIndexConfig` lane 误删了既有 vault 样本，导致后续 `vaultIgnore` 依赖的 “Daily Notes” 被替换而断言失败；改为在向量 lane 中保留既有 vault 文件并在 lane 结束后还原为原始两份样本，恢复后续验证线的状态前提。
+- 向量搜索结果行在搜索完成前就会被普通想法列表占位，最初的轮询条件过早返回导致 shard / model 元数据断言看到旧行；改为等待 `data-rag-vector-score` 非空后再断言，并补 `data-rag-shard` / `data-rag-embedding-model` 输出。
+
+### Action Items
+
+- 下一 Sprint 候选：Knowledge 语义聚类 / 文档去重。
+- 保留 `vectorIndexConfig` / `vectorIndexRebuild` / `vectorShardSearch` lane，修改 Embedding 配置、分片分配、重建 worker 或搜索元数据时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 144
 
 ### What went well?

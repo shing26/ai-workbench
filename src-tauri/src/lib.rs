@@ -2020,6 +2020,36 @@ fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, 
 }
 
 #[tauri::command]
+fn get_embedding_config(state: State<'_, db::Db>) -> Result<db::EmbeddingConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_embedding_config(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_embedding_config(
+    state: State<'_, db::Db>,
+    request: db::EmbeddingConfigInput,
+) -> Result<db::EmbeddingConfig, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_embedding_config(&conn, request).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_vector_index_status(state: State<'_, db::Db>) -> Result<db::VectorIndexStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_vector_index_status(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rebuild_vector_index(
+    state: State<'_, db::Db>,
+    force: bool,
+) -> Result<db::VectorRebuildResult, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::rebuild_vector_index(&conn, force).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     index_vault_files(&conn, &vault_path, &[], 4)
@@ -5551,6 +5581,31 @@ fn spawn_event_forward_worker(app: tauri::AppHandle) {
     });
 }
 
+fn spawn_vector_rebuild_worker(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(30));
+        let Some(state) = app.try_state::<db::Db>() else {
+            continue;
+        };
+        let Ok(conn) = state.0.lock() else {
+            continue;
+        };
+        let Ok(config) = db::get_embedding_config(&conn) else {
+            continue;
+        };
+        if !config.auto_rebuild {
+            continue;
+        }
+        let Ok(status) = db::get_vector_index_status(&conn) else {
+            continue;
+        };
+        if status.pending == 0 {
+            continue;
+        }
+        let _ = db::rebuild_vector_index(&conn, false);
+    });
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EventEmitRequest {
@@ -6252,6 +6307,7 @@ pub fn run() {
             spawn_provider_heartbeat_monitor(app.handle().clone());
             spawn_webhook_delivery_worker(app.handle().clone());
             spawn_event_forward_worker(app.handle().clone());
+            spawn_vector_rebuild_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -6353,6 +6409,10 @@ pub fn run() {
             capture_clipboard,
             search_thoughts,
             get_rag_index_status,
+            get_embedding_config,
+            set_embedding_config,
+            get_vector_index_status,
+            rebuild_vector_index,
             index_vault,
             index_vault_ex,
             start_vault_index,

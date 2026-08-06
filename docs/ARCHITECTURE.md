@@ -495,6 +495,15 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - SystemView Webhook 卡片新增通道多选与恢复退避输入（`data-webhook-rule-channel` / `data-webhook-rule-backoff`）、规则行通道 / 退避徽标（`data-webhook-rule-channels` / `data-webhook-rule-backoff`）、投递行通道徽标（`data-webhook-delivery-channel`）、Channel settings 面板（SMTP / 收件人 / 通知标题 / 保存 / 测试）与 `data-webhook-recovery-probe` 按钮。
 - `verify:ui` / `verify:preview` 新增 `webhookMultiChannel` / `webhookRecoveryBackoff` lane；Rust 单测覆盖迁移幂等、通道配置默认 / 钳制、多通道创建与入队、熔断开启列表与恢复重置、SMTP mock 发信、通知事件载荷与退避公式，`cargo test --lib` 增至 161 条。
 
+## Sprint 145：真实 Embedding、增量重建与分片索引
+
+- `knowledge_files` 新增 `shard_id` / `embedding_model` / `embedding_dim` / `embedding_status` / `embedding_error`，新增 `embedding_config` 单行表与 `vector_shards` 分片表及 `idx_knowledge_files_shard` 索引；新库 SCHEMA 直接建列建表，旧库 `migrate_vector_index` 幂等补列并播种分片，已加入 `init_connection` 迁移链。
+- `embed_with_config` 统一封装 `local` / OpenAI-compatible `/embeddings` / Ollama `/api/embed`，Bearer 可选、20s 超时，失败回退本地哈希向量并保留 `failed` 状态与错误原因；`upsert_knowledge_file` 写入时按配置嵌入并分配 shard，`delete_knowledge_file` 刷新旧分片统计。
+- `rebuild_vector_index(force)` 只处理 `embedding_status != indexed` / `embedding_model != target` / `embedding` 为空 / force 的候选（单批最多 25 个），写回分片后刷新统计；`spawn_vector_rebuild_worker` 在 `auto_rebuild` 开启时每 30s 后台补齐 pending，已接入 Tauri setup 启动链。
+- `search_thoughts` 查询向量优先使用配置模型、失败回退本地，结果携带 `shardId` / `embeddingModel`；新增 Tauri 命令 `get_embedding_config` / `set_embedding_config` / `get_vector_index_status` / `rebuild_vector_index`，`db.ts` 浏览器 fallback 使用 `ai-workbench:embedding-config:v1` / `ai-workbench:vector-shards:v1` 同构持久化。
+- KnowledgeView 新增 Vector index 卡片：配置表单（mode / base_url / api_key / model / shards / auto rebuild）、Rebuild 按钮（含 force）、状态统计条与分片列表；搜索结果行新增 `data-rag-shard` / `data-rag-embedding-model` 元数据。
+- `verify:ui` / `verify:preview` 新增 `vectorIndexConfig` / `vectorIndexRebuild` / `vectorShardSearch` lane；Rust 单测覆盖迁移、配置默认 / 钳制、分片分配、upsert 统计、重建生命周期与 OpenAI / Ollama 响应解析，`cargo test --lib` 增至 172 条。
+
 ## Sprint 144：事件总线持久化、Schema 校验与跨设备转发
 
 - 新增 `event_logs`（id / event / context / source / device_id / schema_version / status / rejected_reason / created_at，含 `(created_at DESC)` 与 `(event, created_at DESC)` 索引）、`event_schemas`（event PK / schema / enabled / updated_at）、`event_forwards`（event_log_id / target_url / target_token / status / attempts / next_attempt_at / last_status / last_message，含 due 索引）与 `event_bus_config` 单行表；新库 SCHEMA 直接建表，旧库打开同样走 SCHEMA，无需迁移函数。

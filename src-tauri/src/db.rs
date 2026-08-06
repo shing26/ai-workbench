@@ -143,9 +143,36 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
     content TEXT NOT NULL,
     vault_path TEXT NOT NULL DEFAULT '',
     indexed_at INTEGER,
-    embedding TEXT DEFAULT ''
+    embedding TEXT DEFAULT '',
+    shard_id TEXT NOT NULL DEFAULT '0',
+    embedding_model TEXT NOT NULL DEFAULT '',
+    embedding_dim INTEGER NOT NULL DEFAULT 256,
+    embedding_status TEXT NOT NULL DEFAULT 'indexed',
+    embedding_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_files_path ON knowledge_files(path);
+CREATE INDEX IF NOT EXISTS idx_knowledge_files_shard ON knowledge_files(shard_id, embedding_status);
+CREATE TABLE IF NOT EXISTS embedding_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'local',
+    provider_id TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    dimension INTEGER NOT NULL DEFAULT 256,
+    shard_count INTEGER NOT NULL DEFAULT 8,
+    auto_rebuild INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS vector_shards (
+    shard_id TEXT PRIMARY KEY,
+    model TEXT NOT NULL DEFAULT '',
+    dimension INTEGER NOT NULL DEFAULT 256,
+    documents INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'idle',
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -730,6 +757,8 @@ pub struct RagSearchResult {
     pub kind: String,
     pub score: f64,
     pub vector_score: f64,
+    pub shard_id: String,
+    pub embedding_model: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -739,6 +768,68 @@ pub struct RagIndexStatus {
     pub indexed: bool,
     pub last_indexed_at: i64,
     pub vector_indexed: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingConfig {
+    pub mode: String,
+    pub provider_id: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub dimension: usize,
+    pub shard_count: usize,
+    pub auto_rebuild: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingConfigInput {
+    pub mode: String,
+    pub provider_id: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub dimension: usize,
+    pub shard_count: usize,
+    pub auto_rebuild: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorShardRecord {
+    pub shard_id: String,
+    pub model: String,
+    pub dimension: usize,
+    pub documents: i64,
+    pub status: String,
+    pub updated_at: i64,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorIndexStatus {
+    pub total: i64,
+    pub pending: i64,
+    pub failed: i64,
+    pub indexed: i64,
+    pub model: String,
+    pub auto_rebuild: bool,
+    pub shards: Vec<VectorShardRecord>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorRebuildResult {
+    pub total: i64,
+    pub rebuilt: i64,
+    pub failed: i64,
+    pub skipped: i64,
+    pub model: String,
+    pub shards: Vec<VectorShardRecord>,
 }
 
 #[derive(Clone, Serialize)]
@@ -2410,6 +2501,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vault_watch_event_stats(&conn)?;
     migrate_knowledge_vault_path(&conn)?;
     migrate_knowledge_embedding(&conn)?;
+    migrate_vector_index(&conn)?;
     migrate_provider_model(&conn)?;
     migrate_provider_priority(&conn)?;
     migrate_vault_index_queue_priority(&conn)?;
@@ -2484,6 +2576,36 @@ fn migrate_knowledge_embedding(conn: &Connection) -> Result<()> {
         "UPDATE knowledge_files SET embedding = '' WHERE embedding IS NULL",
         [],
     )?;
+    Ok(())
+}
+
+fn migrate_vector_index(conn: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("shard_id", "TEXT NOT NULL DEFAULT '0'"),
+        ("embedding_model", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_dim", "INTEGER NOT NULL DEFAULT 256"),
+        ("embedding_status", "TEXT NOT NULL DEFAULT 'indexed'"),
+        ("embedding_error", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if !column_exists(conn, "knowledge_files", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE knowledge_files ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_files_shard ON knowledge_files(shard_id, embedding_status)",
+        [],
+    )?;
+    let shard_count: Option<i64> = conn
+        .query_row(
+            "SELECT shard_count FROM embedding_config WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let shard_count = shard_count.unwrap_or(8).clamp(1, 64) as usize;
+    seed_vector_shards(conn, shard_count, "local", 256)?;
     Ok(())
 }
 
@@ -5417,6 +5539,388 @@ fn serialize_embedding(vector: &[f64]) -> String {
     serde_json::to_string(vector).unwrap_or_else(|_| "[]".to_string())
 }
 
+fn shard_for(key: &str, shard_count: usize) -> String {
+    let count = shard_count.max(1);
+    ((fnv1a(key.as_bytes(), FNV_OFFSET) as usize) % count).to_string()
+}
+
+fn default_embedding_config() -> EmbeddingConfig {
+    EmbeddingConfig {
+        mode: "local".to_string(),
+        provider_id: String::new(),
+        base_url: String::new(),
+        api_key: String::new(),
+        model: String::new(),
+        dimension: 256,
+        shard_count: 8,
+        auto_rebuild: true,
+        updated_at: 0,
+    }
+}
+
+fn embedding_target_model(config: &EmbeddingConfig) -> String {
+    if config.mode == "local" {
+        "local".to_string()
+    } else {
+        format!("{}:{}", config.mode, config.model)
+    }
+}
+
+pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
+    let row = conn.query_row(
+        "SELECT mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, updated_at
+         FROM embedding_config WHERE id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        },
+    );
+    match row {
+        Ok((
+            mode,
+            provider_id,
+            base_url,
+            api_key,
+            model,
+            dimension,
+            shard_count,
+            auto_rebuild,
+            updated_at,
+        )) => Ok(EmbeddingConfig {
+            mode,
+            provider_id,
+            base_url,
+            api_key,
+            model,
+            dimension: dimension.max(1) as usize,
+            shard_count: shard_count.clamp(1, 64) as usize,
+            auto_rebuild: auto_rebuild != 0,
+            updated_at,
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_embedding_config()),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn set_embedding_config(
+    conn: &Connection,
+    input: EmbeddingConfigInput,
+) -> Result<EmbeddingConfig> {
+    let mode = match input.mode.trim() {
+        "openai" | "ollama" => input.mode.trim().to_string(),
+        _ => "local".to_string(),
+    };
+    let config = EmbeddingConfig {
+        mode,
+        provider_id: input.provider_id.trim().to_string(),
+        base_url: input.base_url.trim().to_string(),
+        api_key: input.api_key.trim().to_string(),
+        model: input.model.trim().to_string(),
+        dimension: input.dimension.clamp(64, 4096),
+        shard_count: input.shard_count.clamp(1, 64),
+        auto_rebuild: input.auto_rebuild,
+        updated_at: now_millis(),
+    };
+    conn.execute(
+        "INSERT INTO embedding_config (id, mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+           mode = excluded.mode,
+           provider_id = excluded.provider_id,
+           base_url = excluded.base_url,
+           api_key = excluded.api_key,
+           model = excluded.model,
+           dimension = excluded.dimension,
+           shard_count = excluded.shard_count,
+           auto_rebuild = excluded.auto_rebuild,
+           updated_at = excluded.updated_at",
+        params![
+            config.mode,
+            config.provider_id,
+            config.base_url,
+            config.api_key,
+            config.model,
+            config.dimension as i64,
+            config.shard_count as i64,
+            config.auto_rebuild as i64,
+            config.updated_at
+        ],
+    )?;
+    seed_vector_shards(
+        conn,
+        config.shard_count,
+        &embedding_target_model(&config),
+        config.dimension,
+    )?;
+    refresh_all_shard_stats(conn)?;
+    Ok(config)
+}
+
+pub fn seed_vector_shards(
+    conn: &Connection,
+    shard_count: usize,
+    model: &str,
+    dimension: usize,
+) -> Result<()> {
+    let count = shard_count.clamp(1, 64) as i64;
+    let now = now_millis();
+    for index in 0..count {
+        let shard_id = index.to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO vector_shards (shard_id, model, dimension, documents, status, updated_at, created_at)
+             VALUES (?1, ?2, ?3, 0, 'idle', ?4, ?4)",
+            params![shard_id, model, dimension as i64, now],
+        )?;
+    }
+    conn.execute(
+        "UPDATE vector_shards SET model = ?1, dimension = ?2 WHERE CAST(shard_id AS INTEGER) < ?3",
+        params![model, dimension as i64, count],
+    )?;
+    conn.execute(
+        "DELETE FROM vector_shards WHERE CAST(shard_id AS INTEGER) >= ?1",
+        params![count],
+    )?;
+    Ok(())
+}
+
+pub fn refresh_shard_stats(conn: &Connection, shard_id: &str) -> Result<()> {
+    let documents: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_files WHERE shard_id = ?1 AND embedding_status = 'indexed'",
+        params![shard_id],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "UPDATE vector_shards SET documents = ?1, status = ?2, updated_at = ?3 WHERE shard_id = ?4",
+        params![
+            documents,
+            if documents > 0 { "ready" } else { "idle" },
+            now_millis(),
+            shard_id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn refresh_all_shard_stats(conn: &Connection) -> Result<()> {
+    let shard_ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT shard_id FROM vector_shards")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(Result::ok).collect()
+    };
+    for shard_id in shard_ids {
+        refresh_shard_stats(conn, &shard_id)?;
+    }
+    Ok(())
+}
+
+fn parse_embedding_response(mode: &str, body: &str) -> Result<Vec<f64>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|err| format!("Invalid embedding response: {err}"))?;
+    let candidate = if mode == "ollama" {
+        value
+            .get("embeddings")
+            .and_then(|item| item.as_array())
+            .and_then(|items| items.first())
+            .cloned()
+    } else {
+        value
+            .get("data")
+            .and_then(|item| item.as_array())
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("embedding"))
+            .cloned()
+    };
+    let Some(candidate) = candidate else {
+        return Err("Embedding response missing embedding vector".to_string());
+    };
+    let vector = candidate
+        .as_array()
+        .ok_or_else(|| "Embedding vector is not an array".to_string())?
+        .iter()
+        .map(|item| {
+            item.as_f64()
+                .ok_or_else(|| "Embedding vector contains non-numeric value".to_string())
+        })
+        .collect::<Result<Vec<f64>, String>>()?;
+    if vector.is_empty() {
+        return Err("Embedding vector is empty".to_string());
+    }
+    Ok(vector)
+}
+
+pub fn embed_with_config(config: &EmbeddingConfig, text: &str) -> Result<Vec<f64>, String> {
+    if config.mode == "local" {
+        return Ok(embed_text(text));
+    }
+    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("Embedding base URL is empty".to_string());
+    }
+    let model = if config.model.trim().is_empty() {
+        "default".to_string()
+    } else {
+        config.model.trim().to_string()
+    };
+    let url = if config.mode == "ollama" {
+        format!("{base_url}/api/embed")
+    } else {
+        format!("{base_url}/embeddings")
+    };
+    let body = serde_json::json!({ "model": model, "input": text }).to_string();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("Embedding client error: {err}"))?;
+    let mut request = client.post(&url).header("Content-Type", "application/json");
+    if !config.api_key.trim().is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", config.api_key.trim()));
+    }
+    let response = request
+        .body(body)
+        .send()
+        .map_err(|err| format!("Embedding request failed: {err}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|err| format!("Embedding response read failed: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Embedding HTTP {status}: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    parse_embedding_response(&config.mode, &text)
+}
+
+pub fn list_vector_shards(conn: &Connection) -> Result<Vec<VectorShardRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT shard_id, model, dimension, documents, status, updated_at, created_at
+         FROM vector_shards ORDER BY CAST(shard_id AS INTEGER) ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(VectorShardRecord {
+            shard_id: row.get(0)?,
+            model: row.get(1)?,
+            dimension: row.get::<_, i64>(2)?.max(1) as usize,
+            documents: row.get(3)?,
+            status: row.get(4)?,
+            updated_at: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn get_vector_index_status(conn: &Connection) -> Result<VectorIndexStatus> {
+    let config = get_embedding_config(conn)?;
+    let target = embedding_target_model(&config);
+    let total: i64 =
+        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
+    let indexed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_files WHERE embedding_status = 'indexed'",
+        [],
+        |row| row.get(0),
+    )?;
+    let failed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_files WHERE embedding_status = 'failed'",
+        [],
+        |row| row.get(0),
+    )?;
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_files
+         WHERE embedding_status != 'indexed' OR embedding = '' OR embedding_model != ?1",
+        params![target],
+        |row| row.get(0),
+    )?;
+    Ok(VectorIndexStatus {
+        total,
+        pending,
+        failed,
+        indexed,
+        model: target,
+        auto_rebuild: config.auto_rebuild,
+        shards: list_vector_shards(conn)?,
+    })
+}
+
+pub fn rebuild_vector_index(conn: &Connection, force: bool) -> Result<VectorRebuildResult> {
+    let config = get_embedding_config(conn)?;
+    let target = embedding_target_model(&config);
+    let total: i64 =
+        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, path, content, shard_id FROM knowledge_files
+         WHERE ?1 OR embedding_status != 'indexed' OR embedding = '' OR embedding_model != ?2
+         ORDER BY rowid ASC LIMIT 25",
+    )?;
+    let rows = stmt.query_map(params![force as i64, target], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let candidates: Vec<(String, String, String, String)> = rows.filter_map(Result::ok).collect();
+    let mut rebuilt = 0i64;
+    let mut failed = 0i64;
+    for (id, path, content, _) in candidates {
+        let shard_id = shard_for(&path, config.shard_count);
+        let outcome = embed_with_config(&config, &content);
+        let (embedding, status, error) = match outcome {
+            Ok(vector) => (
+                serialize_embedding(&vector),
+                "indexed".to_string(),
+                String::new(),
+            ),
+            Err(err) => (
+                serialize_embedding(&embed_text(&content)),
+                "failed".to_string(),
+                err,
+            ),
+        };
+        conn.execute(
+            "UPDATE knowledge_files
+             SET embedding = ?1, shard_id = ?2, embedding_model = ?3, embedding_dim = ?4,
+                 embedding_status = ?5, embedding_error = ?6
+             WHERE id = ?7",
+            params![
+                embedding,
+                shard_id,
+                target,
+                config.dimension as i64,
+                status,
+                error,
+                id
+            ],
+        )?;
+        refresh_shard_stats(conn, &shard_id)?;
+        if status == "indexed" {
+            rebuilt += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    Ok(VectorRebuildResult {
+        total,
+        rebuilt,
+        failed,
+        skipped: total - rebuilt - failed,
+        model: target,
+        shards: list_vector_shards(conn)?,
+    })
+}
+
 pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
     let documents: i64 = conn.query_row("SELECT COUNT(*) FROM thoughts", [], |row| row.get(0))?;
     let files: i64 =
@@ -5443,19 +5947,53 @@ pub fn upsert_knowledge_file(
     content: &str,
     vault_path: &str,
 ) -> Result<()> {
-    let embedding = serialize_embedding(&embed_text(content));
+    let config = get_embedding_config(conn)?;
+    let shard_id = shard_for(path, config.shard_count);
+    let target = embedding_target_model(&config);
+    let (embedding, status, error) = match embed_with_config(&config, content) {
+        Ok(vector) => (
+            serialize_embedding(&vector),
+            "indexed".to_string(),
+            String::new(),
+        ),
+        Err(err) => (
+            serialize_embedding(&embed_text(content)),
+            "failed".to_string(),
+            err,
+        ),
+    };
     conn.execute(
-        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at, embedding)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at, embedding, shard_id, embedding_model, embedding_dim, embedding_status, embedding_error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(path) DO UPDATE SET
            title = excluded.title,
            tags = excluded.tags,
            content = excluded.content,
            vault_path = excluded.vault_path,
            indexed_at = excluded.indexed_at,
-           embedding = excluded.embedding",
-        params![uid(), path, title, tags, content, vault_path, now_millis(), embedding],
+           embedding = excluded.embedding,
+           shard_id = excluded.shard_id,
+           embedding_model = excluded.embedding_model,
+           embedding_dim = excluded.embedding_dim,
+           embedding_status = excluded.embedding_status,
+           embedding_error = excluded.embedding_error",
+        params![
+            uid(),
+            path,
+            title,
+            tags,
+            content,
+            vault_path,
+            now_millis(),
+            embedding,
+            shard_id,
+            target,
+            config.dimension as i64,
+            status,
+            error
+        ],
     )?;
+    refresh_shard_stats(conn, &shard_id)?;
     Ok(())
 }
 
@@ -5514,7 +6052,17 @@ pub fn vault_target_stats(conn: &Connection) -> Result<Vec<VaultTargetStats>, St
 }
 
 pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
+    let shard_id: Option<String> = conn
+        .query_row(
+            "SELECT shard_id FROM knowledge_files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )
+        .optional()?;
     conn.execute("DELETE FROM knowledge_files WHERE path = ?1", params![path])?;
+    if let Some(shard_id) = shard_id {
+        refresh_shard_stats(conn, &shard_id)?;
+    }
     Ok(())
 }
 
@@ -5736,7 +6284,8 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
     if query_tokens.is_empty() {
         return Ok(Vec::new());
     }
-    let query_embedding = embed_text(query);
+    let config = get_embedding_config(conn)?;
+    let query_embedding = embed_with_config(&config, query).unwrap_or_else(|_| embed_text(query));
     struct SearchDoc {
         id: String,
         content: String,
@@ -5744,6 +6293,8 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
         kind: String,
         tokens: Vec<String>,
         embedding: Vec<f64>,
+        shard_id: String,
+        embedding_model: String,
     }
     let mut stmt = conn.prepare("SELECT id, content, tags, type FROM thoughts")?;
     let rows = stmt.query_map([], |row| {
@@ -5766,20 +6317,26 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
                 kind,
                 tokens,
                 embedding,
+                shard_id: "0".to_string(),
+                embedding_model: "local".to_string(),
             }
         })
         .collect();
-    let mut file_stmt = conn.prepare("SELECT id, content, tags, embedding FROM knowledge_files")?;
+    let mut file_stmt = conn.prepare(
+        "SELECT id, content, tags, embedding, shard_id, embedding_model FROM knowledge_files",
+    )?;
     let file_rows = file_stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
         ))
     })?;
     for file in file_rows.flatten() {
-        let (id, content, tags, embedding_raw) = file;
+        let (id, content, tags, embedding_raw, shard_id, embedding_model) = file;
         let tokens = tokenize(&content);
         let embedding = if embedding_raw.is_empty() {
             embed_text(&content)
@@ -5793,6 +6350,8 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
             kind: "doc".to_string(),
             tokens,
             embedding,
+            shard_id,
+            embedding_model,
         });
     }
     if docs.is_empty() {
@@ -5828,6 +6387,8 @@ pub fn search_thoughts(conn: &Connection, query: &str, limit: i64) -> Result<Vec
                 kind: doc.kind.clone(),
                 score,
                 vector_score,
+                shard_id: doc.shard_id.clone(),
+                embedding_model: doc.embedding_model.clone(),
             },
         ));
     }
@@ -8942,6 +9503,31 @@ mod tests {
         )
         .unwrap();
         migrate_knowledge_embedding(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS embedding_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                mode TEXT NOT NULL DEFAULT 'local',
+                provider_id TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                dimension INTEGER NOT NULL DEFAULT 256,
+                shard_count INTEGER NOT NULL DEFAULT 8,
+                auto_rebuild INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS vector_shards (
+                shard_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL DEFAULT '',
+                dimension INTEGER NOT NULL DEFAULT 256,
+                documents INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'idle',
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        migrate_vector_index(&conn).unwrap();
         assert!(column_exists(&conn, "knowledge_files", "embedding").unwrap());
         upsert_knowledge_file(
             &conn,
@@ -8965,6 +9551,234 @@ mod tests {
         assert!(results[0].vector_score > 0.0);
         let status = rag_index_status(&conn).unwrap();
         assert!(status.vector_indexed);
+    }
+
+    #[test]
+    fn vector_shard_assignment_is_stable_and_bounded() {
+        let first = shard_for("C:/vault/alpha.md", 8);
+        assert_eq!(first, shard_for("C:/vault/alpha.md", 8));
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..64 {
+            let shard = shard_for(&format!("C:/vault/file-{index}.md"), 8)
+                .parse::<usize>()
+                .unwrap();
+            assert!(shard < 8);
+            seen.insert(shard);
+        }
+        assert!(seen.len() > 1);
+    }
+
+    #[test]
+    fn embedding_config_defaults_roundtrip_and_clamp() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let defaults = get_embedding_config(&conn).unwrap();
+        assert_eq!(defaults.mode, "local");
+        assert_eq!(defaults.shard_count, 8);
+        let saved = set_embedding_config(
+            &conn,
+            EmbeddingConfigInput {
+                mode: "ollama".to_string(),
+                provider_id: "local-ollama".to_string(),
+                base_url: "http://127.0.0.1:11434".to_string(),
+                api_key: String::new(),
+                model: "nomic-embed-text".to_string(),
+                dimension: 768,
+                shard_count: 16,
+                auto_rebuild: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.mode, "ollama");
+        assert_eq!(saved.dimension, 768);
+        assert_eq!(saved.shard_count, 16);
+        assert!(!saved.auto_rebuild);
+        let clamped = set_embedding_config(
+            &conn,
+            EmbeddingConfigInput {
+                mode: "bogus".to_string(),
+                provider_id: String::new(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: String::new(),
+                dimension: 8,
+                shard_count: 999,
+                auto_rebuild: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(clamped.mode, "local");
+        assert_eq!(clamped.dimension, 64);
+        assert_eq!(clamped.shard_count, 64);
+        let reloaded = get_embedding_config(&conn).unwrap();
+        assert_eq!(reloaded.shard_count, 64);
+        assert_eq!(list_vector_shards(&conn).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn vector_index_migration_adds_columns_and_seeds_shards() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE knowledge_files (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT,
+                tags TEXT,
+                content TEXT NOT NULL,
+                vault_path TEXT NOT NULL DEFAULT '',
+                indexed_at INTEGER,
+                embedding TEXT DEFAULT ''
+            );
+            CREATE TABLE embedding_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                mode TEXT NOT NULL DEFAULT 'local',
+                provider_id TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                dimension INTEGER NOT NULL DEFAULT 256,
+                shard_count INTEGER NOT NULL DEFAULT 8,
+                auto_rebuild INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE vector_shards (
+                shard_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL DEFAULT '',
+                dimension INTEGER NOT NULL DEFAULT 256,
+                documents INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'idle',
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        migrate_vector_index(&conn).unwrap();
+        for column in [
+            "shard_id",
+            "embedding_model",
+            "embedding_dim",
+            "embedding_status",
+            "embedding_error",
+        ] {
+            assert!(column_exists(&conn, "knowledge_files", column).unwrap());
+        }
+        assert_eq!(list_vector_shards(&conn).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn upsert_knowledge_file_marks_shard_and_baseline_embedding() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        migrate_vector_index(&conn).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/notes.md",
+            "Notes",
+            "#work",
+            "Local RAG vector search",
+            "C:/vault",
+        )
+        .unwrap();
+        let (shard_id, model, status, dim, embedding): (String, String, String, i64, String) = conn
+            .query_row(
+                "SELECT shard_id, embedding_model, embedding_status, embedding_dim, embedding
+                 FROM knowledge_files WHERE path = 'C:/vault/notes.md'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(model, "local");
+        assert_eq!(status, "indexed");
+        assert_eq!(dim, 256);
+        assert!(!embedding.is_empty());
+        let shard = list_vector_shards(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.shard_id == shard_id)
+            .unwrap();
+        assert_eq!(shard.documents, 1);
+        assert_eq!(shard.status, "ready");
+    }
+
+    #[test]
+    fn rebuild_vector_index_rebuilds_pending_files() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/alpha.md",
+            "Alpha",
+            "",
+            "Alpha vector content",
+            "C:/vault",
+        )
+        .unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/beta.md",
+            "Beta",
+            "",
+            "Beta vector content",
+            "C:/vault",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE knowledge_files SET embedding_status = 'pending', embedding_model = 'stale'
+             WHERE path = 'C:/vault/alpha.md'",
+            [],
+        )
+        .unwrap();
+        let first = rebuild_vector_index(&conn, false).unwrap();
+        assert_eq!(first.rebuilt, 1);
+        assert_eq!(first.failed, 0);
+        let status = get_vector_index_status(&conn).unwrap();
+        assert_eq!(status.pending, 0);
+        assert_eq!(status.indexed, 2);
+        let forced = rebuild_vector_index(&conn, true).unwrap();
+        assert_eq!(forced.rebuilt, 2);
+    }
+
+    #[test]
+    fn embedding_response_parses_openai_and_ollama_shapes() {
+        let openai = r#"{"data":[{"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small"}"#;
+        assert_eq!(
+            parse_embedding_response("openai", openai).unwrap(),
+            vec![0.1, 0.2, 0.3]
+        );
+        let ollama = r#"{"model":"nomic-embed-text","embeddings":[[0.5,-0.5]]}"#;
+        assert_eq!(
+            parse_embedding_response("ollama", ollama).unwrap(),
+            vec![0.5, -0.5]
+        );
+        assert!(parse_embedding_response("openai", r#"{"data":[]}"#).is_err());
+        assert!(parse_embedding_response("ollama", r#"{"embeddings":[]}"#).is_err());
+    }
+
+    #[test]
+    fn search_thoughts_reports_shard_and_model() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_knowledge_file(
+            &conn,
+            "C:/vault/notes.md",
+            "Notes",
+            "#work",
+            "Local RAG vector search",
+            "C:/vault",
+        )
+        .unwrap();
+        let results = search_thoughts(&conn, "local vector search", 5).unwrap();
+        let doc = results.iter().find(|result| result.kind == "doc").unwrap();
+        assert!(!doc.shard_id.is_empty());
+        assert_eq!(doc.embedding_model, "local");
     }
 
     #[test]
