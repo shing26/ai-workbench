@@ -5777,6 +5777,113 @@ try {
   }
   results.webhookRuleCooldown = webhookRuleCooldown;
 
+  await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const base = {
+      ruleId: "rt-rule",
+      event: "sync.completed",
+      payload: "{}",
+      method: "POST",
+      url: "https://hooks.example.test/retention",
+      token: "",
+      secret: "",
+      retries: 1,
+      attempts: 1,
+      lastStatus: 0,
+      lastMessage: "",
+      nextAttemptAt: now,
+      updatedAt: now,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-deliveries:v1",
+      JSON.stringify([
+        { ...base, id: "rt-old-success", status: "success", lastStatus: 200, lastMessage: "ok", createdAt: now - 3 * day },
+        { ...base, id: "rt-old-dead", status: "dead", lastStatus: 500, lastMessage: "fail", createdAt: now - 3 * day },
+        { ...base, id: "rt-recent-dead", status: "dead", lastStatus: 500, lastMessage: "fail", createdAt: now - 3_600_000 },
+        { ...base, id: "rt-recent-success", status: "success", lastStatus: 200, lastMessage: "ok", createdAt: now + 1 },
+        { ...base, id: "rt-old-queued", status: "queued", attempts: 0, createdAt: now - 3 * day },
+        { ...base, id: "rt-recent-queued", status: "queued", attempts: 0, createdAt: now },
+      ]),
+    );
+    localStorage.removeItem("ai-workbench:webhook-retention:v1");
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRetention = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const days = () => document.querySelector("[data-webhook-retention-days]");
+    const limit = () => document.querySelector("[data-webhook-retention-limit]");
+    const auto = () => document.querySelector("[data-webhook-retention-auto]");
+    const saveBtn = () => document.querySelector("[data-webhook-retention-save]");
+    const pruneBtn = () => document.querySelector("[data-webhook-retention-prune]");
+    const result = () => document.querySelector("[data-webhook-retention-result]")?.textContent ?? "";
+    const stats = () => document.querySelector("[data-webhook-retention-stats]")?.textContent ?? "";
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      if (days() && limit() && auto() && saveBtn() && pruneBtn() && stats().includes("6 total")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) {
+      return { ok: false, reason: "retention controls not ready", stats: stats() };
+    }
+    setValue(days(), "1");
+    setValue(limit(), "1");
+    saveBtn().click();
+    let savedResult = "";
+    for (let i = 0; i < 20; i++) {
+      savedResult = result();
+      if (savedResult.includes("Retention saved")) break;
+      await sleep(100);
+    }
+    const saved = JSON.parse(localStorage.getItem("ai-workbench:webhook-retention:v1") || "null");
+    pruneBtn().click();
+    let pruneResult = "";
+    for (let i = 0; i < 20; i++) {
+      pruneResult = result();
+      if (pruneResult.includes("Cleaned")) break;
+      await sleep(100);
+    }
+    let statsAfter = "";
+    for (let i = 0; i < 20; i++) {
+      statsAfter = stats();
+      if (statsAfter.includes("3 total")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]");
+    const ids = stored.map((d) => d.id);
+    const ok =
+      saved?.retentionDays === 1 &&
+      saved?.maxRecords === 1 &&
+      saved?.autoCleanup === true &&
+      savedResult.includes("Retention saved") &&
+      pruneResult.includes("Cleaned 3") &&
+      pruneResult.includes("age 2") &&
+      pruneResult.includes("count 1") &&
+      ids.length === 3 &&
+      ids.includes("rt-recent-success") &&
+      ids.includes("rt-old-queued") &&
+      ids.includes("rt-recent-queued") &&
+      statsAfter.includes("3 total") &&
+      statsAfter.includes("2 queued") &&
+      statsAfter.includes("1 ok");
+    return { ok, savedResult, pruneResult, statsAfter, ids, saved };
+  })()`);
+  if (!webhookRetention.ok) {
+    throw new Error(`Webhook retention assertion failed: ${JSON.stringify(webhookRetention)}`);
+  }
+  results.webhookRetention = webhookRetention;
+  laneLog('webhookRetention ok');
+
   const syncCheck = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');

@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 134
+
+### What went well?
+
+- SQLite 新增 `webhook_retention_config` 单行表：`retention_days / max_records / auto_cleanup / updated_at`，默认 30 天 / 200 条 / 自动开启，`set_webhook_retention_config` 对 1~3650 天与 1~100000 条做钳制；新增 get / set / prune / stats 四个 Tauri 命令。
+- `prune_webhook_deliveries` 按天数删除过期 success / dead，再按 max_records 从最旧开始裁剪终态记录；queued / delivering 永不按年龄删除，返回 removedByAge / removedByCount / totalRemoved。
+- delivery worker 每轮在 auto_cleanup 开启时自动清理；SystemView Webhook 卡片新增 Retention policy 区（天数 / 条数 / Auto / Save / Run cleanup），`data-webhook-retention-stats` 展示 total / queued / ok / dead 统计。
+- 浏览器 fallback 用 `ai-workbench:webhook-retention:v1` 保存同一配置，`triggerWebhookEvent` 写入时按 autoCleanup 自动裁剪；`verify:ui` / `verify:preview` 新增 `webhookRetention` lane，种子 6 条记录后 Save 1d / 1 条并 Run cleanup，断言 age 2 + count 1、剩余 3 条与持久化。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`（140 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- clippy 在保留策略单测里报 `let mut set` 多余可变性，去掉 `mut` 后通过；首轮验证前该问题由 `-D warnings` 拦截，未进入双端验证。
+
+### Action Items
+
+- 下一 Sprint 候选：Knowledge 笔记双链 / 回溯、Projects 收益端聚合展示、System 自动化规则补强。
+- 保留 `webhookRetention` lane 与三个保留策略单测，修改投递队列、worker 或 System Webhook 面板时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 133
 
 ### What went well?

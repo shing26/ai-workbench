@@ -264,6 +264,13 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_rule ON webhook_deliveries(rule_id);
+CREATE TABLE IF NOT EXISTS webhook_retention_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    retention_days INTEGER NOT NULL DEFAULT 30,
+    max_records INTEGER NOT NULL DEFAULT 200,
+    auto_cleanup INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS quick_prompts (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
@@ -774,6 +781,34 @@ pub struct WebhookDelivery {
     pub updated_at: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookRetentionConfig {
+    pub retention_days: i64,
+    pub max_records: i64,
+    pub auto_cleanup: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookPruneResult {
+    pub removed_by_age: i64,
+    pub removed_by_count: i64,
+    pub total_removed: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDeliveryStats {
+    pub total: i64,
+    pub queued: i64,
+    pub delivering: i64,
+    pub success: i64,
+    pub dead: i64,
+    pub failed: i64,
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1165,6 +1200,133 @@ pub fn clear_webhook_deliveries(conn: &Connection, status_filter: &str) -> Resul
         )?
     };
     Ok(removed as i64)
+}
+
+pub fn get_webhook_retention_config(conn: &Connection) -> Result<WebhookRetentionConfig> {
+    let row = conn.query_row(
+        "SELECT retention_days, max_records, auto_cleanup, updated_at
+         FROM webhook_retention_config WHERE id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    match row {
+        Ok((retention_days, max_records, auto_cleanup, updated_at)) => Ok(WebhookRetentionConfig {
+            retention_days,
+            max_records,
+            auto_cleanup: auto_cleanup != 0,
+            updated_at,
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(WebhookRetentionConfig {
+            retention_days: 30,
+            max_records: 200,
+            auto_cleanup: true,
+            updated_at: 0,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn set_webhook_retention_config(
+    conn: &Connection,
+    retention_days: i64,
+    max_records: i64,
+    auto_cleanup: bool,
+) -> Result<WebhookRetentionConfig> {
+    let days = retention_days.clamp(1, 3650);
+    let max_records = max_records.clamp(1, 100_000);
+    conn.execute(
+        "INSERT INTO webhook_retention_config
+           (id, retention_days, max_records, auto_cleanup, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+           retention_days = excluded.retention_days,
+           max_records = excluded.max_records,
+           auto_cleanup = excluded.auto_cleanup,
+           updated_at = excluded.updated_at",
+        params![days, max_records, auto_cleanup as i64, now_millis()],
+    )?;
+    get_webhook_retention_config(conn)
+}
+
+pub fn get_webhook_delivery_stats(conn: &Connection) -> Result<WebhookDeliveryStats> {
+    let mut stmt =
+        conn.prepare("SELECT status, COUNT(*) FROM webhook_deliveries GROUP BY status")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut stats = WebhookDeliveryStats {
+        total: 0,
+        queued: 0,
+        delivering: 0,
+        success: 0,
+        dead: 0,
+        failed: 0,
+    };
+    for row in rows {
+        let (status, count) = row?;
+        stats.total += count;
+        match status.as_str() {
+            "queued" => stats.queued = count,
+            "delivering" => stats.delivering = count,
+            "success" => stats.success = count,
+            "dead" => stats.dead = count,
+            _ => stats.failed += count,
+        }
+    }
+    Ok(stats)
+}
+
+pub fn prune_webhook_deliveries(
+    conn: &Connection,
+    retention_days: i64,
+    max_records: i64,
+) -> Result<WebhookPruneResult> {
+    let now = now_millis();
+    let mut removed_by_age = 0_i64;
+    if retention_days > 0 {
+        let cutoff = now.saturating_sub(retention_days.saturating_mul(86_400_000));
+        removed_by_age = conn.execute(
+            "DELETE FROM webhook_deliveries
+             WHERE status IN ('success', 'dead') AND created_at < ?1",
+            params![cutoff],
+        )? as i64;
+    }
+
+    let terminal: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM webhook_deliveries WHERE status IN ('success', 'dead')",
+        [],
+        |row| row.get(0),
+    )?;
+    let excess = terminal.saturating_sub(max_records.max(0));
+    let mut removed_by_count = 0_i64;
+    if excess > 0 {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM webhook_deliveries
+             WHERE status IN ('success', 'dead')
+             ORDER BY created_at ASC, rowid ASC
+             LIMIT ?1",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![excess], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            removed_by_count +=
+                conn.execute("DELETE FROM webhook_deliveries WHERE id = ?1", params![id])? as i64;
+        }
+    }
+
+    Ok(WebhookPruneResult {
+        removed_by_age,
+        removed_by_count,
+        total_removed: removed_by_age + removed_by_count,
+    })
 }
 
 pub fn init_connection(path: &Path) -> Result<Connection> {
@@ -7916,5 +8078,136 @@ mod tests {
         delete_webhook_rule(&conn, &event_rule.id).unwrap();
         let remaining = list_webhook_deliveries(&conn, 100, "").unwrap();
         assert!(remaining.iter().all(|d| d.rule_id != event_rule.id));
+    }
+
+    #[test]
+    fn webhook_retention_config_defaults_and_clamps() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let defaults = get_webhook_retention_config(&conn).unwrap();
+        assert_eq!(defaults.retention_days, 30);
+        assert_eq!(defaults.max_records, 200);
+        assert!(defaults.auto_cleanup);
+
+        let clamped = set_webhook_retention_config(&conn, 0, 100_001, false).unwrap();
+        assert_eq!(clamped.retention_days, 1);
+        assert_eq!(clamped.max_records, 100_000);
+        assert!(!clamped.auto_cleanup);
+
+        let clamped_up = set_webhook_retention_config(&conn, 3651, 0, true).unwrap();
+        assert_eq!(clamped_up.retention_days, 3650);
+        assert_eq!(clamped_up.max_records, 1);
+        assert!(clamped_up.auto_cleanup);
+        assert!(clamped_up.updated_at > 0);
+    }
+
+    #[test]
+    fn webhook_retention_prunes_by_age_and_count() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Retention hook",
+                url: "https://example.test/retention",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+            },
+        )
+        .unwrap();
+
+        let old = now_millis() - 2 * 86_400_000;
+        let recent = now_millis();
+        let set = |label: &str, age: i64, status: &str| {
+            let delivery = enqueue_webhook_delivery(
+                &conn,
+                &rule,
+                "sync.completed",
+                &format!("{{\"n\":\"{label}\"}}"),
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE webhook_deliveries SET status = ?1, created_at = ?2, updated_at = ?2
+                 WHERE id = ?3",
+                params![status, age, delivery.id],
+            )
+            .unwrap();
+            delivery.id
+        };
+
+        set("old-success", old, "success");
+        set("old-dead", old, "dead");
+        let recent_dead = set("recent-dead", recent, "dead");
+        set("recent-success", recent + 1, "success");
+        set("old-queued", old, "queued");
+        set("recent-queued", recent, "queued");
+
+        let result = prune_webhook_deliveries(&conn, 1, 1).unwrap();
+        assert_eq!(result.removed_by_age, 2);
+        assert_eq!(result.removed_by_count, 1);
+        assert_eq!(result.total_removed, 3);
+
+        assert!(get_webhook_delivery(&conn, &recent_dead).unwrap().is_none());
+        let remaining = list_webhook_deliveries(&conn, 100, "").unwrap();
+        assert_eq!(remaining.len(), 3);
+        assert!(remaining.iter().any(|d| d.status == "queued"));
+        assert!(remaining.iter().any(|d| d.created_at == old));
+
+        let stats = get_webhook_delivery_stats(&conn).unwrap();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.success, 1);
+        assert_eq!(stats.dead, 0);
+        assert_eq!(stats.queued, 2);
+    }
+
+    #[test]
+    fn webhook_delivery_stats_counts_each_status() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let rule = create_webhook_rule(
+            &conn,
+            &WebhookRuleInput {
+                name: "Stats hook",
+                url: "https://example.test/stats",
+                payload: "{}",
+                method: "POST",
+                token: "",
+                secret: "",
+                retries: 1,
+                cooldown_seconds: 0,
+                interval_seconds: 60,
+                trigger_event: "",
+            },
+        )
+        .unwrap();
+
+        let queued = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
+        let delivering = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
+        let success = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
+        let dead = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
+        let now = now_millis();
+        conn.execute(
+            "UPDATE webhook_deliveries SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params!["delivering", now, delivering.id],
+        )
+        .unwrap();
+        complete_webhook_delivery(&conn, &success.id, "success", 200, "ok", 1, now).unwrap();
+        complete_webhook_delivery(&conn, &dead.id, "dead", 500, "fail", 2, now).unwrap();
+
+        let stats = get_webhook_delivery_stats(&conn).unwrap();
+        assert_eq!(stats.total, 4);
+        assert_eq!(stats.queued, 1);
+        assert_eq!(stats.delivering, 1);
+        assert_eq!(stats.success, 1);
+        assert_eq!(stats.dead, 1);
+        assert_eq!(stats.failed, 0);
+        assert!(get_webhook_delivery(&conn, &queued.id).unwrap().is_some());
     }
 }

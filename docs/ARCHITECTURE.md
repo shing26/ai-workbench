@@ -439,6 +439,15 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - Portfolio summary 卡片新增 `data-project-revenue-export` 开关、`data-project-revenue-csv-preview` 预览、`data-project-revenue-csv-copy` 复制与 `data-project-revenue-csv-download` 下载；结果写入 `data-project-revenue-export-result`，复制成功后按钮显示 Copied。
 - `verify:ui` / `verify:preview` 新增 `projectRevenueExport` lane：断言 CSV 表头、AI Workbench / Hermes Station 项目名、行数、复制状态与结果文本；纯前端改动，无新增 Rust 命令与表结构。
 
+## Sprint 134：Webhook 投递保留策略
+
+- SQLite 新增 `webhook_retention_config` 单行表（id=1）：`retention_days / max_records / auto_cleanup / updated_at`，SCHEMA 直接建表；`get_webhook_retention_config` 空行回退默认 30 天 / 200 条 / 自动开启，`set_webhook_retention_config` 钳制天数 1~3650、条数 1~100000 后 upsert。
+- `prune_webhook_deliveries` 先删过期 success / dead（`created_at < now - days`），再按 `max_records` 从 `created_at ASC, rowid ASC` 裁剪最旧终态记录；queued / delivering 不参与年龄清理，返回 removedByAge / removedByCount / totalRemoved。
+- `spawn_webhook_delivery_worker` 每轮在 auto_cleanup 开启时自动调用清理；新增 Tauri 命令 `get_webhook_retention_config` / `set_webhook_retention_config` / `prune_webhook_deliveries` / `get_webhook_delivery_stats`。
+- SystemView Webhook 卡片新增 Retention policy 区：`data-webhook-retention-days` / `data-webhook-retention-limit` / `data-webhook-retention-auto` / `data-webhook-retention-save` / `data-webhook-retention-prune` / `data-webhook-retention-stats` / `data-webhook-retention-result`。
+- `db.ts` 新增同构 `WebhookRetentionConfig` / `WebhookPruneResult` / `WebhookDeliveryStats` 与 get / set / prune / stats，浏览器 fallback 用 `ai-workbench:webhook-retention:v1`，`triggerWebhookEvent` 写入时按 autoCleanup 自动裁剪。
+- `verify:ui` / `verify:preview` 新增 `webhookRetention` lane；Rust 单测覆盖默认值 / 钳制、年龄与条数裁剪、状态统计，`cargo test --lib` 增至 140 条。
+
 ## Sprint 63：RAG 文档状态面板
 
 - 新增 `list_knowledge_files(vault_path?, limit?)` 命令：按 `indexed_at DESC, path ASC` 返回 `KnowledgeFileRecord`，limit clamp 1~200，支持空路径 legacy 记录。
