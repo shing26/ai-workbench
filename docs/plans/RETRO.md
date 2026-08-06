@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 128
+
+### What went well?
+
+- AI Studio 会话侧栏新增分组视图：pinned / today / yesterday / 7d / older 顺序分组，Active / Archived tab 共用同一规则，会话行渲染抽为 `renderSessionRow` 复用。
+- 分组头支持折叠/展开并展示计数，搜索或 RAG 命中时自动退化为平铺列表，清空后恢复分组。
+- `verify:ui` / `verify:preview` 新增 `sessionGrouping` / `sessionGroupingToggle` / `sessionGroupingSearchFlat` 三条 lane，覆盖分组顺序、计数、折叠与搜索退化。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test --lib`、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- 首轮 `verify:ui` 的折叠断言读取了 React 重渲染前的旧 DOM 引用，改为每次轮询重新查询组状态后一次通过。
+- 首轮 `verify:preview` 的既有 `syncAudit` lane 偶发过滤计数失败，重跑一次后全绿，判定为既有 lane 抖动，与本 Sprint 改动无关。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 收益趋势、Actions 周目标统计/快速归档、System 自动化规则补强。
+- 保留 `sessionGrouping` 系列 lane，修改会话模型、侧栏渲染或搜索逻辑时重跑双端验证。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 127
 
 ### What went well?

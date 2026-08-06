@@ -532,6 +532,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。`update_thought_type` 复用 `thoughts.type` 既有列更新类型，`delete_thought` 直接删除 `thoughts` 行；`thoughts` 无外键依赖，删除无需级联。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `thoughts` 数组，更新或删除后写回同一 key，不新增 localStorage key。
 
+## Sprint 128：AI Studio 会话分组
+
+无表结构变更。会话分组是运行时计算：按 `sessions.created_at` 生成 today / yesterday / 7d / older 分组，`pinned` 仍复用既有 `pinned` 列；折叠状态仅保存在前端组件状态，不写入 SQLite。浏览器 fallback 继续复用 `ai-workbench:db:v1` 的 `sessions` 数组，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。

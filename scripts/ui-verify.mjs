@@ -7375,6 +7375,180 @@ try {
   results.sessionSearchHistoryStats = sessionSearchHistoryStats;
   laneLog('sessionSearchHistoryStats ok');
 
+  const sessionGrouping = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    if (searchInput.value) {
+      setter.call(searchInput, "");
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const groupsReady = await waitFor(
+      () => document.querySelectorAll("[data-session-group]").length >= 2,
+    );
+    if (!groupsReady) {
+      return {
+        ok: false,
+        reason: "session groups missing",
+        groups: [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+          el.getAttribute("data-session-group-label"),
+        ),
+      };
+    }
+    const groupLabels = [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+      el.getAttribute("data-session-group-label"),
+    );
+    const firstLabel = groupLabels[0] ?? "";
+    const pinned = document.querySelector('[data-session-group="pinned"]');
+    const pinnedCount = Number(
+      pinned?.querySelector("[data-session-group-count]")?.getAttribute("data-session-group-count") || 0,
+    );
+    const pinnedRows = pinned?.querySelectorAll("[data-session-pin]").length ?? 0;
+    const today = document.querySelector('[data-session-group="today"]');
+    const todayCount = Number(
+      today?.querySelector("[data-session-group-count]")?.getAttribute("data-session-group-count") || 0,
+    );
+    const visibleRows = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+    const sumCounts = [...document.querySelectorAll("[data-session-group-count]")].reduce(
+      (sum, el) => sum + Number(el.getAttribute("data-session-group-count") || 0),
+      0,
+    );
+    const ok =
+      groupLabels.includes("pinned") &&
+      groupLabels.includes("today") &&
+      firstLabel === "pinned" &&
+      pinnedCount >= 1 &&
+      pinnedRows === pinnedCount &&
+      todayCount >= 1 &&
+      sumCounts === visibleRows;
+    return {
+      ok,
+      groupLabels,
+      pinnedCount,
+      pinnedRows,
+      todayCount,
+      visibleRows,
+      sumCounts,
+    };
+  })()`);
+  results.sessionGrouping = sessionGrouping;
+  if (!sessionGrouping.ok) {
+    throw new Error(
+      `AI Studio session grouping assertion failed: ${JSON.stringify(sessionGrouping)}`,
+    );
+  }
+  laneLog('sessionGrouping ok');
+
+  const sessionGroupingToggle = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const readPinned = () => {
+      const header = document.querySelector('[data-session-group="pinned"]');
+      const toggle = header?.querySelector('[data-session-group-toggle="pinned"]');
+      return {
+        collapsed: toggle?.getAttribute("data-session-group-collapsed") === "true",
+        rows: header?.querySelectorAll("[data-session-pin]").length ?? 0,
+      };
+    };
+    const firstToggle = document.querySelector('[data-session-group-toggle="pinned"]');
+    if (!firstToggle) return { ok: false, reason: "pinned group toggle missing" };
+    firstToggle.click();
+    const collapsedOk = await waitFor(() => {
+      const state = readPinned();
+      return state.collapsed && state.rows === 0;
+    });
+    const secondToggle = document.querySelector('[data-session-group-toggle="pinned"]');
+    if (!secondToggle) return { ok: false, reason: "pinned group toggle missing on expand" };
+    secondToggle.click();
+    const expandedOk = await waitFor(() => {
+      const state = readPinned();
+      return !state.collapsed && state.rows >= 1;
+    });
+    const finalState = readPinned();
+    return {
+      ok: collapsedOk && expandedOk,
+      collapsedOk,
+      expandedOk,
+      finalState,
+    };
+  })()`);
+  results.sessionGroupingToggle = sessionGroupingToggle;
+  if (!sessionGroupingToggle.ok) {
+    throw new Error(
+      `AI Studio session grouping toggle assertion failed: ${JSON.stringify(
+        sessionGroupingToggle,
+      )}`,
+    );
+  }
+  laneLog('sessionGroupingToggle ok');
+
+  const sessionGroupingSearchFlat = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(searchInput, "alpha");
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const flatReady = await waitFor(
+      () =>
+        document.querySelectorAll("[data-session-group]").length === 0 &&
+        document.querySelectorAll("main aside button[aria-label='Open session']").length >= 1,
+    );
+    const flatRows = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+    setter.call(searchInput, "");
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const groupsRestored = await waitFor(
+      () => document.querySelectorAll("[data-session-group]").length >= 2,
+    );
+    const groupLabels = [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+      el.getAttribute("data-session-group-label"),
+    );
+    return {
+      ok: flatReady && flatRows >= 1 && groupsRestored && groupLabels.includes("pinned"),
+      flatReady,
+      flatRows,
+      groupsRestored,
+      groupLabels,
+    };
+  })()`);
+  results.sessionGroupingSearchFlat = sessionGroupingSearchFlat;
+  if (!sessionGroupingSearchFlat.ok) {
+    throw new Error(
+      `AI Studio session grouping search flat assertion failed: ${JSON.stringify(
+        sessionGroupingSearchFlat,
+      )}`,
+    );
+  }
+  laneLog('sessionGroupingSearchFlat ok');
+
   laneLog('providerToggled: clicking System');
   await clickDock('System');
   const providerToggled = await evaluate(`(async () => {
