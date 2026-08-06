@@ -40,6 +40,26 @@
 - 下个 Sprint 候选：Actions Focus 周视图与完成归档、Projects 收益/进度汇总导出、Knowledge 文档标签分类视图、System Provider 批量测试、AI Studio 会话分组/归档。
 - 保持 `providerE2EStream` lane，改动 Provider 卡片或流式命令时重跑 `verify:ui` / `verify:preview`。
 
+## Sprint 116
+
+### What went well?
+
+- `tasks` 表新增 `completed_at`：Rust `Task` / 浏览器 `Task` 同构，旧库幂等迁移；`update_task_status` 完成时自动记录完成时间，`set_task_due_date` 支持按 `YYYY-MM-DD` 指派。
+- Actions Today Focus 升级为一周视图：7 天条带展示每日任务数与完成态，周进度条汇总，焦点任务卡提供一键改派次日按钮；完成归档支持恢复回今日焦点。
+- `verify:ui` / `verify:preview` 新增 `focusWeekArchive` / `focusWeekPersisted` lane：创建任务、改派次日、完成、归档、恢复、切换回今天与 reload 持久化全链路断言。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（123 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- lane 首轮把“明天”按周一顺延计算，实际任务改派为今天次日，导致点击了错误的日期 chip；改为从周条带中定位今天再取后一天后稳定。
+- 恢复归档首轮点击了第一条恢复按钮，但归档可能含多个完成项；改为定位目标任务行内的恢复按钮，并校验该任务从归档消失。
+
+### Action Items
+
+- 下一 Sprint 候选：Projects 收益/进度汇总导出、Knowledge 文档标签分类视图、System Provider 批量测试、AI Studio 会话分组/归档。
+- 保留 `focusWeekArchive` lane，修改 Focus 卡片、任务字段或归档逻辑时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 113
 
 ### What went well?

@@ -23,6 +23,7 @@ export type Task = {
   status: TaskStatus;
   isToday: boolean;
   dueDate: string | null;
+  completedAt: number | null;
   createdAt: number;
 };
 
@@ -681,6 +682,7 @@ function seedShape(): LocalShape {
         status: 'in_progress',
         isToday: true,
         dueDate: null,
+        completedAt: null,
         createdAt: now - 3000,
       },
       {
@@ -689,6 +691,7 @@ function seedShape(): LocalShape {
         status: 'todo',
         isToday: true,
         dueDate: null,
+        completedAt: null,
         createdAt: now - 2000,
       },
       {
@@ -697,6 +700,7 @@ function seedShape(): LocalShape {
         status: 'todo',
         isToday: false,
         dueDate: null,
+        completedAt: null,
         createdAt: now - 1000,
       },
     ],
@@ -1095,6 +1099,7 @@ export async function createTask(title: string, isToday: boolean): Promise<Task>
     status: 'todo',
     isToday,
     dueDate: null,
+    completedAt: null,
     createdAt: Date.now(),
   };
   shape.tasks.unshift(task);
@@ -1109,7 +1114,10 @@ export async function updateTaskStatus(id: string, status: TaskStatus): Promise<
   }
   const shape = readLocal();
   const task = shape.tasks.find((t) => t.id === id);
-  if (task) task.status = status;
+  if (task) {
+    task.status = status;
+    task.completedAt = status === 'done' ? Date.now() : null;
+  }
   writeLocal(shape);
 }
 
@@ -1121,6 +1129,17 @@ export async function setTaskToday(id: string, isToday: boolean): Promise<void> 
   const shape = readLocal();
   const task = shape.tasks.find((t) => t.id === id);
   if (task) task.isToday = isToday;
+  writeLocal(shape);
+}
+
+export async function setTaskDueDate(id: string, dueDate: string | null): Promise<void> {
+  if (isTauri()) {
+    await invoke('set_task_due_date', { id, dueDate });
+    return;
+  }
+  const shape = readLocal();
+  const task = shape.tasks.find((t) => t.id === id);
+  if (task) task.dueDate = dueDate;
   writeLocal(shape);
 }
 

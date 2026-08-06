@@ -1,4 +1,13 @@
-import { CalendarDays, Check, Flame, ListChecks, Plus, Target } from 'lucide-react';
+import {
+  ArchiveRestore,
+  CalendarDays,
+  Check,
+  Flame,
+  ListChecks,
+  Plus,
+  RotateCcw,
+  Target,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import BentoCard from '../components/ui/BentoCard';
@@ -6,6 +15,26 @@ import StatPill from '../components/ui/StatPill';
 import { resetTilt, tiltCard } from '../lib/tilt';
 
 const HABIT_COLORS = ['emerald', 'blue', 'amber', 'rose'] as const;
+
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+
+function dayKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function formatDayLabel(key: string): string {
+  const [, m, d] = key.split('-').map(Number);
+  return `${m}/${d}`;
+}
+
+function formatArchiveTime(ms: number | null | undefined): string {
+  if (!ms) return '';
+  const date = new Date(ms);
+  return `${dayKey(date)} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
 
 const colorClass: Record<
   (typeof HABIT_COLORS)[number],
@@ -40,6 +69,7 @@ export default function ActionsView() {
   const addTask = useWorkbenchStore((s) => s.addTask);
   const setTaskStatus = useWorkbenchStore((s) => s.setTaskStatus);
   const setTaskToday = useWorkbenchStore((s) => s.setTaskToday);
+  const setTaskDueDate = useWorkbenchStore((s) => s.setTaskDueDate);
   const addHabit = useWorkbenchStore((s) => s.addHabit);
   const toggleHabit = useWorkbenchStore((s) => s.toggleHabit);
   const addScheduleEvent = useWorkbenchStore((s) => s.addScheduleEvent);
@@ -53,11 +83,31 @@ export default function ActionsView() {
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('12:00');
   const [eventTag, setEventTag] = useState('work');
+  const [selectedDay, setSelectedDay] = useState(dayKey(new Date()));
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
   const todayDone = todayTasks.filter((t) => t.status === 'done').length;
   const focusProgress = Math.min(todayDone / 3, 1);
+  const now = new Date();
+  const mondayOffset = (now.getDay() + 6) % 7;
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+    return dayKey(d);
+  });
+  const weekTasks = tasks.filter((t) =>
+    t.dueDate ? weekDays.includes(t.dueDate) : t.isToday && selectedDay === dayKey(now),
+  );
+  const weekDone = weekTasks.filter((t) => t.status === 'done').length;
+  const weekProgress = weekTasks.length > 0 ? weekDone / weekTasks.length : 0;
+  const dayTasks = tasks.filter(
+    (t) => t.dueDate === selectedDay || (!t.dueDate && t.isToday && selectedDay === dayKey(now)),
+  );
+  const archived = tasks
+    .filter((t) => t.status === 'done' && t.completedAt)
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
+    .slice(0, 6);
   const habitDone = habits.filter((h) => h.doneToday).length;
   const eventDone = scheduleEvents.filter((e) => e.done).length;
   const nextEvent = scheduleEvents.find((e) => !e.done);
@@ -131,6 +181,59 @@ export default function ActionsView() {
         </BentoCard>
 
         <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={7}>
+          <div className="mb-3 grid grid-cols-7 gap-1">
+            {weekDays.map((key, i) => {
+              const dayList = tasks.filter((t) => t.dueDate === key);
+              const doneCount = dayList.filter((t) => t.status === 'done').length;
+              const allDone = dayList.length > 0 && doneCount === dayList.length;
+              const isSelected = selectedDay === key;
+              const isToday = key === dayKey(now);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  data-focus-week-day={key}
+                  data-focus-day-done={allDone ? 'true' : 'false'}
+                  onClick={() => setSelectedDay(key)}
+                  className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
+                    isSelected
+                      ? 'accent-border accent-bg-15 accent-text-strong'
+                      : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <span className="flex items-center gap-1">
+                    {WEEKDAY_LABELS[i]}
+                    {isToday && <span className="rounded bg-white/10 px-1">T</span>}
+                  </span>
+                  <span className="font-mono text-[9px] opacity-70">{formatDayLabel(key)}</span>
+                  <span className="flex h-3.5 items-center gap-0.5 text-slate-400">
+                    {dayList.length > 0 ? (
+                      <>
+                        <span className="font-mono">
+                          {doneCount}/{dayList.length}
+                        </span>
+                        {allDone && <Check size={9} className="text-emerald-400" />}
+                      </>
+                    ) : (
+                      <span className="text-slate-700">-</span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mb-3 flex items-center gap-2">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+              <div
+                data-focus-week-bar
+                className="progress-strip-inner h-full rounded-full accent-bg"
+                style={{ transform: `scaleX(${weekProgress})` }}
+              />
+            </div>
+            <span data-focus-week-total className="font-mono text-[10px] text-slate-500">
+              week {weekDone}/{weekTasks.length}
+            </span>
+          </div>
           <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
             <div
               className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
@@ -138,18 +241,20 @@ export default function ActionsView() {
             />
           </div>
           <div className="grid gap-2 md:grid-cols-3">
-            {todayTasks.map((t) => (
-              <button
+            {dayTasks.map((t) => (
+              <div
                 key={t.id}
-                type="button"
-                onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
+                data-task-row={t.id}
                 className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition-colors ${
                   t.status === 'done'
                     ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
                     : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]'
                 }`}
               >
-                <span
+                <button
+                  type="button"
+                  onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
+                  aria-label={`Toggle ${t.title}`}
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border ${
                     t.status === 'done'
                       ? 'check-pop border-emerald-500/40 bg-emerald-500/20'
@@ -157,16 +262,74 @@ export default function ActionsView() {
                   }`}
                 >
                   {t.status === 'done' && <Check size={11} />}
-                </span>
-                <span className="truncate">{t.title}</span>
-              </button>
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{t.title}</div>
+                  <span className="mt-0.5 block font-mono text-[9px] text-slate-600">
+                    {t.dueDate ? formatDayLabel(t.dueDate) : dayKey(now)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  data-task-next-day={t.id}
+                  aria-label={`Move ${t.title} to next day`}
+                  onClick={() => {
+                    const nextIndex = weekDays.indexOf(dayKey(now));
+                    const next = weekDays[(nextIndex + 1) % weekDays.length];
+                    void setTaskDueDate(t.id, next);
+                    if (t.isToday) void setTaskToday(t.id, false);
+                  }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
+                  title="Move to tomorrow"
+                >
+                  <CalendarDays size={11} />
+                </button>
+              </div>
             ))}
-            {todayTasks.length < 3 && (
+            {dayTasks.length < 3 && (
               <div className="flex items-center justify-center rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-[11px] text-slate-600">
-                Add up to 3 focus items
+                {selectedDay === dayKey(now) ? 'Add up to 3 focus items' : 'No focus on this day'}
               </div>
             )}
           </div>
+          {archived.length > 0 && (
+            <details
+              data-focus-archive
+              className="mt-3 rounded-xl border border-white/10 bg-white/[0.02]"
+            >
+              <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11px] text-slate-400 hover:text-slate-300">
+                <ArchiveRestore size={12} />
+                <span data-focus-archive-count>Completed archive · {archived.length}</span>
+              </summary>
+              <div className="flex flex-col gap-1 border-t border-white/5 p-2">
+                {archived.map((t) => (
+                  <div
+                    key={t.id}
+                    data-focus-archive-row
+                    className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-400 hover:bg-white/[0.04]"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-slate-300">{t.title}</span>
+                    <span className="font-mono text-[9px] text-slate-600">
+                      {formatArchiveTime(t.completedAt)}
+                    </span>
+                    <button
+                      type="button"
+                      data-focus-archive-restore
+                      aria-label={`Restore ${t.title}`}
+                      onClick={() => {
+                        void setTaskStatus(t.id, 'todo');
+                        void setTaskDueDate(t.id, null);
+                        void setTaskToday(t.id, true);
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </BentoCard>
 
         <BentoCard title="Habits" subtitle="打卡与连续天数" icon={Flame} colSpan={5}>
