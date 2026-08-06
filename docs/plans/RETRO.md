@@ -1,5 +1,25 @@
 # Sprint Retrospective
 
+## Sprint 112
+
+### What went well?
+
+- MOA 链式路由落地：`stream_ai_message` 新增 `moa_chain`，按优先级顺序串行请求前 3 个 Provider；后续请求在原始 messages 后追加 `[Previous agent output from X]` 上下文，失败只插入错误片段并继续。
+- 浏览器 fallback 同构：`sendAiMessageStream` 新增 `moaChain`，串行消费真实 SSE / NDJSON，取消语义与并行 MOA 一致；`appendMoaChainContext` 提供统一上下文格式。
+- AI Studio MOA 新增 Parallel / Chain 切换（`data-moa-chain-mode`），Chain 时头部展示 `data-moa-chain-badge`（A → B → C），MOA badge 状态显示 chain，Inspector 展示 Chain / Final。
+- `verify:ui` / `verify:preview` 新增 `moaChain` lane：3 个本地 SSE mock 断言请求顺序 chain-a → chain-b → chain-c、`maxActive <= 1`、上下文传递与链式徽标。
+- `npm run build`、lint、prettier、`cargo fmt` / `cargo clippy --lib -- -D warnings`、`cargo test --lib`（122 条）、`verify:ui` / `verify:preview` 全绿。
+
+### What went wrong?
+
+- chain 断言首轮误判：上一 lane 的并行 MOA 消息仍留在会话历史里，`document.body.innerText` 含有旧的 `## MOA Consensus`；改为只检查最新一条 assistant 消息后稳定，同时避免旧链路文本造成 false positive。
+
+### Action Items
+
+- 下一 Sprint 候选：审计跨时间轴图、AI 复盘结果一键保存更多入口、真实 Provider 端到端流式联调。
+- 保留 `moaChain` lane，修改 MOA 执行拓扑、链式上下文格式或 AI Studio 模式控件时重跑 `verify:ui` / `verify:preview`。
+- Connection Layer 与 Monetization Workbench 继续搁置，后续有需要再开发。
+
 ## Sprint 111
 
 ### What went well?

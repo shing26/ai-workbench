@@ -6692,6 +6692,192 @@ try {
     if (moaServer) moaServer.close();
   }
 
+  let chainServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const requestOrder = [];
+    const requestBodies = [];
+    chainServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const tag = route.includes('provider-a')
+          ? 'Alpha'
+          : route.includes('provider-b')
+            ? 'Beta'
+            : 'Gamma';
+        const key = route.includes('provider-a')
+          ? 'chain-a'
+          : route.includes('provider-b')
+            ? 'chain-b'
+            : 'chain-c';
+        requestOrder.push(key);
+        try {
+          requestBodies.push(JSON.parse(body));
+        } catch {
+          requestBodies.push(null);
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+        setTimeout(() => {
+          res.write(`data: {"choices":[{"delta":{"content":"chain"}}]}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 300);
+      });
+    });
+    await new Promise((resolve) => chainServer.listen(0, '127.0.0.1', resolve));
+    const chainPort = chainServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "chain-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          isActive: true,
+        },
+        {
+          id: "chain-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          isActive: true,
+        },
+        {
+          id: "chain-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const chainUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const chainBtn = document.querySelector('[data-moa-chain-mode="chain"]');
+      if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
+      chainBtn.click();
+      await sleep(120);
+      const pressed = document
+        .querySelector('[data-moa-chain-mode="chain"]')
+        ?.getAttribute("aria-pressed");
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "chain moa check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let allSeen = false;
+      let chainBadgeSeen = false;
+      let consensusAbsent = true;
+      let busyEnded = false;
+      let text = "";
+      for (let i = 0; i < 80; i++) {
+        text =
+          [...document.querySelectorAll('[data-message-id]')].at(-1)?.textContent ?? '';
+        const bodyText = document.body.innerText;
+        allSeen =
+          text.includes("## Alpha AI") &&
+          text.includes("Alpha answer chain") &&
+          text.includes("## Beta AI") &&
+          text.includes("Beta answer chain") &&
+          text.includes("## Gamma AI") &&
+          text.includes("Gamma answer chain");
+        chainBadgeSeen = bodyText.includes("Alpha AI → Beta AI → Gamma AI");
+        consensusAbsent = !text.includes("## MOA Consensus");
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot");
+        if (allSeen && chainBadgeSeen && consensusAbsent && busyEnded) break;
+        await sleep(100);
+      }
+      return {
+        ok: allSeen && chainBadgeSeen && consensusAbsent,
+        allSeen,
+        chainBadgeSeen,
+        consensusAbsent,
+        busyEnded,
+        pressed,
+        snippet: text.slice(0, 400),
+      };
+    })()`);
+    await clickDock('System');
+    const bodyByRoute = Object.fromEntries(
+      requestOrder.map((key, index) => [key, requestBodies[index]]),
+    );
+    const hasContext = (route, name, output) =>
+      !!bodyByRoute[route]?.messages?.some(
+        (message) =>
+          message.content?.includes(`[Previous agent output from ${name}]`) &&
+          message.content?.includes(output),
+      );
+    const chain = {
+      ...chainUi,
+      maxActive,
+      requestOrder,
+      firstNoContext: !bodyByRoute['chain-a']?.messages?.some((message) =>
+        message.content?.includes('[Previous agent output from'),
+      ),
+      betaContext: hasContext('chain-b', 'Alpha AI', 'Alpha answer chain'),
+      gammaContext: hasContext('chain-c', 'Beta AI', 'Beta answer chain'),
+    };
+    if (
+      !chain.ok ||
+      chain.pressed !== 'true' ||
+      chain.maxActive > 1 ||
+      chain.requestOrder.join(',') !== 'chain-a,chain-b,chain-c' ||
+      !chain.firstNoContext ||
+      !chain.betaContext ||
+      !chain.gammaContext
+    ) {
+      throw new Error(`MOA chain assertion failed: ${JSON.stringify(chain)}`);
+    }
+    results.moaChain = chain;
+    laneLog('moaChain ok');
+  } finally {
+    if (chainServer) chainServer.close();
+  }
+
   let fallbackServer = null;
   try {
     fallbackServer = http.createServer((req, res) => {

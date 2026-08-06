@@ -466,6 +466,10 @@ CREATE INDEX IF NOT EXISTS idx_vault_watch_events_vault_created
 
 无表结构变更。`error_log_summary` 新增 hour 粒度（UTC 整点对齐）与可选 `since_ms` / `until_ms` 过滤，SQL 在 `source` / `severity` / `device_id` 基础上追加 `updated_at` 区间条件；浏览器 fallback 在 localStorage logs 上按 `updatedAt` 过滤后执行同一分桶。System 卡片按 24h / 7d / 30d 传入窗口，峰值告警由前端在返回的 buckets 上计算，不落库。
 
+## Sprint 112：MOA 链式路由
+
+无表结构变更。链式路由是运行时行为：`stream_ai_message(moa_chain=true)` 按优先级串行请求前 3 个启用 Provider，后续请求的上下文以内存追加的 user 消息承载（`[Previous agent output from X]`），最终仍由 `chat_messages` 落库，不新增表、索引或字段。浏览器 fallback 继续使用 `ai-workbench:db:v1` 的 `providers` / `chatMessages`，不新增 localStorage key。
+
 ## Sprint 63：RAG 文档状态面板
 
 无表结构变更。`list_knowledge_files` 读取 `knowledge_files` 既有列（`id / path / title / tags / vault_path / indexed_at`），按 `indexed_at DESC, path ASC` 排序；`vault_path` 为空字符串的记录表示未归属任何 vault 的 legacy 文档，仍可单独过滤。
