@@ -2260,6 +2260,24 @@ pub fn toggle_habit(conn: &Connection, id: &str) -> Result<Habit> {
     Ok(habit)
 }
 
+pub fn update_habit_week_goal(conn: &Connection, id: &str, week_goal: i64) -> Result<Habit> {
+    let goal = week_goal.clamp(1, 31);
+    conn.execute(
+        "UPDATE habits SET week_goal = ?1 WHERE id = ?2",
+        params![goal, id],
+    )?;
+    list_habits(conn)?
+        .into_iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_habit(conn: &Connection, id: &str) -> Result<bool> {
+    conn.execute("DELETE FROM habit_logs WHERE habit_id = ?1", params![id])?;
+    let removed = conn.execute("DELETE FROM habits WHERE id = ?1", params![id])?;
+    Ok(removed > 0)
+}
+
 pub fn list_schedule_events(conn: &Connection) -> Result<Vec<ScheduleEvent>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, start_time, done, tag, created_at FROM schedule_events ORDER BY start_time ASC, created_at ASC",
@@ -5446,6 +5464,46 @@ mod tests {
 
         let missing = update_thought_tags(&conn, "missing-thought", "#life");
         assert!(matches!(missing, Err(rusqlite::Error::QueryReturnedNoRows)));
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn habit_week_goal_edit_and_delete_persist() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-manage-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let habit = create_habit(&conn, "Deep work", 3, "blue").unwrap();
+        toggle_habit(&conn, &habit.id).unwrap();
+        let updated = update_habit_week_goal(&conn, &habit.id, 7).unwrap();
+        assert_eq!(updated.week_goal, 7);
+        let clamped = update_habit_week_goal(&conn, &habit.id, 99).unwrap();
+        assert_eq!(clamped.week_goal, 31);
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let saved = list_habits(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|h| h.id == habit.id)
+            .expect("updated habit should be listed");
+        assert_eq!(saved.week_goal, 31);
+
+        let deleted = delete_habit(&conn, &habit.id).unwrap();
+        assert!(deleted);
+        let logs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?1",
+                params![habit.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(logs, 0);
+        assert!(!list_habits(&conn).unwrap().iter().any(|h| h.id == habit.id));
+        assert!(!delete_habit(&conn, &habit.id).unwrap());
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();

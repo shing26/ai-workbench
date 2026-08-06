@@ -4,11 +4,14 @@ import {
   Check,
   Flame,
   ListChecks,
+  Pencil,
   Plus,
   RotateCcw,
   Target,
+  Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
+import * as db from '../lib/db';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import BentoCard from '../components/ui/BentoCard';
 import StatPill from '../components/ui/StatPill';
@@ -72,6 +75,8 @@ export default function ActionsView() {
   const setTaskDueDate = useWorkbenchStore((s) => s.setTaskDueDate);
   const addHabit = useWorkbenchStore((s) => s.addHabit);
   const toggleHabit = useWorkbenchStore((s) => s.toggleHabit);
+  const updateHabitWeekGoal = useWorkbenchStore((s) => s.updateHabitWeekGoal);
+  const deleteHabit = useWorkbenchStore((s) => s.deleteHabit);
   const addScheduleEvent = useWorkbenchStore((s) => s.addScheduleEvent);
   const toggleEventDone = useWorkbenchStore((s) => s.toggleEventDone);
 
@@ -84,6 +89,10 @@ export default function ActionsView() {
   const [eventTime, setEventTime] = useState('12:00');
   const [eventTag, setEventTag] = useState('work');
   const [selectedDay, setSelectedDay] = useState(dayKey(new Date()));
+  const [habitGoalEdits, setHabitGoalEdits] = useState<Record<string, string>>({});
+  const [habitEditId, setHabitEditId] = useState<string | null>(null);
+  const [habitEditResults, setHabitEditResults] = useState<Record<string, string>>({});
+  const [habitDeleteId, setHabitDeleteId] = useState<string | null>(null);
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
@@ -130,6 +139,27 @@ export default function ActionsView() {
     await addHabit(habitName.trim(), habitGoal, habitColor);
     setHabitName('');
     setHabitGoal(5);
+  };
+
+  const startHabitGoalEdit = (habit: db.Habit) => {
+    setHabitEditId(habit.id);
+    setHabitGoalEdits((prev) => ({ ...prev, [habit.id]: String(habit.weekGoal) }));
+    setHabitEditResults((prev) => ({ ...prev, [habit.id]: '' }));
+  };
+
+  const saveHabitGoal = async (habit: db.Habit) => {
+    const parsed = Number(habitGoalEdits[habit.id]);
+    const goal = Number.isFinite(parsed)
+      ? Math.max(1, Math.min(31, Math.round(parsed)))
+      : habit.weekGoal;
+    await updateHabitWeekGoal(habit.id, goal);
+    setHabitEditId(null);
+    setHabitEditResults((prev) => ({ ...prev, [habit.id]: 'Saved' }));
+  };
+
+  const confirmDeleteHabit = async (habit: db.Habit) => {
+    await deleteHabit(habit.id);
+    setHabitDeleteId(null);
   };
 
   const addEventItem = async () => {
@@ -411,6 +441,47 @@ export default function ActionsView() {
                         周 {weekCount}/{h.weekGoal}
                       </span>
                     </div>
+                    {habitEditId === h.id && (
+                      <div
+                        data-habit-week-editor={h.id}
+                        className="mb-1 mt-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1"
+                      >
+                        <span className="text-[9px] text-slate-500">Week goal</span>
+                        <input
+                          data-habit-week-input={h.id}
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={habitGoalEdits[h.id] ?? String(h.weekGoal)}
+                          onChange={(e) =>
+                            setHabitGoalEdits((prev) => ({ ...prev, [h.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void saveHabitGoal(h);
+                            }
+                          }}
+                          className="h-6 w-12 rounded-md border border-white/10 bg-black/20 px-1.5 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40"
+                        />
+                        <button
+                          type="button"
+                          data-habit-week-save={h.id}
+                          onClick={() => void saveHabitGoal(h)}
+                          className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                        >
+                          <Check size={10} /> Save
+                        </button>
+                        <button
+                          type="button"
+                          data-habit-week-cancel={h.id}
+                          onClick={() => setHabitEditId(null)}
+                          className="h-6 rounded-md border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
                     <div
                       data-habit-recent-days
                       className="mt-1 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[3px]"
@@ -432,14 +503,65 @@ export default function ActionsView() {
                     <div className="mt-0.5 text-[10px] text-slate-500">
                       {h.doneToday ? '今天已打卡' : `本周目标 ${h.weekGoal} 次`}
                     </div>
+                    {habitEditResults[h.id] && (
+                      <span
+                        data-habit-edit-result={h.id}
+                        className="mt-0.5 inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                      >
+                        {habitEditResults[h.id]}
+                      </span>
+                    )}
                   </div>
-                  <span
-                    data-habit-streak={h.currentStreak}
-                    className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500"
-                  >
-                    <Flame size={11} className={h.currentStreak >= 3 ? 'text-amber-400' : ''} />
-                    {h.currentStreak} 天
-                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span
+                      data-habit-streak={h.currentStreak}
+                      className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500"
+                    >
+                      <Flame size={11} className={h.currentStreak >= 3 ? 'text-amber-400' : ''} />
+                      {h.currentStreak} 天
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        data-habit-week-edit={h.id}
+                        title="Edit week goal"
+                        onClick={() => startHabitGoalEdit(h)}
+                        className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                      >
+                        <Pencil size={10} />
+                      </button>
+                      {habitDeleteId === h.id ? (
+                        <>
+                          <button
+                            type="button"
+                            data-habit-delete-confirm={h.id}
+                            onClick={() => void confirmDeleteHabit(h)}
+                            className="flex h-5 items-center rounded-lg bg-rose-500/20 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/30"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            data-habit-delete-cancel={h.id}
+                            onClick={() => setHabitDeleteId(null)}
+                            className="h-5 rounded-lg border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          data-habit-delete={h.id}
+                          title="Delete habit"
+                          onClick={() => setHabitDeleteId(h.id)}
+                          className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-rose-500/15 hover:text-rose-300"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               );
             })}
