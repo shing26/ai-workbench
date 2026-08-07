@@ -11,11 +11,13 @@ import {
   TrendingUp,
   Trash2,
   Wand2,
+  X,
 } from 'lucide-react';
 import { useState } from 'react';
 import * as db from '../lib/db';
 import { loadWeekPlanTemplates, weekPlanTemplateCounts } from '../lib/weekPlanTemplates';
 import { useWorkbenchStore } from '../stores/workbenchStore';
+import { useViewState } from '../stores/viewState';
 import BentoCard from '../components/ui/BentoCard';
 import StatPill from '../components/ui/StatPill';
 import { resetTilt, tiltCard } from '../lib/tilt';
@@ -76,6 +78,8 @@ export default function ActionsView() {
   const setTaskStatus = useWorkbenchStore((s) => s.setTaskStatus);
   const setTaskToday = useWorkbenchStore((s) => s.setTaskToday);
   const setTaskDueDate = useWorkbenchStore((s) => s.setTaskDueDate);
+  const updateTaskTitle = useWorkbenchStore((s) => s.updateTaskTitle);
+  const deleteTask = useWorkbenchStore((s) => s.deleteTask);
   const addHabit = useWorkbenchStore((s) => s.addHabit);
   const toggleHabit = useWorkbenchStore((s) => s.toggleHabit);
   const updateHabitWeekGoal = useWorkbenchStore((s) => s.updateHabitWeekGoal);
@@ -98,12 +102,16 @@ export default function ActionsView() {
     () => loadWeekPlanTemplates()[0]?.id ?? 'balanced-week',
   );
   const [weekPlanResult, setWeekPlanResult] = useState('');
-  const [selectedDay, setSelectedDay] = useState(dayKey(new Date()));
+  const [selectedDay, setSelectedDay] = useViewState('actions', 'selectedDay', dayKey(new Date()));
   const [habitGoalEdits, setHabitGoalEdits] = useState<Record<string, string>>({});
   const [habitEditId, setHabitEditId] = useState<string | null>(null);
   const [habitEditResults, setHabitEditResults] = useState<Record<string, string>>({});
   const [habitDeleteId, setHabitDeleteId] = useState<string | null>(null);
   const [archiveResult, setArchiveResult] = useState('');
+  const [taskRenameId, setTaskRenameId] = useState<string | null>(null);
+  const [taskRenameDraft, setTaskRenameDraft] = useState('');
+  const [taskDeleteId, setTaskDeleteId] = useState<string | null>(null);
+  const [archiveConfirming, setArchiveConfirming] = useState(false);
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
@@ -207,7 +215,7 @@ export default function ActionsView() {
   };
 
   const confirmDeleteHabit = async (habit: db.Habit) => {
-    await deleteHabit(habit.id);
+    await deleteHabit(habit.id, true);
     setHabitDeleteId(null);
   };
 
@@ -225,6 +233,12 @@ export default function ActionsView() {
   };
 
   const archiveWeekDone = async () => {
+    if (!archiveConfirming) {
+      setArchiveConfirming(true);
+      setArchiveResult('');
+      return;
+    }
+    setArchiveConfirming(false);
     const doneTasks = weekTasks.filter((t) => t.status === 'done');
     for (const t of doneTasks) {
       await setTaskToday(t.id, false);
@@ -363,11 +377,80 @@ export default function ActionsView() {
                   {t.status === 'done' && <Check size={11} />}
                 </button>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate">{t.title}</div>
-                  <span className="mt-0.5 block font-mono text-[9px] text-slate-600">
-                    {t.dueDate ? formatDayLabel(t.dueDate) : dayKey(now)}
-                  </span>
+                  {taskRenameId === t.id ? (
+                    <input
+                      data-task-rename-input
+                      value={taskRenameDraft}
+                      onChange={(e) => setTaskRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const value = taskRenameDraft.trim();
+                          if (value) void updateTaskTitle(t.id, value);
+                          setTaskRenameId(null);
+                        } else if (e.key === 'Escape') {
+                          setTaskRenameId(null);
+                        }
+                      }}
+                      autoFocus
+                      className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
+                    />
+                  ) : (
+                    <>
+                      <div className="truncate">{t.title}</div>
+                      <span className="mt-0.5 block font-mono text-[9px] text-slate-600">
+                        {t.dueDate ? formatDayLabel(t.dueDate) : dayKey(now)}
+                      </span>
+                    </>
+                  )}
                 </div>
+                <button
+                  type="button"
+                  data-task-rename
+                  aria-label={`Rename ${t.title}`}
+                  onClick={() => {
+                    setTaskRenameId(t.id);
+                    setTaskRenameDraft(t.title);
+                  }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
+                  title="Rename"
+                >
+                  <Pencil size={11} />
+                </button>
+                {taskDeleteId === t.id ? (
+                  <div className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-1.5 py-1">
+                    <span className="text-[9px] text-rose-300">Delete?</span>
+                    <button
+                      type="button"
+                      data-task-delete-confirm
+                      aria-label={`Confirm delete ${t.title}`}
+                      onClick={() => void deleteTask(t.id, true)}
+                      className="flex h-5 w-5 items-center justify-center rounded-md text-rose-300 hover:bg-rose-500/20"
+                    >
+                      <Check size={10} />
+                    </button>
+                    <button
+                      type="button"
+                      data-task-delete-cancel
+                      aria-label="Cancel delete"
+                      onClick={() => setTaskDeleteId(null)}
+                      className="flex h-5 w-5 items-center justify-center rounded-md text-slate-400 hover:bg-white/10"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-task-delete
+                    aria-label={`Delete ${t.title}`}
+                    onClick={() => setTaskDeleteId(t.id)}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+                    title="Delete"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                )}
                 <button
                   type="button"
                   data-task-next-day={t.id}
@@ -690,8 +773,64 @@ export default function ActionsView() {
                 <span
                   className={`min-w-0 flex-1 truncate text-xs ${t.status === 'done' ? 'text-slate-600 line-through' : 'text-slate-300'}`}
                 >
-                  {t.title}
+                  {taskRenameId === t.id ? (
+                    <input
+                      data-task-rename-input
+                      value={taskRenameDraft}
+                      onChange={(e) => setTaskRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const value = taskRenameDraft.trim();
+                          if (value) void updateTaskTitle(t.id, value);
+                          setTaskRenameId(null);
+                        } else if (e.key === 'Escape') {
+                          setTaskRenameId(null);
+                        }
+                      }}
+                      autoFocus
+                      className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
+                    />
+                  ) : (
+                    t.title
+                  )}
                 </span>
+                <button
+                  type="button"
+                  data-task-rename
+                  aria-label={`Rename ${t.title}`}
+                  onClick={() => {
+                    setTaskRenameId(t.id);
+                    setTaskRenameDraft(t.title);
+                  }}
+                  className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                  title="Rename"
+                >
+                  <Pencil size={11} />
+                </button>
+                {taskDeleteId === t.id ? (
+                  <button
+                    type="button"
+                    data-task-delete-confirm
+                    aria-label={`Confirm delete ${t.title}`}
+                    onClick={() => void deleteTask(t.id, true)}
+                    className="flex h-6 w-6 items-center justify-center rounded-lg text-rose-300 hover:bg-rose-500/20"
+                    title="Confirm delete"
+                  >
+                    <Check size={11} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-task-delete
+                    aria-label={`Delete ${t.title}`}
+                    onClick={() => setTaskDeleteId(t.id)}
+                    className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
+                    title="Delete"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void setTaskToday(t.id, !t.isToday)}
@@ -948,11 +1087,27 @@ export default function ActionsView() {
               <button
                 type="button"
                 data-week-review-archive
+                data-archive-confirming={archiveConfirming ? 'true' : 'false'}
                 onClick={() => void archiveWeekDone()}
-                className="flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+                className={`flex h-8 items-center gap-1.5 rounded-xl px-3 text-[11px] ${
+                  archiveConfirming
+                    ? 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
+                    : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                }`}
               >
-                <ArchiveRestore size={12} /> Archive done
+                <ArchiveRestore size={12} />
+                {archiveConfirming ? '确认归档？' : 'Archive done'}
               </button>
+              {archiveConfirming && (
+                <button
+                  type="button"
+                  data-week-review-archive-cancel
+                  onClick={() => setArchiveConfirming(false)}
+                  className="flex h-8 items-center rounded-xl border border-white/10 px-3 text-[11px] text-slate-400 hover:bg-white/[0.06]"
+                >
+                  取消
+                </button>
+              )}
               <span data-week-review-archived className="text-[11px] text-slate-400">
                 {archiveResult}
               </span>

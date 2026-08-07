@@ -29,6 +29,20 @@ mod db;
 mod webhook_condition;
 mod webhook_template;
 
+const CONFIRM_PREFIX: &str = "__requires_confirmation__:";
+
+fn confirmation_error(action: &str, object: &str) -> String {
+    format!("{CONFIRM_PREFIX}{action}:{object}")
+}
+
+fn requires_confirmation(action: &str, object: &str, confirmed: bool) -> Result<(), String> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err(confirmation_error(action, object))
+    }
+}
+
 #[derive(Default)]
 struct StreamCancellation {
     cancelled: std::sync::Mutex<HashSet<String>>,
@@ -1360,6 +1374,19 @@ fn set_task_due_date(
 }
 
 #[tauri::command]
+fn update_task_title(state: State<'_, db::Db>, id: String, title: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_task_title(&conn, &id, &title).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_task(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<(), String> {
+    requires_confirmation("delete_task", &id, confirmed)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_task(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_projects(state: State<'_, db::Db>) -> Result<Vec<db::Project>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_projects(&conn).map_err(|e| e.to_string())
@@ -1397,7 +1424,8 @@ fn update_project_material(
 }
 
 #[tauri::command]
-fn delete_project(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+fn delete_project(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<(), String> {
+    requires_confirmation("delete_project", &id, confirmed)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_project(&conn, &id).map_err(|e| e.to_string())
 }
@@ -1469,7 +1497,8 @@ fn update_thought_type(
 }
 
 #[tauri::command]
-fn delete_thought(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+fn delete_thought(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<(), String> {
+    requires_confirmation("delete_thought", &id, confirmed)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_thought(&conn, &id).map_err(|e| e.to_string())
 }
@@ -1938,7 +1967,8 @@ fn update_habit_week_goal(
 }
 
 #[tauri::command]
-fn delete_habit(state: State<'_, db::Db>, id: String) -> Result<bool, String> {
+fn delete_habit(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<bool, String> {
+    requires_confirmation("delete_habit", &id, confirmed)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_habit(&conn, &id).map_err(|e| e.to_string())
 }
@@ -7078,6 +7108,8 @@ pub fn run() {
             update_task_status,
             set_task_today,
             set_task_due_date,
+            update_task_title,
+            delete_task,
             list_projects,
             create_project,
             update_project,

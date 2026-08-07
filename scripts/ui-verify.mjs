@@ -361,14 +361,41 @@ try {
     throw new Error(`UI theme/stage assertion failed: ${JSON.stringify(results.uiDynamics)}`);
   }
 
+  const viewStatePersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const composer = document.querySelector("[data-composer]");
+    if (!composer) return { ok: false, reason: "composer missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(composer, "DRAFT-KEEP-CHECK");
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(150);
+    return { ok: true };
+  })()`);
+  results.viewStatePersistDraft = viewStatePersist;
+  await clickDock('Projects');
+  await clickDock('AI Studio');
+  const viewStatePersistCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const composer = document.querySelector("[data-composer]");
+    if (!composer) return { ok: false, reason: "composer missing after switch" };
+    await sleep(200);
+    return { ok: composer.value === "DRAFT-KEEP-CHECK", value: composer.value };
+  })()`);
+  results.viewStatePersist = viewStatePersistCheck;
+  if (!results.viewStatePersist?.ok) {
+    throw new Error(
+      `View state persistence assertion failed: ${JSON.stringify(results.viewStatePersist)}`,
+    );
+  }
+
   results.uiDynamics.agentSelect = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       const select = document.querySelector('select[aria-label="Dispatch agent"]');
       if (select && select.options.length >= 12) {
         return { ok: true, options: select.options.length, selected: select.value };
       }
-      await sleep(100);
+      await sleep(200);
     }
     const select = document.querySelector('select[aria-label="Dispatch agent"]');
     return { ok: false, options: select?.options.length ?? 0 };
@@ -2376,7 +2403,11 @@ try {
     }
     if (!edit) return { ok: false, reason: "project edit missing after trend reload" };
     const section = edit.closest("section");
-    const points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    let points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    for (let i = 0; i < 40 && points.length < 2; i++) {
+      await sleep(100);
+      points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    }
     const last = points[points.length - 1];
     const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
     const storedPoints = (stored.projectRevenueHistory ?? []).filter(
@@ -3315,6 +3346,68 @@ try {
     throw new Error(`Habit delete assertion failed: ${JSON.stringify(results.habitDeleteCheck)}`);
   }
 
+  const taskManage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Task rename delete check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task rename delete check"));
+    if (!row) return { ok: false, reason: "created task row not found" };
+    const renameBtn = row.querySelector("[data-task-rename]");
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(150);
+    const renameInput = row.querySelector("[data-task-rename-input]");
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    const setter2 = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter2.call(renameInput, "Task renamed check");
+    renameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(400);
+    const renamed = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!renamed) return { ok: false, reason: "rename not applied" };
+    const row2 = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!row2) return { ok: false, reason: "renamed row not found" };
+    const deleteBtn = row2.querySelector("[data-task-delete]");
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    await sleep(150);
+    const deleteCancel = row2.querySelector("[data-task-delete-cancel]");
+    if (!deleteCancel) return { ok: false, reason: "delete cancel missing" };
+    deleteCancel.click();
+    await sleep(150);
+    const stillThere = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!stillThere) return { ok: false, reason: "cancel delete removed task" };
+    const row3 = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task renamed check"));
+    const deleteBtn2 = row3.querySelector("[data-task-delete]");
+    deleteBtn2.click();
+    await sleep(150);
+    const deleteConfirm = row3.querySelector("[data-task-delete-confirm]");
+    if (!deleteConfirm) return { ok: false, reason: "delete confirm missing" };
+    deleteConfirm.click();
+    await sleep(600);
+    const gone = ![...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    return { ok: renamed && stillThere && gone, renamed, stillThere, gone };
+  })()`);
+  results.taskManage = taskManage;
+  if (!results.taskManage?.ok) {
+    throw new Error(`Task manage assertion failed: ${JSON.stringify(results.taskManage)}`);
+  }
+
   const focusWeekArchive = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const input = document.querySelector('input[placeholder="New task..."]');
@@ -3450,6 +3543,86 @@ try {
   })()`);
   results.focusWeekRestored = focusWeekRestored;
 
+  const taskManagePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Task persist check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist check"));
+    if (!row) return { ok: false, reason: "created persist task not found" };
+    const renameBtn = row.querySelector("[data-task-rename]");
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(150);
+    const renameInput = row.querySelector("[data-task-rename-input]");
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    const setter2 = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter2.call(renameInput, "Task persist renamed");
+    renameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(400);
+    return { ok: true };
+  })()`);
+  results.taskManagePersisted = taskManagePersisted;
+  await reloadAndWait();
+  await clickDock('Actions');
+  const taskManagePersistedCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const renamed = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task persist renamed"));
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist renamed"));
+    let deleteOk = false;
+    if (row) {
+      const deleteBtn = row.querySelector("[data-task-delete]");
+      if (deleteBtn) {
+        deleteBtn.click();
+        await sleep(150);
+        const cancelBtn = row.querySelector("[data-task-delete-cancel]");
+        if (cancelBtn) cancelBtn.click();
+        deleteOk = true;
+      }
+    }
+    await sleep(150);
+    return { ok: renamed && deleteOk, renamed, deleteOk };
+  })()`);
+  results.taskManagePersistedCheck = taskManagePersistedCheck;
+  if (!results.taskManagePersistedCheck?.ok) {
+    throw new Error(
+      `Task manage persistence assertion failed: ${JSON.stringify(results.taskManagePersistedCheck)}`,
+    );
+  }
+  const taskManagePersistedCleanup = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist renamed"));
+    if (!row) return { ok: false, reason: "persist task row not found for cleanup" };
+    const deleteBtn = row.querySelector("[data-task-delete]");
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    await sleep(150);
+    const confirmBtn = row.querySelector("[data-task-delete-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing" };
+    confirmBtn.click();
+    await sleep(500);
+    return { ok: true };
+  })()`);
+  results.taskManagePersistedCleanup = taskManagePersistedCleanup;
+  if (!results.taskManagePersistedCleanup?.ok) {
+    throw new Error(
+      `Task manage cleanup assertion failed: ${JSON.stringify(results.taskManagePersistedCleanup)}`,
+    );
+  }
+
   const weekReviewStats = await evaluate(`(() => {
     const card = document.querySelector("[data-week-review]");
     if (!card) return { ok: false, reason: "week review card missing" };
@@ -3514,6 +3687,10 @@ try {
     const archiveBtn = document.querySelector("[data-week-review-archive]");
     if (!archiveBtn) return { ok: false, reason: "week review archive button missing" };
     archiveBtn.click();
+    await sleep(200);
+    const archiveBtn2 = document.querySelector("[data-week-review-archive]");
+    const armed = archiveBtn2?.getAttribute("data-archive-confirming") === "true";
+    archiveBtn2?.click();
     await sleep(800);
     const archivedText = document.querySelector("[data-week-review-archived]")?.textContent ?? "";
     const activeVisible = [...document.querySelectorAll("[data-task-row]")]
@@ -3521,7 +3698,8 @@ try {
     const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
       .some((el) => (el.textContent || "").includes("Week review archive check"));
     return {
-      ok: archivedText.includes("1") && !activeVisible && archiveRow,
+      ok: armed && archivedText.includes("1") && !activeVisible && archiveRow,
+      armed,
       archivedText,
       activeVisible,
       archiveRow,
@@ -7641,6 +7819,9 @@ try {
     }
     const saved = JSON.parse(localStorage.getItem("ai-workbench:webhook-retention:v1") || "null");
     pruneBtn().click();
+    await sleep(200);
+    const pruneArmed = !!document.querySelector("[data-webhook-retention-prune-cancel]");
+    pruneBtn().click();
     let pruneResult = "";
     for (let i = 0; i < 20; i++) {
       pruneResult = result();
@@ -7670,7 +7851,7 @@ try {
       statsAfter.includes("3 total") &&
       statsAfter.includes("2 queued") &&
       statsAfter.includes("1 ok");
-    return { ok, savedResult, pruneResult, statsAfter, ids, saved };
+    return { ok, savedResult, pruneResult, statsAfter, ids, saved, pruneArmed };
   })()`);
   if (!webhookRetention.ok) {
     throw new Error(`Webhook retention assertion failed: ${JSON.stringify(webhookRetention)}`);
@@ -8805,10 +8986,14 @@ try {
       };
     }
     clearBtn.click();
+    await sleep(200);
+    const clearBtn2 = document.querySelector("[data-sync-audit-clear]");
+    const clearArmed = !!document.querySelector("[data-sync-audit-clear-cancel]");
+    clearBtn2?.click();
     await sleep(300);
     const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
     return {
-      ok: mergeSeen && resolveSeen && filterOk && rangeOk && customOk && exportOk && cleared,
+      ok: mergeSeen && resolveSeen && filterOk && rangeOk && customOk && exportOk && cleared && clearArmed,
       mergeSeen,
       resolveSeen,
       filterOk,
@@ -8816,6 +9001,7 @@ try {
       customOk,
       exportOk,
       cleared,
+      clearArmed,
       count: items.length,
       filteredCount: filteredItems.length,
       exportedText,
@@ -10994,18 +11180,51 @@ try {
       document
         .querySelector('[data-provider-id="catalog-provider"] [data-provider-models-detect]')
         ?.click();
-      await sleep(300);
-      const orderAfterPick = [
-        ...document.querySelectorAll(
-          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
-        ),
-      ]
-        .map((b) => b.getAttribute("data-provider-model-option"))
-        .filter(Boolean);
-      document
-        .querySelector('[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]')
-        ?.click();
-      await sleep(200);
+      let orderAfterPick = [];
+      for (let i = 0; i < 30; i++) {
+        orderAfterPick = [
+          ...document.querySelectorAll(
+            '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+          ),
+        ]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (orderAfterPick.length >= 4) break;
+        await sleep(100);
+      }
+      const metaEditBtn = document.querySelector(
+        '[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]',
+      );
+      metaEditBtn?.click();
+      let metaReady = false;
+      for (let i = 0; i < 30; i++) {
+        const input = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-input="contextWindow"]',
+        );
+        if (input) {
+          metaReady = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!metaReady) {
+        const metaEditBtn2 = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]',
+        );
+        metaEditBtn2?.click();
+        for (let i = 0; i < 30; i++) {
+          const input = document.querySelector(
+            '[data-provider-id="catalog-provider"] [data-model-meta-input="contextWindow"]',
+          );
+          if (input) {
+            metaReady = true;
+            break;
+          }
+          await sleep(100);
+        }
+      }
+      if (!metaReady) return { ok: false, reason: "meta input missing contextWindow" };
+      await sleep(100);
       const metaValues = {
         contextWindow: "256000",
         inputPricePerMtok: "5",
@@ -12117,7 +12336,7 @@ try {
       let betaFailed = false;
       let gammaStopSeen = false;
       let gammaLaneKey = "";
-      for (let i = 0; i < 80; i++) {
+      for (let i = 0; i < 120; i++) {
         const bodyText = document.body.innerText;
         const messages = [...document.querySelectorAll('[data-message-id]')];
         const gammaMsg = messages.find((el) => el.textContent?.includes("## Gamma AI"));
@@ -12360,6 +12579,19 @@ try {
       if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
       chainBtn.click();
       await sleep(120);
+      let providersReady = false;
+      for (let i = 0; i < 40; i++) {
+        const providerSelects = [...document.querySelectorAll("main select")];
+        const select = providerSelects.find(
+          (s) => s.querySelector('option[value="chaincancel-a"]'),
+        );
+        if (select && select.options.length >= 4) {
+          providersReady = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!providersReady) return { ok: false, reason: "chain cancel providers not loaded" };
       const input = document.querySelector('textarea[placeholder="Ask anything..."]');
       if (!input) return { ok: false, reason: "no chat input" };
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
@@ -12428,6 +12660,90 @@ try {
   } finally {
     if (chainCancelServer) chainCancelServer.close();
   }
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.providers = [];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  const moaNoProvider = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll('nav button[aria-label]')]
+      .find((b) => b.getAttribute("aria-label") === "AI Studio");
+    if (!dock) return { ok: false, reason: "dock missing" };
+    dock.click();
+    await sleep(300);
+    const moaBtn = [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "MOA");
+    if (!moaBtn) return { ok: false, reason: "moa button missing" };
+    moaBtn.click();
+    await sleep(200);
+    const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("New chat"),
+    );
+    if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+    newChatBtn.click();
+    await sleep(200);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "moa no provider check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const sendBtn = document.querySelector('main button[aria-label="Send"]');
+    if (!sendBtn) return { ok: false, reason: "no send button" };
+    sendBtn.click();
+    let lanesSeen = 0;
+    let busyEnded = false;
+    let consensusSeen = false;
+    let userMessageSaved = false;
+    for (let i = 0; i < 80; i++) {
+      const allMessages = [...document.querySelectorAll('[data-message-id]')];
+      const startIdx = allMessages.findIndex((el) =>
+        el.textContent?.includes("moa no provider check"),
+      );
+      const laneTexts = allMessages
+        .slice(startIdx >= 0 ? startIdx + 1 : 0)
+        .map((el) => el.textContent ?? "")
+        .join(String.fromCharCode(10));
+      lanesSeen = (laneTexts.match(/## Alpha AI/g) || []).length;
+      consensusSeen = laneTexts.includes("## MOA Consensus");
+      userMessageSaved = allMessages.some((el) =>
+        el.textContent?.includes("moa no provider check"),
+      );
+      busyEnded =
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-moa-lane-stop]');
+      if (busyEnded) break;
+      await sleep(100);
+    }
+    const canSendAgain = (() => {
+      const btn = document.querySelector('main button[aria-label="Send"]');
+      return !!btn && !btn.disabled;
+    })();
+    await sleep(300);
+    const userMsgAfterWait = [...document.querySelectorAll('[data-message-id]')].some((el) =>
+      el.textContent?.includes("moa no provider check"),
+    );
+    return {
+      ok: busyEnded && canSendAgain && userMsgAfterWait,
+      lanesSeen,
+      busyEnded,
+      consensusSeen,
+      canSendAgain,
+      userMessageSaved: userMsgAfterWait,
+    };
+  })()`);
+  results.moaNoProvider = moaNoProvider;
+  if (!results.moaNoProvider?.ok) {
+    throw new Error(
+      `MOA no-provider deadlock assertion failed: ${JSON.stringify(results.moaNoProvider)}`,
+    );
+  }
+  laneLog('moaNoProvider ok');
 
   let fallbackServer = null;
   try {

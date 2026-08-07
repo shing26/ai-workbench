@@ -319,6 +319,7 @@ export default function SystemView() {
   const [budgetLimitDraft, setBudgetLimitDraft] = useState('');
   const [budgetConfig, setBudgetConfig] = useState<TokenBudgetConfig>(() => getBudgetStatus());
   const [budgetStatus, setBudgetStatusState] = useState<TokenBudgetStatus>(() => getBudgetStatus());
+  const [confirmAction, setConfirmAction] = useState<string | null>(null);
   const runAutoSyncRef = useRef<() => Promise<void>>(async () => {});
   const strengthTimerRef = useRef<number | null>(null);
   const webhookPayloadRef = useRef<HTMLTextAreaElement | null>(null);
@@ -956,6 +957,11 @@ export default function SystemView() {
   };
 
   const clearResolvedHistory = async () => {
+    if (confirmAction !== 'clear-resolved') {
+      setConfirmAction('clear-resolved');
+      return;
+    }
+    setConfirmAction(null);
     const cleared = await db.clearResolvedSyncConflicts();
     setResolvedConflicts(await db.listSyncConflicts('resolved'));
     await loadAudit();
@@ -964,6 +970,11 @@ export default function SystemView() {
   };
 
   const clearAudit = async () => {
+    if (confirmAction !== 'clear-audit') {
+      setConfirmAction('clear-audit');
+      return;
+    }
+    setConfirmAction(null);
     const cleared = await db.clearSyncAudit();
     setSyncAudit(await db.listSyncAudit(50));
     setAuditSummary({ granularity: auditGranularity, total: 0, buckets: [] });
@@ -1384,6 +1395,11 @@ export default function SystemView() {
   };
 
   const clearWebhookDeliveries = async () => {
+    if (confirmAction !== 'clear-webhook-deliveries') {
+      setConfirmAction('clear-webhook-deliveries');
+      return;
+    }
+    setConfirmAction(null);
     const removed = await db.clearWebhookDeliveries('dead');
     setWebhookResult({
       ok: true,
@@ -1421,6 +1437,11 @@ export default function SystemView() {
   };
 
   const runWebhookRetentionPrune = async () => {
+    if (confirmAction !== 'prune-webhook') {
+      setConfirmAction('prune-webhook');
+      return;
+    }
+    setConfirmAction(null);
     const result = await db.pruneWebhookDeliveries();
     setWebhookRetentionResult(
       `Cleaned ${result.totalRemoved} (age ${result.removedByAge}, count ${result.removedByCount})`,
@@ -1537,12 +1558,22 @@ export default function SystemView() {
   };
 
   const clearEventBusLogs = async () => {
+    if (confirmAction !== 'clear-event-logs') {
+      setConfirmAction('clear-event-logs');
+      return;
+    }
+    setConfirmAction(null);
     const removed = await db.clearEventLogs();
     setEventBusMessage(`Cleared ${removed} event logs`);
     await loadEventBusData();
   };
 
   const clearEventBusForwards = async () => {
+    if (confirmAction !== 'clear-event-forwards') {
+      setConfirmAction('clear-event-forwards');
+      return;
+    }
+    setConfirmAction(null);
     const removed = await db.clearEventForwards();
     setEventBusMessage(`Cleared ${removed} event forwards`);
     await loadEventBusData();
@@ -2643,15 +2674,31 @@ export default function SystemView() {
             {showResolved ? 'Hide resolved' : 'Show resolved history'}
           </button>
           {showResolved && resolvedConflicts.length > 0 && (
-            <button
-              type="button"
-              aria-label="Clear resolved sync conflict history"
-              data-clear-resolved-history
-              onClick={() => void clearResolvedHistory()}
-              className="flex h-7 items-center gap-1 rounded-lg bg-rose-500/15 px-2 text-[10px] text-rose-300 hover:bg-rose-500/25"
-            >
-              Clear resolved
-            </button>
+            <>
+              <button
+                type="button"
+                aria-label="Clear resolved sync conflict history"
+                data-clear-resolved-history
+                onClick={() => void clearResolvedHistory()}
+                className={`flex h-7 items-center gap-1 rounded-lg px-2 text-[10px] ${
+                  confirmAction === 'clear-resolved'
+                    ? 'bg-rose-500/25 text-rose-200'
+                    : 'bg-rose-500/15 text-rose-300 hover:bg-rose-500/25'
+                }`}
+              >
+                {confirmAction === 'clear-resolved' ? 'Confirm?' : 'Clear resolved'}
+              </button>
+              {confirmAction === 'clear-resolved' && (
+                <button
+                  type="button"
+                  data-clear-resolved-history-cancel
+                  onClick={() => setConfirmAction(null)}
+                  className="flex h-7 items-center rounded-lg border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06]"
+                >
+                  取消
+                </button>
+              )}
+            </>
           )}
         </div>
         {showResolved && (
@@ -2773,10 +2820,24 @@ export default function SystemView() {
               aria-label="Clear sync audit log"
               data-sync-audit-clear
               onClick={() => void clearAudit()}
-              className="flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+              className={`flex h-6 items-center rounded-md px-2 text-[9px] ${
+                confirmAction === 'clear-audit'
+                  ? 'bg-rose-500/25 text-rose-200'
+                  : 'bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
+              }`}
             >
-              Clear
+              {confirmAction === 'clear-audit' ? '确认清除？' : 'Clear'}
             </button>
+            {confirmAction === 'clear-audit' && (
+              <button
+                type="button"
+                data-sync-audit-clear-cancel
+                onClick={() => setConfirmAction(null)}
+                className="flex h-6 items-center rounded-md border border-white/10 px-2 text-[9px] text-slate-400 hover:bg-white/[0.06]"
+              >
+                取消
+              </button>
+            )}
           </div>
           <div className="mt-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5">
             <div className="flex items-center gap-1.5">
@@ -3622,10 +3683,24 @@ export default function SystemView() {
               type="button"
               data-webhook-delivery-clear
               onClick={() => void clearWebhookDeliveries()}
-              className="ml-auto flex h-6 items-center rounded-md bg-rose-500/10 px-2 text-[9px] text-rose-300 hover:bg-rose-500/20"
+              className={`ml-auto flex h-6 items-center rounded-md px-2 text-[9px] ${
+                confirmAction === 'clear-webhook-deliveries'
+                  ? 'bg-rose-500/25 text-rose-200'
+                  : 'bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
+              }`}
             >
-              Clear dead
+              {confirmAction === 'clear-webhook-deliveries' ? '确认清除？' : 'Clear dead'}
             </button>
+            {confirmAction === 'clear-webhook-deliveries' && (
+              <button
+                type="button"
+                data-webhook-delivery-clear-cancel
+                onClick={() => setConfirmAction(null)}
+                className="ml-1 flex h-6 items-center rounded-md border border-white/10 px-2 text-[9px] text-slate-400 hover:bg-white/[0.06]"
+              >
+                取消
+              </button>
+            )}
           </div>
           <div data-webhook-deliveries className="mt-2 space-y-1">
             {webhookDeliveries.length === 0 && (
@@ -3885,10 +3960,24 @@ export default function SystemView() {
                 type="button"
                 data-webhook-retention-prune
                 onClick={() => void runWebhookRetentionPrune()}
-                className="flex h-6 items-center rounded-md bg-emerald-500/10 px-2 text-[9px] text-emerald-300 hover:bg-emerald-500/20"
+                className={`flex h-6 items-center rounded-md px-2 text-[9px] ${
+                  confirmAction === 'prune-webhook'
+                    ? 'bg-rose-500/20 text-rose-200'
+                    : 'bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                }`}
               >
-                Run cleanup
+                {confirmAction === 'prune-webhook' ? '确认清理？' : 'Run cleanup'}
               </button>
+              {confirmAction === 'prune-webhook' && (
+                <button
+                  type="button"
+                  data-webhook-retention-prune-cancel
+                  onClick={() => setConfirmAction(null)}
+                  className="flex h-6 items-center rounded-md border border-white/10 px-2 text-[9px] text-slate-400 hover:bg-white/[0.06]"
+                >
+                  取消
+                </button>
+              )}
               {webhookDeliveryStats && (
                 <span
                   data-webhook-retention-stats
@@ -4014,11 +4103,25 @@ export default function SystemView() {
                 type="button"
                 data-event-bus-logs-clear
                 onClick={() => void clearEventBusLogs()}
-                className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-2 text-[9px] text-slate-400 hover:bg-white/10"
+                className={`flex h-6 items-center gap-1 rounded-md px-2 text-[9px] ${
+                  confirmAction === 'clear-event-logs'
+                    ? 'bg-rose-500/20 text-rose-200'
+                    : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                }`}
               >
                 <Trash2 size={10} />
-                Clear
+                {confirmAction === 'clear-event-logs' ? '确认清除？' : 'Clear'}
               </button>
+              {confirmAction === 'clear-event-logs' && (
+                <button
+                  type="button"
+                  data-event-bus-logs-clear-cancel
+                  onClick={() => setConfirmAction(null)}
+                  className="flex h-6 items-center rounded-md border border-white/10 px-2 text-[9px] text-slate-400 hover:bg-white/[0.06]"
+                >
+                  取消
+                </button>
+              )}
             </div>
             {eventBusLogs.map((log) => (
               <div
@@ -4207,10 +4310,24 @@ export default function SystemView() {
                 type="button"
                 data-event-bus-forwards-clear
                 onClick={() => void clearEventBusForwards()}
-                className="flex h-5 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[8px] text-slate-400 hover:bg-white/10"
+                className={`flex h-5 items-center gap-1 rounded-md px-1.5 text-[8px] ${
+                  confirmAction === 'clear-event-forwards'
+                    ? 'bg-rose-500/20 text-rose-200'
+                    : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                }`}
               >
-                Clear
+                {confirmAction === 'clear-event-forwards' ? '确认清除？' : 'Clear'}
               </button>
+              {confirmAction === 'clear-event-forwards' && (
+                <button
+                  type="button"
+                  data-event-bus-forwards-clear-cancel
+                  onClick={() => setConfirmAction(null)}
+                  className="flex h-5 items-center rounded-md border border-white/10 px-1.5 text-[8px] text-slate-400 hover:bg-white/[0.06]"
+                >
+                  取消
+                </button>
+              )}
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-1">
               {eventBusForwards.map((forward) => (

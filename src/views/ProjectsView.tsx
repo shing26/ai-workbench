@@ -507,7 +507,7 @@ ${trend}
   };
 
   const deleteProjectRow = async (project: db.Project) => {
-    await deleteProject(project.id);
+    await deleteProject(project.id, true);
     setConfirmDeleteProjectId(null);
     setProjectEdits((prev) => {
       const next = { ...prev };

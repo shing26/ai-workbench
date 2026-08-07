@@ -18,6 +18,7 @@ import ReactMarkdown from 'react-markdown';
 import * as db from '../lib/db';
 import { loadRecapDraft, markRecapDraftSaved, type RecapDraft } from '../lib/recapDraft';
 import { useWorkbenchStore } from '../stores/workbenchStore';
+import { useViewState } from '../stores/viewState';
 import BentoCard from '../components/ui/BentoCard';
 import ModelBadge from '../components/ui/ModelBadge';
 
@@ -30,10 +31,10 @@ export default function KnowledgeView() {
   const deleteThought = useWorkbenchStore((s) => s.deleteThought);
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
-  const [filter, setFilter] = useState('all');
-  const [selectedTag, setSelectedTag] = useState('all');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useViewState('knowledge', 'filter', 'all');
+  const [selectedTag, setSelectedTag] = useViewState('knowledge', 'selectedTag', 'all');
+  const [selectedId, setSelectedId] = useViewState<string | null>('knowledge', 'selectedId', null);
+  const [query, setQuery] = useViewState('knowledge', 'query', '');
   const [results, setResults] = useState<db.RagSearchResult[] | null>(null);
   const [crossFileFilter, setCrossFileFilter] = useState<string[] | null>(null);
   const [indexStatus, setIndexStatus] = useState<db.RagIndexStatus | null>(null);
@@ -438,6 +439,12 @@ export default function KnowledgeView() {
     setRecapDraft(markRecapDraftSaved(recapDraft));
   };
 
+  const activeView = useWorkbenchStore((s) => s.activeView);
+  useEffect(() => {
+    if (activeView !== 'knowledge') return;
+    setRecapDraft(loadRecapDraft());
+  }, [activeView]);
+
   const startTagEdit = (thought: db.Thought) => {
     setTagEditId(thought.id);
     setTagDraft(thought.tags);
@@ -542,7 +549,7 @@ export default function KnowledgeView() {
   };
 
   const confirmDeleteThought = async (thought: db.Thought) => {
-    await deleteThought(thought.id);
+    await deleteThought(thought.id, true);
     setDeleteConfirmId(null);
     setTagEditId(null);
     setBodyEditId(null);

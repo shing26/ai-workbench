@@ -3590,6 +3590,27 @@ pub fn set_task_due_date(conn: &Connection, id: &str, due_date: Option<&str>) ->
     Ok(())
 }
 
+pub fn update_task_title(conn: &Connection, id: &str, title: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE tasks SET title = ?1 WHERE id = ?2",
+        params![title, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_task(conn: &Connection, id: &str) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, path, revenue, status, created_at, sort_order, material
@@ -8736,6 +8757,31 @@ mod tests {
         migrate_task_completed_at(&conn).unwrap();
         migrate_task_completed_at(&conn).unwrap();
         assert!(column_exists(&conn, "tasks", "completed_at").unwrap());
+    }
+
+    #[test]
+    fn task_rename_and_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let task = create_task(&conn, "Original title", true).unwrap();
+
+        update_task_title(&conn, &task.id, "Renamed title").unwrap();
+        let renamed = list_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .expect("task should persist after rename");
+        assert_eq!(renamed.title, "Renamed title");
+
+        delete_task(&conn, &task.id).unwrap();
+        assert!(list_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .all(|t| t.id != task.id));
+
+        let missing = delete_task(&conn, &task.id);
+        assert!(missing.is_err());
     }
 
     #[test]

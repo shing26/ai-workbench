@@ -20,6 +20,7 @@ import {
 } from './embed';
 export type { EmbeddingMode };
 import { pinyin } from 'pinyin-pro';
+import { parseWorkbenchError, WorkbenchError } from './errors';
 
 export type { CustomQuickPrompt, QuickPrompt };
 
@@ -1045,7 +1046,11 @@ const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in 
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<T>(cmd, args);
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (err) {
+    throw parseWorkbenchError(err);
+  }
 }
 
 const makeId = () =>
@@ -1644,6 +1649,30 @@ export async function setTaskDueDate(id: string, dueDate: string | null): Promis
   writeLocal(shape);
 }
 
+export async function updateTaskTitle(id: string, title: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('update_task_title', { id, title });
+    return;
+  }
+  const shape = readLocal();
+  const task = shape.tasks.find((t) => t.id === id);
+  if (task) task.title = title;
+  writeLocal(shape);
+}
+
+export async function deleteTask(id: string, confirmed = false): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_task', { id, confirmed });
+    return;
+  }
+  if (!confirmed) {
+    throw new WorkbenchError('REQUIRES_CONFIRMATION', `delete_task:${id}`);
+  }
+  const shape = readLocal();
+  shape.tasks = shape.tasks.filter((t) => t.id !== id);
+  writeLocal(shape);
+}
+
 export async function listProjects(): Promise<Project[]> {
   return isTauri() ? invoke<Project[]>('list_projects') : readLocal().projects;
 }
@@ -1715,10 +1744,13 @@ export async function updateProjectMaterial(id: string, material: string): Promi
   return project;
 }
 
-export async function deleteProject(id: string): Promise<void> {
+export async function deleteProject(id: string, confirmed = false): Promise<void> {
   if (isTauri()) {
-    await invoke('delete_project', { id });
+    await invoke('delete_project', { id, confirmed });
     return;
+  }
+  if (!confirmed) {
+    throw new WorkbenchError('REQUIRES_CONFIRMATION', `delete_project:${id}`);
   }
   const shape = readLocal();
   shape.projects = shape.projects.filter((p) => p.id !== id);
@@ -1792,10 +1824,13 @@ export async function updateThoughtType(id: string, type: ThoughtType): Promise<
   return thought;
 }
 
-export async function deleteThought(id: string): Promise<void> {
+export async function deleteThought(id: string, confirmed = false): Promise<void> {
   if (isTauri()) {
-    await invoke('delete_thought', { id });
+    await invoke('delete_thought', { id, confirmed });
     return;
+  }
+  if (!confirmed) {
+    throw new WorkbenchError('REQUIRES_CONFIRMATION', `delete_thought:${id}`);
   }
   const shape = readLocal();
   const exists = shape.thoughts.some((t) => t.id === id);
@@ -3238,8 +3273,11 @@ export async function updateHabitWeekGoal(id: string, weekGoal: number): Promise
   return habit;
 }
 
-export async function deleteHabit(id: string): Promise<boolean> {
-  if (isTauri()) return invoke<boolean>('delete_habit', { id });
+export async function deleteHabit(id: string, confirmed = false): Promise<boolean> {
+  if (isTauri()) return invoke<boolean>('delete_habit', { id, confirmed });
+  if (!confirmed) {
+    throw new WorkbenchError('REQUIRES_CONFIRMATION', `delete_habit:${id}`);
+  }
   const shape = readLocal();
   const index = shape.habits.findIndex((h) => h.id === id);
   if (index < 0) return false;
@@ -6868,6 +6906,117 @@ export async function sendAiMessageStream(args: {
       emitLocalStreamChunk({
         id: consensusRunId,
         delta: `\n\n## MOA Consensus\n\n${consensus.summary}`,
+        done: false,
+        error: null,
+        cancelled: false,
+      });
+    }
+    emitLocalStreamChunk({
+      id: consensusRunId,
+      delta: '',
+      done: true,
+      error: null,
+      cancelled: wasCancelled,
+    });
+    emitLocalStreamChunk({
+      id: args.runId,
+      delta: '',
+      done: true,
+      error: null,
+      cancelled: wasCancelled,
+    });
+    return;
+  }
+  if (args.moa && realProviders.length === 0) {
+    const mockProviderCount = providers.length > 0 ? providers.length : 3;
+    const laneCount = Math.min(mockProviderCount, 3);
+    const laneNames = (
+      args.moaChain ? ['Alpha', 'Beta', 'Gamma'] : ['Alpha', 'Beta', 'Gamma']
+    ).slice(0, laneCount);
+    const mockReply = (name: string) =>
+      `[${name}] Browser fallback: 当前没有可用 Provider（未配置模型或地址）。请到 System 配置 Provider 后重试。`;
+    if (args.moaChain) {
+      let completedSteps = 0;
+      for (let index = 0; index < laneCount; index += 1) {
+        if (localCancelledRuns.has(args.runId)) break;
+        const subRunId = `${args.runId}-s${index}`;
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: `\n\n## ${laneNames[index]}\n\n`,
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: mockReply(laneNames[index]),
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: '',
+          done: true,
+          error: null,
+          cancelled: false,
+        });
+        completedSteps += 1;
+      }
+      for (let remaining = completedSteps; remaining < laneCount; remaining += 1) {
+        emitLocalStreamChunk({
+          id: `${args.runId}-s${remaining}`,
+          delta: '',
+          done: true,
+          error: null,
+          cancelled: true,
+        });
+      }
+      const wasCancelled = localCancelledRuns.has(args.runId);
+      localCancelledRuns.delete(args.runId);
+      emitLocalStreamChunk({
+        id: args.runId,
+        delta: '',
+        done: true,
+        error: null,
+        cancelled: wasCancelled,
+      });
+      return;
+    }
+    await Promise.allSettled(
+      Array.from({ length: laneCount }, (_, index) => {
+        const subRunId = `${args.runId}-p${index}`;
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: `\n\n## ${laneNames[index]}\n\n`,
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: mockReply(laneNames[index]),
+          done: false,
+          error: null,
+          cancelled: false,
+        });
+        emitLocalStreamChunk({
+          id: subRunId,
+          delta: '',
+          done: true,
+          error: null,
+          cancelled: false,
+        });
+        return Promise.resolve();
+      }),
+    );
+    const wasCancelled = localCancelledRuns.has(args.runId);
+    localCancelledRuns.delete(args.runId);
+    const consensusRunId = `${args.runId}-c`;
+    if (!wasCancelled) {
+      emitLocalStreamChunk({
+        id: consensusRunId,
+        delta: `\n\n## MOA Consensus\n\n当前没有可用 Provider，各 Agent 均返回占位回复。请到 System 配置至少一个可用 Provider。`,
         done: false,
         error: null,
         cancelled: false,

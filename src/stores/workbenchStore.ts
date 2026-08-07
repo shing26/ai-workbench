@@ -25,17 +25,19 @@ type WorkbenchState = {
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
   setTaskToday: (id: string, isToday: boolean) => Promise<void>;
   setTaskDueDate: (id: string, dueDate: string | null) => Promise<void>;
+  updateTaskTitle: (id: string, title: string) => Promise<void>;
+  deleteTask: (id: string, confirmed?: boolean) => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   updateProject: (id: string, status: string, revenue: number) => Promise<void>;
   setProjectMaterial: (id: string, material: string) => Promise<void>;
-  deleteProject: (id: string) => Promise<void>;
+  deleteProject: (id: string, confirmed?: boolean) => Promise<void>;
   reorderProjects: (ids: string[]) => Promise<void>;
   setProjects: (projects: db.Project[]) => void;
   addThought: (content: string, tags: string, type: db.ThoughtType) => Promise<void>;
   updateThoughtTags: (id: string, tags: string) => Promise<void>;
   updateThoughtContent: (id: string, content: string) => Promise<void>;
   updateThoughtType: (id: string, type: db.ThoughtType) => Promise<void>;
-  deleteThought: (id: string) => Promise<void>;
+  deleteThought: (id: string, confirmed?: boolean) => Promise<void>;
   addProvider: (name: string, baseUrl: string, apiKey: string, model?: string) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
   setProviderModel: (id: string, model: string) => Promise<void>;
@@ -51,7 +53,7 @@ type WorkbenchState = {
   addHabit: (name: string, weekGoal: number, color: db.Habit['color']) => Promise<void>;
   toggleHabit: (id: string) => Promise<void>;
   updateHabitWeekGoal: (id: string, weekGoal: number) => Promise<void>;
-  deleteHabit: (id: string) => Promise<void>;
+  deleteHabit: (id: string, confirmed?: boolean) => Promise<void>;
   addScheduleEvent: (title: string, startTime: string, tag: string, date: string) => Promise<void>;
   applyWeekPlan: (
     template: WeekPlanTemplate,
@@ -137,6 +139,14 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.setTaskDueDate(id, dueDate);
     set({ tasks: await db.listTasks() });
   },
+  updateTaskTitle: async (id, title) => {
+    await db.updateTaskTitle(id, title);
+    set({ tasks: await db.listTasks() });
+  },
+  deleteTask: async (id, confirmed = false) => {
+    await db.deleteTask(id, confirmed);
+    set({ tasks: await db.listTasks() });
+  },
   addProject: async (name, path) => {
     await db.createProject(name, path);
     set({ projects: await db.listProjects() });
@@ -149,8 +159,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.updateProjectMaterial(id, material);
     set({ projects: await db.listProjects() });
   },
-  deleteProject: async (id) => {
-    await db.deleteProject(id);
+  deleteProject: async (id, confirmed = false) => {
+    await db.deleteProject(id, confirmed);
     set({ projects: await db.listProjects() });
   },
   reorderProjects: async (ids) => {
@@ -174,8 +184,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.updateThoughtType(id, type);
     set({ thoughts: await db.listThoughts() });
   },
-  deleteThought: async (id) => {
-    await db.deleteThought(id);
+  deleteThought: async (id, confirmed = false) => {
+    await db.deleteThought(id, confirmed);
     set({ thoughts: await db.listThoughts() });
   },
   addProvider: async (name, baseUrl, apiKey, model = '') => {
@@ -216,8 +226,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.updateHabitWeekGoal(id, weekGoal);
     set({ habits: await db.listHabits() });
   },
-  deleteHabit: async (id) => {
-    await db.deleteHabit(id);
+  deleteHabit: async (id, confirmed = false) => {
+    await db.deleteHabit(id, confirmed);
     set({ habits: await db.listHabits() });
   },
   addScheduleEvent: async (title, startTime, tag, date) => {

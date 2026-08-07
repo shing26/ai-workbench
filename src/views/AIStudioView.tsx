@@ -64,6 +64,7 @@ import {
 } from '../lib/recapDraft';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
+import { useViewState } from '../stores/viewState';
 import ModelBadge from '../components/ui/ModelBadge';
 
 type Message = { role: 'user' | 'assistant'; content: string; id?: string; laneKey?: string };
@@ -161,7 +162,7 @@ export default function AIStudioView() {
       content: 'Ready. Ask anything or switch to MOA for multi-model consensus.',
     },
   ]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useViewState('ai-studio', 'input', '');
   const [providerId, setProviderId] = useState('');
   const [moa, setMoa] = useState(false);
   const [moaChain, setMoaChain] = useState(false);
@@ -225,7 +226,7 @@ export default function AIStudioView() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [activeLaneKeys, setActiveLaneKeys] = useState<Set<string>>(new Set());
   const [sessions, setSessions] = useState<db.Session[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useViewState<string | null>('ai-studio', 'sessionId', null);
   const [sessionQuery, setSessionQuery] = useState('');
   const [sessionRange, setSessionRange] = useState('all');
   const [sessionFullText, setSessionFullText] = useState(true);
@@ -323,6 +324,13 @@ export default function AIStudioView() {
     setUsageCounts(usage);
     setCustomPrompts(custom);
   };
+
+  const activeView = useWorkbenchStore((s) => s.activeView);
+  useEffect(() => {
+    if (activeView !== 'ai-studio') return;
+    void refreshQuickPrompts();
+    setRecapDraft(loadRecapDraft());
+  }, [activeView]);
 
   const addCustom = async () => {
     if (!customLabel.trim() || !customText.trim()) return;
@@ -572,7 +580,7 @@ export default function AIStudioView() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [setSessionId]);
 
   useEffect(() => {
     let disposed = false;
@@ -643,6 +651,7 @@ export default function AIStudioView() {
     };
   }, [sessionQuery, sessionRange, sessionFullText, sessionArchiveTab, sessions]);
 
+  const loaded = useWorkbenchStore((s) => s.loaded);
   useEffect(() => {
     let disposed = false;
     void Promise.all([db.listDepartments(), db.listAgents()]).then(
@@ -662,7 +671,7 @@ export default function AIStudioView() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [loaded]);
 
   const stopStreaming = async () => {
     const targetRuns = new Set<string>();
@@ -2937,6 +2946,7 @@ export default function AIStudioView() {
           <div className="composer flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">
             <textarea
               ref={composerRef}
+              data-composer
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
