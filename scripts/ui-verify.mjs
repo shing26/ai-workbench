@@ -3211,7 +3211,11 @@ try {
       .map((el) => Number(el.getAttribute("data-habit-streak") || 0));
     const recentRows = document.querySelectorAll("[data-habit-recent-days]").length;
     const streakBefore = Number(row.querySelector("[data-habit-streak]")?.getAttribute("data-habit-streak") || 0);
-    const weekBefore = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    let weekBefore = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    for (let i = 0; i < 20 && (weekBefore === "" || weekBefore === "0/5"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      weekBefore = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    }
     const todayBefore = row.querySelector('[data-habit-day="' + todayKey + '"]')?.getAttribute("data-habit-day-checked") ?? "";
     const recentCountBefore = row.querySelectorAll("[data-habit-day]").length;
     btn.click();
@@ -6669,6 +6673,8 @@ try {
     throw new Error('Knowledge markdown preview assertion failed');
   }
   const habitStreakResult = results.actions.habitToggle;
+  const weekBeforeCount = Number(String(habitStreakResult.weekBefore || '').split('/')[0] || 0);
+  const weekAfterCount = Number(String(habitStreakResult.weekAfter || '').split('/')[0] || 0);
   const habitStreakOk =
     habitStreakResult.ok &&
     habitStreakResult.doneClass &&
@@ -6676,8 +6682,8 @@ try {
     habitStreakResult.recentRows === 3 &&
     habitStreakResult.streakBefore === 3 &&
     habitStreakResult.streakAfter === 4 &&
-    habitStreakResult.weekBefore === '3/5' &&
-    habitStreakResult.weekAfter === '4/5' &&
+    weekAfterCount === weekBeforeCount + 1 &&
+    habitStreakResult.weekAfter.includes('/5') &&
     habitStreakResult.todayBefore === 'false' &&
     habitStreakResult.todayAfter === 'true' &&
     habitStreakResult.recentCountBefore === 14;

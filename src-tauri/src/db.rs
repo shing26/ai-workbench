@@ -9005,6 +9005,42 @@ pub fn list_run_metrics(conn: &Connection, limit: i64) -> Result<Vec<RunMetric>>
     rows.collect()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSummary {
+    pub projects: Vec<Project>,
+    pub tasks: Vec<Task>,
+    pub thoughts: Vec<Thought>,
+    pub sessions: Vec<Session>,
+    pub providers: Vec<Provider>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsBundle {
+    pub tasks: Vec<Task>,
+    pub habits: Vec<Habit>,
+    pub schedule_events: Vec<ScheduleEvent>,
+}
+
+pub fn get_workspace_summary(conn: &Connection) -> Result<WorkspaceSummary> {
+    Ok(WorkspaceSummary {
+        projects: list_projects(conn)?,
+        tasks: list_tasks(conn)?,
+        thoughts: list_thoughts(conn)?,
+        sessions: list_sessions(conn)?,
+        providers: list_providers(conn)?,
+    })
+}
+
+pub fn get_actions_bundle(conn: &Connection) -> Result<ActionsBundle> {
+    Ok(ActionsBundle {
+        tasks: list_tasks(conn)?,
+        habits: list_habits(conn)?,
+        schedule_events: list_schedule_events(conn)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14028,5 +14064,46 @@ mod tests {
         delete_fsm_run(&conn, &run_id).unwrap();
         assert!(list_fsm_nodes(&conn, &run_id).unwrap().is_empty());
         assert!(get_run_metric(&conn, &run_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn workspace_summary_aggregates_all_core_assets() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        create_project(&conn, "Summary Project", "/tmp/summary").unwrap();
+        create_task(&conn, "Summary Task", true).unwrap();
+        create_thought(&conn, "Summary Thought", "#test", "inbox").unwrap();
+        create_session(&conn, "Summary Session", "openai").unwrap();
+        create_provider(
+            &conn,
+            "Summary Provider",
+            "http://localhost",
+            "key",
+            "model",
+        )
+        .unwrap();
+
+        let summary = get_workspace_summary(&conn).unwrap();
+        assert_eq!(summary.projects.len(), 1);
+        assert_eq!(summary.tasks.len(), 1);
+        assert_eq!(summary.thoughts.len(), 1);
+        assert_eq!(summary.sessions.len(), 1);
+        assert_eq!(summary.providers.len(), 1);
+    }
+
+    #[test]
+    fn actions_bundle_includes_tasks_habits_schedule() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        create_task(&conn, "Bundle Task", true).unwrap();
+        create_habit(&conn, "Bundle Habit", 5, "emerald").unwrap();
+        create_schedule_event(&conn, "Bundle Event", "09:00", "2026-08-10", "work").unwrap();
+
+        let bundle = get_actions_bundle(&conn).unwrap();
+        assert_eq!(bundle.tasks.len(), 1);
+        assert_eq!(bundle.habits.len(), 1);
+        assert_eq!(bundle.schedule_events.len(), 1);
     }
 }

@@ -2097,6 +2097,18 @@ fn list_sessions(state: State<'_, db::Db>) -> Result<Vec<db::Session>, String> {
 }
 
 #[tauri::command]
+fn get_workspace_summary(state: State<'_, db::Db>) -> Result<db::WorkspaceSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_workspace_summary(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_actions_bundle(state: State<'_, db::Db>) -> Result<db::ActionsBundle, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_actions_bundle(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn search_sessions(
     state: State<'_, db::Db>,
     query: String,
@@ -7253,6 +7265,8 @@ pub fn run() {
             create_schedule_event,
             toggle_event_done,
             list_sessions,
+            get_workspace_summary,
+            get_actions_bundle,
             search_sessions,
             create_session,
             rename_session,

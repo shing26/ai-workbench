@@ -59,6 +59,7 @@ type WorkbenchState = {
   noteContext: NoteContext | null;
   actionContext: ActionContext | null;
   init: () => Promise<void>;
+  restoreWorkspace: () => Promise<boolean>;
   addTask: (title: string, isToday: boolean) => Promise<void>;
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
   setTaskToday: (id: string, isToday: boolean) => Promise<void>;
@@ -170,6 +171,30 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       logs,
       loaded: true,
     });
+  },
+  restoreWorkspace: async () => {
+    if (get().loaded) return true;
+    await db.initDb();
+    try {
+      const summary = await db.getWorkspaceSummary();
+      const bundle = await db.getActionsBundle();
+      const [clipboard, logs] = await Promise.all([db.listClipboard(), db.listErrorLogs()]);
+      set({
+        projects: summary.projects,
+        tasks: summary.tasks,
+        thoughts: summary.thoughts,
+        sessions: summary.sessions,
+        providers: summary.providers,
+        habits: bundle.habits,
+        scheduleEvents: bundle.scheduleEvents,
+        clipboard,
+        logs,
+        loaded: true,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   },
   addTask: async (title, isToday) => {
     await db.createTask(title, isToday);

@@ -1656,6 +1656,42 @@ export async function listTasks(): Promise<Task[]> {
   return isTauri() ? invoke<Task[]>('list_tasks') : readLocal().tasks;
 }
 
+export type WorkspaceSummary = {
+  projects: Project[];
+  tasks: Task[];
+  thoughts: Thought[];
+  sessions: Session[];
+  providers: Provider[];
+};
+
+export type ActionsBundle = {
+  tasks: Task[];
+  habits: Habit[];
+  scheduleEvents: ScheduleEvent[];
+};
+
+export async function getWorkspaceSummary(): Promise<WorkspaceSummary> {
+  if (isTauri()) return invoke<WorkspaceSummary>('get_workspace_summary');
+  const shape = readLocal();
+  return {
+    projects: shape.projects,
+    tasks: shape.tasks,
+    thoughts: shape.thoughts,
+    sessions: await listSessions(),
+    providers: await listProviders(),
+  };
+}
+
+export async function getActionsBundle(): Promise<ActionsBundle> {
+  if (isTauri()) return invoke<ActionsBundle>('get_actions_bundle');
+  const shape = readLocal();
+  return {
+    tasks: shape.tasks,
+    habits: await listHabits(),
+    scheduleEvents: await listScheduleEvents(),
+  };
+}
+
 export async function createTask(title: string, isToday: boolean): Promise<Task> {
   if (isTauri()) return invoke<Task>('create_task', { title, isToday });
   const shape = readLocal();

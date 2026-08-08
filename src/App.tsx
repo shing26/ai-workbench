@@ -12,12 +12,15 @@ import { useWorkbenchStore } from './stores/workbenchStore';
 export default function App() {
   const initTheme = useThemeStore((s) => s.init);
   const init = useWorkbenchStore((s) => s.init);
+  const restoreWorkspace = useWorkbenchStore((s) => s.restoreWorkspace);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
   const reportError = useWorkbenchStore((s) => s.reportError);
 
   useEffect(() => {
-    void init();
-  }, [init]);
+    void restoreWorkspace().then((ok) => {
+      if (!ok) void init();
+    });
+  }, [restoreWorkspace, init]);
 
   useEffect(() => {
     initTheme();
