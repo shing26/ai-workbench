@@ -21,6 +21,12 @@ import {
 export type { EmbeddingMode };
 import { pinyin } from 'pinyin-pro';
 import { parseWorkbenchError, WorkbenchError } from './errors';
+import {
+  isMockAgentsEnabled,
+  mockLlmReply,
+  mockProviderHealth,
+  mockWebhookDelivery,
+} from './mockAgents';
 
 export type { CustomQuickPrompt, QuickPrompt };
 
@@ -1524,8 +1530,62 @@ function readLocal(): LocalShape {
   }
 }
 
+const DB_LOCK_NAME = 'ai-workbench:db';
+const DB_VERSION_LS_KEY = 'ai-workbench:db-write-version:v1';
+
+let dbLockTail: Promise<void> = Promise.resolve();
+
+function readDbWriteVersion(): number {
+  try {
+    const parsed = Number(localStorage.getItem(DB_VERSION_LS_KEY));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function stampDbWriteVersion() {
+  const version = Math.max(readDbWriteVersion(), Date.now()) + 1;
+  try {
+    localStorage.setItem(DB_VERSION_LS_KEY, String(version));
+  } catch {
+    // version stamp is best-effort
+  }
+}
+
+export async function withDbLock<T>(fn: () => T | Promise<T>): Promise<T> {
+  const lockManager = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  const run = async () => {
+    try {
+      return await fn();
+    } finally {
+      stampDbWriteVersion();
+    }
+  };
+  if (lockManager?.request) {
+    return lockManager.request(DB_LOCK_NAME, { mode: 'exclusive' }, run);
+  }
+  const previous = dbLockTail.catch(() => undefined);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  dbLockTail = gate;
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+function lockedStorageWrite(fn: () => void) {
+  fn();
+  stampDbWriteVersion();
+}
+
 function writeLocal(shape: LocalShape) {
-  localStorage.setItem(LS_KEY, JSON.stringify(shape));
+  lockedStorageWrite(() => localStorage.setItem(LS_KEY, JSON.stringify(shape)));
 }
 
 function localDateKeyOffset(daysAgo: number): string {
@@ -2402,6 +2462,7 @@ export async function restoreAgentPrompt(agentId: string, versionId: string): Pr
 
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
   if (isTauri()) return invoke<ProviderHealth>('check_provider_health', { providerId });
+  if (isMockAgentsEnabled()) return mockProviderHealth(providerId);
   await new Promise((resolve) => setTimeout(resolve, 120));
   return { ok: true, latencyMs: 120, message: 'ok' };
 }
@@ -3522,7 +3583,7 @@ function readSyncKeysStore(): SyncKeysStore {
 }
 
 function writeSyncKeysStore(store: SyncKeysStore) {
-  localStorage.setItem(SYNC_KEYS_LS_KEY, JSON.stringify(store));
+  lockedStorageWrite(() => localStorage.setItem(SYNC_KEYS_LS_KEY, JSON.stringify(store)));
 }
 
 export type SyncAutoConfig = {
@@ -3857,7 +3918,7 @@ export async function exportSyncSnapshot(): Promise<SyncSnapshot> {
     quickPrompts: [...QUICK_PROMPTS, ...listCustomQuickPromptsLocal()],
     quickPromptUsage: readQuickPromptUsageEntriesLocal(),
   };
-  localStorage.setItem(SYNC_LS_KEY, JSON.stringify(snapshot));
+  lockedStorageWrite(() => localStorage.setItem(SYNC_LS_KEY, JSON.stringify(snapshot)));
   return snapshot;
 }
 
@@ -4216,7 +4277,7 @@ function readSyncConflictRecords(): SyncConflictRecord[] {
 }
 
 function writeSyncConflictRecords(records: SyncConflictRecord[]) {
-  localStorage.setItem(SYNC_CONFLICTS_LS_KEY, JSON.stringify(records));
+  lockedStorageWrite(() => localStorage.setItem(SYNC_CONFLICTS_LS_KEY, JSON.stringify(records)));
 }
 
 function readSyncAudit(): SyncAuditEntry[] {
@@ -4228,7 +4289,9 @@ function readSyncAudit(): SyncAuditEntry[] {
 }
 
 function writeSyncAudit(entries: SyncAuditEntry[]) {
-  localStorage.setItem(SYNC_AUDIT_LS_KEY, JSON.stringify(entries.slice(0, 200)));
+  lockedStorageWrite(() =>
+    localStorage.setItem(SYNC_AUDIT_LS_KEY, JSON.stringify(entries.slice(0, 200))),
+  );
 }
 
 function appendSyncAudit(event: string, detail: string) {
@@ -4961,7 +5024,7 @@ function readVaultFiles(): VaultFileRecord[] {
 }
 
 function writeVaultFiles(files: VaultFileRecord[]) {
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(files));
+  lockedStorageWrite(() => localStorage.setItem(VAULT_LS_KEY, JSON.stringify(files)));
 }
 
 function sampleVaultFiles(vaultPath: string): VaultFileRecord[] {
@@ -5025,15 +5088,17 @@ function readVaultWatchTargets(): VaultWatchTarget[] {
 }
 
 function writeVaultWatchTargets(targets: VaultWatchTarget[]): VaultWatchTarget[] {
-  localStorage.setItem(VAULT_WATCH_TARGETS_LS_KEY, JSON.stringify(targets));
-  const first = targets[0];
-  const record: VaultWatchRecord = {
-    watching: first?.enabled ?? false,
-    path: first?.path ?? null,
-    updatedAt: first?.updatedAt ?? Date.now(),
-    ignorePatterns: first?.ignorePatterns ?? [],
-  };
-  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  lockedStorageWrite(() => {
+    localStorage.setItem(VAULT_WATCH_TARGETS_LS_KEY, JSON.stringify(targets));
+    const first = targets[0];
+    const record: VaultWatchRecord = {
+      watching: first?.enabled ?? false,
+      path: first?.path ?? null,
+      updatedAt: first?.updatedAt ?? Date.now(),
+      ignorePatterns: first?.ignorePatterns ?? [],
+    };
+    localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  });
   return targets;
 }
 
@@ -5065,7 +5130,7 @@ function writeVaultWatchConfig(config: VaultWatchConfig): VaultWatchConfig {
     updatedAt: config.updatedAt || Date.now(),
     ignorePatterns: config.ignorePatterns,
   };
-  localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
+  lockedStorageWrite(() => localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record)));
   return { ...config, updatedAt: record.updatedAt };
 }
 
@@ -5131,7 +5196,7 @@ function readVaultWatchEvents(): VaultWatchEvent[] {
 
 function writeVaultWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
   const next = events.slice(0, 500);
-  localStorage.setItem(VAULT_WATCH_EVENTS_LS_KEY, JSON.stringify(next));
+  lockedStorageWrite(() => localStorage.setItem(VAULT_WATCH_EVENTS_LS_KEY, JSON.stringify(next)));
   return next;
 }
 
@@ -5316,7 +5381,7 @@ function readVectorShards(): VectorShardRecord[] {
 }
 
 function writeVectorShards(shards: VectorShardRecord[]) {
-  localStorage.setItem(VECTOR_SHARDS_LS_KEY, JSON.stringify(shards));
+  lockedStorageWrite(() => localStorage.setItem(VECTOR_SHARDS_LS_KEY, JSON.stringify(shards)));
 }
 
 function seedVectorShards(shardCount: number, model: string, dimension: number) {
@@ -5562,7 +5627,9 @@ function writeKnowledgeClusterConfig(config: {
   dedupThreshold: number;
   lastRecomputedAt: number;
 }) {
-  localStorage.setItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY, JSON.stringify(config));
+  lockedStorageWrite(() =>
+    localStorage.setItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY, JSON.stringify(config)),
+  );
 }
 
 type ClusterDoc = {
@@ -5606,7 +5673,9 @@ function readKnowledgeClusters(): KnowledgeClusterRecord[] {
 }
 
 function writeKnowledgeClusters(clusters: KnowledgeClusterRecord[]) {
-  localStorage.setItem(KNOWLEDGE_CLUSTERS_LS_KEY, JSON.stringify(clusters));
+  lockedStorageWrite(() =>
+    localStorage.setItem(KNOWLEDGE_CLUSTERS_LS_KEY, JSON.stringify(clusters)),
+  );
 }
 
 function readKnowledgeDedup(): KnowledgeDedupCandidate[] {
@@ -5620,7 +5689,9 @@ function readKnowledgeDedup(): KnowledgeDedupCandidate[] {
 }
 
 function writeKnowledgeDedup(candidates: KnowledgeDedupCandidate[]) {
-  localStorage.setItem(KNOWLEDGE_DEDUP_LS_KEY, JSON.stringify(candidates));
+  lockedStorageWrite(() =>
+    localStorage.setItem(KNOWLEDGE_DEDUP_LS_KEY, JSON.stringify(candidates)),
+  );
 }
 
 function normalizeVector(vector: number[]): number[] {
@@ -5963,7 +6034,7 @@ function writePersistedVaultIndexQueue() {
       status: 'queued' as const,
     })),
   ];
-  localStorage.setItem(VAULT_INDEX_QUEUE_LS_KEY, JSON.stringify(records));
+  lockedStorageWrite(() => localStorage.setItem(VAULT_INDEX_QUEUE_LS_KEY, JSON.stringify(records)));
 }
 
 function restoreVaultIndexQueueIfNeeded() {
@@ -6518,6 +6589,55 @@ function canRealStream(provider: Provider): boolean {
   return true;
 }
 
+async function mockStreamProviderReply(
+  prompt: string,
+  runId: string,
+  opts: {
+    final?: boolean;
+    manageCancel?: boolean;
+    onChunk?: (delta: string) => void;
+  } = {},
+): Promise<string> {
+  const final = opts.final !== false;
+  const manageCancel = opts.manageCancel !== false;
+  const reply = mockLlmReply(prompt);
+  const words = reply.split(' ').filter(Boolean);
+  let index = 0;
+  let collected = '';
+  await new Promise<void>((resolve) => {
+    const timer = window.setInterval(() => {
+      const wasCancelled = localCancelledRuns.has(runId);
+      if (index >= words.length || wasCancelled) {
+        window.clearInterval(timer);
+        if (manageCancel) localCancelledRuns.delete(runId);
+        if (final) {
+          emitLocalStreamChunk({
+            id: runId,
+            delta: '',
+            done: true,
+            error: null,
+            cancelled: wasCancelled,
+          });
+        }
+        resolve();
+        return;
+      }
+      const delta = `${words[index]} `;
+      collected += delta;
+      emitLocalStreamChunk({
+        id: runId,
+        delta,
+        done: false,
+        error: null,
+        cancelled: false,
+      });
+      opts.onChunk?.(delta);
+      index += 1;
+    }, 60);
+  });
+  return collected;
+}
+
 async function streamProviderLive(
   provider: Provider,
   args: {
@@ -6532,6 +6652,10 @@ async function streamProviderLive(
     onChunk?: (delta: string) => void;
   } = {},
 ): Promise<string> {
+  if (isMockAgentsEnabled()) {
+    const prompt = args.messages.map((m) => m.content).join('\n');
+    return mockStreamProviderReply(prompt, args.runId, opts);
+  }
   const final = opts.final !== false;
   const manageCancel = opts.manageCancel !== false;
   const timeoutMs = Math.max(100, (provider.timeoutSecs ?? 30) * 1000);
@@ -6934,7 +7058,9 @@ export async function sendAiMessageStream(args: {
       args.moaChain ? ['Alpha', 'Beta', 'Gamma'] : ['Alpha', 'Beta', 'Gamma']
     ).slice(0, laneCount);
     const mockReply = (name: string) =>
-      `[${name}] Browser fallback: 当前没有可用 Provider（未配置模型或地址）。请到 System 配置 Provider 后重试。`;
+      isMockAgentsEnabled()
+        ? mockLlmReply(name)
+        : `[${name}] Browser fallback: 当前没有可用 Provider（未配置模型或地址）。请到 System 配置 Provider 后重试。`;
     if (args.moaChain) {
       let completedSteps = 0;
       for (let index = 0; index < laneCount; index += 1) {
@@ -7083,8 +7209,9 @@ export async function sendAiMessageStream(args: {
     return;
   }
 
-  const reply =
-    'Streaming fallback: 这条回复由浏览器分块模拟，逐段到达。\n\n- 第一段已就绪\n- 第二段继续\n- 第三段完成';
+  const reply = isMockAgentsEnabled()
+    ? mockLlmReply(lastUserContent)
+    : 'Streaming fallback: 这条回复由浏览器分块模拟，逐段到达。\n\n- 第一段已就绪\n- 第二段继续\n- 第三段完成';
   const words = reply.split(' ');
   let index = 0;
   await new Promise<void>((resolve) => {
@@ -7497,7 +7624,7 @@ function readWebhookRules(): WebhookRule[] {
 }
 
 function writeWebhookRules(rules: WebhookRule[]) {
-  localStorage.setItem(WEBHOOK_RULES_LS_KEY, JSON.stringify(rules));
+  lockedStorageWrite(() => localStorage.setItem(WEBHOOK_RULES_LS_KEY, JSON.stringify(rules)));
 }
 
 function readWebhookRuleRuns(): WebhookRuleRun[] {
@@ -7510,7 +7637,7 @@ function readWebhookRuleRuns(): WebhookRuleRun[] {
 }
 
 function writeWebhookRuleRuns(runs: WebhookRuleRun[]) {
-  localStorage.setItem(WEBHOOK_RULE_RUNS_LS_KEY, JSON.stringify(runs));
+  lockedStorageWrite(() => localStorage.setItem(WEBHOOK_RULE_RUNS_LS_KEY, JSON.stringify(runs)));
 }
 
 function pruneWebhookRuleRuns(runs: WebhookRuleRun[], keep = 50): WebhookRuleRun[] {
@@ -7740,7 +7867,9 @@ function readWebhookDeliveries(): WebhookDelivery[] {
 }
 
 function writeWebhookDeliveries(deliveries: WebhookDelivery[]) {
-  localStorage.setItem(WEBHOOK_DELIVERIES_LS_KEY, JSON.stringify(deliveries));
+  lockedStorageWrite(() =>
+    localStorage.setItem(WEBHOOK_DELIVERIES_LS_KEY, JSON.stringify(deliveries)),
+  );
 }
 
 export async function listWebhookDeliveries(
@@ -8124,7 +8253,9 @@ function readWebhookTemplateVersions(): Record<string, WebhookTemplateVersion[]>
 }
 
 function writeWebhookTemplateVersions(versions: Record<string, WebhookTemplateVersion[]>) {
-  localStorage.setItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY, JSON.stringify(versions));
+  lockedStorageWrite(() =>
+    localStorage.setItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY, JSON.stringify(versions)),
+  );
 }
 
 export async function listWebhookTemplateVersions(
@@ -8647,6 +8778,7 @@ export async function triggerWebhookEvent(
     return invoke<number>('trigger_webhook_event', { event, context: context ?? null });
   }
   const now = Date.now();
+  const mockNote = isMockAgentsEnabled() ? mockWebhookDelivery(event) : null;
   const rules = readWebhookRules().filter(
     (r) =>
       r.enabled &&
@@ -8670,14 +8802,15 @@ export async function triggerWebhookEvent(
       secret: rule.secret,
       retries: rule.retries,
       attempts: 1,
-      status: 'success',
-      lastStatus: 200,
+      status: mockNote?.status ?? 'success',
+      lastStatus: mockNote?.lastStatus ?? 200,
       lastMessage:
-        channel === 'email'
+        mockNote?.lastMessage ??
+        (channel === 'email'
           ? `Email queued (event: ${event})`
           : channel === 'notification'
             ? `Notification delivered (event: ${event})`
-            : `HTTP 200 delivered (event: ${event})`,
+            : `HTTP 200 delivered (event: ${event})`),
       nextAttemptAt: now,
       createdAt: now,
       updatedAt: now,
@@ -8695,9 +8828,9 @@ export async function triggerWebhookEvent(
         rule.id,
         'event',
         'success',
-        200,
+        mockNote?.lastStatus ?? 200,
         1,
-        `HTTP 200 delivered (event: ${event})`,
+        mockNote?.lastMessage ?? `HTTP 200 delivered (event: ${event})`,
       );
     }
   }
@@ -9063,7 +9196,7 @@ function readEventLogs(): EventLogRecord[] {
 }
 
 function writeEventLogs(logs: EventLogRecord[]) {
-  localStorage.setItem(EVENT_LOGS_LS_KEY, JSON.stringify(logs));
+  lockedStorageWrite(() => localStorage.setItem(EVENT_LOGS_LS_KEY, JSON.stringify(logs)));
 }
 
 function pruneEventLogs(logs: EventLogRecord[], config: EventBusConfig): EventLogRecord[] {
@@ -9093,7 +9226,7 @@ function readEventSchemas(): EventSchema[] {
 }
 
 function writeEventSchemas(schemas: EventSchema[]) {
-  localStorage.setItem(EVENT_SCHEMAS_LS_KEY, JSON.stringify(schemas));
+  lockedStorageWrite(() => localStorage.setItem(EVENT_SCHEMAS_LS_KEY, JSON.stringify(schemas)));
 }
 
 function readEventForwards(): EventForwardRecord[] {
@@ -9106,7 +9239,7 @@ function readEventForwards(): EventForwardRecord[] {
 }
 
 function writeEventForwards(forwards: EventForwardRecord[]) {
-  localStorage.setItem(EVENT_FORWARDS_LS_KEY, JSON.stringify(forwards));
+  lockedStorageWrite(() => localStorage.setItem(EVENT_FORWARDS_LS_KEY, JSON.stringify(forwards)));
 }
 
 function readEventBusConfig(): EventBusConfig {

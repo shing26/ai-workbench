@@ -29,13 +29,22 @@ function resolveMaterial(material: string | undefined, index: number) {
   return CAROUSEL_MATERIALS[index % CAROUSEL_MATERIALS.length];
 }
 
-export default function ProjectCarousel() {
+export default function ProjectCarousel({
+  onOpenProject,
+}: {
+  onOpenProject?: (projectId: string) => void;
+}) {
   const projects = useWorkbenchStore((s) => s.projects);
   const reorderProjects = useWorkbenchStore((s) => s.reorderProjects);
   const setProjectMaterial = useWorkbenchStore((s) => s.setProjectMaterial);
   const setProjects = useWorkbenchStore((s) => s.setProjects);
   const [mode, setMode] = useState<'orbit' | 'fan'>('orbit');
   const [playing, setPlaying] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
   const [speed, setSpeed] = useState(() => {
     try {
       const raw = localStorage.getItem(CAROUSEL_SPEED_KEY);
@@ -74,6 +83,15 @@ export default function ProjectCarousel() {
     const currentMode = modeRef.current;
     cardRefs.current.forEach((card, i) => {
       if (!card) return;
+      if (reducedRef.current) {
+        card.style.transform = '';
+        card.style.opacity = '';
+        card.style.zIndex = '';
+        const selected = i === indexRef.current;
+        card.dataset.carouselSelected = String(selected);
+        card.setAttribute('aria-selected', String(selected));
+        return;
+      }
       const delta = relativePosition(i, position, count);
       const abs = Math.abs(delta);
       let x: number;
@@ -138,6 +156,7 @@ export default function ProjectCarousel() {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const update = () => {
       reducedRef.current = media.matches;
+      setReducedMotion(media.matches);
       if (media.matches) setPlaying(false);
     };
     update();
@@ -325,12 +344,14 @@ export default function ProjectCarousel() {
       <div
         ref={sceneRef}
         data-carousel-scene
+        data-carousel-reduced={String(reducedMotion)}
         data-carousel-scene-mode={mode}
         data-carousel-dragging={String(dragId !== null)}
         data-carousel-order={projects.map((project) => project.name).join(',')}
         tabIndex={0}
         aria-roledescription="project carousel"
         onWheel={(event) => {
+          if (reducedMotion) return;
           if (event.deltaY > 0) go(1);
           else if (event.deltaY < 0) go(-1);
         }}
@@ -359,6 +380,17 @@ export default function ProjectCarousel() {
         onPointerCancel={() => {
           if (dragRef.current) endDrag();
         }}
+        style={
+          reducedMotion
+            ? {
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(108px, 1fr))',
+                gap: '12px',
+                height: 'auto',
+                padding: '12px',
+              }
+            : undefined
+        }
         className="project-carousel-scene h-[190px] w-full rounded-xl border border-white/5 bg-white/[0.015] outline-none"
       >
         {projects.map((project, i) => (
@@ -382,7 +414,20 @@ export default function ProjectCarousel() {
               indexRef.current = i;
               setIndex(i);
               applyPositionsRef.current();
+              onOpenProject?.(project.id);
             }}
+            style={
+              reducedMotion
+                ? {
+                    position: 'static',
+                    width: 'auto',
+                    height: '138px',
+                    transform: 'none',
+                    opacity: '1',
+                    zIndex: 'auto',
+                  }
+                : undefined
+            }
             className="project-carousel-card"
           >
             <span

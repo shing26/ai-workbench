@@ -1512,6 +1512,15 @@ try {
   await clickDock('Projects');
   results.projectCarousel = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let carouselBtn = null;
+    for (let i = 0; i < 20; i++) {
+      carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) break;
+      await sleep(100);
+    }
+    if (!carouselBtn) return { ok: false, reason: "carousel toggle missing" };
+    carouselBtn.click();
+    await sleep(300);
     let carousel = null;
     for (let i = 0; i < 20; i++) {
       carousel = document.querySelector("[data-project-carousel]");
@@ -1585,6 +1594,15 @@ try {
   await clickDock('Projects');
   const carouselReorderBefore = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
     const scene = document.querySelector("[data-carousel-scene]");
     const handles = [...document.querySelectorAll("[data-carousel-drag-handle]")];
     const speed = document.querySelector("[data-carousel-speed]");
@@ -1640,6 +1658,19 @@ try {
   }
   await reloadAndWait();
   await clickDock('Projects');
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
   await delay(200);
   const carouselReorderAfter = await evaluate(`(() => {
     const restoredSpeed = Number(
@@ -1774,6 +1805,19 @@ try {
   }
   await reloadAndWait();
   await clickDock('Projects');
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
   await delay(250);
   const carouselMaterialMemoryAfter = await evaluate(`(() => {
     const scene = document.querySelector("[data-carousel-scene]");
@@ -1820,6 +1864,20 @@ try {
   };
   results.carouselMaterialMemory = carouselMaterialMemory;
   laneLog('carouselMaterialMemory ok');
+
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const gridBtn = document.querySelector("[data-projects-view-grid]");
+      if (gridBtn) {
+        gridBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
 
   const gitGraph = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3055,7 +3113,8 @@ try {
   await send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
   });
-  await delay(150);
+  await clickDock('Actions');
+  await delay(300);
   results.motion.reducedMotion = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const material = document.querySelector('.material-card[data-material]');

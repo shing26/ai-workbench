@@ -506,6 +506,31 @@ CREATE TABLE IF NOT EXISTS quick_prompt_usage (
     count INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS fsm_nodes (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_key TEXT NOT NULL,
+    agent TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    trace_id TEXT,
+    temp_file_paths TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER,
+    updated_at INTEGER,
+    UNIQUE(run_id, node_key)
+);
+CREATE INDEX IF NOT EXISTS idx_fsm_nodes_run ON fsm_nodes(run_id, created_at);
+CREATE TABLE IF NOT EXISTS run_metrics (
+    run_id TEXT PRIMARY KEY,
+    trace_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'workflow',
+    started_at INTEGER,
+    ended_at INTEGER,
+    node_count INTEGER DEFAULT 0,
+    hitl_count INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    status TEXT
+);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -1470,7 +1495,7 @@ fn recent_habit_logs(log_dates: &[String], today: &str, window: i64) -> Vec<Stri
     dates
 }
 
-fn uid() -> String {
+pub fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
@@ -2909,8 +2934,40 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
     migrate_schedule_event_date(&conn)?;
+    migrate_fsm_nodes(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
+}
+
+fn migrate_fsm_nodes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS fsm_nodes (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_key TEXT NOT NULL,
+            agent TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            context_json TEXT NOT NULL DEFAULT '{}',
+            trace_id TEXT,
+            temp_file_paths TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER,
+            updated_at INTEGER,
+            UNIQUE(run_id, node_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fsm_nodes_run ON fsm_nodes(run_id, created_at);
+        CREATE TABLE IF NOT EXISTS run_metrics (
+            run_id TEXT PRIMARY KEY,
+            trace_id TEXT,
+            kind TEXT NOT NULL DEFAULT 'workflow',
+            started_at INTEGER,
+            ended_at INTEGER,
+            node_count INTEGER DEFAULT 0,
+            hitl_count INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            status TEXT
+        );",
+    )?;
+    Ok(())
 }
 
 fn migrate_vault_watch_targets(conn: &Connection) -> Result<()> {
@@ -8698,6 +8755,256 @@ pub fn truncate_chat_messages(
     Ok(())
 }
 
+// ---- FSM orchestration (ADR-001 §6/§7/§11, Sprint 2 backend) ----
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsmNode {
+    pub id: String,
+    pub run_id: String,
+    pub node_key: String,
+    pub agent: Option<String>,
+    pub status: String,
+    pub context_json: String,
+    pub trace_id: Option<String>,
+    pub temp_file_paths: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunMetric {
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    pub kind: String,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub node_count: i64,
+    pub hitl_count: i64,
+    pub total_tokens: i64,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsmRunCreated {
+    pub run_id: String,
+    pub trace_id: String,
+}
+
+/// ULID-style sortable trace id: hex millis prefix + 32-char random suffix.
+/// Lexicographic ordering of the string follows creation time, per ADR-001 §11.
+pub fn generate_trace_id() -> String {
+    let millis = now_millis().max(0) as u64;
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    format!("{:016x}{}", millis, random)
+}
+
+fn fsm_run_trace_id(conn: &Connection, run_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT trace_id FROM fsm_nodes
+         WHERE run_id = ?1 AND trace_id IS NOT NULL AND trace_id <> ''
+         ORDER BY created_at ASC, rowid ASC LIMIT 1",
+        params![run_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+fn map_fsm_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<FsmNode> {
+    let temp_file_paths_raw: String = row.get(7)?;
+    let temp_file_paths =
+        serde_json::from_str::<Vec<String>>(&temp_file_paths_raw).unwrap_or_else(|_| Vec::new());
+    Ok(FsmNode {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        node_key: row.get(2)?,
+        agent: row.get(3)?,
+        status: row.get(4)?,
+        context_json: row.get(5)?,
+        trace_id: row.get(6)?,
+        temp_file_paths,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn get_fsm_node(conn: &Connection, id: &str) -> Result<Option<FsmNode>> {
+    conn.query_row(
+        "SELECT id, run_id, node_key, agent, status, context_json, trace_id, temp_file_paths, created_at, updated_at
+         FROM fsm_nodes WHERE id = ?1",
+        params![id],
+        map_fsm_node,
+    )
+    .optional()
+}
+
+/// Creates a fresh FSM run: persists a ULID-style trace id on a root node
+/// (`node_key = 'root'`, status `pending`) and returns the run id.
+pub fn create_fsm_run(conn: &Connection, run_id: &str, trace_id: &str) -> Result<String> {
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO fsm_nodes (id, run_id, node_key, agent, status, context_json, trace_id, temp_file_paths, created_at, updated_at)
+         VALUES (?1, ?2, 'root', NULL, 'pending', '{}', ?3, '[]', ?4, ?4)",
+        params![uid(), run_id, trace_id, now],
+    )?;
+    Ok(run_id.to_string())
+}
+
+/// Inserts a node into an existing run. The node inherits the run's trace id
+/// so traces stay contiguous across the whole FSM (ADR-001 §11).
+pub fn create_fsm_node(
+    conn: &Connection,
+    run_id: &str,
+    node_key: &str,
+    agent: Option<&str>,
+    status: &str,
+    context_json: &str,
+) -> Result<FsmNode> {
+    let id = uid();
+    let now = now_millis();
+    let trace_id = fsm_run_trace_id(conn, run_id);
+    conn.execute(
+        "INSERT INTO fsm_nodes (id, run_id, node_key, agent, status, context_json, trace_id, temp_file_paths, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]', ?8, ?8)",
+        params![id, run_id, node_key, agent, status, context_json, trace_id, now],
+    )?;
+    Ok(FsmNode {
+        id,
+        run_id: run_id.to_string(),
+        node_key: node_key.to_string(),
+        agent: agent.map(|a| a.to_string()),
+        status: status.to_string(),
+        context_json: context_json.to_string(),
+        trace_id,
+        temp_file_paths: Vec::new(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub fn update_fsm_node_status(conn: &Connection, id: &str, status: &str) -> Result<FsmNode> {
+    let updated = conn.execute(
+        "UPDATE fsm_nodes SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        params![status, now_millis(), id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_fsm_node(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn update_fsm_node_context(conn: &Connection, id: &str, context_json: &str) -> Result<FsmNode> {
+    let updated = conn.execute(
+        "UPDATE fsm_nodes SET context_json = ?1, updated_at = ?2 WHERE id = ?3",
+        params![context_json, now_millis(), id],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_fsm_node(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn list_fsm_nodes(conn: &Connection, run_id: &str) -> Result<Vec<FsmNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, run_id, node_key, agent, status, context_json, trace_id, temp_file_paths, created_at, updated_at
+         FROM fsm_nodes WHERE run_id = ?1 ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id], map_fsm_node)?;
+    rows.collect()
+}
+
+/// Run ids that still hold at least one non-terminal node
+/// (`pending / running / paused / blocked-on-human`), used to revive runs
+/// after app restart/crash (ADR-001 §6).
+pub fn list_active_fsm_runs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT run_id FROM fsm_nodes
+         WHERE status IN ('pending', 'running', 'paused', 'blocked-on-human')
+         GROUP BY run_id
+         ORDER BY MIN(created_at) ASC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect()
+}
+
+/// Deletes the run and all of its nodes; the run's metric row is removed too,
+/// matching the ADR-001 §12 right-to-be-forgotten cascade.
+pub fn delete_fsm_run(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM fsm_nodes WHERE run_id = ?1", params![run_id])?;
+    conn.execute("DELETE FROM run_metrics WHERE run_id = ?1", params![run_id])?;
+    Ok(())
+}
+
+fn map_run_metric(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunMetric> {
+    Ok(RunMetric {
+        run_id: row.get(0)?,
+        trace_id: row.get(1)?,
+        kind: row.get(2)?,
+        started_at: row.get(3)?,
+        ended_at: row.get(4)?,
+        node_count: row.get(5)?,
+        hitl_count: row.get(6)?,
+        total_tokens: row.get(7)?,
+        status: row.get(8)?,
+    })
+}
+
+/// Upserts a run's metric row. Called by the FSM executor once built
+/// (Sprint 2 orchestration) and by tests today; kept public for the
+/// future in-process caller, mirroring `create_provider`.
+#[allow(dead_code)]
+pub fn upsert_run_metric(conn: &Connection, metric: &RunMetric) -> Result<()> {
+    conn.execute(
+        "INSERT INTO run_metrics (run_id, trace_id, kind, started_at, ended_at, node_count, hitl_count, total_tokens, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(run_id) DO UPDATE SET
+           trace_id = excluded.trace_id,
+           kind = excluded.kind,
+           started_at = excluded.started_at,
+           ended_at = excluded.ended_at,
+           node_count = excluded.node_count,
+           hitl_count = excluded.hitl_count,
+           total_tokens = excluded.total_tokens,
+           status = excluded.status",
+        params![
+            metric.run_id,
+            metric.trace_id,
+            metric.kind,
+            metric.started_at,
+            metric.ended_at,
+            metric.node_count,
+            metric.hitl_count,
+            metric.total_tokens,
+            metric.status,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_run_metric(conn: &Connection, run_id: &str) -> Result<Option<RunMetric>> {
+    conn.query_row(
+        "SELECT run_id, trace_id, kind, started_at, ended_at, node_count, hitl_count, total_tokens, status
+         FROM run_metrics WHERE run_id = ?1",
+        params![run_id],
+        map_run_metric,
+    )
+    .optional()
+}
+
+pub fn list_run_metrics(conn: &Connection, limit: i64) -> Result<Vec<RunMetric>> {
+    let limit = limit.clamp(1, 200);
+    let mut stmt = conn.prepare(
+        "SELECT run_id, trace_id, kind, started_at, ended_at, node_count, hitl_count, total_tokens, status
+         FROM run_metrics ORDER BY started_at DESC, rowid DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], map_run_metric)?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13571,5 +13878,155 @@ mod tests {
         assert!(get_event_forward(&conn, &forward.id).unwrap().is_none());
         let cleared = clear_event_logs(&conn, "").unwrap();
         assert_eq!(cleared, 1);
+    }
+
+    #[test]
+    fn fsm_node_lifecycle_persists() {
+        let dir = std::env::temp_dir().join(format!("aiwb-fsm-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let run_id = uid();
+        let trace_id = generate_trace_id();
+        let conn = init_connection(&db_path).unwrap();
+        let returned = create_fsm_run(&conn, &run_id, &trace_id).unwrap();
+        assert_eq!(returned, run_id);
+
+        let node = create_fsm_node(
+            &conn,
+            &run_id,
+            "clarify",
+            Some("recap_agent"),
+            "pending",
+            r#"{"step":1}"#,
+        )
+        .unwrap();
+        assert_eq!(node.status, "pending");
+        assert_eq!(node.trace_id.as_deref(), Some(trace_id.as_str()));
+        assert!(node.temp_file_paths.is_empty());
+
+        let updated = update_fsm_node_status(&conn, &node.id, "complete").unwrap();
+        assert_eq!(updated.status, "complete");
+        assert!(updated.updated_at >= updated.created_at);
+
+        let nodes = list_fsm_nodes(&conn, &run_id).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().any(|n| n.node_key == "root"));
+        let persisted = nodes.iter().find(|n| n.id == node.id).unwrap();
+        assert_eq!(persisted.status, "complete");
+        assert_eq!(persisted.updated_at, updated.updated_at);
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let reloaded = list_fsm_nodes(&conn, &run_id).unwrap();
+        assert_eq!(reloaded.len(), 2);
+        assert!(reloaded
+            .iter()
+            .any(|n| n.id == node.id && n.status == "complete"));
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fsm_node_status_missing_id_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        assert!(update_fsm_node_status(&conn, "missing-id", "running").is_err());
+        assert!(update_fsm_node_context(&conn, "missing-id", "{}").is_err());
+    }
+
+    #[test]
+    fn fsm_run_metrics_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let run_id = uid();
+        let trace_id = generate_trace_id();
+        upsert_run_metric(
+            &conn,
+            &RunMetric {
+                run_id: run_id.clone(),
+                trace_id: Some(trace_id.clone()),
+                kind: "workflow".to_string(),
+                started_at: Some(now_millis()),
+                ended_at: None,
+                node_count: 3,
+                hitl_count: 1,
+                total_tokens: 4096,
+                status: Some("running".to_string()),
+            },
+        )
+        .unwrap();
+
+        let got = get_run_metric(&conn, &run_id).unwrap().unwrap();
+        assert_eq!(got.kind, "workflow");
+        assert_eq!(got.trace_id.as_deref(), Some(trace_id.as_str()));
+        assert_eq!(got.node_count, 3);
+
+        upsert_run_metric(
+            &conn,
+            &RunMetric {
+                run_id: run_id.clone(),
+                trace_id: Some(trace_id),
+                kind: "workflow".to_string(),
+                started_at: Some(1),
+                ended_at: Some(2),
+                node_count: 5,
+                hitl_count: 2,
+                total_tokens: 8192,
+                status: Some("complete".to_string()),
+            },
+        )
+        .unwrap();
+        let listed = list_run_metrics(&conn, 10).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status.as_deref(), Some("complete"));
+        assert_eq!(listed[0].node_count, 5);
+    }
+
+    #[test]
+    fn active_runs_detects_nonterminal() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let run_id = uid();
+        let trace_id = generate_trace_id();
+        create_fsm_run(&conn, &run_id, &trace_id).unwrap();
+
+        assert!(list_active_fsm_runs(&conn).unwrap().contains(&run_id));
+
+        for node in list_fsm_nodes(&conn, &run_id).unwrap() {
+            update_fsm_node_status(&conn, &node.id, "complete").unwrap();
+        }
+        assert!(!list_active_fsm_runs(&conn).unwrap().contains(&run_id));
+    }
+
+    #[test]
+    fn delete_fsm_run_removes_nodes_and_metrics() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let run_id = uid();
+        let trace_id = generate_trace_id();
+        create_fsm_run(&conn, &run_id, &trace_id).unwrap();
+        create_fsm_node(&conn, &run_id, "extra", None, "pending", "{}").unwrap();
+        upsert_run_metric(
+            &conn,
+            &RunMetric {
+                run_id: run_id.clone(),
+                trace_id: Some(trace_id),
+                kind: "workflow".to_string(),
+                started_at: Some(now_millis()),
+                ended_at: None,
+                node_count: 2,
+                hitl_count: 0,
+                total_tokens: 0,
+                status: Some("running".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(list_fsm_nodes(&conn, &run_id).unwrap().len(), 2);
+
+        delete_fsm_run(&conn, &run_id).unwrap();
+        assert!(list_fsm_nodes(&conn, &run_id).unwrap().is_empty());
+        assert!(get_run_metric(&conn, &run_id).unwrap().is_none());
     }
 }

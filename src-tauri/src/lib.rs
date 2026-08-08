@@ -1387,6 +1387,99 @@ fn delete_task(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<
 }
 
 #[tauri::command]
+fn create_fsm_run(state: State<'_, db::Db>) -> Result<db::FsmRunCreated, String> {
+    let run_id = db::uid();
+    let trace_id = db::generate_trace_id();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_fsm_run(&conn, &run_id, &trace_id).map_err(|e| e.to_string())?;
+    Ok(db::FsmRunCreated { run_id, trace_id })
+}
+
+#[tauri::command]
+fn create_fsm_node(
+    state: State<'_, db::Db>,
+    run_id: String,
+    node_key: String,
+    agent: Option<String>,
+    status: String,
+    context_json: String,
+) -> Result<db::FsmNode, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_fsm_node(
+        &conn,
+        &run_id,
+        &node_key,
+        agent.as_deref(),
+        &status,
+        &context_json,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_fsm_node_status(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    id: String,
+    status: String,
+) -> Result<db::FsmNode, String> {
+    let node = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::update_fsm_node_status(&conn, &id, &status).map_err(|e| e.to_string())?
+    };
+    let _ = app.emit("fsm://node/updated", node.clone());
+    Ok(node)
+}
+
+#[tauri::command]
+fn update_fsm_node_context(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    id: String,
+    context_json: String,
+) -> Result<db::FsmNode, String> {
+    let node = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::update_fsm_node_context(&conn, &id, &context_json).map_err(|e| e.to_string())?
+    };
+    let _ = app.emit("fsm://node/updated", node.clone());
+    Ok(node)
+}
+
+#[tauri::command]
+fn list_fsm_nodes(state: State<'_, db::Db>, run_id: String) -> Result<Vec<db::FsmNode>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_fsm_nodes(&conn, &run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_active_fsm_runs(state: State<'_, db::Db>) -> Result<Vec<String>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_active_fsm_runs(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_fsm_run(state: State<'_, db::Db>, run_id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_fsm_run(&conn, &run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_run_metric(
+    state: State<'_, db::Db>,
+    run_id: String,
+) -> Result<Option<db::RunMetric>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_run_metric(&conn, &run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_run_metrics(state: State<'_, db::Db>, limit: i64) -> Result<Vec<db::RunMetric>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_run_metrics(&conn, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_projects(state: State<'_, db::Db>) -> Result<Vec<db::Project>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_projects(&conn).map_err(|e| e.to_string())
@@ -7302,7 +7395,16 @@ pub fn run() {
             clear_event_forwards,
             get_event_bus_stats,
             run_provider_stream_smoke_test,
-            run_provider_e2e_stream
+            run_provider_e2e_stream,
+            create_fsm_run,
+            create_fsm_node,
+            update_fsm_node_status,
+            update_fsm_node_context,
+            list_fsm_nodes,
+            list_active_fsm_runs,
+            delete_fsm_run,
+            get_run_metric,
+            list_run_metrics
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

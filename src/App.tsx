@@ -2,7 +2,9 @@ import { useEffect } from 'react';
 import AppDock from './components/layout/AppDock';
 import AppHeader from './components/layout/AppHeader';
 import AppInspector from './components/layout/AppInspector';
+import ToastHost from './components/ui/Toast';
 import ViewRouter from './components/ViewRouter';
+import { useActiveThrottle } from './hooks/useActiveThrottle';
 import * as db from './lib/db';
 import { useThemeStore } from './stores/themeStore';
 import { useWorkbenchStore } from './stores/workbenchStore';
@@ -21,11 +23,16 @@ export default function App() {
     initTheme();
   }, [initTheme]);
 
+  useActiveThrottle(
+    () => {
+      void refreshSystem();
+    },
+    3000,
+    10000,
+  );
+
   useEffect(() => {
     let disposed = false;
-    const timer = window.setInterval(() => {
-      if (!disposed) void refreshSystem();
-    }, 3000);
     let unlisten = () => {};
     void db
       .listenClipboardUpdated(() => {
@@ -51,7 +58,6 @@ export default function App() {
     window.addEventListener('unhandledrejection', onRejection);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
       unlisten();
@@ -68,6 +74,7 @@ export default function App() {
           <AppInspector />
         </div>
       </div>
+      <ToastHost />
     </div>
   );
 }

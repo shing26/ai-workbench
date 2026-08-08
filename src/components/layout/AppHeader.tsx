@@ -1,8 +1,9 @@
 import { Search } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
-import MaterialDrawer from './MaterialDrawer';
+import CommandPalette from '../CommandPalette';
 import ThemeSwitcher from '../ui/ThemeSwitcher';
+import MaterialDrawer from './MaterialDrawer';
+import { emitEvent, TOPICS } from '../../stores/events';
 
 const TITLES: Record<ViewId, string> = {
   'ai-studio': 'AI Studio',
@@ -14,36 +15,8 @@ const TITLES: Record<ViewId, string> = {
 
 export default function AppHeader() {
   const activeView = useWorkbenchStore((s) => s.activeView);
-  const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const providers = useWorkbenchStore((s) => s.providers);
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
   const activeProvider = providers.find((p) => p.isActive);
-
-  const items = useMemo(
-    () =>
-      (Object.keys(TITLES) as ViewId[]).filter((id) =>
-        TITLES[id].toLowerCase().includes(query.toLowerCase()),
-      ),
-    [query],
-  );
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setOpen((v) => !v);
-      }
-      if (e.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open]);
 
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#16161A]/80 px-4 backdrop-blur-2xl">
@@ -60,59 +33,22 @@ export default function AppHeader() {
         )}
         <MaterialDrawer />
         <ThemeSwitcher />
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
-          >
-            <Search size={14} />
-            <span className="hidden md:inline">Search</span>
-            <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">
-              Ctrl K
-            </kbd>
-          </button>
-          {open && (
-            <div className="search-pop absolute right-0 top-11 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[#18181C] shadow-xl">
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && items[0]) {
-                    setActiveView(items[0]);
-                    setOpen(false);
-                    setQuery('');
-                  }
-                }}
-                placeholder="Jump to view..."
-                className="h-11 w-full border-b border-white/10 bg-transparent px-3 text-sm text-slate-200 outline-none placeholder:text-slate-600"
-              />
-              <div className="p-1.5">
-                {items.length === 0 && (
-                  <div className="px-3 py-6 text-center text-xs text-slate-600">No results</div>
-                )}
-                {items.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => {
-                      setActiveView(id);
-                      setOpen(false);
-                      setQuery('');
-                    }}
-                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs text-slate-300 hover:bg-white/[0.06]"
-                  >
-                    <span>{TITLES[id]}</span>
-                    {id === activeView && <span className="text-emerald-400">Active</span>}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <button
+          type="button"
+          data-command-trigger
+          aria-label="Search commands"
+          aria-haspopup="dialog"
+          onClick={() => emitEvent(TOPICS.COMMAND_PALETTE_TOGGLE)}
+          className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
+        >
+          <Search size={14} />
+          <span className="hidden md:inline">Search</span>
+          <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">
+            Ctrl K
+          </kbd>
+        </button>
       </div>
+      <CommandPalette />
     </header>
   );
 }
