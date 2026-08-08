@@ -157,6 +157,8 @@ export default function AIStudioView() {
   const addThought = useWorkbenchStore((s) => s.addThought);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const setInspectorMetrics = useWorkbenchStore((s) => s.setInspectorMetrics);
+  const vibeContext = useWorkbenchStore((s) => s.vibeContext);
+  const clearVibeContext = useWorkbenchStore((s) => s.clearVibeContext);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -1252,6 +1254,18 @@ export default function AIStudioView() {
         });
     }
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
+    if (vibeContext) {
+      apiMessages.unshift({
+        role: 'system',
+        content:
+          `[Vibe Coding 上下文] 当前挂载项目：${vibeContext.projectName}\n` +
+          `Path: ${vibeContext.path}\n` +
+          `Branch: ${vibeContext.branch} · HEAD: ${vibeContext.head} · Commits: ${vibeContext.commitCount}\n` +
+          `最新提交: ${vibeContext.latestCommit}\n` +
+          `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无未提交变更'}\n` +
+          `请基于以上工程上下文执行用户的代码重构 / 修改指令，注意变更文件与分支约束。`,
+      });
+    }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
     }
@@ -1409,6 +1423,17 @@ export default function AIStudioView() {
           ? [providerBase]
           : [];
       const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
+      if (vibeContext) {
+        apiMessages.unshift({
+          role: 'system',
+          content:
+            `[Vibe Coding 上下文] 当前挂载项目：${vibeContext.projectName}\n` +
+            `Path: ${vibeContext.path}\n` +
+            `Branch: ${vibeContext.branch} · HEAD: ${vibeContext.head} · Commits: ${vibeContext.commitCount}\n` +
+            `最新提交: ${vibeContext.latestCommit}\n` +
+            `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无未提交变更'}`,
+        });
+      }
       if (agent.systemPrompt?.trim()) {
         apiMessages.unshift({ role: 'system', content: agent.systemPrompt.trim() });
       }
@@ -1796,6 +1821,16 @@ export default function AIStudioView() {
     const history: Message[] = current.slice(0, meta.baseHistoryLength);
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
     const selectedAgent = agentId ? (agents.find((a) => a.id === agentId) ?? null) : null;
+    if (vibeContext) {
+      apiMessages.unshift({
+        role: 'system',
+        content:
+          `[Vibe Coding 上下文] 当前挂载项目：${vibeContext.projectName}\n` +
+          `Path: ${vibeContext.path}\n` +
+          `Branch: ${vibeContext.branch} · HEAD: ${vibeContext.head} · Commits: ${vibeContext.commitCount}\n` +
+          `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无未提交变更'}`,
+      });
+    }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
     }
@@ -3050,6 +3085,31 @@ export default function AIStudioView() {
                   </SortableContext>
                 </DndContext>
               )}
+            </div>
+          )}
+          {vibeContext && (
+            <div
+              data-vibe-context
+              className="mb-2 flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] px-3 py-2"
+            >
+              <Sparkles size={13} className="shrink-0 text-emerald-400" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-medium text-emerald-300">
+                  Vibe Coding · {vibeContext.projectName}
+                </div>
+                <div className="truncate font-mono text-[9px] text-slate-500">
+                  {vibeContext.branch} · {vibeContext.changes.length} changed file(s) · context
+                  mounted
+                </div>
+              </div>
+              <button
+                type="button"
+                data-vibe-context-dismiss
+                onClick={clearVibeContext}
+                className="flex h-6 shrink-0 items-center rounded-md border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+              >
+                卸载
+              </button>
             </div>
           )}
           <div className="composer flex shrink-0 items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 focus-within:border-emerald-500/40">

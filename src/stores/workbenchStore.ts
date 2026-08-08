@@ -11,6 +11,18 @@ export type InspectorState = {
   metrics: InspectorMetrics | null;
 };
 
+export type VibeContext = {
+  projectId: string;
+  projectName: string;
+  path: string;
+  branch: string;
+  head: string;
+  commitCount: number;
+  latestCommit: string;
+  changes: string[];
+  mountedAt: number;
+};
+
 type WorkbenchState = {
   activeView: ViewId;
   setActiveView: (view: ViewId) => void;
@@ -25,6 +37,7 @@ type WorkbenchState = {
   clipboard: db.ClipboardItem[];
   logs: db.ErrorLog[];
   inspector: InspectorState | null;
+  vibeContext: VibeContext | null;
   init: () => Promise<void>;
   addTask: (title: string, isToday: boolean) => Promise<void>;
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
@@ -75,6 +88,8 @@ type WorkbenchState = {
   ) => Promise<void>;
   openInspector: (title: string, sections: InspectorSection[], keepMetrics?: boolean) => void;
   setInspectorMetrics: (patch: Partial<InspectorMetrics>) => void;
+  setVibeContext: (ctx: VibeContext) => void;
+  clearVibeContext: () => void;
   closeInspector: () => void;
 };
 
@@ -92,6 +107,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   clipboard: [],
   logs: [],
   inspector: null,
+  vibeContext: null,
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
@@ -313,4 +329,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       };
     }),
   closeInspector: () => set({ inspector: null }),
+  setVibeContext: (ctx) => set({ vibeContext: ctx }),
+  clearVibeContext: () => set({ vibeContext: null }),
 }));

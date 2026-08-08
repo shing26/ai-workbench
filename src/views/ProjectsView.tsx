@@ -13,6 +13,7 @@ import {
   TrendingUp,
   Trash2,
   Undo2,
+  Wand2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import * as db from '../lib/db';
@@ -133,6 +134,7 @@ type ProjectCardBodyProps = {
   onAbortRebase: () => void;
   onResolve: (strategy: string) => void;
   onAiCoding: () => void;
+  onVibeCoding: () => void;
 };
 
 function ProjectCardBody({
@@ -162,6 +164,7 @@ function ProjectCardBody({
   onAbortRebase,
   onResolve,
   onAiCoding,
+  onVibeCoding,
 }: ProjectCardBodyProps) {
   return (
     <div className="flex min-w-0 flex-col">
@@ -517,6 +520,14 @@ function ProjectCardBody({
         </button>
         <button
           type="button"
+          data-project-vibe={project.id}
+          onClick={onVibeCoding}
+          className="flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/30"
+        >
+          <Wand2 size={12} /> 进入 Vibe Coding
+        </button>
+        <button
+          type="button"
           aria-label="Generate commit PR draft"
           onClick={onGenerateDraft}
           className="flex h-8 items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 text-[11px] text-violet-300 hover:bg-violet-500/20"
@@ -534,6 +545,8 @@ export default function ProjectsView() {
   const updateProject = useWorkbenchStore((s) => s.updateProject);
   const deleteProject = useWorkbenchStore((s) => s.deleteProject);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
+  const setVibeContext = useWorkbenchStore((s) => s.setVibeContext);
+  const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
@@ -589,6 +602,12 @@ export default function ProjectsView() {
   const pausedProjects = projects.filter((p) => p.status === 'paused').length;
   const weekCommitPeak = gitActivity
     ? Math.max(0, ...gitActivity.commitTrend.buckets.map((b) => b.count))
+    : 0;
+
+  const weekCommits = gitActivity
+    ? gitActivity.commitTrend.buckets
+        .filter((b) => Date.now() - b.dayMs <= 7 * 86_400_000)
+        .reduce((sum, b) => sum + b.count, 0)
     : 0;
 
   const revenueCsv = (() => {
@@ -961,6 +980,22 @@ ${trend}
     ]);
   };
 
+  const vibeCoding = async (project: db.Project) => {
+    const ctx = await db.getProjectGitContext(project.path ?? '');
+    setVibeContext({
+      projectId: project.id,
+      projectName: project.name,
+      path: project.path ?? '',
+      branch: ctx.branch,
+      head: ctx.head,
+      commitCount: ctx.commitCount,
+      latestCommit: ctx.latestCommit,
+      changes: ctx.changes,
+      mountedAt: Date.now(),
+    });
+    setActiveView('ai-studio');
+  };
+
   const generateDraft = async (project: db.Project) => {
     const draft = await db.generateCommitPrDraft(project.path ?? '', project.name);
     setDrafts((prev) => ({ ...prev, [project.id]: draft }));
@@ -1221,6 +1256,7 @@ ${trend}
       onAbortRebase={() => void abortProjectRebase(project)}
       onResolve={(strategy) => void resolveConflicts(project, strategy)}
       onAiCoding={() => void aiCoding(project)}
+      onVibeCoding={() => void vibeCoding(project)}
     />
   );
 
@@ -1271,6 +1307,9 @@ ${trend}
             <StatPill label="Active" value={String(activeProjects)} tone="blue" />
             <StatPill label="Paused" value={String(pausedProjects)} tone="neutral" />
             <StatPill label="Commits" value={String(gitActivity?.totalCommits ?? 0)} tone="blue" />
+            <div data-portfolio-week-commits className="contents">
+              <StatPill label="Week commits" value={String(weekCommits)} tone="blue" />
+            </div>
             <StatPill
               label="Dirty"
               value={String(gitActivity?.dirtyProjects ?? 0)}
@@ -1421,7 +1460,7 @@ ${trend}
           title="Git activity"
           subtitle={`${gitActivity.totalProjects} projects`}
           icon={GitBranch}
-          colSpan={12}
+          colSpan={4}
         >
           <div data-git-activity className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -1619,7 +1658,7 @@ ${trend}
           {projectCardBody(detailProject)}
         </ProjectDetailView>
       ) : (
-        <>
+        <div className="col-span-8 flex flex-col gap-4">
           <div
             data-projects-view-toggle
             data-projects-view-mode={viewMode}
@@ -1702,7 +1741,7 @@ ${trend}
               })}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
