@@ -775,8 +775,8 @@ export default function KnowledgeView() {
       : null;
 
   return (
-    <div className="view-enter flex h-full flex-col gap-4 p-4">
-      <BentoCard title="Thought Inbox" subtitle="Command+N 闪念速记" icon={BookOpen} colSpan={12}>
+    <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      <BentoCard title="Thought Inbox" subtitle="Command+N 闪念速记" icon={BookOpen} colSpan={8}>
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -831,7 +831,7 @@ export default function KnowledgeView() {
         title="Tag Library"
         subtitle="标签云 · 类型分布 · 分类浏览"
         icon={Tags}
-        colSpan={12}
+        colSpan={4}
       >
         <div data-knowledge-tag-library className="space-y-3">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -932,7 +932,7 @@ export default function KnowledgeView() {
         title="Vault Index"
         subtitle="Obsidian / Markdown 文件夹纳入 RAG"
         icon={FolderOpen}
-        colSpan={12}
+        colSpan={7}
       >
         <div className="flex items-end gap-2">
           <input
@@ -1488,7 +1488,7 @@ export default function KnowledgeView() {
         title="Vector index"
         subtitle="真实 Embedding 模型、增量重建与分片索引"
         icon={Database}
-        colSpan={12}
+        colSpan={5}
       >
         <div data-vector-index-status className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
           <div className="flex flex-col items-center rounded-xl bg-white/[0.03] px-2 py-1.5">

@@ -20,15 +20,20 @@ export default function AppHeader() {
 
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#16161A]/80 px-4 backdrop-blur-2xl">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-200">{TITLES[activeView]}</span>
-        <span className="hidden text-xs text-slate-500 md:inline">Local-first AI Workbench</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-semibold text-slate-200">{TITLES[activeView]}</span>
+        <span className="hidden truncate text-xs text-slate-500 md:inline">
+          Local-first AI Workbench
+        </span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         {activeProvider && (
-          <span className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            {activeProvider.name}
+          <span
+            title={activeProvider.name}
+            className="flex max-w-44 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-400"
+          >
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+            <span className="truncate">{activeProvider.name}</span>
           </span>
         )}
         <MaterialDrawer />

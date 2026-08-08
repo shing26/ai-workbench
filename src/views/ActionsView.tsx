@@ -248,65 +248,812 @@ export default function ActionsView() {
   };
 
   return (
-    <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="grid grid-cols-12 gap-4">
-        <BentoCard
-          title="Today progress"
-          subtitle="Focus · Habits · Schedule"
-          icon={ListChecks}
-          colSpan={12}
-        >
-          <div data-daily-progress className="space-y-2">
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-              <div data-daily-focus={`${todayDone}/${todayTasks.length}`} className="min-w-0">
-                <StatPill label="Focus" value={`${todayDone}/${todayTasks.length}`} tone="green" />
-              </div>
-              <div data-daily-habits={`${habitDone}/${habits.length}`} className="min-w-0">
-                <StatPill label="Habits" value={`${habitDone}/${habits.length}`} tone="blue" />
-              </div>
-              <div
-                data-daily-schedule={`${eventDone}/${scheduleEvents.length}`}
-                className="min-w-0"
-              >
-                <StatPill
-                  label="Schedule"
-                  value={`${eventDone}/${scheduleEvents.length}`}
-                  tone="neutral"
-                />
-              </div>
+    <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      <BentoCard
+        title="Today progress"
+        subtitle="Focus · Habits · Schedule"
+        icon={ListChecks}
+        colSpan={12}
+      >
+        <div data-daily-progress className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+            <div data-daily-focus={`${todayDone}/${todayTasks.length}`} className="min-w-0">
+              <StatPill label="Focus" value={`${todayDone}/${todayTasks.length}`} tone="green" />
             </div>
-            <div className="flex items-center gap-2">
-              <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
-                <div
-                  data-daily-progress-bar
-                  className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
-                  style={{ transform: `scaleX(${overallProgress})` }}
-                />
-              </div>
-              <span data-daily-overall className="font-mono text-[10px] text-slate-500">
-                {doneItems}/{totalItems}
-              </span>
+            <div data-daily-habits={`${habitDone}/${habits.length}`} className="min-w-0">
+              <StatPill label="Habits" value={`${habitDone}/${habits.length}`} tone="blue" />
             </div>
-            <div data-daily-next-event className="truncate text-[11px] text-slate-400">
-              Next: {nextEvent ? `${nextEvent.startTime} ${nextEvent.title}` : 'Nothing scheduled'}
+            <div data-daily-schedule={`${eventDone}/${scheduleEvents.length}`} className="min-w-0">
+              <StatPill
+                label="Schedule"
+                value={`${eventDone}/${scheduleEvents.length}`}
+                tone="neutral"
+              />
             </div>
           </div>
-        </BentoCard>
+          <div className="flex items-center gap-2">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+              <div
+                data-daily-progress-bar
+                className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
+                style={{ transform: `scaleX(${overallProgress})` }}
+              />
+            </div>
+            <span data-daily-overall className="font-mono text-[10px] text-slate-500">
+              {doneItems}/{totalItems}
+            </span>
+          </div>
+          <div data-daily-next-event className="truncate text-[11px] text-slate-400">
+            Next: {nextEvent ? `${nextEvent.startTime} ${nextEvent.title}` : 'Nothing scheduled'}
+          </div>
+        </div>
+      </BentoCard>
 
-        <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={7}>
-          <div className="mb-3 grid grid-cols-7 gap-1">
+      <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={7}>
+        <div className="mb-3 grid grid-cols-7 gap-1">
+          {weekDays.map((key, i) => {
+            const dayList = tasks.filter((t) => t.dueDate === key);
+            const doneCount = dayList.filter((t) => t.status === 'done').length;
+            const allDone = dayList.length > 0 && doneCount === dayList.length;
+            const isSelected = selectedDay === key;
+            const isToday = key === dayKey(now);
+            return (
+              <button
+                key={key}
+                type="button"
+                data-focus-week-day={key}
+                data-focus-day-done={allDone ? 'true' : 'false'}
+                onClick={() => setSelectedDay(key)}
+                className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
+                  isSelected
+                    ? 'accent-border accent-bg-15 accent-text-strong'
+                    : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
+                }`}
+              >
+                <span className="flex items-center gap-1">
+                  {WEEKDAY_LABELS[i]}
+                  {isToday && <span className="rounded bg-white/10 px-1">T</span>}
+                </span>
+                <span className="font-mono text-[9px] opacity-70">{formatDayLabel(key)}</span>
+                <span className="flex h-3.5 items-center gap-0.5 text-slate-400">
+                  {dayList.length > 0 ? (
+                    <>
+                      <span className="font-mono">
+                        {doneCount}/{dayList.length}
+                      </span>
+                      {allDone && <Check size={9} className="text-emerald-400" />}
+                    </>
+                  ) : (
+                    <span className="text-slate-700">-</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mb-3 flex items-center gap-2">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+            <div
+              data-focus-week-bar
+              className="progress-strip-inner h-full rounded-full accent-bg"
+              style={{ transform: `scaleX(${weekProgress})` }}
+            />
+          </div>
+          <span data-focus-week-total className="font-mono text-[10px] text-slate-500">
+            week {weekDone}/{weekTasks.length}
+          </span>
+        </div>
+        <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
+            style={{ transform: `scaleX(${focusProgress})` }}
+          />
+        </div>
+        <div className="grid gap-2 md:grid-cols-3">
+          {dayTasks.map((t) => (
+            <div
+              key={t.id}
+              data-task-row={t.id}
+              className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition-colors ${
+                t.status === 'done'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                  : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
+                aria-label={`Toggle ${t.title}`}
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border ${
+                  t.status === 'done'
+                    ? 'check-pop border-emerald-500/40 bg-emerald-500/20'
+                    : 'border-white/20'
+                }`}
+              >
+                {t.status === 'done' && <Check size={11} />}
+              </button>
+              <div className="min-w-0 flex-1">
+                {taskRenameId === t.id ? (
+                  <input
+                    data-task-rename-input
+                    value={taskRenameDraft}
+                    onChange={(e) => setTaskRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const value = taskRenameDraft.trim();
+                        if (value) void updateTaskTitle(t.id, value);
+                        setTaskRenameId(null);
+                      } else if (e.key === 'Escape') {
+                        setTaskRenameId(null);
+                      }
+                    }}
+                    autoFocus
+                    className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
+                  />
+                ) : (
+                  <>
+                    <div className="truncate">{t.title}</div>
+                    <span className="mt-0.5 block font-mono text-[9px] text-slate-600">
+                      {t.dueDate ? formatDayLabel(t.dueDate) : dayKey(now)}
+                    </span>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                data-task-rename
+                aria-label={`Rename ${t.title}`}
+                onClick={() => {
+                  setTaskRenameId(t.id);
+                  setTaskRenameDraft(t.title);
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
+                title="Rename"
+              >
+                <Pencil size={11} />
+              </button>
+              {taskDeleteId === t.id ? (
+                <div className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-1.5 py-1">
+                  <span className="text-[9px] text-rose-300">Delete?</span>
+                  <button
+                    type="button"
+                    data-task-delete-confirm
+                    aria-label={`Confirm delete ${t.title}`}
+                    onClick={() => void deleteTask(t.id, true)}
+                    className="flex h-5 w-5 items-center justify-center rounded-md text-rose-300 hover:bg-rose-500/20"
+                  >
+                    <Check size={10} />
+                  </button>
+                  <button
+                    type="button"
+                    data-task-delete-cancel
+                    aria-label="Cancel delete"
+                    onClick={() => setTaskDeleteId(null)}
+                    className="flex h-5 w-5 items-center justify-center rounded-md text-slate-400 hover:bg-white/10"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  data-task-delete
+                  aria-label={`Delete ${t.title}`}
+                  onClick={() => setTaskDeleteId(t.id)}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+                  title="Delete"
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
+              <button
+                type="button"
+                data-task-next-day={t.id}
+                aria-label={`Move ${t.title} to next day`}
+                onClick={() => {
+                  const nextIndex = weekDays.indexOf(dayKey(now));
+                  const next = weekDays[(nextIndex + 1) % weekDays.length];
+                  void setTaskDueDate(t.id, next);
+                  if (t.isToday) void setTaskToday(t.id, false);
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
+                title="Move to tomorrow"
+              >
+                <CalendarDays size={11} />
+              </button>
+            </div>
+          ))}
+          {dayTasks.length < 3 && (
+            <div className="flex items-center justify-center rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-[11px] text-slate-600">
+              {selectedDay === dayKey(now) ? 'Add up to 3 focus items' : 'No focus on this day'}
+            </div>
+          )}
+        </div>
+        {archived.length > 0 && (
+          <details
+            data-focus-archive
+            className="mt-3 rounded-xl border border-white/10 bg-white/[0.02]"
+          >
+            <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11px] text-slate-400 hover:text-slate-300">
+              <ArchiveRestore size={12} />
+              <span data-focus-archive-count>Completed archive · {archived.length}</span>
+            </summary>
+            <div className="flex flex-col gap-1 border-t border-white/5 p-2">
+              {archived.map((t) => (
+                <div
+                  key={t.id}
+                  data-focus-archive-row
+                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-400 hover:bg-white/[0.04]"
+                >
+                  <span className="min-w-0 flex-1 truncate text-slate-300">{t.title}</span>
+                  <span className="font-mono text-[9px] text-slate-600">
+                    {formatArchiveTime(t.completedAt)}
+                  </span>
+                  <button
+                    type="button"
+                    data-focus-archive-restore
+                    aria-label={`Restore ${t.title}`}
+                    onClick={() => {
+                      void setTaskStatus(t.id, 'todo');
+                      void setTaskDueDate(t.id, null);
+                      void setTaskToday(t.id, true);
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                  >
+                    <RotateCcw size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </BentoCard>
+
+      <BentoCard title="Habits" subtitle="打卡与连续天数" icon={Flame} colSpan={5}>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            value={habitName}
+            onChange={(e) => setHabitName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void addHabitItem();
+              }
+            }}
+            placeholder="New habit..."
+            className="h-8 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <div className="flex items-center gap-1">
+            {HABIT_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Habit color ${c}`}
+                onClick={() => setHabitColor(c)}
+                className={`h-4 w-4 rounded-full ${colorClass[c].dot} ${habitColor === c ? `ring-2 ${colorClass[c].ring}` : 'opacity-50 hover:opacity-80'}`}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => void addHabitItem()}
+            className="flex h-8 items-center gap-1 rounded-xl bg-emerald-500/20 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+            aria-label="Add habit"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {habits.map((h) => {
+            const tone = colorClass[h.color] ?? colorClass.emerald;
+            const recentSet = new Set(h.recentLogs ?? []);
+            const weekCount = recentDayKeys.slice(7).filter((key) => recentSet.has(key)).length;
+            return (
+              <div
+                key={h.id}
+                className={`message-in flex items-center gap-2.5 rounded-xl border px-3 py-2 ${
+                  h.doneToday ? tone.active : 'border-white/10 bg-white/[0.03]'
+                }`}
+              >
+                <button
+                  type="button"
+                  data-habit-toggle
+                  onClick={() => void toggleHabit(h.id)}
+                  aria-label={`Toggle ${h.name}`}
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border ${
+                    h.doneToday
+                      ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                      : 'border-white/20 text-transparent hover:border-white/40'
+                  }`}
+                >
+                  <Check size={12} />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`truncate text-xs ${
+                        h.doneToday ? 'text-current' : 'text-slate-300'
+                      }`}
+                    >
+                      {h.name}
+                    </span>
+                    <span
+                      data-habit-week={`${weekCount}/${h.weekGoal}`}
+                      className="shrink-0 font-mono text-[9px] text-slate-500"
+                    >
+                      周 {weekCount}/{h.weekGoal}
+                    </span>
+                  </div>
+                  {habitEditId === h.id && (
+                    <div
+                      data-habit-week-editor={h.id}
+                      className="mb-1 mt-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1"
+                    >
+                      <span className="text-[9px] text-slate-500">Week goal</span>
+                      <input
+                        data-habit-week-input={h.id}
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={habitGoalEdits[h.id] ?? String(h.weekGoal)}
+                        onChange={(e) =>
+                          setHabitGoalEdits((prev) => ({ ...prev, [h.id]: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void saveHabitGoal(h);
+                          }
+                        }}
+                        className="h-6 w-12 rounded-md border border-white/10 bg-black/20 px-1.5 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40"
+                      />
+                      <button
+                        type="button"
+                        data-habit-week-save={h.id}
+                        onClick={() => void saveHabitGoal(h)}
+                        className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                      >
+                        <Check size={10} /> Save
+                      </button>
+                      <button
+                        type="button"
+                        data-habit-week-cancel={h.id}
+                        onClick={() => setHabitEditId(null)}
+                        className="h-6 rounded-md border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  <div
+                    data-habit-recent-days
+                    className="mt-1 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[3px]"
+                  >
+                    {recentDayKeys.map((key) => {
+                      const checked = recentSet.has(key);
+                      return (
+                        <span
+                          key={key}
+                          data-habit-day={key}
+                          data-habit-day-checked={checked ? 'true' : 'false'}
+                          className={`h-1.5 rounded-[2px] ${
+                            checked ? tone.dot : 'bg-white/[0.06]'
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-slate-500">
+                    {h.doneToday ? '今天已打卡' : `本周目标 ${h.weekGoal} 次`}
+                  </div>
+                  {habitEditResults[h.id] && (
+                    <span
+                      data-habit-edit-result={h.id}
+                      className="mt-0.5 inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                    >
+                      {habitEditResults[h.id]}
+                    </span>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span
+                    data-habit-streak={h.currentStreak}
+                    className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500"
+                  >
+                    <Flame size={11} className={h.currentStreak >= 3 ? 'text-amber-400' : ''} />
+                    {h.currentStreak} 天
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      data-habit-week-edit={h.id}
+                      title="Edit week goal"
+                      onClick={() => startHabitGoalEdit(h)}
+                      className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                    >
+                      <Pencil size={10} />
+                    </button>
+                    {habitDeleteId === h.id ? (
+                      <>
+                        <button
+                          type="button"
+                          data-habit-delete-confirm={h.id}
+                          onClick={() => void confirmDeleteHabit(h)}
+                          className="flex h-5 items-center rounded-lg bg-rose-500/20 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/30"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          data-habit-delete-cancel={h.id}
+                          onClick={() => setHabitDeleteId(null)}
+                          className="h-5 rounded-lg border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        data-habit-delete={h.id}
+                        title="Delete habit"
+                        onClick={() => setHabitDeleteId(h.id)}
+                        className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-rose-500/15 hover:text-rose-300"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {habits.length === 0 && (
+            <div className="py-8 text-center text-xs text-slate-600">No habits</div>
+          )}
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Fast list" subtitle="Enter 快速新建" icon={Target} colSpan={5}>
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void add();
+              }
+            }}
+            placeholder="New task..."
+            className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <button
+            type="button"
+            onClick={() => void add()}
+            className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
+          >
+            <Plus size={14} /> Add
+          </button>
+          <button
+            type="button"
+            onClick={() => setTodayOnly((v) => !v)}
+            className={`h-9 rounded-xl border px-3 text-[11px] ${
+              todayOnly
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                : 'border-white/10 text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            Today
+          </button>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {list.map((t) => (
+            <div
+              key={t.id}
+              className="message-in flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+            >
+              <button
+                type="button"
+                onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
+                className={`flex h-5 w-5 items-center justify-center rounded-lg border ${
+                  t.status === 'done'
+                    ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                    : 'border-white/20 text-transparent'
+                }`}
+                aria-label="Toggle status"
+              >
+                <Check size={12} />
+              </button>
+              <span
+                className={`min-w-0 flex-1 truncate text-xs ${t.status === 'done' ? 'text-slate-600 line-through' : 'text-slate-300'}`}
+              >
+                {taskRenameId === t.id ? (
+                  <input
+                    data-task-rename-input
+                    value={taskRenameDraft}
+                    onChange={(e) => setTaskRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const value = taskRenameDraft.trim();
+                        if (value) void updateTaskTitle(t.id, value);
+                        setTaskRenameId(null);
+                      } else if (e.key === 'Escape') {
+                        setTaskRenameId(null);
+                      }
+                    }}
+                    autoFocus
+                    className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
+                  />
+                ) : (
+                  t.title
+                )}
+              </span>
+              <button
+                type="button"
+                data-task-rename
+                aria-label={`Rename ${t.title}`}
+                onClick={() => {
+                  setTaskRenameId(t.id);
+                  setTaskRenameDraft(t.title);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                title="Rename"
+              >
+                <Pencil size={11} />
+              </button>
+              {taskDeleteId === t.id ? (
+                <button
+                  type="button"
+                  data-task-delete-confirm
+                  aria-label={`Confirm delete ${t.title}`}
+                  onClick={() => void deleteTask(t.id, true)}
+                  className="flex h-6 w-6 items-center justify-center rounded-lg text-rose-300 hover:bg-rose-500/20"
+                  title="Confirm delete"
+                >
+                  <Check size={11} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  data-task-delete
+                  aria-label={`Delete ${t.title}`}
+                  onClick={() => setTaskDeleteId(t.id)}
+                  className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
+                  title="Delete"
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void setTaskToday(t.id, !t.isToday)}
+                className={`rounded-md px-2 py-1 text-[10px] ${
+                  t.isToday
+                    ? 'accent-bg-15 accent-text-strong'
+                    : 'text-slate-600 hover:text-slate-400'
+                }`}
+              >
+                Focus
+              </button>
+            </div>
+          ))}
+          {list.length === 0 && (
+            <div className="py-8 text-center text-xs text-slate-600">No tasks</div>
+          )}
+        </div>
+      </BentoCard>
+
+      <BentoCard
+        title="Schedule Timeline"
+        subtitle="按时间排序，勾选完成"
+        icon={CalendarDays}
+        colSpan={7}
+        className="tilt-card"
+        onPointerMove={tiltCard}
+        onPointerLeave={resetTilt}
+      >
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            value={eventTitle}
+            onChange={(e) => setEventTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void addEventItem();
+              }
+            }}
+            placeholder="New event..."
+            className="h-8 min-w-0 flex-[2] rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
+          />
+          <input
+            type="date"
+            value={eventDate}
+            onChange={(e) => setEventDate(e.target.value)}
+            className="h-8 w-32 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none [color-scheme:dark]"
+          />
+          <input
+            type="time"
+            value={eventTime}
+            onChange={(e) => setEventTime(e.target.value)}
+            className="h-8 w-24 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none [color-scheme:dark]"
+          />
+          <select
+            value={eventTag}
+            onChange={(e) => setEventTag(e.target.value)}
+            className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
+          >
+            <option value="work">work</option>
+            <option value="routine">routine</option>
+            <option value="life">life</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => void addEventItem()}
+            className="flex h-8 items-center gap-1 rounded-xl bg-emerald-500/20 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+            aria-label="Add event"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {scheduleEvents.map((ev) => (
+            <div
+              key={ev.id}
+              data-schedule-event-row
+              className="message-in flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+            >
+              <div className="w-20 shrink-0 text-right font-mono text-[10px] leading-tight text-slate-500">
+                <span className="block">{ev.date ? formatDayLabel(ev.date) : '—'}</span>
+                <span className="block">{ev.startTime}</span>
+              </div>
+              <div className="h-4 w-px bg-white/10" />
+              <button
+                type="button"
+                onClick={() => void toggleEventDone(ev.id)}
+                aria-label={`Toggle ${ev.title}`}
+                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border ${
+                  ev.done
+                    ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                    : 'border-white/20 text-transparent hover:border-white/40'
+                }`}
+              >
+                <Check size={12} />
+              </button>
+              <span
+                className={`min-w-0 flex-1 truncate text-xs ${ev.done ? 'text-slate-600 line-through' : 'text-slate-300'}`}
+              >
+                {ev.title}
+              </span>
+              <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-500">
+                {ev.tag}
+              </span>
+            </div>
+          ))}
+          {scheduleEvents.length === 0 && (
+            <div className="py-8 text-center text-xs text-slate-600">No events</div>
+          )}
+        </div>
+      </BentoCard>
+
+      <BentoCard title="Week Plan" subtitle="Focus · Schedule" icon={Wand2} colSpan={12}>
+        <div data-week-plan className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              data-week-plan-template
+              value={weekPlanTemplateId}
+              onChange={(e) => setWeekPlanTemplateId(e.target.value)}
+              className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
+            >
+              {weekPlanTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <span
+              data-week-plan-counts
+              className="rounded-md bg-white/5 px-2 py-1 font-mono text-[10px] text-slate-500"
+            >
+              {weekPlanCounts.focusCount} focus · {weekPlanCounts.eventCount} events
+            </span>
+            <button
+              type="button"
+              data-week-plan-apply
+              onClick={() => void applyWeekPlanTemplate()}
+              className="ml-auto flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+            >
+              <Wand2 size={12} /> Apply to week
+            </button>
+            <span data-week-plan-result className="text-[11px] text-slate-400">
+              {weekPlanResult}
+            </span>
+          </div>
+          <div data-week-plan-preview className="grid grid-cols-2 gap-1.5 md:grid-cols-7">
             {weekDays.map((key, i) => {
-              const dayList = tasks.filter((t) => t.dueDate === key);
-              const doneCount = dayList.filter((t) => t.status === 'done').length;
-              const allDone = dayList.length > 0 && doneCount === dayList.length;
+              const day = selectedWeekPlan?.days[i];
+              return (
+                <div
+                  key={key}
+                  data-week-plan-day={key}
+                  className={`rounded-lg border p-2 ${
+                    key === todayKey
+                      ? 'border-emerald-500/30 bg-emerald-500/[0.06]'
+                      : 'border-white/10 bg-white/[0.02]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] text-slate-400">{WEEKDAY_LABELS[i]}</span>
+                    <span className="font-mono text-[9px] text-slate-600">
+                      {formatDayLabel(key)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 space-y-1">
+                    {(day?.focus ?? []).slice(0, 2).map((item, index) => (
+                      <div
+                        key={`${item}-${index}`}
+                        className="truncate rounded bg-white/[0.04] px-1.5 py-1 text-[9px] text-slate-400"
+                      >
+                        {item}
+                      </div>
+                    ))}
+                    {(day?.events ?? []).slice(0, 2).map((event, index) => (
+                      <div
+                        key={`${event.title}-${index}`}
+                        className="flex items-center gap-1 rounded bg-emerald-500/[0.06] px-1.5 py-1 text-[9px] text-emerald-300/80"
+                      >
+                        <span className="font-mono">{event.time}</span>
+                        <span className="truncate">{event.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </BentoCard>
+
+      <BentoCard
+        title="Week Review"
+        subtitle="本周目标统计与快速归档"
+        icon={TrendingUp}
+        colSpan={12}
+      >
+        <div data-week-review className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div data-week-review-total className="min-w-0">
+              <StatPill label="Week done" value={`${weekDone}/${weekTasks.length}`} tone="green" />
+            </div>
+            <div data-week-review-rate className="min-w-0">
+              <StatPill label="Rate" value={`${Math.round(weekProgress * 100)}%`} tone="blue" />
+            </div>
+            <div data-week-review-best className="min-w-0">
+              <StatPill label="Best day" value={bestDayLabel} tone="neutral" />
+            </div>
+            <div data-week-review-streak className="min-w-0">
+              <StatPill label="Streak" value={`${weekStreak}d`} tone="blue" />
+            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {weekDays.map((key, i) => {
+              const stats = weekDayStats.find((d) => d.key === key) ?? {
+                key,
+                total: 0,
+                done: 0,
+              };
               const isSelected = selectedDay === key;
-              const isToday = key === dayKey(now);
+              const pct = stats.total > 0 ? stats.done / stats.total : 0;
               return (
                 <button
                   key={key}
                   type="button"
-                  data-focus-week-day={key}
-                  data-focus-day-done={allDone ? 'true' : 'false'}
+                  data-week-review-day={key}
+                  data-week-review-day-total={stats.total}
+                  data-week-review-day-done={stats.done}
+                  data-week-review-day-selected={isSelected ? 'true' : 'false'}
                   onClick={() => setSelectedDay(key)}
                   className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
                     isSelected
@@ -314,807 +1061,51 @@ export default function ActionsView() {
                       : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className="flex items-center gap-1">
-                    {WEEKDAY_LABELS[i]}
-                    {isToday && <span className="rounded bg-white/10 px-1">T</span>}
-                  </span>
-                  <span className="font-mono text-[9px] opacity-70">{formatDayLabel(key)}</span>
-                  <span className="flex h-3.5 items-center gap-0.5 text-slate-400">
-                    {dayList.length > 0 ? (
-                      <>
-                        <span className="font-mono">
-                          {doneCount}/{dayList.length}
-                        </span>
-                        {allDone && <Check size={9} className="text-emerald-400" />}
-                      </>
-                    ) : (
-                      <span className="text-slate-700">-</span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="mb-3 flex items-center gap-2">
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
-              <div
-                data-focus-week-bar
-                className="progress-strip-inner h-full rounded-full accent-bg"
-                style={{ transform: `scaleX(${weekProgress})` }}
-              />
-            </div>
-            <span data-focus-week-total className="font-mono text-[10px] text-slate-500">
-              week {weekDone}/{weekTasks.length}
-            </span>
-          </div>
-          <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
-            <div
-              className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
-              style={{ transform: `scaleX(${focusProgress})` }}
-            />
-          </div>
-          <div className="grid gap-2 md:grid-cols-3">
-            {dayTasks.map((t) => (
-              <div
-                key={t.id}
-                data-task-row={t.id}
-                className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition-colors ${
-                  t.status === 'done'
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                    : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
-                  aria-label={`Toggle ${t.title}`}
-                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border ${
-                    t.status === 'done'
-                      ? 'check-pop border-emerald-500/40 bg-emerald-500/20'
-                      : 'border-white/20'
-                  }`}
-                >
-                  {t.status === 'done' && <Check size={11} />}
-                </button>
-                <div className="min-w-0 flex-1">
-                  {taskRenameId === t.id ? (
-                    <input
-                      data-task-rename-input
-                      value={taskRenameDraft}
-                      onChange={(e) => setTaskRenameDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const value = taskRenameDraft.trim();
-                          if (value) void updateTaskTitle(t.id, value);
-                          setTaskRenameId(null);
-                        } else if (e.key === 'Escape') {
-                          setTaskRenameId(null);
-                        }
-                      }}
-                      autoFocus
-                      className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
-                    />
-                  ) : (
-                    <>
-                      <div className="truncate">{t.title}</div>
-                      <span className="mt-0.5 block font-mono text-[9px] text-slate-600">
-                        {t.dueDate ? formatDayLabel(t.dueDate) : dayKey(now)}
-                      </span>
-                    </>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  data-task-rename
-                  aria-label={`Rename ${t.title}`}
-                  onClick={() => {
-                    setTaskRenameId(t.id);
-                    setTaskRenameDraft(t.title);
-                  }}
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
-                  title="Rename"
-                >
-                  <Pencil size={11} />
-                </button>
-                {taskDeleteId === t.id ? (
-                  <div className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-1.5 py-1">
-                    <span className="text-[9px] text-rose-300">Delete?</span>
-                    <button
-                      type="button"
-                      data-task-delete-confirm
-                      aria-label={`Confirm delete ${t.title}`}
-                      onClick={() => void deleteTask(t.id, true)}
-                      className="flex h-5 w-5 items-center justify-center rounded-md text-rose-300 hover:bg-rose-500/20"
-                    >
-                      <Check size={10} />
-                    </button>
-                    <button
-                      type="button"
-                      data-task-delete-cancel
-                      aria-label="Cancel delete"
-                      onClick={() => setTaskDeleteId(null)}
-                      className="flex h-5 w-5 items-center justify-center rounded-md text-slate-400 hover:bg-white/10"
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    data-task-delete
-                    aria-label={`Delete ${t.title}`}
-                    onClick={() => setTaskDeleteId(t.id)}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
-                    title="Delete"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  data-task-next-day={t.id}
-                  aria-label={`Move ${t.title} to next day`}
-                  onClick={() => {
-                    const nextIndex = weekDays.indexOf(dayKey(now));
-                    const next = weekDays[(nextIndex + 1) % weekDays.length];
-                    void setTaskDueDate(t.id, next);
-                    if (t.isToday) void setTaskToday(t.id, false);
-                  }}
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition-colors hover:bg-white/10 hover:text-slate-300"
-                  title="Move to tomorrow"
-                >
-                  <CalendarDays size={11} />
-                </button>
-              </div>
-            ))}
-            {dayTasks.length < 3 && (
-              <div className="flex items-center justify-center rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-[11px] text-slate-600">
-                {selectedDay === dayKey(now) ? 'Add up to 3 focus items' : 'No focus on this day'}
-              </div>
-            )}
-          </div>
-          {archived.length > 0 && (
-            <details
-              data-focus-archive
-              className="mt-3 rounded-xl border border-white/10 bg-white/[0.02]"
-            >
-              <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11px] text-slate-400 hover:text-slate-300">
-                <ArchiveRestore size={12} />
-                <span data-focus-archive-count>Completed archive · {archived.length}</span>
-              </summary>
-              <div className="flex flex-col gap-1 border-t border-white/5 p-2">
-                {archived.map((t) => (
-                  <div
-                    key={t.id}
-                    data-focus-archive-row
-                    className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-400 hover:bg-white/[0.04]"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-slate-300">{t.title}</span>
-                    <span className="font-mono text-[9px] text-slate-600">
-                      {formatArchiveTime(t.completedAt)}
-                    </span>
-                    <button
-                      type="button"
-                      data-focus-archive-restore
-                      aria-label={`Restore ${t.title}`}
-                      onClick={() => {
-                        void setTaskStatus(t.id, 'todo');
-                        void setTaskDueDate(t.id, null);
-                        void setTaskToday(t.id, true);
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
-                    >
-                      <RotateCcw size={11} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </BentoCard>
-
-        <BentoCard title="Habits" subtitle="打卡与连续天数" icon={Flame} colSpan={5}>
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input
-              value={habitName}
-              onChange={(e) => setHabitName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  void addHabitItem();
-                }
-              }}
-              placeholder="New habit..."
-              className="h-8 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
-            />
-            <div className="flex items-center gap-1">
-              {HABIT_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-label={`Habit color ${c}`}
-                  onClick={() => setHabitColor(c)}
-                  className={`h-4 w-4 rounded-full ${colorClass[c].dot} ${habitColor === c ? `ring-2 ${colorClass[c].ring}` : 'opacity-50 hover:opacity-80'}`}
-                />
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={() => void addHabitItem()}
-              className="flex h-8 items-center gap-1 rounded-xl bg-emerald-500/20 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
-              aria-label="Add habit"
-            >
-              <Plus size={12} />
-            </button>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            {habits.map((h) => {
-              const tone = colorClass[h.color] ?? colorClass.emerald;
-              const recentSet = new Set(h.recentLogs ?? []);
-              const weekCount = recentDayKeys.slice(7).filter((key) => recentSet.has(key)).length;
-              return (
-                <div
-                  key={h.id}
-                  className={`message-in flex items-center gap-2.5 rounded-xl border px-3 py-2 ${
-                    h.doneToday ? tone.active : 'border-white/10 bg-white/[0.03]'
-                  }`}
-                >
-                  <button
-                    type="button"
-                    data-habit-toggle
-                    onClick={() => void toggleHabit(h.id)}
-                    aria-label={`Toggle ${h.name}`}
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border ${
-                      h.doneToday
-                        ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
-                        : 'border-white/20 text-transparent hover:border-white/40'
-                    }`}
-                  >
-                    <Check size={12} />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span
-                        className={`truncate text-xs ${
-                          h.doneToday ? 'text-current' : 'text-slate-300'
-                        }`}
-                      >
-                        {h.name}
-                      </span>
-                      <span
-                        data-habit-week={`${weekCount}/${h.weekGoal}`}
-                        className="shrink-0 font-mono text-[9px] text-slate-500"
-                      >
-                        周 {weekCount}/{h.weekGoal}
-                      </span>
-                    </div>
-                    {habitEditId === h.id && (
-                      <div
-                        data-habit-week-editor={h.id}
-                        className="mb-1 mt-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] p-1"
-                      >
-                        <span className="text-[9px] text-slate-500">Week goal</span>
-                        <input
-                          data-habit-week-input={h.id}
-                          type="number"
-                          min="1"
-                          max="31"
-                          value={habitGoalEdits[h.id] ?? String(h.weekGoal)}
-                          onChange={(e) =>
-                            setHabitGoalEdits((prev) => ({ ...prev, [h.id]: e.target.value }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              void saveHabitGoal(h);
-                            }
-                          }}
-                          className="h-6 w-12 rounded-md border border-white/10 bg-black/20 px-1.5 text-[10px] text-slate-200 outline-none focus:border-emerald-500/40"
-                        />
-                        <button
-                          type="button"
-                          data-habit-week-save={h.id}
-                          onClick={() => void saveHabitGoal(h)}
-                          className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
-                        >
-                          <Check size={10} /> Save
-                        </button>
-                        <button
-                          type="button"
-                          data-habit-week-cancel={h.id}
-                          onClick={() => setHabitEditId(null)}
-                          className="h-6 rounded-md border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                    <div
-                      data-habit-recent-days
-                      className="mt-1 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[3px]"
-                    >
-                      {recentDayKeys.map((key) => {
-                        const checked = recentSet.has(key);
-                        return (
-                          <span
-                            key={key}
-                            data-habit-day={key}
-                            data-habit-day-checked={checked ? 'true' : 'false'}
-                            className={`h-1.5 rounded-[2px] ${
-                              checked ? tone.dot : 'bg-white/[0.06]'
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                    <div className="mt-0.5 text-[10px] text-slate-500">
-                      {h.doneToday ? '今天已打卡' : `本周目标 ${h.weekGoal} 次`}
-                    </div>
-                    {habitEditResults[h.id] && (
-                      <span
-                        data-habit-edit-result={h.id}
-                        className="mt-0.5 inline-block rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
-                      >
-                        {habitEditResults[h.id]}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <span>{WEEKDAY_LABELS[i]}</span>
+                  <span className="flex h-8 w-2 items-end overflow-hidden rounded-[2px] bg-white/[0.06]">
                     <span
-                      data-habit-streak={h.currentStreak}
-                      className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500"
-                    >
-                      <Flame size={11} className={h.currentStreak >= 3 ? 'text-amber-400' : ''} />
-                      {h.currentStreak} 天
-                    </span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        data-habit-week-edit={h.id}
-                        title="Edit week goal"
-                        onClick={() => startHabitGoalEdit(h)}
-                        className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-white/10 hover:text-slate-300"
-                      >
-                        <Pencil size={10} />
-                      </button>
-                      {habitDeleteId === h.id ? (
-                        <>
-                          <button
-                            type="button"
-                            data-habit-delete-confirm={h.id}
-                            onClick={() => void confirmDeleteHabit(h)}
-                            className="flex h-5 items-center rounded-lg bg-rose-500/20 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/30"
-                          >
-                            Confirm
-                          </button>
-                          <button
-                            type="button"
-                            data-habit-delete-cancel={h.id}
-                            onClick={() => setHabitDeleteId(null)}
-                            className="h-5 rounded-lg border border-white/10 px-1.5 text-[9px] text-slate-500 hover:text-slate-300"
-                          >
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          data-habit-delete={h.id}
-                          title="Delete habit"
-                          onClick={() => setHabitDeleteId(h.id)}
-                          className="flex h-5 w-5 items-center justify-center rounded-lg border border-white/10 text-slate-500 hover:bg-rose-500/15 hover:text-rose-300"
-                        >
-                          <Trash2 size={10} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                      className={`w-full ${stats.done > 0 ? 'accent-bg' : 'bg-white/10'}`}
+                      style={{ height: `${Math.max(pct * 100, stats.total > 0 ? 14 : 3)}%` }}
+                    />
+                  </span>
+                  <span className="font-mono text-[9px] opacity-70">
+                    {stats.done}/{stats.total}
+                  </span>
+                </button>
               );
             })}
-            {habits.length === 0 && (
-              <div className="py-8 text-center text-xs text-slate-600">No habits</div>
-            )}
           </div>
-        </BentoCard>
-
-        <BentoCard title="Fast list" subtitle="Enter 快速新建" icon={Target} colSpan={5}>
-          <div className="mb-3 flex items-center gap-2">
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  void add();
-                }
-              }}
-              placeholder="New task..."
-              className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
-            />
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => void add()}
-              className="flex h-9 items-center gap-1 rounded-xl bg-emerald-500/20 px-3 text-xs text-emerald-400 hover:bg-emerald-500/30"
-            >
-              <Plus size={14} /> Add
-            </button>
-            <button
-              type="button"
-              onClick={() => setTodayOnly((v) => !v)}
-              className={`h-9 rounded-xl border px-3 text-[11px] ${
-                todayOnly
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                  : 'border-white/10 text-slate-500 hover:text-slate-300'
+              data-week-review-archive
+              data-archive-confirming={archiveConfirming ? 'true' : 'false'}
+              onClick={() => void archiveWeekDone()}
+              className={`flex h-8 items-center gap-1.5 rounded-xl px-3 text-[11px] ${
+                archiveConfirming
+                  ? 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
+                  : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
               }`}
             >
-              Today
+              <ArchiveRestore size={12} />
+              {archiveConfirming ? '确认归档？' : 'Archive done'}
             </button>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            {list.map((t) => (
-              <div
-                key={t.id}
-                className="message-in flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
-              >
-                <button
-                  type="button"
-                  onClick={() => void setTaskStatus(t.id, t.status === 'done' ? 'todo' : 'done')}
-                  className={`flex h-5 w-5 items-center justify-center rounded-lg border ${
-                    t.status === 'done'
-                      ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
-                      : 'border-white/20 text-transparent'
-                  }`}
-                  aria-label="Toggle status"
-                >
-                  <Check size={12} />
-                </button>
-                <span
-                  className={`min-w-0 flex-1 truncate text-xs ${t.status === 'done' ? 'text-slate-600 line-through' : 'text-slate-300'}`}
-                >
-                  {taskRenameId === t.id ? (
-                    <input
-                      data-task-rename-input
-                      value={taskRenameDraft}
-                      onChange={(e) => setTaskRenameDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const value = taskRenameDraft.trim();
-                          if (value) void updateTaskTitle(t.id, value);
-                          setTaskRenameId(null);
-                        } else if (e.key === 'Escape') {
-                          setTaskRenameId(null);
-                        }
-                      }}
-                      autoFocus
-                      className="w-full rounded-md border border-emerald-500/40 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-200 outline-none"
-                    />
-                  ) : (
-                    t.title
-                  )}
-                </span>
-                <button
-                  type="button"
-                  data-task-rename
-                  aria-label={`Rename ${t.title}`}
-                  onClick={() => {
-                    setTaskRenameId(t.id);
-                    setTaskRenameDraft(t.title);
-                  }}
-                  className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-white/10 hover:text-slate-300"
-                  title="Rename"
-                >
-                  <Pencil size={11} />
-                </button>
-                {taskDeleteId === t.id ? (
-                  <button
-                    type="button"
-                    data-task-delete-confirm
-                    aria-label={`Confirm delete ${t.title}`}
-                    onClick={() => void deleteTask(t.id, true)}
-                    className="flex h-6 w-6 items-center justify-center rounded-lg text-rose-300 hover:bg-rose-500/20"
-                    title="Confirm delete"
-                  >
-                    <Check size={11} />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    data-task-delete
-                    aria-label={`Delete ${t.title}`}
-                    onClick={() => setTaskDeleteId(t.id)}
-                    className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
-                    title="Delete"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void setTaskToday(t.id, !t.isToday)}
-                  className={`rounded-md px-2 py-1 text-[10px] ${
-                    t.isToday
-                      ? 'accent-bg-15 accent-text-strong'
-                      : 'text-slate-600 hover:text-slate-400'
-                  }`}
-                >
-                  Focus
-                </button>
-              </div>
-            ))}
-            {list.length === 0 && (
-              <div className="py-8 text-center text-xs text-slate-600">No tasks</div>
-            )}
-          </div>
-        </BentoCard>
-
-        <BentoCard
-          title="Schedule Timeline"
-          subtitle="按时间排序，勾选完成"
-          icon={CalendarDays}
-          colSpan={7}
-          className="tilt-card"
-          onPointerMove={tiltCard}
-          onPointerLeave={resetTilt}
-        >
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input
-              value={eventTitle}
-              onChange={(e) => setEventTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  void addEventItem();
-                }
-              }}
-              placeholder="New event..."
-              className="h-8 min-w-0 flex-[2] rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
-            />
-            <input
-              type="date"
-              value={eventDate}
-              onChange={(e) => setEventDate(e.target.value)}
-              className="h-8 w-32 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none [color-scheme:dark]"
-            />
-            <input
-              type="time"
-              value={eventTime}
-              onChange={(e) => setEventTime(e.target.value)}
-              className="h-8 w-24 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none [color-scheme:dark]"
-            />
-            <select
-              value={eventTag}
-              onChange={(e) => setEventTag(e.target.value)}
-              className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
-            >
-              <option value="work">work</option>
-              <option value="routine">routine</option>
-              <option value="life">life</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => void addEventItem()}
-              className="flex h-8 items-center gap-1 rounded-xl bg-emerald-500/20 px-2.5 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
-              aria-label="Add event"
-            >
-              <Plus size={12} />
-            </button>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            {scheduleEvents.map((ev) => (
-              <div
-                key={ev.id}
-                data-schedule-event-row
-                className="message-in flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
-              >
-                <div className="w-20 shrink-0 text-right font-mono text-[10px] leading-tight text-slate-500">
-                  <span className="block">{ev.date ? formatDayLabel(ev.date) : '—'}</span>
-                  <span className="block">{ev.startTime}</span>
-                </div>
-                <div className="h-4 w-px bg-white/10" />
-                <button
-                  type="button"
-                  onClick={() => void toggleEventDone(ev.id)}
-                  aria-label={`Toggle ${ev.title}`}
-                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border ${
-                    ev.done
-                      ? 'check-pop border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
-                      : 'border-white/20 text-transparent hover:border-white/40'
-                  }`}
-                >
-                  <Check size={12} />
-                </button>
-                <span
-                  className={`min-w-0 flex-1 truncate text-xs ${ev.done ? 'text-slate-600 line-through' : 'text-slate-300'}`}
-                >
-                  {ev.title}
-                </span>
-                <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] text-slate-500">
-                  {ev.tag}
-                </span>
-              </div>
-            ))}
-            {scheduleEvents.length === 0 && (
-              <div className="py-8 text-center text-xs text-slate-600">No events</div>
-            )}
-          </div>
-        </BentoCard>
-
-        <BentoCard title="Week Plan" subtitle="Focus · Schedule" icon={Wand2} colSpan={12}>
-          <div data-week-plan className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                data-week-plan-template
-                value={weekPlanTemplateId}
-                onChange={(e) => setWeekPlanTemplateId(e.target.value)}
-                className="h-8 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
-              >
-                {weekPlanTemplates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-              <span
-                data-week-plan-counts
-                className="rounded-md bg-white/5 px-2 py-1 font-mono text-[10px] text-slate-500"
-              >
-                {weekPlanCounts.focusCount} focus · {weekPlanCounts.eventCount} events
-              </span>
+            {archiveConfirming && (
               <button
                 type="button"
-                data-week-plan-apply
-                onClick={() => void applyWeekPlanTemplate()}
-                className="ml-auto flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/30"
+                data-week-review-archive-cancel
+                onClick={() => setArchiveConfirming(false)}
+                className="flex h-8 items-center rounded-xl border border-white/10 px-3 text-[11px] text-slate-400 hover:bg-white/[0.06]"
               >
-                <Wand2 size={12} /> Apply to week
+                取消
               </button>
-              <span data-week-plan-result className="text-[11px] text-slate-400">
-                {weekPlanResult}
-              </span>
-            </div>
-            <div data-week-plan-preview className="grid grid-cols-2 gap-1.5 md:grid-cols-7">
-              {weekDays.map((key, i) => {
-                const day = selectedWeekPlan?.days[i];
-                return (
-                  <div
-                    key={key}
-                    data-week-plan-day={key}
-                    className={`rounded-lg border p-2 ${
-                      key === todayKey
-                        ? 'border-emerald-500/30 bg-emerald-500/[0.06]'
-                        : 'border-white/10 bg-white/[0.02]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="text-[10px] text-slate-400">{WEEKDAY_LABELS[i]}</span>
-                      <span className="font-mono text-[9px] text-slate-600">
-                        {formatDayLabel(key)}
-                      </span>
-                    </div>
-                    <div className="mt-1.5 space-y-1">
-                      {(day?.focus ?? []).slice(0, 2).map((item, index) => (
-                        <div
-                          key={`${item}-${index}`}
-                          className="truncate rounded bg-white/[0.04] px-1.5 py-1 text-[9px] text-slate-400"
-                        >
-                          {item}
-                        </div>
-                      ))}
-                      {(day?.events ?? []).slice(0, 2).map((event, index) => (
-                        <div
-                          key={`${event.title}-${index}`}
-                          className="flex items-center gap-1 rounded bg-emerald-500/[0.06] px-1.5 py-1 text-[9px] text-emerald-300/80"
-                        >
-                          <span className="font-mono">{event.time}</span>
-                          <span className="truncate">{event.title}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            )}
+            <span data-week-review-archived className="text-[11px] text-slate-400">
+              {archiveResult}
+            </span>
           </div>
-        </BentoCard>
-
-        <BentoCard
-          title="Week Review"
-          subtitle="本周目标统计与快速归档"
-          icon={TrendingUp}
-          colSpan={12}
-        >
-          <div data-week-review className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-              <div data-week-review-total className="min-w-0">
-                <StatPill
-                  label="Week done"
-                  value={`${weekDone}/${weekTasks.length}`}
-                  tone="green"
-                />
-              </div>
-              <div data-week-review-rate className="min-w-0">
-                <StatPill label="Rate" value={`${Math.round(weekProgress * 100)}%`} tone="blue" />
-              </div>
-              <div data-week-review-best className="min-w-0">
-                <StatPill label="Best day" value={bestDayLabel} tone="neutral" />
-              </div>
-              <div data-week-review-streak className="min-w-0">
-                <StatPill label="Streak" value={`${weekStreak}d`} tone="blue" />
-              </div>
-            </div>
-            <div className="grid grid-cols-7 gap-1">
-              {weekDays.map((key, i) => {
-                const stats = weekDayStats.find((d) => d.key === key) ?? {
-                  key,
-                  total: 0,
-                  done: 0,
-                };
-                const isSelected = selectedDay === key;
-                const pct = stats.total > 0 ? stats.done / stats.total : 0;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    data-week-review-day={key}
-                    data-week-review-day-total={stats.total}
-                    data-week-review-day-done={stats.done}
-                    data-week-review-day-selected={isSelected ? 'true' : 'false'}
-                    onClick={() => setSelectedDay(key)}
-                    className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
-                      isSelected
-                        ? 'accent-border accent-bg-15 accent-text-strong'
-                        : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
-                    }`}
-                  >
-                    <span>{WEEKDAY_LABELS[i]}</span>
-                    <span className="flex h-8 w-2 items-end overflow-hidden rounded-[2px] bg-white/[0.06]">
-                      <span
-                        className={`w-full ${stats.done > 0 ? 'accent-bg' : 'bg-white/10'}`}
-                        style={{ height: `${Math.max(pct * 100, stats.total > 0 ? 14 : 3)}%` }}
-                      />
-                    </span>
-                    <span className="font-mono text-[9px] opacity-70">
-                      {stats.done}/{stats.total}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-week-review-archive
-                data-archive-confirming={archiveConfirming ? 'true' : 'false'}
-                onClick={() => void archiveWeekDone()}
-                className={`flex h-8 items-center gap-1.5 rounded-xl px-3 text-[11px] ${
-                  archiveConfirming
-                    ? 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30'
-                    : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
-                }`}
-              >
-                <ArchiveRestore size={12} />
-                {archiveConfirming ? '确认归档？' : 'Archive done'}
-              </button>
-              {archiveConfirming && (
-                <button
-                  type="button"
-                  data-week-review-archive-cancel
-                  onClick={() => setArchiveConfirming(false)}
-                  className="flex h-8 items-center rounded-xl border border-white/10 px-3 text-[11px] text-slate-400 hover:bg-white/[0.06]"
-                >
-                  取消
-                </button>
-              )}
-              <span data-week-review-archived className="text-[11px] text-slate-400">
-                {archiveResult}
-              </span>
-            </div>
-          </div>
-        </BentoCard>
-      </div>
+        </div>
+      </BentoCard>
     </div>
   );
 }

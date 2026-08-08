@@ -1,5 +1,6 @@
 import { SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 const MATERIAL_KEY = 'ai-workbench:material-settings:v1';
 const MATERIAL_PRESETS = ['cyan', 'original', 'rain', 'chrome'] as const;
@@ -100,121 +101,126 @@ export default function MaterialDrawer() {
         <SlidersHorizontal size={14} />
         <span className="hidden md:inline">Material</span>
       </button>
-      <div
-        data-material-overlay
-        className={`material-overlay ${open ? 'open' : ''}`}
-        aria-hidden={!open}
-        onClick={() => {
-          setOpen(false);
-          triggerRef.current?.focus();
-        }}
-      />
-      <aside
-        id="material-drawer"
-        data-material-drawer
-        role="dialog"
-        aria-modal="true"
-        aria-label="Material settings"
-        aria-hidden={!open}
-        className={`material-drawer ${open ? 'open' : ''}`}
-      >
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] px-4">
-          <div>
-            <span className="text-[8px] uppercase tracking-normal text-emerald-400/80">
-              Surface
-            </span>
-            <h2 className="text-xs font-semibold text-slate-200">Material settings</h2>
-          </div>
-          <button
-            ref={closeRef}
-            type="button"
-            aria-label="Close material settings"
-            data-material-drawer-close
+      {createPortal(
+        <>
+          <div
+            data-material-overlay
+            className={`material-overlay ${open ? 'open' : ''}`}
+            aria-hidden={!open}
             onClick={() => {
               setOpen(false);
               triggerRef.current?.focus();
             }}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-400 transition-colors hover:text-slate-200"
-          >
-            <X size={13} />
-          </button>
-        </header>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-          <div
-            data-material-preview
-            className={`material-preview material-card material-${settings.preset}`}
           />
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] text-slate-500">Preset</span>
-            <select
-              data-material-preset
-              value={settings.preset}
-              onChange={(event) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  preset: event.target.value as MaterialSettings['preset'],
-                }))
-              }
-              className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
-            >
-              {MATERIAL_PRESETS.map((preset) => (
-                <option key={preset} value={preset}>
-                  {preset}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
-              <span>Glow opacity</span>
-              <span data-material-opacity-value className="text-slate-300">
-                {settings.opacity.toFixed(2)}
+          <aside
+            id="material-drawer"
+            data-material-drawer
+            role="dialog"
+            aria-modal="true"
+            aria-label="Material settings"
+            aria-hidden={!open}
+            className={`material-drawer ${open ? 'open' : ''}`}
+          >
+            <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] px-4">
+              <div>
+                <span className="text-[8px] uppercase tracking-normal text-emerald-400/80">
+                  Surface
+                </span>
+                <h2 className="text-xs font-semibold text-slate-200">Material settings</h2>
+              </div>
+              <button
+                ref={closeRef}
+                type="button"
+                aria-label="Close material settings"
+                data-material-drawer-close
+                onClick={() => {
+                  setOpen(false);
+                  triggerRef.current?.focus();
+                }}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-400 transition-colors hover:text-slate-200"
+              >
+                <X size={13} />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+              <div
+                data-material-preview
+                className={`material-preview material-card material-${settings.preset}`}
+              />
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] text-slate-500">Preset</span>
+                <select
+                  data-material-preset
+                  value={settings.preset}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      preset: event.target.value as MaterialSettings['preset'],
+                    }))
+                  }
+                  className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+                >
+                  {MATERIAL_PRESETS.map((preset) => (
+                    <option key={preset} value={preset}>
+                      {preset}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
+                  <span>Glow opacity</span>
+                  <span data-material-opacity-value className="text-slate-300">
+                    {settings.opacity.toFixed(2)}
+                  </span>
+                </span>
+                <input
+                  type="range"
+                  data-material-opacity
+                  min="0.1"
+                  max="0.7"
+                  step="0.05"
+                  value={settings.opacity}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      opacity: Number(event.target.value),
+                    }))
+                  }
+                  className="h-1.5 w-full accent-emerald-400"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
+                  <span>Blur radius</span>
+                  <span data-material-blur-value className="text-slate-300">
+                    {settings.blur}px
+                  </span>
+                </span>
+                <input
+                  type="range"
+                  data-material-blur
+                  min="8"
+                  max="40"
+                  step="2"
+                  value={settings.blur}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      blur: Number(event.target.value),
+                    }))
+                  }
+                  className="h-1.5 w-full accent-emerald-400"
+                />
+              </label>
+              <span data-material-settings-status className="block text-[9px] text-slate-600">
+                Applied live and saved locally
               </span>
-            </span>
-            <input
-              type="range"
-              data-material-opacity
-              min="0.1"
-              max="0.7"
-              step="0.05"
-              value={settings.opacity}
-              onChange={(event) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  opacity: Number(event.target.value),
-                }))
-              }
-              className="h-1.5 w-full accent-emerald-400"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
-              <span>Blur radius</span>
-              <span data-material-blur-value className="text-slate-300">
-                {settings.blur}px
-              </span>
-            </span>
-            <input
-              type="range"
-              data-material-blur
-              min="8"
-              max="40"
-              step="2"
-              value={settings.blur}
-              onChange={(event) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  blur: Number(event.target.value),
-                }))
-              }
-              className="h-1.5 w-full accent-emerald-400"
-            />
-          </label>
-          <span data-material-settings-status className="block text-[9px] text-slate-600">
-            Applied live and saved locally
-          </span>
-        </div>
-      </aside>
+            </div>
+          </aside>
+        </>,
+        document.body,
+      )}
     </>
   );
 }

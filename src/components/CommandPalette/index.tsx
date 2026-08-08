@@ -1,5 +1,6 @@
 import { Search } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { loadCommandUsage, recordCommandUsage, type CommandUsageMap } from '../../lib/commandUsage';
 import { TOPICS, useEvent } from '../../stores/events';
 import {
@@ -130,7 +131,7 @@ export default function CommandPalette() {
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       data-command-palette
       className="fixed inset-0 z-50 flex items-start justify-center pt-[18vh]"
@@ -273,6 +274,7 @@ export default function CommandPalette() {
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

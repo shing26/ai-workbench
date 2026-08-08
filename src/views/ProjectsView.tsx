@@ -1229,8 +1229,8 @@ ${trend}
     : undefined;
 
   return (
-    <div className="view-enter flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="flex justify-end">
+    <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      <div className="col-span-12 flex justify-end">
         <MockBadge />
       </div>
 
