@@ -7,13 +7,14 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Sparkles,
   Target,
   TrendingUp,
   Trash2,
   Wand2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
 import { loadWeekPlanTemplates, weekPlanTemplateCounts } from '../lib/weekPlanTemplates';
 import { useWorkbenchStore } from '../stores/workbenchStore';
@@ -87,6 +88,8 @@ export default function ActionsView() {
   const addScheduleEvent = useWorkbenchStore((s) => s.addScheduleEvent);
   const applyWeekPlan = useWorkbenchStore((s) => s.applyWeekPlan);
   const toggleEventDone = useWorkbenchStore((s) => s.toggleEventDone);
+  const setActionContext = useWorkbenchStore((s) => s.setActionContext);
+  const setActiveView = useWorkbenchStore((s) => s.setActiveView);
 
   const [title, setTitle] = useState('');
   const [todayOnly, setTodayOnly] = useState(false);
@@ -112,6 +115,20 @@ export default function ActionsView() {
   const [taskRenameDraft, setTaskRenameDraft] = useState('');
   const [taskDeleteId, setTaskDeleteId] = useState<string | null>(null);
   const [archiveConfirming, setArchiveConfirming] = useState(false);
+  const fastInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'n' || e.key === 'N' || e.key === '/') {
+        e.preventDefault();
+        fastInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
@@ -247,6 +264,18 @@ export default function ActionsView() {
     setArchiveResult(doneTasks.length > 0 ? `Archived ${doneTasks.length}` : 'Nothing to archive');
   };
 
+  const discussTask = (task: db.Task) => {
+    setActionContext({
+      taskId: task.id,
+      title: task.title,
+      status: task.status,
+      dueDate: task.dueDate,
+      isToday: task.isToday,
+      mountedAt: Date.now(),
+    });
+    setActiveView('ai-studio');
+  };
+
   return (
     <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
       <BentoCard
@@ -289,7 +318,7 @@ export default function ActionsView() {
         </div>
       </BentoCard>
 
-      <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={7}>
+      <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={8}>
         <div className="mb-3 grid grid-cols-7 gap-1">
           {weekDays.map((key, i) => {
             const dayList = tasks.filter((t) => t.dueDate === key);
@@ -413,6 +442,17 @@ export default function ActionsView() {
               >
                 <Pencil size={11} />
               </button>
+              <button
+                type="button"
+                data-action-discuss={t.id}
+                data-action-discuss-title={t.title}
+                aria-label={`AI break down ${t.title}`}
+                onClick={() => discussTask(t)}
+                className="flex h-6 shrink-0 items-center gap-1 rounded-lg bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+                title="AI 拆解 / 讨论任务"
+              >
+                <Sparkles size={10} /> AI
+              </button>
               {taskDeleteId === t.id ? (
                 <div className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-1.5 py-1">
                   <span className="text-[9px] text-rose-300">Delete?</span>
@@ -510,7 +550,7 @@ export default function ActionsView() {
         )}
       </BentoCard>
 
-      <BentoCard title="Habits" subtitle="打卡与连续天数" icon={Flame} colSpan={5}>
+      <BentoCard title="Habits" subtitle="打卡与连续天数" icon={Flame} colSpan={4}>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <input
             value={habitName}
@@ -715,9 +755,10 @@ export default function ActionsView() {
         </div>
       </BentoCard>
 
-      <BentoCard title="Fast list" subtitle="Enter 快速新建" icon={Target} colSpan={5}>
+      <BentoCard title="Fast list" subtitle="Enter 快速新建 · n 聚焦" icon={Target} colSpan={5}>
         <div className="mb-3 flex items-center gap-2">
           <input
+            ref={fastInputRef}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -803,6 +844,17 @@ export default function ActionsView() {
                 title="Rename"
               >
                 <Pencil size={11} />
+              </button>
+              <button
+                type="button"
+                data-action-discuss={t.id}
+                data-action-discuss-title={t.title}
+                aria-label={`AI break down ${t.title}`}
+                onClick={() => discussTask(t)}
+                className="flex h-6 shrink-0 items-center gap-1 rounded-lg bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+                title="AI 拆解 / 讨论任务"
+              >
+                <Sparkles size={10} /> AI
               </button>
               {taskDeleteId === t.id ? (
                 <button

@@ -12,6 +12,7 @@ import {
   GitFork,
   GripVertical,
   History,
+  ListChecks,
   Pencil,
   Pin,
   PinOff,
@@ -78,6 +79,18 @@ function buildNoteSystemMessage(note: import('../stores/workbenchStore').NoteCon
     `类型: ${note.type}\n` +
     `笔记正文:\n${note.content.slice(0, 6000)}` +
     `\n请基于以上笔记内容执行用户的提炼 / 扩展 / 重构指令，引用时注明来源笔记。`
+  );
+}
+
+function buildActionSystemMessage(
+  action: import('../stores/workbenchStore').ActionContext,
+): string {
+  return (
+    `[任务上下文] 当前挂载任务：${action.title}\n` +
+    `状态: ${action.status}\n` +
+    `截止: ${action.dueDate || '未设定'}\n` +
+    `今日焦点: ${action.isToday ? '是' : '否'}\n` +
+    `请帮我把该任务拆解为可执行的 Markdown 步骤清单，或给出解决方案 / 建议。`
   );
 }
 
@@ -172,6 +185,8 @@ export default function AIStudioView() {
   const clearVibeContext = useWorkbenchStore((s) => s.clearVibeContext);
   const noteContext = useWorkbenchStore((s) => s.noteContext);
   const clearNoteContext = useWorkbenchStore((s) => s.clearNoteContext);
+  const actionContext = useWorkbenchStore((s) => s.actionContext);
+  const clearActionContext = useWorkbenchStore((s) => s.clearActionContext);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -1282,6 +1297,9 @@ export default function AIStudioView() {
     if (noteContext) {
       apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
     }
+    if (actionContext) {
+      apiMessages.unshift({ role: 'system', content: buildActionSystemMessage(actionContext) });
+    }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
     }
@@ -1452,6 +1470,9 @@ export default function AIStudioView() {
       }
       if (noteContext) {
         apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
+      }
+      if (actionContext) {
+        apiMessages.unshift({ role: 'system', content: buildActionSystemMessage(actionContext) });
       }
       if (agent.systemPrompt?.trim()) {
         apiMessages.unshift({ role: 'system', content: agent.systemPrompt.trim() });
@@ -1852,6 +1873,9 @@ export default function AIStudioView() {
     }
     if (noteContext) {
       apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
+    }
+    if (actionContext) {
+      apiMessages.unshift({ role: 'system', content: buildActionSystemMessage(actionContext) });
     }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
@@ -3152,6 +3176,31 @@ export default function AIStudioView() {
                 type="button"
                 data-note-context-dismiss
                 onClick={clearNoteContext}
+                className="flex h-6 shrink-0 items-center rounded-md border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+              >
+                卸载
+              </button>
+            </div>
+          )}
+          {actionContext && (
+            <div
+              data-action-context
+              className="mb-2 flex items-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/[0.06] px-3 py-2"
+            >
+              <ListChecks size={13} className="shrink-0 text-violet-400" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[11px] font-medium text-violet-300">
+                  Actions · {actionContext.title}
+                </div>
+                <div className="truncate font-mono text-[9px] text-slate-500">
+                  {actionContext.status}
+                  {actionContext.dueDate ? ` · due ${actionContext.dueDate}` : ''} · context mounted
+                </div>
+              </div>
+              <button
+                type="button"
+                data-action-context-dismiss
+                onClick={clearActionContext}
                 className="flex h-6 shrink-0 items-center rounded-md border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
               >
                 卸载
