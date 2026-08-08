@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Sparkles,
   Tags,
   Trash2,
 } from 'lucide-react';
@@ -29,6 +30,8 @@ export default function KnowledgeView() {
   const updateThoughtContent = useWorkbenchStore((s) => s.updateThoughtContent);
   const updateThoughtType = useWorkbenchStore((s) => s.updateThoughtType);
   const deleteThought = useWorkbenchStore((s) => s.deleteThought);
+  const setNoteContext = useWorkbenchStore((s) => s.setNoteContext);
+  const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useViewState('knowledge', 'filter', 'all');
@@ -425,8 +428,46 @@ export default function KnowledgeView() {
 
   const add = async () => {
     if (!content.trim()) return;
-    await addThought(content.trim(), tags, 'inbox');
+    const parsed = Array.from(
+      new Set(
+        content
+          .split(/\s+/)
+          .map((w) => w.trim())
+          .filter((w) => w.startsWith('#'))
+          .map((w) => w.replace(/[，。,.!！?？]$/, '')),
+      ),
+    );
+    const mergedTags = Array.from(
+      new Set(
+        tags
+          .split(/[,，]/)
+          .map((t) => t.trim().replace(/^#/, ''))
+          .filter(Boolean)
+          .concat(parsed.map((p) => p.replace(/^#/, ''))),
+      ),
+    )
+      .map((t) => `#${t}`)
+      .join(',');
+    const cleanedContent = content
+      .split(/\s+/)
+      .filter((w) => !parsed.includes(w))
+      .join(' ');
+    await addThought(cleanedContent || '（闪念）', mergedTags, 'inbox');
     setContent('');
+    if (parsed.length > 0) setTags(mergedTags);
+  };
+
+  const discussNote = (note: db.Thought | db.RagSearchResult) => {
+    const title = note.content.split('\n')[0].replace(/^#+\s*/, '') || '未命名笔记';
+    setNoteContext({
+      thoughtId: note.id,
+      title,
+      content: note.content,
+      tags: note.tags,
+      type: note.type,
+      mountedAt: Date.now(),
+    });
+    setActiveView('ai-studio');
   };
 
   const saveRecapDraftNote = async () => {
@@ -798,6 +839,7 @@ export default function KnowledgeView() {
             onChange={(e) => setTags(e.target.value)}
             className="h-9 w-28 rounded-xl border border-white/10 bg-white/[0.03] px-2 text-[11px] text-slate-300 outline-none"
             placeholder="#tags"
+            title="标签（可在正文用 #tag 自动解析）"
           />
           <button
             type="button"
@@ -2018,6 +2060,15 @@ export default function KnowledgeView() {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <ModelBadge label={selected.tags} tone="green" />
+                  <button
+                    type="button"
+                    data-thought-discuss={selected.id}
+                    data-thought-discuss-title={selected.content.split('\n')[0]}
+                    onClick={() => discussNote(selected)}
+                    className="flex h-6 items-center gap-1 rounded-lg bg-emerald-500/15 px-2 text-[9px] font-medium text-emerald-300 hover:bg-emerald-500/25"
+                  >
+                    <Sparkles size={10} /> 讨论此笔记
+                  </button>
                   {selectedLocal && (
                     <button
                       type="button"

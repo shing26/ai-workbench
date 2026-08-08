@@ -23,6 +23,15 @@ export type VibeContext = {
   mountedAt: number;
 };
 
+export type NoteContext = {
+  thoughtId: string;
+  title: string;
+  content: string;
+  tags: string;
+  type: string;
+  mountedAt: number;
+};
+
 type WorkbenchState = {
   activeView: ViewId;
   setActiveView: (view: ViewId) => void;
@@ -38,6 +47,7 @@ type WorkbenchState = {
   logs: db.ErrorLog[];
   inspector: InspectorState | null;
   vibeContext: VibeContext | null;
+  noteContext: NoteContext | null;
   init: () => Promise<void>;
   addTask: (title: string, isToday: boolean) => Promise<void>;
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
@@ -90,6 +100,8 @@ type WorkbenchState = {
   setInspectorMetrics: (patch: Partial<InspectorMetrics>) => void;
   setVibeContext: (ctx: VibeContext) => void;
   clearVibeContext: () => void;
+  setNoteContext: (ctx: NoteContext) => void;
+  clearNoteContext: () => void;
   closeInspector: () => void;
 };
 
@@ -108,6 +120,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   logs: [],
   inspector: null,
   vibeContext: null,
+  noteContext: null,
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
@@ -331,4 +344,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   closeInspector: () => set({ inspector: null }),
   setVibeContext: (ctx) => set({ vibeContext: ctx }),
   clearVibeContext: () => set({ vibeContext: null }),
+  setNoteContext: (ctx) => set({ noteContext: ctx }),
+  clearNoteContext: () => set({ noteContext: null }),
 }));

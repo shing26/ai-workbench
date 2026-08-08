@@ -1,6 +1,7 @@
 import {
   Archive,
   ArchiveRestore,
+  BookOpen,
   CalendarDays,
   Check,
   ChevronDown,
@@ -69,6 +70,16 @@ import ModelBadge from '../components/ui/ModelBadge';
 
 type Message = { role: 'user' | 'assistant'; content: string; id?: string; laneKey?: string };
 type ApiMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+
+function buildNoteSystemMessage(note: import('../stores/workbenchStore').NoteContext): string {
+  return (
+    `[知识笔记上下文] 当前挂载笔记：${note.title}\n` +
+    `标签: ${note.tags || '无'}\n` +
+    `类型: ${note.type}\n` +
+    `笔记正文:\n${note.content.slice(0, 6000)}` +
+    `\n请基于以上笔记内容执行用户的提炼 / 扩展 / 重构指令，引用时注明来源笔记。`
+  );
+}
 
 function SortablePromptRow({
   prompt,
@@ -159,6 +170,8 @@ export default function AIStudioView() {
   const setInspectorMetrics = useWorkbenchStore((s) => s.setInspectorMetrics);
   const vibeContext = useWorkbenchStore((s) => s.vibeContext);
   const clearVibeContext = useWorkbenchStore((s) => s.clearVibeContext);
+  const noteContext = useWorkbenchStore((s) => s.noteContext);
+  const clearNoteContext = useWorkbenchStore((s) => s.clearNoteContext);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -1266,6 +1279,9 @@ export default function AIStudioView() {
           `请基于以上工程上下文执行用户的代码重构 / 修改指令，注意变更文件与分支约束。`,
       });
     }
+    if (noteContext) {
+      apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
+    }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
     }
@@ -1433,6 +1449,9 @@ export default function AIStudioView() {
             `最新提交: ${vibeContext.latestCommit}\n` +
             `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无未提交变更'}`,
         });
+      }
+      if (noteContext) {
+        apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
       }
       if (agent.systemPrompt?.trim()) {
         apiMessages.unshift({ role: 'system', content: agent.systemPrompt.trim() });
@@ -1830,6 +1849,9 @@ export default function AIStudioView() {
           `Branch: ${vibeContext.branch} · HEAD: ${vibeContext.head} · Commits: ${vibeContext.commitCount}\n` +
           `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无未提交变更'}`,
       });
+    }
+    if (noteContext) {
+      apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
     }
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
@@ -3106,6 +3128,30 @@ export default function AIStudioView() {
                 type="button"
                 data-vibe-context-dismiss
                 onClick={clearVibeContext}
+                className="flex h-6 shrink-0 items-center rounded-md border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+              >
+                卸载
+              </button>
+            </div>
+          )}
+          {noteContext && (
+            <div
+              data-note-context
+              className="mb-2 flex items-center gap-2 rounded-xl border border-sky-500/25 bg-sky-500/[0.06] px-3 py-2"
+            >
+              <BookOpen size={13} className="shrink-0 text-sky-400" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[11px] font-medium text-sky-300">
+                  Knowledge · {noteContext.title}
+                </div>
+                <div className="truncate font-mono text-[9px] text-slate-500">
+                  {noteContext.tags || 'untagged'} · {noteContext.type} · context mounted
+                </div>
+              </div>
+              <button
+                type="button"
+                data-note-context-dismiss
+                onClick={clearNoteContext}
                 className="flex h-6 shrink-0 items-center rounded-md border border-white/10 px-2 text-[10px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
               >
                 卸载
