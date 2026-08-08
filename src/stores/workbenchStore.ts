@@ -1,10 +1,15 @@
 import { create } from 'zustand';
 import * as db from '../lib/db';
 import type { WeekPlanTemplate } from '../lib/weekPlanTemplates';
+import type { InspectorMetrics } from '../types/llm';
 
 export type ViewId = 'ai-studio' | 'projects' | 'knowledge' | 'actions' | 'system';
 export type InspectorSection = { label: string; value: string };
-export type InspectorState = { title: string; sections: InspectorSection[] };
+export type InspectorState = {
+  title: string;
+  sections: InspectorSection[];
+  metrics: InspectorMetrics | null;
+};
 
 type WorkbenchState = {
   activeView: ViewId;
@@ -68,7 +73,8 @@ type WorkbenchState = {
     stack: string | null,
     severity: string,
   ) => Promise<void>;
-  openInspector: (title: string, sections: InspectorSection[]) => void;
+  openInspector: (title: string, sections: InspectorSection[], keepMetrics?: boolean) => void;
+  setInspectorMetrics: (patch: Partial<InspectorMetrics>) => void;
   closeInspector: () => void;
 };
 
@@ -275,6 +281,36 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     }
     set({ logs: await db.listErrorLogs() });
   },
-  openInspector: (title, sections) => set({ inspector: { title, sections } }),
+  openInspector: (title, sections, keepMetrics) =>
+    set((state) => ({
+      inspector: {
+        title,
+        sections,
+        metrics: keepMetrics ? (state.inspector?.metrics ?? null) : null,
+      },
+    })),
+  setInspectorMetrics: (patch) =>
+    set((state) => {
+      if (!state.inspector) return state;
+      return {
+        inspector: {
+          ...state.inspector,
+          metrics: {
+            providerName: '',
+            modelName: '',
+            baseUrl: '',
+            temperature: 0,
+            ttftMs: null,
+            totalTokens: 0,
+            tokensPerSec: 0,
+            contextUsed: 0,
+            contextLimit: 128000,
+            status: 'idle',
+            ...state.inspector.metrics,
+            ...patch,
+          },
+        },
+      };
+    }),
   closeInspector: () => set({ inspector: null }),
 }));

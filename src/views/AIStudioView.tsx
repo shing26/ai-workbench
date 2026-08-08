@@ -156,6 +156,7 @@ export default function AIStudioView() {
   const scheduleEvents = useWorkbenchStore((s) => s.scheduleEvents);
   const addThought = useWorkbenchStore((s) => s.addThought);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
+  const setInspectorMetrics = useWorkbenchStore((s) => s.setInspectorMetrics);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -273,6 +274,10 @@ export default function AIStudioView() {
   const runIdRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const runsRef = useRef(new Map<string, { content: string; index: number; label?: string }>());
+  const inspectorStartRef = useRef(0);
+  const inspectorFirstTokenRef = useRef<number | null>(null);
+  const inspectorTokensRef = useRef(0);
+  const inspectorActiveRef = useRef(false);
   const retryTargetRef = useRef<Message | null>(null);
   const activeProvider =
     providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
@@ -518,13 +523,30 @@ export default function AIStudioView() {
           if (chunk.error) {
             setStreamStatus('error');
             setStreamError(chunk.error);
+            if (inspectorActiveRef.current) {
+              setInspectorMetrics({
+                status: 'error',
+                lastError: chunk.error,
+              });
+            }
           } else if (chunk.cancelled) {
             setStreamStatus('stopped');
             setStreamError(null);
+            if (inspectorActiveRef.current) {
+              setInspectorMetrics({ status: 'completed' });
+            }
           } else {
             setStreamStatus('idle');
             setStreamError(null);
             retryTargetRef.current = null;
+            if (inspectorActiveRef.current) {
+              setInspectorMetrics({
+                status: 'completed',
+                totalTokens: inspectorTokensRef.current,
+                tokensPerSec: 0,
+                contextUsed: inspectorTokensRef.current,
+              });
+            }
           }
           setBusy(false);
           return;
@@ -532,6 +554,27 @@ export default function AIStudioView() {
         setStreamStatus('streaming');
         const delta = run.label && !run.content ? `${run.label}\n\n${chunk.delta}` : chunk.delta;
         run.content += delta;
+        if (inspectorActiveRef.current && !chunk.error) {
+          if (inspectorFirstTokenRef.current === null) {
+            inspectorFirstTokenRef.current = performance.now();
+            const ttft = Math.max(
+              0,
+              Math.round(inspectorFirstTokenRef.current - inspectorStartRef.current),
+            );
+            setInspectorMetrics({ ttftMs: ttft, status: 'streaming' });
+          }
+          inspectorTokensRef.current += Math.max(1, estimateTokens(chunk.delta));
+          const elapsedSec =
+            (performance.now() - (inspectorFirstTokenRef.current || inspectorStartRef.current)) /
+            1000;
+          const tps =
+            elapsedSec > 0 ? Math.max(0, Math.round(inspectorTokensRef.current / elapsedSec)) : 0;
+          setInspectorMetrics({
+            totalTokens: inspectorTokensRef.current,
+            tokensPerSec: tps,
+            contextUsed: inspectorTokensRef.current,
+          });
+        }
         setMessages((prev) => {
           const next = [...prev];
           const idx = run.index;
@@ -552,7 +595,7 @@ export default function AIStudioView() {
       disposed = true;
       unlisten();
     };
-  }, []);
+  }, [setInspectorMetrics]);
 
   useEffect(() => {
     let disposed = false;
@@ -739,6 +782,9 @@ export default function AIStudioView() {
     setHighlightMessageId(null);
     runsRef.current.clear();
     retryTargetRef.current = null;
+    inspectorActiveRef.current = false;
+    inspectorFirstTokenRef.current = null;
+    inspectorTokensRef.current = 0;
     setActiveLaneKeys(new Set());
     teamPendingRef.current = 0;
     teamRunIdsRef.current = [];
@@ -1179,6 +1225,32 @@ export default function AIStudioView() {
     }
     if (selectedAgent) setRoutedAgent(selectedAgent);
     setRoutedProvider(routedName ? { name: routedName, fallbackFrom } : null);
+    inspectorStartRef.current = performance.now();
+    inspectorFirstTokenRef.current = null;
+    inspectorTokensRef.current = 0;
+    inspectorActiveRef.current = true;
+    openInspector('Streaming', []);
+    const preProvider = moaProviders[0] ?? activeProvider;
+    setInspectorMetrics({
+      providerName: preProvider?.name ?? (moa ? 'MOA' : 'Unknown'),
+      modelName: preProvider?.model ?? selectedAgent?.model ?? '',
+      baseUrl: preProvider?.baseUrl ?? '',
+      temperature: 0.7,
+      ttftMs: null,
+      totalTokens: 0,
+      tokensPerSec: 0,
+      contextUsed: 0,
+      contextLimit: 128000,
+      status: 'connecting',
+    });
+    if (preProvider?.id) {
+      db.listCachedProviderModels(preProvider.id)
+        .then((models) => models.find((m) => m.id === preProvider.model)?.contextWindow ?? 128000)
+        .catch(() => 128000)
+        .then((limit) => {
+          setInspectorMetrics({ contextLimit: limit });
+        });
+    }
     const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
     if (selectedAgent?.systemPrompt?.trim()) {
       apiMessages.unshift({ role: 'system', content: selectedAgent.systemPrompt.trim() });
@@ -1287,7 +1359,7 @@ export default function AIStudioView() {
               : chain
                 ? 'MOA Chain Trace'
                 : 'MOA Trace';
-      openInspector(traceTitle, sections);
+      openInspector(traceTitle, sections, true);
       if (userMessageId) {
         const payload = JSON.stringify({
           rag: hits,
@@ -1358,6 +1430,26 @@ export default function AIStudioView() {
         runId: subRunId,
       });
     });
+    inspectorStartRef.current = performance.now();
+    inspectorFirstTokenRef.current = null;
+    inspectorTokensRef.current = 0;
+    inspectorActiveRef.current = true;
+    openInspector('Team Streaming', []);
+    const teamPreProvider = teamRunIdsRef.current[0]
+      ? providers.find((p) => p.id === teamRunIdsRef.current[0])
+      : null;
+    setInspectorMetrics({
+      providerName: teamPreProvider?.name ?? 'Team',
+      modelName: teamPreProvider?.model ?? '',
+      baseUrl: teamPreProvider?.baseUrl ?? '',
+      temperature: 0.7,
+      ttftMs: null,
+      totalTokens: 0,
+      tokensPerSec: 0,
+      contextUsed: 0,
+      contextLimit: 128000,
+      status: 'connecting',
+    });
     await Promise.all(agentRuns.map((promise) => promise.catch(() => {})));
     const teamOutputs = teamRunIdsRef.current.map((id) => teamResultsRef.current.get(id) ?? '');
     const summaryText = await db.buildTeamSummary(teamOutputs);
@@ -1392,7 +1484,24 @@ export default function AIStudioView() {
     ]
       .filter(Boolean)
       .join(' + ');
-    openInspector(traceTitle, sections);
+    openInspector(traceTitle, sections, true);
+    const teamFirstAgent = selectedAgents[0] ?? null;
+    const teamProvider = teamFirstAgent?.providerId
+      ? providers.find((p) => p.id === teamFirstAgent.providerId)
+      : null;
+    const teamContextPromise = teamProvider
+      ? db
+          .listCachedProviderModels(teamProvider.id)
+          .then(
+            (models) => models.find((m) => m.id === teamProvider.model)?.contextWindow ?? 128000,
+          )
+          .catch(() => 128000)
+      : Promise.resolve(128000);
+    void teamContextPromise.then((limit) => {
+      setInspectorMetrics({
+        contextLimit: limit,
+      });
+    });
     if (messageId) {
       const payload = JSON.stringify({ rag: hits, trace: { title: traceTitle, sections } });
       await db.saveMessageAux(messageId, payload).catch(() => {});

@@ -3107,7 +3107,7 @@ try {
   const layoutStable =
     widthBefore === inspectorInfo.mainWidth &&
     widthAfterClose === inspectorInfo.mainWidth &&
-    inspectorInfo.asideWidth === '240px';
+    inspectorInfo.asideWidth === '288px';
   results.motion.inspector = { widthBefore, inspectorInfo, widthAfterClose, layoutStable };
 
   await send('Emulation.setEmulatedMedia', {
