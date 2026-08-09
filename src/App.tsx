@@ -4,6 +4,7 @@ import AppHeader from './components/layout/AppHeader';
 import AppInspector from './components/layout/AppInspector';
 import ToastHost from './components/ui/Toast';
 import ViewRouter from './components/ViewRouter';
+import { useTauriEvents } from './hooks/useTauriEvents';
 import { useActiveThrottle } from './hooks/useActiveThrottle';
 import * as db from './lib/db';
 import { useThemeStore } from './stores/themeStore';
@@ -15,6 +16,8 @@ export default function App() {
   const restoreWorkspace = useWorkbenchStore((s) => s.restoreWorkspace);
   const refreshSystem = useWorkbenchStore((s) => s.refreshSystem);
   const reportError = useWorkbenchStore((s) => s.reportError);
+
+  useTauriEvents();
 
   useEffect(() => {
     void restoreWorkspace().then((ok) => {

@@ -58,8 +58,11 @@ type WorkbenchState = {
   vibeContext: VibeContext | null;
   noteContext: NoteContext | null;
   actionContext: ActionContext | null;
+  eventLogs: { id: string; type: string; message: string; timestamp: string }[];
   init: () => Promise<void>;
   restoreWorkspace: () => Promise<boolean>;
+  addEventLog: (type: string, message: string) => void;
+  refreshMountedGitStatus: () => Promise<void>;
   addTask: (title: string, isToday: boolean) => Promise<void>;
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
   setTaskToday: (id: string, isToday: boolean) => Promise<void>;
@@ -135,6 +138,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   vibeContext: null,
   noteContext: null,
   actionContext: null,
+  eventLogs: [],
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
@@ -386,4 +390,32 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   clearNoteContext: () => set({ noteContext: null }),
   setActionContext: (ctx) => set({ actionContext: ctx }),
   clearActionContext: () => set({ actionContext: null }),
+  addEventLog: (type, message) => {
+    const timestamp = new Date().toTimeString().split(' ')[0];
+    set((state) => ({
+      eventLogs: [
+        { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, type, message, timestamp },
+        ...state.eventLogs,
+      ].slice(0, 100),
+    }));
+  },
+  refreshMountedGitStatus: async () => {
+    const vibe = get().vibeContext;
+    if (!vibe || !vibe.path) return;
+    try {
+      const ctx = await db.getProjectGitContext(vibe.path);
+      set({
+        vibeContext: {
+          ...vibe,
+          branch: ctx.branch,
+          head: ctx.head,
+          commitCount: ctx.commitCount,
+          latestCommit: ctx.latestCommit,
+          changes: ctx.changes,
+        },
+      });
+    } catch {
+      /* git context unavailable */
+    }
+  },
 }));

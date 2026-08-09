@@ -3,7 +3,7 @@
 **What to build:** 鏂囦欢鎴愬姛鍐欏叆鍚庡悜 Event Bus 骞挎挱鍙樻洿锛孭rojects Git Diff 璁℃暟瀹炴椂鍒锋柊銆?
 **Blocked by:** 02 (S7-2 Code Apply)
 
-**Status:** in-progress
+**Status:** completed
 
 - [ ] Rust `write_file_with_backup` 鎴愬姛鍚?emit `file-applied` 浜嬩欢锛坽 projectPath, filePath }锛?- [ ] 鍓嶇 `events.ts` 璁㈤槄 `file-applied` 鈫?鍒锋柊瀵瑰簲椤圭洰 gitCtx锛坄getProjectGitContext`锛?- [ ] Projects 鍗＄墖鍙樻洿鏂囦欢璁℃暟鍗虫椂 +1 / Git 鐘舵€佹洿鏂帮紙鏃犳墜鍔ㄥ埛鏂帮級
 - [ ] 娴忚鍣?fallback 鐢?CustomEvent 鍚屾瀯

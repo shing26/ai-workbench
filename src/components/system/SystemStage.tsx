@@ -8,6 +8,7 @@ import {
   setMockAgentsEnabled,
 } from '../../lib/mockAgents';
 import { useViewState } from '../../stores/viewState';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 
 const RING_CAP = 500;
 
@@ -129,6 +130,7 @@ function EventRow({ event, decision, onApprove, onReject }: EventRowProps) {
 }
 
 export default function SystemStage() {
+  const eventLogs = useWorkbenchStore((s) => s.eventLogs);
   const [events, setEvents] = useState<FsmEvent[]>([]);
   const [mockEnabled, setMockEnabled] = useState<boolean>(() => isMockAgentsEnabled());
   const [hitlDecisions, setHitlDecisions] = useState<Record<string, 'approved' | 'rejected'>>({});
@@ -285,6 +287,22 @@ export default function SystemStage() {
         )}
         <span className="ml-auto text-[9px] text-slate-600">{visibleEvents.length} events</span>
       </div>
+      {eventLogs.length > 0 && (
+        <div
+          data-ipc-log
+          className="mb-2 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2 py-1"
+        >
+          <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-emerald-400/80">
+            IPC
+          </span>
+          <div className="min-w-0 flex-1 truncate font-mono text-[9px] text-slate-500">
+            {eventLogs[0].timestamp} · {eventLogs[0].type} · {eventLogs[0].message}
+          </div>
+          <span className="shrink-0 text-[8px] text-slate-600">
+            +{Math.min(eventLogs.length - 1, 99)}
+          </span>
+        </div>
+      )}
       <div
         ref={listRef}
         onScroll={handleScroll}
