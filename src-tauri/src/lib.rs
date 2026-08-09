@@ -4607,6 +4607,99 @@ struct GitFileVersions {
     new_content: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDiffFile {
+    path: String,
+    status: String,
+    insertions: usize,
+    deletions: usize,
+    hunk_preview: String,
+}
+
+fn git_diff_stats(path: &str, git_file: &str) -> (usize, usize) {
+    let diff = run_git(
+        path,
+        &["diff", "--numstat", "--", &git_file.replace('\\', "/")],
+    )
+    .unwrap_or_default();
+    if let Some(line) = diff.lines().next() {
+        return git_diff_stats_numstat(line);
+    }
+    (0, 0)
+}
+
+fn git_diff_stats_numstat(line: &str) -> (usize, usize) {
+    let parts: Vec<&str> = line.split('\t').collect();
+    if parts.len() >= 2 {
+        let added = parts[0].parse::<usize>().unwrap_or(0);
+        let deleted = parts[1].parse::<usize>().unwrap_or(0);
+        return (added, deleted);
+    }
+    (0, 0)
+}
+
+fn porcelain_kind(line: &str) -> &'static str {
+    if line.starts_with("??") {
+        "Added"
+    } else if line.starts_with("D") {
+        "Deleted"
+    } else {
+        "Modified"
+    }
+}
+
+#[tauri::command]
+fn get_project_diff_tree(path: String) -> Result<Vec<GitDiffFile>, String> {
+    let porcelain = run_git(&path, &["status", "--porcelain"]).unwrap_or_default();
+    let mut files: Vec<GitDiffFile> = Vec::new();
+    for line in porcelain.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let file_part = line[3..].to_string();
+        let git_file = file_part.replace('\\', "/");
+        let status = porcelain_kind(line);
+        let (add, del) = if status == "Added" {
+            fs::read_to_string(Path::new(&path).join(&git_file))
+                .map(|c| (c.lines().count(), 0usize))
+                .unwrap_or((0, 0))
+        } else {
+            git_diff_stats(&path, &git_file)
+        };
+        let hunk = if status == "Deleted" {
+            String::new()
+        } else {
+            get_git_file_diff(path.clone(), git_file.clone())
+                .map(|d| truncate_hunk(&d.diff, 1200))
+                .unwrap_or_default()
+        };
+        files.push(GitDiffFile {
+            path: git_file,
+            status: status.to_string(),
+            insertions: add,
+            deletions: del,
+            hunk_preview: hunk,
+        });
+    }
+    Ok(files)
+}
+
+fn truncate_hunk(diff: &str, max: usize) -> String {
+    if diff.chars().count() <= max {
+        diff.to_string()
+    } else {
+        let mut s: String = diff.chars().take(max).collect();
+        s.push_str("\n... (truncated)");
+        s
+    }
+}
+
+#[tauri::command]
+fn get_file_hunk_patch(path: String, relative_path: String) -> Result<GitFileDiff, String> {
+    get_git_file_diff(path, relative_path)
+}
+
 fn read_untracked_diff(path: &str, file: &str) -> String {
     let display = file.replace('\\', "/");
     let target = Path::new(path).join(file);
@@ -7371,6 +7464,8 @@ pub fn run() {
             get_project_git_context,
             get_git_activity,
             get_git_file_diff,
+            get_project_diff_tree,
+            get_file_hunk_patch,
             get_git_file_versions,
             generate_commit_pr_draft,
             apply_commit,
@@ -9754,5 +9849,20 @@ mod tests {
         assert!(!looks_like_keyring_ref(""));
         assert!(!looks_like_keyring_ref("lower_case"));
         assert!(!looks_like_keyring_ref(&"K".repeat(65)));
+    }
+
+    #[test]
+    fn diff_stats_parses_numstat_lines() {
+        // 模拟 "12\t4\tsrc/foo.ts"
+        let (add, del) = git_diff_stats_numstat("12\t4\tsrc/foo.ts");
+        assert_eq!(add, 12);
+        assert_eq!(del, 4);
+    }
+
+    #[test]
+    fn porcelain_status_maps_to_kind() {
+        assert_eq!(porcelain_kind("?? new.txt"), "Added");
+        assert_eq!(porcelain_kind(" M modified.ts"), "Modified");
+        assert_eq!(porcelain_kind("D  removed.rs"), "Deleted");
     }
 }

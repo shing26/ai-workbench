@@ -14,6 +14,7 @@ import {
   Trash2,
   Undo2,
   Wand2,
+  X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import * as db from '../lib/db';
@@ -135,6 +136,11 @@ type ProjectCardBodyProps = {
   onResolve: (strategy: string) => void;
   onAiCoding: () => void;
   onVibeCoding: () => void;
+  diffTree?: db.GitDiffFile[];
+  diffTreeOpen?: boolean;
+  diffTreeBusy?: boolean;
+  onToggleDiffTree: () => void;
+  onOpenHunk: (file: db.GitDiffFile) => void;
 };
 
 function ProjectCardBody({
@@ -165,6 +171,11 @@ function ProjectCardBody({
   onResolve,
   onAiCoding,
   onVibeCoding,
+  diffTree,
+  diffTreeOpen,
+  diffTreeBusy,
+  onToggleDiffTree,
+  onOpenHunk,
 }: ProjectCardBodyProps) {
   return (
     <div className="flex min-w-0 flex-col">
@@ -329,6 +340,42 @@ function ProjectCardBody({
               </span>
             ))}
           </div>
+          {gitCtx.changes.length > 0 && (
+            <button
+              type="button"
+              data-diff-fold-toggle={project.id}
+              onClick={onToggleDiffTree}
+              className="mt-2 flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+            >
+              {gitCtx.changes.length} files changed {diffTreeOpen ? '▴' : '▾'}
+            </button>
+          )}
+          {diffTreeOpen && (
+            <div data-diff-fold-tree={project.id} className="mt-1.5 space-y-0.5">
+              {diffTreeBusy && !diffTree ? (
+                <div className="py-2 text-center text-[9px] text-slate-600">加载变动树…</div>
+              ) : (
+                (diffTree ?? []).map((f) => (
+                  <button
+                    key={f.path}
+                    type="button"
+                    data-diff-file={f.path}
+                    data-diff-file-status={f.status}
+                    onClick={() => onOpenHunk(f)}
+                    className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{f.path}</span>
+                    <span className="shrink-0 rounded bg-emerald-500/10 px-1 text-[8px] text-emerald-300">
+                      +{f.insertions}
+                    </span>
+                    <span className="shrink-0 rounded bg-rose-500/10 px-1 text-[8px] text-rose-300">
+                      -{f.deletions}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <button
               type="button"
@@ -551,6 +598,14 @@ export default function ProjectsView() {
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
+  const [diffTrees, setDiffTrees] = useState<Record<string, db.GitDiffFile[]>>({});
+  const [diffTreeOpen, setDiffTreeOpen] = useState<Record<string, boolean>>({});
+  const [diffTreeBusy, setDiffTreeBusy] = useState<Record<string, boolean>>({});
+  const [hunkDrawer, setHunkDrawer] = useState<{
+    projectId: string;
+    file: db.GitDiffFile;
+    patch: string;
+  } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, db.CommitPrDraft>>({});
   const [commitResults, setCommitResults] = useState<Record<string, db.GitCommitResult>>({});
   const [prResults, setPrResults] = useState<Record<string, db.RemotePrResult>>({});
@@ -997,6 +1052,32 @@ ${trend}
     setActiveView('ai-studio');
   };
 
+  const toggleDiffTree = async (project: db.Project) => {
+    if (diffTreeOpen[project.id]) {
+      setDiffTreeOpen((prev) => ({ ...prev, [project.id]: false }));
+      return;
+    }
+    setDiffTreeOpen((prev) => ({ ...prev, [project.id]: true }));
+    if (!diffTrees[project.id]) {
+      setDiffTreeBusy((prev) => ({ ...prev, [project.id]: true }));
+      try {
+        const tree = await db.getProjectDiffTree(project.path ?? '');
+        setDiffTrees((prev) => ({ ...prev, [project.id]: tree }));
+      } finally {
+        setDiffTreeBusy((prev) => ({ ...prev, [project.id]: false }));
+      }
+    }
+  };
+
+  const openHunk = async (project: db.Project, file: db.GitDiffFile) => {
+    try {
+      const patch = await db.getFileHunkPatch(project.path ?? '', file.path);
+      setHunkDrawer({ projectId: project.id, file, patch: patch.diff });
+    } catch {
+      setHunkDrawer({ projectId: project.id, file, patch: file.hunkPreview });
+    }
+  };
+
   const generateDraft = async (project: db.Project) => {
     const draft = await db.generateCommitPrDraft(project.path ?? '', project.name);
     setDrafts((prev) => ({ ...prev, [project.id]: draft }));
@@ -1258,6 +1339,11 @@ ${trend}
       onResolve={(strategy) => void resolveConflicts(project, strategy)}
       onAiCoding={() => void aiCoding(project)}
       onVibeCoding={() => void vibeCoding(project)}
+      diffTree={diffTrees[project.id]}
+      diffTreeOpen={diffTreeOpen[project.id]}
+      diffTreeBusy={diffTreeBusy[project.id]}
+      onToggleDiffTree={() => void toggleDiffTree(project)}
+      onOpenHunk={(file) => void openHunk(project, file)}
     />
   );
 
@@ -1267,6 +1353,53 @@ ${trend}
 
   return (
     <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      {hunkDrawer && (
+        <div className="fixed inset-0 z-40 flex justify-end">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setHunkDrawer(null)}
+            aria-hidden="true"
+          />
+          <aside
+            data-hunk-drawer
+            className="relative h-full w-[420px] max-w-[94vw] border-l border-white/10 bg-[#16161A] shadow-2xl"
+          >
+            <div className="flex h-12 items-center justify-between border-b border-white/10 px-3">
+              <span className="truncate font-mono text-[10px] text-slate-400">
+                {hunkDrawer.file.path}
+              </span>
+              <button
+                type="button"
+                data-hunk-drawer-close
+                onClick={() => setHunkDrawer(null)}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-white/[0.06] hover:text-slate-200"
+                aria-label="Close hunk drawer"
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <div className="p-3">
+              <div className="mb-2 flex items-center gap-1.5">
+                <span
+                  data-hunk-status={hunkDrawer.file.status}
+                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
+                >
+                  {hunkDrawer.file.status}
+                </span>
+                <span className="rounded bg-emerald-500/10 px-1 text-[8px] text-emerald-300">
+                  +{hunkDrawer.file.insertions}
+                </span>
+                <span className="rounded bg-rose-500/10 px-1 text-[8px] text-rose-300">
+                  -{hunkDrawer.file.deletions}
+                </span>
+              </div>
+              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/[0.06] bg-[#0d0d11] p-3 font-mono text-[10px] leading-relaxed text-slate-300">
+                {hunkDrawer.patch || hunkDrawer.file.hunkPreview || '（无 diff 内容）'}
+              </pre>
+            </div>
+          </aside>
+        </div>
+      )}
       <div className="col-span-12 flex justify-end">
         <MockBadge />
       </div>

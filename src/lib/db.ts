@@ -1694,8 +1694,32 @@ export async function getActionsBundle(): Promise<ActionsBundle> {
   };
 }
 
+export type GitDiffFile = {
+  path: string;
+  status: string;
+  insertions: number;
+  deletions: number;
+  hunkPreview: string;
+};
+
+export async function getProjectDiffTree(projectPath: string): Promise<GitDiffFile[]> {
+  if (isTauri()) return invoke<GitDiffFile[]>('get_project_diff_tree', { path: projectPath });
+  return [];
+}
+
+export async function getFileHunkPatch(
+  projectPath: string,
+  relativePath: string,
+): Promise<GitFileDiff> {
+  if (isTauri()) {
+    return invoke<GitFileDiff>('get_file_hunk_patch', { path: projectPath, relativePath });
+  }
+  return { path: relativePath, status: 'clean', diff: '' };
+}
+
 export type ApplySnippetResult = {
   success: boolean;
+
   backupId: string;
   filePath: string;
   diffDelta: string;
