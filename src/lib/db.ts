@@ -1702,6 +1702,16 @@ export type GitDiffFile = {
   hunkPreview: string;
 };
 
+export type QualityGateResult = {
+  status: string;
+  errors: string[];
+};
+
+export async function runQualityGate(projectPath: string): Promise<QualityGateResult> {
+  if (isTauri()) return invoke<QualityGateResult>('run_quality_gate', { path: projectPath });
+  return { status: 'GREEN', errors: [] };
+}
+
 export async function getProjectDiffTree(projectPath: string): Promise<GitDiffFile[]> {
   if (isTauri()) return invoke<GitDiffFile[]>('get_project_diff_tree', { path: projectPath });
   return [];

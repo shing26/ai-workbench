@@ -4609,6 +4609,91 @@ struct GitFileVersions {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct QualityGateResult {
+    status: String,
+    errors: Vec<String>,
+}
+
+fn run_check_command(
+    dir: &str,
+    program: &str,
+    args: &[&str],
+    timeout_ms: u64,
+) -> Result<String, String> {
+    use std::process::Command;
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{} not available: {}", program, e))?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(_status) = child.try_wait().map_err(|e| e.to_string())? {
+            let out = child.wait_with_output().map_err(|e| e.to_string())?;
+            let text = String::from_utf8_lossy(&out.stderr).to_string();
+            return Ok(text);
+        }
+        if start.elapsed().as_millis() > timeout_ms as u128 {
+            let _ = child.kill();
+            return Err(format!("{} check timed out", program));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[tauri::command]
+fn run_quality_gate(path: String) -> Result<QualityGateResult, String> {
+    let mut errors: Vec<String> = Vec::new();
+    let has_ts = Path::new(&path).join("tsconfig.json").exists();
+    let has_cargo = Path::new(&path).join("Cargo.toml").exists();
+
+    if has_ts {
+        match run_check_command(&path, "npx", &["tsc", "--noEmit"], 30000) {
+            Ok(out) => {
+                if !out.trim().is_empty() {
+                    errors.extend(
+                        out.lines()
+                            .filter(|l| l.contains("error"))
+                            .take(20)
+                            .map(|l| l.to_string()),
+                    );
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    if has_cargo {
+        match run_check_command(&path, "cargo", &["check", "--quiet"], 60000) {
+            Ok(out) => {
+                if !out.trim().is_empty() {
+                    errors.extend(
+                        out.lines()
+                            .filter(|l| l.contains("error"))
+                            .take(20)
+                            .map(|l| l.to_string()),
+                    );
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.is_empty() {
+        Ok(QualityGateResult {
+            status: "GREEN".to_string(),
+            errors: Vec::new(),
+        })
+    } else {
+        Ok(QualityGateResult {
+            status: "FAILED".to_string(),
+            errors,
+        })
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitDiffFile {
     path: String,
     status: String,
@@ -7466,6 +7551,7 @@ pub fn run() {
             get_git_file_diff,
             get_project_diff_tree,
             get_file_hunk_patch,
+            run_quality_gate,
             get_git_file_versions,
             generate_commit_pr_draft,
             apply_commit,
