@@ -26,6 +26,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 
 mod db;
+mod file_ops;
 mod webhook_condition;
 mod webhook_template;
 
@@ -7418,7 +7419,11 @@ pub fn run() {
             list_active_fsm_runs,
             delete_fsm_run,
             get_run_metric,
-            list_run_metrics
+            list_run_metrics,
+            file_ops::apply_code_snippet,
+            file_ops::rollback_snapshot,
+            file_ops::list_snapshots,
+            file_ops::prune_snapshots
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

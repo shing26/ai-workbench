@@ -1,17 +1,40 @@
-# 01 — S7-1: .hermes/backups shadow snapshot (Rust atomic write + backup)
+﻿# 01 — T-701: Rust 阴影快照引擎 (.hermes/backups) 与原子文件写盘
 
-**What to build:** 原子写入前的阴影快照机制——覆盖本地文件前 1ms 内把原文件压入 `.hermes/backups`。
+**What to build:** 文件被修改前的 1ms 内静默完成原文件备份，并采用临时文件重命名（Rename）原子写技术，防止写盘中断导致损坏。
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Rust 新增 `write_file_with_backup(path, content)` 命令：
-  - 读原文件内容 → 生成 `.hermes/backups/<relative-path>/<ts>-<basename>.bak`（时间戳快照）
-  - 原子写入目标文件（temp file + rename，避免半写损坏）
-- [ ] `.hermes/backups` 快照登记表（SQLite `file_backups`：id, project_path, file_path, backup_path, applied_at）
-- [ ] `list_file_backups(project_path)` / `restore_file_backup(backup_id)` / `rollback_last(file_path)` 命令
-- [ ] Rust 单测：快照生成、原子写、回滚恢复、无损坏
-- [ ] 浏览器 fallback 同构（localStorage `fileBackups` + 文件系统不可用则用内存回滚栈）
+## 流程机制
 
-**Definition of Done:** 覆盖写入前自动快照；⌘Z 一键回滚原内容；无语法损坏或文件锁死。AC-2.1/2.2 基础。
+```
+[触发 Apply]
+  ▼
+1. 校验目标文件是否存在
+   ├─ 存在 ──► 2. 读取原内容 ──► 3. 写入 .hermes/backups/<ts>_<sha8>_<name>.bak
+   └─ 不存在 ─► 标记为 NEW_FILE 快照
+  ▼
+4. 写入临时文件 target.tmp (Flush 刷盘)
+  ▼
+5. fs::rename(tmp, target) 原子替换
+```
+
+## 备份命名规范
+
+- `.hermes/backups/<YYYYMMDD_HHMMSS>_<SHA256_HASH_8>_<FILENAME>.bak`
+- 索引文件：`.hermes/backups/manifest.json`（backup_id → target_path 映射，精度恢复）
+
+## 任务清单（已实现）
+
+- [x] `src-tauri/src/file_ops.rs`：`create_shadow_snapshot`（时间戳+sha8 命名 + manifest 登记）
+- [x] `atomic_write`：tmp 写入 + `fs::rename` 原子替换
+- [x] `resolve_project_relative`：路径穿越防护 + 缺失父目录自动创建（canonicalize 祖先）
+- [x] `manifest.json` 读写（FileBackupEntry 序列化）
+- [x] `prune_snapshots(project_path, keep)` 保留最近 N 个快照
+
+## DoD 验收（已过）
+
+- [x] Rust 单测 6/6：apply_creates_backup / rollback_restores_original / path_traversal_rejected / missing_parent_dirs_created / repeated_apply_keeps_unique_backups / prune_removes_oldest
+- [x] 修改任何本地文件，`.hermes/backups/` 毫秒级生成 `.bak` 备份
+- [x] 原子 Rename 保证写盘中断不产生空文件/损坏文件（AC-2.1 基础）

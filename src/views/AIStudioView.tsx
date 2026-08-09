@@ -67,6 +67,7 @@ import {
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
+import { renderRichContent } from '../components/CodeBlockContent';
 import ModelBadge from '../components/ui/ModelBadge';
 
 type Message = { role: 'user' | 'assistant'; content: string; id?: string; laneKey?: string };
@@ -2567,7 +2568,9 @@ export default function AIStudioView() {
                         : 'border border-white/10 bg-white/[0.04] text-slate-300'
                   }`}
                 >
-                  {m.content === '__stream__' ? '' : m.content}
+                  {m.content === '__stream__'
+                    ? ''
+                    : renderRichContent(m.content, vibeContext?.path)}
                   {m.content === '__stream__' && busy && <span className="stream-caret" />}
                   {m.laneKey && activeLaneKeys.has(m.laneKey) && (
                     <span className="mt-1.5 flex items-center gap-1.5">

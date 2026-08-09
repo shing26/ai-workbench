@@ -1692,6 +1692,53 @@ export async function getActionsBundle(): Promise<ActionsBundle> {
   };
 }
 
+export type ApplySnippetResult = {
+  success: boolean;
+  backupId: string;
+  filePath: string;
+  diffDelta: string;
+};
+
+export type FileBackupEntry = {
+  backupId: string;
+  targetPath: string;
+  backupPath: string;
+  isNewFile: boolean;
+  createdAt: number;
+};
+
+export async function applyCodeSnippet(
+  projectPath: string,
+  relativePath: string,
+  codeContent: string,
+): Promise<ApplySnippetResult> {
+  if (isTauri()) {
+    return invoke<ApplySnippetResult>('apply_code_snippet', {
+      projectPath,
+      relativePath,
+      codeContent,
+    });
+  }
+  throw new Error('Apply is only available in the desktop (Tauri) runtime');
+}
+
+export async function rollbackSnapshot(projectPath: string, backupId: string): Promise<boolean> {
+  if (isTauri()) {
+    return invoke<boolean>('rollback_snapshot', { projectPath, backupId });
+  }
+  throw new Error('Rollback is only available in the desktop (Tauri) runtime');
+}
+
+export async function listSnapshots(projectPath: string): Promise<FileBackupEntry[]> {
+  if (isTauri()) return invoke<FileBackupEntry[]>('list_snapshots', { projectPath });
+  return [];
+}
+
+export async function pruneSnapshots(projectPath: string, keep: number): Promise<number> {
+  if (isTauri()) return invoke<number>('prune_snapshots', { projectPath, keep });
+  return 0;
+}
+
 export async function createTask(title: string, isToday: boolean): Promise<Task> {
   if (isTauri()) return invoke<Task>('create_task', { title, isToday });
   const shape = readLocal();

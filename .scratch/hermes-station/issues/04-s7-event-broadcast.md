@@ -1,15 +1,12 @@
-# 04 — S7-4: Apply 写入后 Event Bus 广播
+﻿# 04 鈥?S7-4: Apply 鍐欏叆鍚?Event Bus 骞挎挱
 
-**What to build:** 文件成功写入后向 Event Bus 广播变更，Projects Git Diff 计数实时刷新。
-
+**What to build:** 鏂囦欢鎴愬姛鍐欏叆鍚庡悜 Event Bus 骞挎挱鍙樻洿锛孭rojects Git Diff 璁℃暟瀹炴椂鍒锋柊銆?
 **Blocked by:** 02 (S7-2 Code Apply)
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
-- [ ] Rust `write_file_with_backup` 成功后 emit `file-applied` 事件（{ projectPath, filePath }）
-- [ ] 前端 `events.ts` 订阅 `file-applied` → 刷新对应项目 gitCtx（`getProjectGitContext`）
-- [ ] Projects 卡片变更文件计数即时 +1 / Git 状态更新（无手动刷新）
-- [ ] 浏览器 fallback 用 CustomEvent 同构
-- [ ] verify lane：Apply 后 Projects 卡 changed 计数刷新
+- [ ] Rust `write_file_with_backup` 鎴愬姛鍚?emit `file-applied` 浜嬩欢锛坽 projectPath, filePath }锛?- [ ] 鍓嶇 `events.ts` 璁㈤槄 `file-applied` 鈫?鍒锋柊瀵瑰簲椤圭洰 gitCtx锛坄getProjectGitContext`锛?- [ ] Projects 鍗＄墖鍙樻洿鏂囦欢璁℃暟鍗虫椂 +1 / Git 鐘舵€佹洿鏂帮紙鏃犳墜鍔ㄥ埛鏂帮級
+- [ ] 娴忚鍣?fallback 鐢?CustomEvent 鍚屾瀯
+- [ ] verify lane锛欰pply 鍚?Projects 鍗?changed 璁℃暟鍒锋柊
 
-**Definition of Done:** Apply 写入 → Event Bus → Projects 实时刷新。AC-2.1 联动。
+**Definition of Done:** Apply 鍐欏叆 鈫?Event Bus 鈫?Projects 瀹炴椂鍒锋柊銆侫C-2.1 鑱斿姩銆?
