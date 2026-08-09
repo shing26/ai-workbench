@@ -63,7 +63,13 @@ type WorkbenchState = {
   restoreWorkspace: () => Promise<boolean>;
   addEventLog: (type: string, message: string) => void;
   refreshMountedGitStatus: () => Promise<void>;
-  addTask: (title: string, isToday: boolean) => Promise<void>;
+  refreshTasks: () => Promise<void>;
+  addTask: (
+    title: string,
+    isToday: boolean,
+    projectId?: string | null,
+    isDod?: boolean,
+  ) => Promise<void>;
   setTaskStatus: (id: string, status: db.TaskStatus) => Promise<void>;
   setTaskToday: (id: string, isToday: boolean) => Promise<void>;
   setTaskDueDate: (id: string, dueDate: string | null) => Promise<void>;
@@ -200,8 +206,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       return false;
     }
   },
-  addTask: async (title, isToday) => {
-    await db.createTask(title, isToday);
+  addTask: async (title, isToday, projectId = null, isDod = false) => {
+    await db.createTask(title, isToday, projectId, isDod);
     set({ tasks: await db.listTasks() });
   },
   setTaskStatus: async (id, status) => {
@@ -417,5 +423,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     } catch {
       /* git context unavailable */
     }
+  },
+  refreshTasks: async () => {
+    set({ tasks: await db.listTasks() });
   },
 }));

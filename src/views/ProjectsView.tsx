@@ -541,6 +541,7 @@ function ProjectCardBody({
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
+  const allTasks = useWorkbenchStore((s) => s.tasks);
   const addProject = useWorkbenchStore((s) => s.addProject);
   const updateProject = useWorkbenchStore((s) => s.updateProject);
   const deleteProject = useWorkbenchStore((s) => s.deleteProject);
@@ -1715,6 +1716,28 @@ ${trend}
                       <div className="min-w-0">
                         <h2 className="text-sm font-semibold text-slate-200">{p.name}</h2>
                         <p className="mt-0.5 text-[11px] text-slate-500">{p.status}</p>
+                        <span
+                          data-project-dod={p.id}
+                          data-project-dod-count={
+                            allTasks.filter(
+                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
+                            ).length
+                          }
+                          className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] ${
+                            allTasks.filter(
+                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
+                            ).length > 0
+                              ? 'bg-amber-500/10 text-amber-300'
+                              : 'bg-white/5 text-slate-600'
+                          }`}
+                        >
+                          🎯 待攻坚 DoD ·{' '}
+                          {
+                            allTasks.filter(
+                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
+                            ).length
+                          }
+                        </span>
                       </div>
                       <button
                         type="button"

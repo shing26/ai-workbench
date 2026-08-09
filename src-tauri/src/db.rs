@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     is_today INTEGER DEFAULT 0,
     due_date TEXT,
     created_at INTEGER,
-    completed_at INTEGER
+    completed_at INTEGER,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    is_dod INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS thoughts (
     id TEXT PRIMARY KEY,
@@ -543,6 +545,8 @@ pub struct Task {
     pub due_date: Option<String>,
     pub completed_at: Option<i64>,
     pub created_at: i64,
+    pub project_id: Option<String>,
+    pub is_dod: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -2933,6 +2937,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_session_pinned(&conn)?;
     migrate_session_archived(&conn)?;
     migrate_task_completed_at(&conn)?;
+    migrate_task_project(&conn)?;
     migrate_schedule_event_date(&conn)?;
     migrate_fsm_nodes(&conn)?;
     seed_if_empty(&conn)?;
@@ -3331,6 +3336,20 @@ fn migrate_task_completed_at(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_task_project(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "tasks", "project_id")? {
+        conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;",
+        )?;
+    }
+    if !column_exists(conn, "tasks", "is_dod")? {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN is_dod INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);")?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tasks_is_dod ON tasks(is_dod);")?;
+    Ok(())
+}
+
 fn migrate_schedule_event_date(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "schedule_events", "date")? {
         conn.execute_batch(
@@ -3588,7 +3607,7 @@ fn seed_agents_if_empty(conn: &Connection) -> Result<()> {
 
 pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, is_today, due_date, completed_at, created_at FROM tasks ORDER BY created_at DESC",
+        "SELECT id, title, status, is_today, due_date, completed_at, created_at, project_id, is_dod FROM tasks ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Task {
@@ -3599,17 +3618,25 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
             due_date: row.get(4)?,
             completed_at: row.get(5)?,
             created_at: row.get(6)?,
+            project_id: row.get(7)?,
+            is_dod: row.get::<_, i64>(8)? != 0,
         })
     })?;
     rows.collect()
 }
 
-pub fn create_task(conn: &Connection, title: &str, is_today: bool) -> Result<Task> {
+pub fn create_task(
+    conn: &Connection,
+    title: &str,
+    is_today: bool,
+    project_id: Option<&str>,
+    is_dod: bool,
+) -> Result<Task> {
     let id = uid();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at, completed_at) VALUES (?1, ?2, 'todo', ?3, NULL, ?4, NULL)",
-        params![id, title, is_today as i64, now],
+        "INSERT INTO tasks (id, title, status, is_today, due_date, created_at, completed_at, project_id, is_dod) VALUES (?1, ?2, 'todo', ?3, NULL, ?4, NULL, ?5, ?6)",
+        params![id, title, is_today as i64, now, project_id, is_dod as i64],
     )?;
     Ok(Task {
         id,
@@ -3619,6 +3646,8 @@ pub fn create_task(conn: &Connection, title: &str, is_today: bool) -> Result<Tas
         due_date: None,
         completed_at: None,
         created_at: now,
+        project_id: project_id.map(|p| p.to_string()),
+        is_dod,
     })
 }
 
@@ -3629,6 +3658,25 @@ pub fn update_task_status(conn: &Connection, id: &str, status: &str) -> Result<(
         params![status, id, now],
     )?;
     Ok(())
+}
+
+pub fn get_task_project(conn: &Connection, id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT project_id FROM tasks WHERE id = ?1",
+        params![id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|opt| opt.flatten())
+}
+
+pub fn count_project_dod(conn: &Connection, project_id: &str) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND is_dod = 1 AND status <> 'done'",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
 }
 
 pub fn set_task_today(conn: &Connection, id: &str, is_today: bool) -> Result<()> {
@@ -9052,7 +9100,7 @@ mod tests {
         let db_path = dir.join("workbench.db");
 
         let conn = init_connection(&db_path).unwrap();
-        let task = create_task(&conn, "Today task", true).unwrap();
+        let task = create_task(&conn, "Today task", true, None, false).unwrap();
         drop(conn);
 
         let conn = init_connection(&db_path).unwrap();
@@ -9107,7 +9155,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
 
-        let task = create_task(&conn, "Original title", true).unwrap();
+        let task = create_task(&conn, "Original title", true, None, false).unwrap();
 
         update_task_title(&conn, &task.id, "Renamed title").unwrap();
         let renamed = list_tasks(&conn)
@@ -9125,6 +9173,27 @@ mod tests {
 
         let missing = delete_task(&conn, &task.id);
         assert!(missing.is_err());
+    }
+
+    #[test]
+    fn dod_count_tracks_project_bound_tasks() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        migrate_task_project(&conn).unwrap();
+
+        let project = create_project(&conn, "DoD Project", "/tmp/dod").unwrap();
+
+        let t1 = create_task(&conn, "DoD task 1", true, Some(&project.id), true).unwrap();
+        let _t2 = create_task(&conn, "Normal task", true, None, false).unwrap();
+
+        assert_eq!(count_project_dod(&conn, &project.id).unwrap(), 1);
+        assert_eq!(
+            get_task_project(&conn, &t1.id).unwrap().as_deref(),
+            Some(project.id.as_str())
+        );
+
+        update_task_status(&conn, &t1.id, "done").unwrap();
+        assert_eq!(count_project_dod(&conn, &project.id).unwrap(), 0);
     }
 
     #[test]
@@ -14072,7 +14141,7 @@ mod tests {
         conn.execute_batch(SCHEMA).unwrap();
 
         create_project(&conn, "Summary Project", "/tmp/summary").unwrap();
-        create_task(&conn, "Summary Task", true).unwrap();
+        create_task(&conn, "Summary Task", true, None, false).unwrap();
         create_thought(&conn, "Summary Thought", "#test", "inbox").unwrap();
         create_session(&conn, "Summary Session", "openai").unwrap();
         create_provider(
@@ -14097,7 +14166,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
 
-        create_task(&conn, "Bundle Task", true).unwrap();
+        create_task(&conn, "Bundle Task", true, None, false).unwrap();
         create_habit(&conn, "Bundle Habit", 5, "emerald").unwrap();
         create_schedule_event(&conn, "Bundle Event", "09:00", "2026-08-10", "work").unwrap();
 

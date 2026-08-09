@@ -1347,15 +1347,32 @@ fn create_task(
     state: State<'_, db::Db>,
     title: String,
     is_today: bool,
+    project_id: Option<String>,
+    is_dod: bool,
 ) -> Result<db::Task, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_task(&conn, &title, is_today).map_err(|e| e.to_string())
+    db::create_task(&conn, &title, is_today, project_id.as_deref(), is_dod)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn update_task_status(state: State<'_, db::Db>, id: String, status: String) -> Result<(), String> {
+fn update_task_status(
+    app: tauri::AppHandle,
+    state: State<'_, db::Db>,
+    id: String,
+    status: String,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::update_task_status(&conn, &id, &status).map_err(|e| e.to_string())
+    db::update_task_status(&conn, &id, &status).map_err(|e| e.to_string())?;
+    if let Ok(Some(project_id)) = db::get_task_project(&conn, &id) {
+        if let Ok(remaining) = db::count_project_dod(&conn, &project_id) {
+            let _ = app.emit(
+                "DOD_STATUS_CHANGED",
+                serde_json::json!({ "projectId": project_id, "remainingDodCount": remaining }),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

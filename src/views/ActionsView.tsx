@@ -204,7 +204,14 @@ export default function ActionsView() {
 
   const add = async () => {
     if (!title.trim()) return;
-    await addTask(title.trim(), true);
+    const words = title.trim().split(/\s+/);
+    const projTag = words.find((w) => w.startsWith('#proj-'));
+    const isDod = words.some((w) => w.toLowerCase() === '#dod' || w.toLowerCase() === '#dod');
+    const projectId = projTag ? projTag.replace('#proj-', '') : null;
+    const cleanTitle = words
+      .filter((w) => !w.startsWith('#proj-') && w.toLowerCase() !== '#dod')
+      .join(' ');
+    await addTask(cleanTitle || '（任务）', true, projectId, isDod);
     setTitle('');
   };
 

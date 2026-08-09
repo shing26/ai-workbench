@@ -40,6 +40,8 @@ export type Task = {
   dueDate: string | null;
   completedAt: number | null;
   createdAt: number;
+  projectId?: string | null;
+  isDod?: boolean;
 };
 
 export type Project = {
@@ -1739,8 +1741,15 @@ export async function pruneSnapshots(projectPath: string, keep: number): Promise
   return 0;
 }
 
-export async function createTask(title: string, isToday: boolean): Promise<Task> {
-  if (isTauri()) return invoke<Task>('create_task', { title, isToday });
+export async function createTask(
+  title: string,
+  isToday: boolean,
+  projectId?: string | null,
+  isDod?: boolean,
+): Promise<Task> {
+  if (isTauri()) {
+    return invoke<Task>('create_task', { title, isToday, projectId, isDod });
+  }
   const shape = readLocal();
   const task: Task = {
     id: makeId(),
@@ -1750,6 +1759,8 @@ export async function createTask(title: string, isToday: boolean): Promise<Task>
     dueDate: null,
     completedAt: null,
     createdAt: Date.now(),
+    projectId: projectId ?? null,
+    isDod: isDod ?? false,
   };
   shape.tasks.unshift(task);
   writeLocal(shape);
