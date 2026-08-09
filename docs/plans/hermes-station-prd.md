@@ -96,7 +96,68 @@
 | **AC-4.2** | API Key 存储安全性 | 抓取前端 LocalStorage 与配置文件，确认**不存在明文 API Key**，Key 必须安全离线归档至 OS Keychain。 |
 | **AC-4.3** | 全局语言切换 (i18n) | 点击顶栏 `🌐 Locale` 中的 `EN` 或 `日本語`，全局 UI 标语、状态文字秒级更新，且重启客户端后语言配置依然有效。 |
 
-## 4. 迭代规划（Sprint 7+）
+## 4. 历史里程碑（Sprint 1-5，v1.0 已交付）
+
+> 以下 5 个 Sprint 是 v1.0.0-alpha 已交付能力的正式归档（开发基线），Sprint 7+ 在其上迭代。
+
+### Sprint 1 — 骨架基座、Tauri IPC 与 System 运维中枢
+**目标**：建立全屏响应式 App Shell、Tauri 2.0 后端 IPC 通信桥梁、OS Keyring 凭据加密与 API 热切换机制。
+
+- 前端 Shell：React + Tailwind + Zustand 骨架，全屏撑满、顶部拖拽条、底部 Apple Glass Dock
+- Rust IPC 桥梁：`tauriBridge.ts` 强类型接口，前端 `invoke` 异步调用
+- System 视图：API Profile 卡片网格、一键 `⚡ 设为当前 API` 热切、`⚡ 批量 Ping` 探测
+- OS Keyring：keyring-rs 加密存取 + 脱敏显示（`sk-proj-••••`）
+- 全局 i18n 引擎：顶栏 `🌐 Locale` 胶囊，zh-CN / en-US / ja-JP 无刷新字典切变 + SQLite 落盘
+- **DoD**：AC-4.1 / AC-4.2 / AC-4.3
+
+### Sprint 2 — 工程控制塔、Git 扫描与 Vibe Pipeline
+**目标**：打通本地 Git 资产扫描、Quality Gate 门禁、项目卡片矩阵与上下文打包流水线。
+
+- Projects 视图：2 列响应式 Bento Grid
+- libgit2 集成：Rust `git2` crate，HEAD 分支 + Uncommitted Diffs 毫秒级扫描
+- Inline Git Diff 展开树：`x files changed ▾` 折叠展开 + 变动 Hunk 预览
+- Vibe Context Mount：`⚡ 进入 Vibe Coding` 毫秒级流水线，构造 `<vibe_context>` XML 并发射切变事件
+- Quality Gate 静默校验：异步跑 tsc / lint 诊断，顶栏 ALL GREEN ✅ 状态
+- **DoD**：AC-1.1 / AC-1.2 / AC-1.3
+
+### Sprint 3 — AI Studio、MOA 共识与安全代码 Apply 写入
+**目标**：打造多模型共识 Canvas，实现带阴影快照与一键 Rollback 的安全文件写入引擎。
+
+- AI Studio：对话面板、挂载 Context 状态 Banner、Markdown / CodeBlock 渲染器
+- MOA 降级流引擎：Rust `tokio::spawn` 多 API 节点并发，3s 超时自动退避 + Aggregator 提炼
+- 原子文件 Apply（`apply_code_snippet`）：写入前压入 `.hermes/backups/` 快照，写入后广播 `FILE_UPDATED`
+- 快照撤销（Rollback Engine）：⌘Z / 按钮一键恢复 Apply 前状态
+- **DoD**：AC-2.1 / AC-2.2 / AC-2.3
+
+### Sprint 4 — Linear 全键盘引擎与 Projects DoD 双向同步
+**目标**：实现无鼠标全键盘驱动的任务流，建立 SQLite 关系引擎与 Projects DoD 增量更新机制。
+
+- Actions 视图：Today's Focus、Habit Streaks、Linear Task 列表
+- Linear-Style Shortcuts Engine：keydown 监听，j/k 游走高亮、n 新建、x 完成、p 置顶、a AI 3 步拆解
+- SQLite tasks Migration：`project_id`、`is_dod` 索引字段
+- DoD 增量事件广播：勾选完成 → Rust 推 `DOD_STATUS_CHANGED` → Projects 卡 DoD 计数实时削减
+- **DoD**：AC-3.1 / AC-3.2 / AC-3.3
+
+### Sprint 5 — 闪念 Inbox、Obsidian RAG 与 v1.0-alpha 发布
+**目标**：实现闪念捕获与 Obsidian 向量 RAG，全系统回归测试与客户端打包。
+
+- Knowledge 视图：⌘N 全局唤醒闪念捕获框
+- 正文 #tag 自动解析器：剥离正文与标签，归类标签云
+- Obsidian Vault 向量 RAG：本地 Embeddings 索引，AI Studio 检索笔记图谱
+- 全系统集成测试 & 瘦身：`🧹 清理快照` 缩减 SQLite 体积，打包 macOS .dmg / .app
+- **DoD**：100% 覆核 12 条 AC，输出 `Hermes-Station-v1.0-alpha.dmg`
+
+### Sprint 进度跟踪总览表
+
+| Sprint | 核心主题 | 关联核心视图 | 主要技术栈 | 预估交付物 |
+|---|---|---|---|---|
+| Sprint 1 | 骨架基座 & 系统运维 | ⚙️ System | React, Tauri IPC, Keyring, i18n | 全屏 App Shell + API 热切 + Keychain 凭据库 |
+| Sprint 2 | 工程控制塔 & Vibe Pipeline | 📁 Projects | libgit2, Quality Gate, Bento Grid | Git Diff 扫描树 + ⚡ Vibe Coding 上下文挂载 |
+| Sprint 3 | MOA 共识 & Apply 安全写入 | 💬 AI Studio | Tokio Multi-thread, Atomic File I/O | 多模型共识 Canvas + 阴影快照代码写入引擎 |
+| Sprint 4 | Linear 键盘流 & DoD 闭环 | 🎯 Actions | Shortcuts Engine, SQLite, Event Bus | j/k/x 全键盘流 + Projects DoD 双向增量同步 |
+| Sprint 5 | 闪念 RAG & v1.0 发布 | 🧠 Knowledge | Local Embeddings, Obsidian Vault, Tauri Packager | 闪念捕获 + v1.0-alpha 桌面端打包 |
+
+## 5. 迭代规划（Sprint 7+）
 
 按价值优先级分 4 个小 Sprint 迭代推进：
 
@@ -125,7 +186,7 @@
 - 全局 i18n 热切（中文/EN/日本語）+ 配置持久化
 - 验收：AC-4.1 / AC-4.2 / AC-4.3
 
-## 5. 设计哲学约束
+## 6. 设计哲学约束
 
 - **Local-First**：数据、密钥、模型全部本地可控；重启 100% 无损。
 - **Intent as Code, Agent as Runtime**：意图下发 → 智能生成 → 校验门禁 → 原子写入闭环。
