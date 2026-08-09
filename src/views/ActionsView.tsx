@@ -116,25 +116,52 @@ export default function ActionsView() {
   const [taskDeleteId, setTaskDeleteId] = useState<string | null>(null);
   const [archiveConfirming, setArchiveConfirming] = useState(false);
   const fastInputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<db.Task[]>([]);
+  const [focusedTaskIndex, setFocusedTaskIndex] = useState(-1);
+  const [breakdownTask, setBreakdownTask] = useState<db.Task | null>(null);
+
+  const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
+  const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
+  listRef.current = list;
+  const todayDone = todayTasks.filter((t) => t.status === 'done').length;
+  const focusProgress = Math.min(todayDone / 3, 1);
+  const now = new Date();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === 'n' || e.key === 'N' || e.key === '/') {
+      const current = listRef.current;
+      const key = e.key.toLowerCase();
+      if (key === 'n' || key === '/') {
         e.preventDefault();
         fastInputRef.current?.focus();
+        return;
+      }
+      if (current.length === 0) return;
+      if (key === 'j' || key === 'k') {
+        e.preventDefault();
+        setFocusedTaskIndex((prev) => {
+          const delta = key === 'j' ? 1 : -1;
+          return (prev + delta + current.length) % current.length;
+        });
+      } else if (key === 'x') {
+        const idx = focusedTaskIndex >= 0 ? focusedTaskIndex : 0;
+        const task = current[idx];
+        if (task) void setTaskStatus(task.id, task.status === 'done' ? 'todo' : 'done');
+      } else if (key === 'p') {
+        const idx = focusedTaskIndex >= 0 ? focusedTaskIndex : 0;
+        const task = current[idx];
+        if (task) void setTaskToday(task.id, !task.isToday);
+      } else if (key === 'a') {
+        const idx = focusedTaskIndex >= 0 ? focusedTaskIndex : 0;
+        const task = current[idx];
+        if (task) setBreakdownTask(task);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  const todayTasks = tasks.filter((t) => t.isToday).slice(0, 3);
-  const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
-  const todayDone = todayTasks.filter((t) => t.status === 'done').length;
-  const focusProgress = Math.min(todayDone / 3, 1);
-  const now = new Date();
+  }, [focusedTaskIndex, setTaskStatus, setTaskToday]);
   const recentDayKeys = Array.from({ length: 14 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (13 - i));
     return dayKey(d);
@@ -285,6 +312,68 @@ export default function ActionsView() {
 
   return (
     <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      {breakdownTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setBreakdownTask(null)}
+            aria-hidden="true"
+          />
+          <div
+            data-ai-breakdown
+            className="relative w-[420px] max-w-[94vw] rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-[10px] uppercase tracking-wide text-emerald-400/80">
+                  AI 3 步拆解
+                </div>
+                <div className="truncate text-xs font-medium text-slate-200">
+                  {breakdownTask.title}
+                </div>
+              </div>
+              <button
+                type="button"
+                data-ai-breakdown-close
+                onClick={() => setBreakdownTask(null)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-white/[0.06] hover:text-slate-200"
+                aria-label="Close breakdown"
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <div className="mb-3 space-y-1.5">
+              {[
+                `1. 拆解：${breakdownTask.title} → 明确输入、约束与验收标准`,
+                `2. 落地：识别改动文件与调用链，按模块小步实现`,
+                `3. 验证：补充测试 / 检查 tsc & lint，确认 DoD 完成`,
+              ].map((step, idx) => (
+                <div
+                  key={idx}
+                  data-ai-breakdown-step={idx + 1}
+                  className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-[10px] leading-relaxed text-slate-400"
+                >
+                  {step}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-ai-breakdown-dispatch
+                onClick={() => {
+                  const task = breakdownTask;
+                  setBreakdownTask(null);
+                  discussTask(task);
+                }}
+                className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-xl bg-emerald-500/20 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/30"
+              >
+                <Sparkles size={12} /> 一键投递 AI Studio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <BentoCard
         title="Today progress"
         subtitle="Focus · Habits · Schedule"
@@ -797,10 +886,15 @@ export default function ActionsView() {
           </button>
         </div>
         <div className="flex flex-col gap-1.5">
-          {list.map((t) => (
+          {list.map((t, idx) => (
             <div
               key={t.id}
-              className="message-in flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+              data-task-cursor={focusedTaskIndex === idx ? 'true' : 'false'}
+              className={`message-in flex items-center gap-2 rounded-xl border px-3 py-2 ${
+                focusedTaskIndex === idx
+                  ? 'border-emerald-500/40 bg-emerald-500/10'
+                  : 'border-white/10 bg-white/[0.03]'
+              }`}
             >
               <button
                 type="button"

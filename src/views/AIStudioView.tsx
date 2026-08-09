@@ -2603,6 +2603,14 @@ export default function AIStudioView() {
                         </button>
                       </span>
                     )}
+                  {m.laneKey && m.content.startsWith('请求失败') && (
+                    <span
+                      data-moa-node-status="disconnected"
+                      className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-rose-500/25 bg-rose-500/10 px-2 text-[10px] text-rose-300"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" /> Disconnected
+                    </span>
+                  )}
                 </div>
                 {m.role === 'user' && m.id && editingMessageId === m.id ? (
                   <div className="mt-1 flex items-start gap-1.5">

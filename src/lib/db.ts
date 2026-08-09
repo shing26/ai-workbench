@@ -6778,6 +6778,7 @@ async function streamProviderLive(
     final?: boolean;
     manageCancel?: boolean;
     onChunk?: (delta: string) => void;
+    firstTokenTimeoutMs?: number;
   } = {},
 ): Promise<string> {
   if (isMockAgentsEnabled()) {
@@ -6799,10 +6800,11 @@ async function streamProviderLive(
   let buffer = '';
   let finished = false;
   let collected = '';
+  const firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? timeoutMs;
   const timeoutTimer = window.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, timeoutMs);
+  }, firstTokenTimeoutMs);
   localStreamControllers.set(args.runId, controller);
   try {
     const response = await fetch(endpoint, {
@@ -6822,12 +6824,28 @@ async function streamProviderLive(
     const reader = response.body?.getReader();
     if (!reader) throw new Error('Provider response has no body');
     const decoder = new TextDecoder();
+    let firstTokenHandled = false;
+    const markFirstToken = () => {
+      if (firstTokenHandled) return;
+      firstTokenHandled = true;
+      if (opts.firstTokenTimeoutMs && timeoutMs !== firstTokenTimeoutMs) {
+        window.clearTimeout(timeoutTimer);
+        const extended = window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+        localStreamControllers.set(args.runId, controller);
+        // replace timer reference is not needed; original timeoutTimer already fired or cleared
+        void extended;
+      }
+    };
     const flush = async (line: string) => {
       const trimmed = line.trim();
       if (!trimmed) return;
       if (isOllama) {
         const json = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
         if (json.message?.content) {
+          markFirstToken();
           collected += json.message.content;
           emitLocalStreamChunk({
             id: args.runId,
@@ -6850,6 +6868,7 @@ async function streamProviderLive(
       const json = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
       const delta = json.choices?.[0]?.delta?.content ?? '';
       if (delta) {
+        markFirstToken();
         collected += delta;
         emitLocalStreamChunk({
           id: args.runId,
@@ -6945,6 +6964,7 @@ async function streamProviderWithRetry(
     final?: boolean;
     manageCancel?: boolean;
     onChunk?: (delta: string) => void;
+    firstTokenTimeoutMs?: number;
   } = {},
 ): Promise<string> {
   const retries = Math.max(0, Math.min(5, Math.round(provider.retryCount ?? 1)));
@@ -7056,7 +7076,7 @@ export async function sendAiMessageStream(args: {
           previousOutput = await streamProviderWithRetry(
             provider,
             { ...args, runId: subRunId, providerIds: [provider.id], messages: stepMessages },
-            { final: false, manageCancel: false },
+            { final: false, manageCancel: false, firstTokenTimeoutMs: 3000 },
           );
           const subCancelled = localCancelledRuns.has(subRunId);
           localCancelledRuns.delete(subRunId);
@@ -7123,7 +7143,7 @@ export async function sendAiMessageStream(args: {
           const output = await streamProviderWithRetry(
             provider,
             { ...args, runId: subRunId, providerIds: [provider.id] },
-            { final: false, manageCancel: false },
+            { final: false, manageCancel: false, firstTokenTimeoutMs: 3000 },
           );
           const subCancelled = localCancelledRuns.has(subRunId);
           localCancelledRuns.delete(subRunId);

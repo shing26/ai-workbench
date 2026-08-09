@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 扩展现有键盘系统：j/k 上下光标游走任务列表（`data-task-cursor` 高亮），响应 <5ms
 - [ ] n 聚焦新建输入（已有）、x 标记完成（toggle status）、p 置顶到 Today's Focus（setTaskToday true）

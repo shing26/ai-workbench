@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 弹窗组件（`data-ai-breakdown`）：展示 3 步建议（识别 → 拆解 → 落地），来源 = task title + actionContext
 - [ ] 3 步建议由本地规则生成或调用 AI（MOA/单流）生成
