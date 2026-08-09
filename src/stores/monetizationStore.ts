@@ -1,6 +1,6 @@
-import { create } from "zustand";
+import { create } from 'zustand';
 
-export type ProjectStatus = "pending" | "active" | "archived";
+export type ProjectStatus = 'pending' | 'active' | 'archived';
 
 export interface TemplateStep {
   label: string;
@@ -31,30 +31,30 @@ export interface MonetizationProject {
 
 export const TEMPLATES: MonetizationTemplate[] = [
   {
-    name: "Landing Page",
+    name: 'Landing Page',
     steps: [
-      { label: "Buy domain", done: false },
-      { label: "Deploy to Vercel / Netlify", done: false },
-      { label: "Configure DNS", done: false },
-      { label: "Add analytics", done: false },
+      { label: 'Buy domain', done: false },
+      { label: 'Deploy to Vercel / Netlify', done: false },
+      { label: 'Configure DNS', done: false },
+      { label: 'Add analytics', done: false },
     ],
   },
   {
-    name: "Chrome Extension",
+    name: 'Chrome Extension',
     steps: [
-      { label: "Bundle as .crx", done: false },
-      { label: "Submit to Chrome Web Store", done: false },
-      { label: "Write description", done: false },
-      { label: "Add screenshots", done: false },
+      { label: 'Bundle as .crx', done: false },
+      { label: 'Submit to Chrome Web Store', done: false },
+      { label: 'Write description', done: false },
+      { label: 'Add screenshots', done: false },
     ],
   },
   {
-    name: "Paid Content",
+    name: 'Paid Content',
     steps: [
-      { label: "Organize as document / course", done: false },
-      { label: "Pick platform (Gumroad, etc.)", done: false },
-      { label: "Set price", done: false },
-      { label: "Publish", done: false },
+      { label: 'Organize as document / course', done: false },
+      { label: 'Pick platform (Gumroad, etc.)', done: false },
+      { label: 'Set price', done: false },
+      { label: 'Publish', done: false },
     ],
   },
 ];
@@ -67,7 +67,10 @@ interface MonetizationState {
   selectTemplate: (id: string, templateName: string) => void;
   toggleStep: (id: string, stepIndex: number) => void;
   addRevenue: (id: string, amount: number, source: string) => void;
-  updateProject: (id: string, partial: Partial<Pick<MonetizationProject, "name" | "template">>) => void;
+  updateProject: (
+    id: string,
+    partial: Partial<Pick<MonetizationProject, 'name' | 'template'>>,
+  ) => void;
   archiveProject: (id: string) => void;
   setSelectedProjectId: (id: string | null) => void;
   monthlyRevenue: () => number;
@@ -76,7 +79,9 @@ interface MonetizationState {
 }
 
 let counter = 0;
-function genId() { return `mon-${Date.now()}-${++counter}`; }
+function genId() {
+  return `mon-${Date.now()}-${++counter}`;
+}
 
 export const useMonetizationStore = create<MonetizationState>((set, get) => ({
   projects: [],
@@ -85,8 +90,14 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
   addProject: (name, generatedCode) => {
     const id = genId();
     const project: MonetizationProject = {
-      id, name, template: null, templateSteps: [], revenueLog: [],
-      generatedCode, status: "pending", createdAt: Date.now(),
+      id,
+      name,
+      template: null,
+      templateSteps: [],
+      revenueLog: [],
+      generatedCode,
+      status: 'pending',
+      createdAt: Date.now(),
     };
     set((s) => ({ projects: [...s.projects, project], selectedProjectId: id }));
     return id;
@@ -98,8 +109,13 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === id
-          ? { ...p, template: templateName, templateSteps: tpl.steps.map((st) => ({ ...st })), status: "active" as const }
-          : p
+          ? {
+              ...p,
+              template: templateName,
+              templateSteps: tpl.steps.map((st) => ({ ...st })),
+              status: 'active' as const,
+            }
+          : p,
       ),
     }));
   },
@@ -108,8 +124,13 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === id
-          ? { ...p, templateSteps: p.templateSteps.map((st, i) => (i === stepIndex ? { ...st, done: !st.done } : st)) }
-          : p
+          ? {
+              ...p,
+              templateSteps: p.templateSteps.map((st, i) =>
+                i === stepIndex ? { ...st, done: !st.done } : st,
+              ),
+            }
+          : p,
       ),
     })),
 
@@ -118,7 +139,7 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
       projects: s.projects.map((p) =>
         p.id === id
           ? { ...p, revenueLog: [...p.revenueLog, { amount, source, timestamp: Date.now() }] }
-          : p
+          : p,
       ),
     })),
 
@@ -129,7 +150,7 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
 
   archiveProject: (id) =>
     set((s) => ({
-      projects: s.projects.map((p) => (p.id === id ? { ...p, status: "archived" as const } : p)),
+      projects: s.projects.map((p) => (p.id === id ? { ...p, status: 'archived' as const } : p)),
     })),
 
   setSelectedProjectId: (id) => set({ selectedProjectId: id }),
@@ -137,17 +158,16 @@ export const useMonetizationStore = create<MonetizationState>((set, get) => ({
   monthlyRevenue: () => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    return get().projects.reduce((sum, p) =>
-      sum + p.revenueLog
-        .filter((r) => r.timestamp >= monthStart)
-        .reduce((s, r) => s + r.amount, 0), 0
+    return get().projects.reduce(
+      (sum, p) =>
+        sum +
+        p.revenueLog.filter((r) => r.timestamp >= monthStart).reduce((s, r) => s + r.amount, 0),
+      0,
     );
   },
 
   allTimeRevenue: () =>
-    get().projects.reduce((sum, p) =>
-      sum + p.revenueLog.reduce((s, r) => s + r.amount, 0), 0
-    ),
+    get().projects.reduce((sum, p) => sum + p.revenueLog.reduce((s, r) => s + r.amount, 0), 0),
 
   projectRevenue: (id) => {
     const p = get().projects.find((p) => p.id === id);

@@ -1,5 +1,9 @@
 ﻿# AI Workbench — Context
 
+## 当前开发范围（Sprint 101 起）
+
+Connection Layer（信号通知层）与 Monetization Workbench（创收工作台）两块未启动大模块已按用户要求搁置，后续有需要再开发，不纳入当前开发终点。下方模块描述仅作为产品愿景存档。
+
 ## 连接组织层 (Connection Layer)
 
 The workbench's nervous system. A cross-module event-listening and notification-routing layer. It subscribes to state changes from Chat Hub, Automation Workbench, Knowledge Hub, and Vibe Coding, then decides what to surface, in what form, and when. It does not produce content — it routes signal.

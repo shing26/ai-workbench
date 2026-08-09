@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "ai-workbench"
 version = "0.1.0"
 description = "A Tauri App"
@@ -17,5 +17,17 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+ring = "0.17"
 keyring = { version = "3", features = ["windows-native"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+notify = "8"
+similar = "2"
+arboard = "3"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+pinyin = "0.11.0"
+chrono = { version = "0.4", features = ["clock"] }

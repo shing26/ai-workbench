@@ -1,0 +1,14392 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+
+const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+const APP_URL = process.env.AIWB_APP_URL || 'http://localhost:1420';
+const OUT_DIR = 'D:/ai-workbench/.screenshots';
+const SHOT_PREFIX = process.env.AIWB_SHOT_PREFIX || 'sprint1';
+const APP_HOST = new URL(APP_URL).host;
+const VIEWS = [
+  { id: 'ai-studio', label: 'AI Studio', header: 'AI Studio' },
+  { id: 'projects', label: 'Projects', header: 'Projects' },
+  { id: 'knowledge', label: 'Knowledge', header: 'Knowledge & Inbox' },
+  { id: 'actions', label: 'Actions', header: 'Actions & Schedule' },
+  { id: 'system', label: 'System', header: 'System & Automation' },
+];
+
+fs.mkdirSync(OUT_DIR, { recursive: true });
+
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'aiwb-cdp-'));
+const edge = spawn(
+  EDGE,
+  [
+    '--headless=new',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+    APP_URL,
+  ],
+  { windowsHide: true, stdio: 'ignore' },
+);
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const results = { views: [], tokens: {}, persistence: {}, overlay: {} };
+
+function durationSeconds(value) {
+  const parts = String(value || '')
+    .split(',')
+    .map((s) => s.trim());
+  const nums = parts.map((part) => {
+    if (part.endsWith('ms')) return Number(part.slice(0, -2)) / 1000;
+    if (part.endsWith('s')) return Number(part.slice(0, -1));
+    return 0;
+  });
+  return Math.max(0, ...nums);
+}
+
+async function waitForDevToolsPort() {
+  const portFile = path.join(profile, 'DevToolsActivePort');
+  for (let i = 0; i < 60; i++) {
+    if (fs.existsSync(portFile)) {
+      const [port] = fs.readFileSync(portFile, 'utf8').trim().split(/\r?\n/);
+      return Number(port);
+    }
+    await delay(250);
+  }
+  throw new Error('Edge DevTools port file not created');
+}
+
+async function getPageTarget(port) {
+  for (let i = 0; i < 60; i++) {
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      const page = list.find((t) => t.type === 'page' && t.url.includes(APP_HOST));
+      if (page) return page;
+    } catch {
+      /* retry until target appears */
+    }
+    await delay(250);
+  }
+  throw new Error('page target not found');
+}
+
+let ws;
+let nextId = 1;
+const pending = new Map();
+
+function send(method, params = {}) {
+  const id = nextId++;
+  ws.send(JSON.stringify({ id, method, params }));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`CDP timeout: ${method}`));
+    }, 30000);
+    pending.set(id, { resolve, reject, timer });
+  });
+}
+
+async function evaluate(expression) {
+  let result;
+  try {
+    result = await send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  } catch (err) {
+    if (!String(err).includes('CDP timeout')) throw err;
+    await reconnect(port);
+    result = await send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
+  if (result.exceptionDetails) {
+    const details =
+      result.exceptionDetails.exception?.description ??
+      result.exceptionDetails.exception?.value ??
+      JSON.stringify(result.exceptionDetails);
+    throw new Error(`evaluate failed: ${details}`);
+  }
+  return result.result.value;
+}
+
+async function connect(port) {
+  const target = await getPageTarget(port);
+  ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = () => reject(new Error('CDP websocket error'));
+  });
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.method === 'Runtime.exceptionThrown') {
+      const details = msg.params?.exceptionDetails;
+      const description = details?.exception?.description ?? details?.text ?? 'unknown exception';
+      console.error(`[browser exception] ${description}`);
+    } else if (msg.method === 'Runtime.consoleAPICalled') {
+      const type = msg.params?.type ?? 'log';
+      const text = (msg.params?.args ?? [])
+        .map((arg) => arg.value ?? arg.description ?? '')
+        .join(' ');
+      if (type === 'error' || type === 'warning') {
+        console.error(`[browser console.${type}] ${text}`);
+      }
+    }
+    if (msg.id && pending.has(msg.id)) {
+      const { resolve, reject, timer } = pending.get(msg.id);
+      clearTimeout(timer);
+      pending.delete(msg.id);
+      if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+      else resolve(msg.result);
+    }
+  };
+  await send('Page.enable');
+  await send('Runtime.enable');
+}
+
+async function reconnect(port) {
+  try {
+    ws?.close();
+  } catch {
+    /* old socket may already be gone */
+  }
+  await delay(250);
+  await connect(port);
+}
+
+async function waitForApp() {
+  for (let i = 0; i < 80; i++) {
+    try {
+      const ready = await evaluate(
+        `document.querySelectorAll('nav button[aria-label]').length >= 5`,
+      );
+      if (ready) return;
+    } catch {
+      /* tolerate transient context switches */
+    }
+    await delay(250);
+  }
+  throw new Error('app shell did not render 5 dock buttons');
+}
+
+async function reloadAndWait() {
+  const marker = `v=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const url = `${APP_URL}${APP_URL.includes('?') ? '&' : '?'}${marker}`;
+  try {
+    await send('Page.navigate', { url });
+  } catch (err) {
+    if (!String(err).includes('CDP timeout')) throw err;
+    await reconnect(port);
+  }
+  for (let i = 0; i < 80; i++) {
+    try {
+      const ready = await evaluate(
+        `location.href.includes(${JSON.stringify(marker)}) && document.readyState === "complete" && document.querySelectorAll('nav button[aria-label]').length >= 5`,
+      );
+      if (ready) return;
+    } catch {
+      /* tolerate transient context switches */
+    }
+    await delay(250);
+  }
+  throw new Error('app shell did not render after reload');
+}
+
+async function setViewport(width, height) {
+  await send('Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+}
+
+async function capture(name) {
+  const shot = await send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: false,
+  });
+  const out = path.join(OUT_DIR, name);
+  fs.writeFileSync(out, Buffer.from(shot.data, 'base64'));
+  return out;
+}
+
+async function clickDock(label) {
+  let clicked = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    clicked = await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute('aria-label') === ${JSON.stringify(label)});
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (clicked) break;
+    await delay(150);
+  }
+  if (!clicked) throw new Error(`dock button missing: ${label}`);
+  await delay(450);
+}
+
+async function clickDockFast(label) {
+  let clicked = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    clicked = await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute('aria-label') === ${JSON.stringify(label)});
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (clicked) break;
+    await delay(150);
+  }
+  if (!clicked) throw new Error(`dock button missing: ${label}`);
+}
+
+async function sampleTokens() {
+  return evaluate(`(() => {
+    const bodyBg = getComputedStyle(document.body).backgroundColor;
+    const mainBg = getComputedStyle(document.querySelector('main')).backgroundColor;
+    const cards = [...document.querySelectorAll('main section[class*="rounded-2xl"]')];
+    const bad = cards.filter((el) => {
+      const s = getComputedStyle(el);
+      return s.backgroundColor === "rgb(0, 0, 0)" || s.borderTopColor === "rgb(0, 0, 0)";
+    }).length;
+    const okCards = cards.filter((el) => getComputedStyle(el).backgroundColor === "rgb(24, 24, 28)").length;
+    return {
+      bodyBg,
+      mainBg,
+      cardCount: cards.length,
+      tokenOkCards: okCards,
+      blackCards: bad,
+    };
+  })()`);
+}
+
+function laneLog(label) {
+  console.log(`[ui-verify] ${label}`);
+}
+
+let port;
+
+try {
+  port = await waitForDevToolsPort();
+  await connect(port);
+  await setViewport(1440, 900);
+  await waitForApp();
+
+  for (const view of VIEWS) {
+    await clickDock(view.label);
+    const state = await evaluate(`(() => {
+      const header = document.querySelector('header span')?.textContent || "";
+      const main = document.querySelector('main');
+      const headings = [...(main?.querySelectorAll('h2') ?? [])].slice(0, 4).map((h) => h.textContent);
+      return { header, headings, bodyLength: main?.innerText.length ?? 0 };
+    })()`);
+    const shot = await capture(`${SHOT_PREFIX}-${view.id}.png`);
+    const tokens = await sampleTokens();
+    results.views.push({ id: view.id, label: view.label, state, shot, tokens });
+  }
+
+  results.motion = await evaluate(`(() => {
+    const main = document.querySelector('main');
+    const navBtn = document.querySelector('nav button');
+    const viewEl = document.querySelector('.view-enter');
+    return {
+      ambientBackground: main ? getComputedStyle(main).backgroundImage : "",
+      navTransitionDuration: navBtn ? getComputedStyle(navBtn).transitionDuration : "",
+      viewAnimationDuration: viewEl ? getComputedStyle(viewEl).animationDuration : "",
+      bodyOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  })()`);
+
+  await clickDock('AI Studio');
+  results.uiDynamics = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const click = (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return false;
+      el.click();
+      return true;
+    };
+    const themeBtn = document.querySelector('button[aria-label="Theme and accent"]');
+    if (!themeBtn) return { ok: false, reason: "theme button missing" };
+    themeBtn.click();
+    await sleep(120);
+    if (!click('[data-theme-option="light"]')) return { ok: false, reason: "light option missing" };
+    await sleep(120);
+    const themeLight = document.documentElement.dataset.theme === "light";
+    const storedLight = localStorage.getItem("ai-workbench:theme") === "light";
+    if (!click('[data-accent-option="ocean"]')) return { ok: false, reason: "ocean swatch missing" };
+    await sleep(120);
+    const accentOcean = document.documentElement.dataset.accent === "ocean";
+    const storedAccent = localStorage.getItem("ai-workbench:accent") === "ocean";
+    const pressed = document.querySelector('[data-accent-option="ocean"]')?.getAttribute("aria-pressed") === "true";
+    const accentVar = getComputedStyle(document.documentElement).getPropertyValue("--color-accent").trim();
+    if (!click('[data-theme-option="system"]')) return { ok: false, reason: "system option missing" };
+    await sleep(100);
+    const systemPending = document.documentElement.dataset.theme === "system";
+    const stage = document.querySelector(".conversation-stage");
+    const composer = document.querySelector(".composer");
+    return {
+      ok: themeLight && storedLight && accentOcean && storedAccent && pressed && systemPending,
+      themeLight,
+      storedLight,
+      accentOcean,
+      storedAccent,
+      pressed,
+      accentVar,
+      systemPending,
+      stagePresent: !!stage,
+      composerPresent: !!composer,
+      composerTransition: composer ? getComputedStyle(composer).transitionDuration : "",
+      stageStreamingOff: stage ? stage.dataset.streaming === "false" : false,
+    };
+  })()`);
+  if (
+    !results.uiDynamics.ok ||
+    !results.uiDynamics.stagePresent ||
+    !results.uiDynamics.composerPresent
+  ) {
+    throw new Error(`UI theme/stage assertion failed: ${JSON.stringify(results.uiDynamics)}`);
+  }
+
+  const viewStatePersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const composer = document.querySelector("[data-composer]");
+    if (!composer) return { ok: false, reason: "composer missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(composer, "DRAFT-KEEP-CHECK");
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(150);
+    return { ok: true };
+  })()`);
+  results.viewStatePersistDraft = viewStatePersist;
+  await clickDock('Projects');
+  await clickDock('AI Studio');
+  const viewStatePersistCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const composer = document.querySelector("[data-composer]");
+    if (!composer) return { ok: false, reason: "composer missing after switch" };
+    await sleep(200);
+    return { ok: composer.value === "DRAFT-KEEP-CHECK", value: composer.value };
+  })()`);
+  results.viewStatePersist = viewStatePersistCheck;
+  if (!results.viewStatePersist?.ok) {
+    throw new Error(
+      `View state persistence assertion failed: ${JSON.stringify(results.viewStatePersist)}`,
+    );
+  }
+
+  results.uiDynamics.agentSelect = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 60; i++) {
+      const select = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (select && select.options.length >= 12) {
+        return { ok: true, options: select.options.length, selected: select.value };
+      }
+      await sleep(200);
+    }
+    const select = document.querySelector('select[aria-label="Dispatch agent"]');
+    return { ok: false, options: select?.options.length ?? 0 };
+  })()`);
+  if (!results.uiDynamics.agentSelect.ok) {
+    throw new Error(
+      `AI Studio agent selector assertion failed: ${JSON.stringify(results.uiDynamics.agentSelect)}`,
+    );
+  }
+
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-color-scheme', value: 'light' }],
+  });
+  await delay(200);
+  const systemResolved = await evaluate(
+    `document.documentElement.dataset.themeResolved === "light"`,
+  );
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  const restored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector('[data-theme-option="dark"]')?.click();
+    await sleep(120);
+    document.querySelector('[data-accent-option="emerald"]')?.click();
+    await sleep(120);
+    document.querySelector('button[aria-label="Theme and accent"]')?.click();
+    await sleep(100);
+    return document.documentElement.dataset.theme === "dark" && document.documentElement.dataset.accent === "emerald";
+  })()`);
+  if (!systemResolved || !restored) {
+    throw new Error(
+      `UI system theme assertion failed: systemResolved=${systemResolved} restored=${restored}`,
+    );
+  }
+
+  await clickDock('Knowledge');
+  results.accentTokens = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let btn = null;
+    for (let i = 0; i < 20; i++) {
+      btn = document.querySelector('[data-accent-token="index-vault"]');
+      if (btn) break;
+      await sleep(100);
+    }
+    if (!btn) return { ok: false, reason: "no accent token element" };
+    const themeBtn = document.querySelector('button[aria-label="Theme and accent"]');
+    if (!themeBtn) return { ok: false, reason: "no theme button" };
+    themeBtn.click();
+    await sleep(100);
+    const ocean = document.querySelector('[data-accent-option="ocean"]');
+    if (!ocean) return { ok: false, reason: "no ocean swatch" };
+    ocean.click();
+    await sleep(150);
+    const oceanColor = getComputedStyle(btn).color;
+    const emerald = document.querySelector('[data-accent-option="emerald"]');
+    if (!emerald) return { ok: false, reason: "no emerald swatch" };
+    emerald.click();
+    await sleep(150);
+    const emeraldColor = getComputedStyle(btn).color;
+    themeBtn.click();
+    await sleep(80);
+    const accentReset = document.documentElement.dataset.accent === "emerald";
+    return { ok: oceanColor !== emeraldColor && accentReset, oceanColor, emeraldColor, accentReset };
+  })()`);
+  if (!results.accentTokens.ok) {
+    throw new Error(`Accent token assertion failed: ${JSON.stringify(results.accentTokens)}`);
+  }
+
+  results.materialDrawer = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setNativeValue = (el, value) => {
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+    };
+    const openBtn = document.querySelector("[data-material-settings-open]");
+    if (!openBtn) return { ok: false, reason: "material open button missing" };
+    openBtn.click();
+    let drawer = null;
+    for (let i = 0; i < 20; i++) {
+      drawer = document.querySelector("[data-material-drawer]");
+      if (drawer?.classList.contains("open")) break;
+      await sleep(100);
+    }
+    if (!drawer?.classList.contains("open")) return { ok: false, reason: "drawer not open" };
+    const preset = document.querySelector("[data-material-preset]");
+    const opacity = document.querySelector("[data-material-opacity]");
+    const blur = document.querySelector("[data-material-blur]");
+    if (!preset || !opacity || !blur) return { ok: false, reason: "material controls missing" };
+    setNativeValue(preset, "rain");
+    await sleep(120);
+    setNativeValue(opacity, "0.55");
+    await sleep(120);
+    setNativeValue(blur, "30");
+    await sleep(120);
+    const root = document.documentElement;
+    const card = document.querySelector(".material-card[data-material]");
+    const computedOpacity = card ? getComputedStyle(card).getPropertyValue("--material-opacity").trim() : "";
+    const computedBlur = card ? getComputedStyle(card).getPropertyValue("--material-blur").trim() : "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:material-settings:v1") ?? "{}");
+    const applied = root.dataset.materialGlobal === "rain"
+      && root.style.getPropertyValue("--material-opacity-base") === "0.55"
+      && root.style.getPropertyValue("--material-blur-base") === "30px"
+      && computedOpacity === "0.55"
+      && computedBlur === "30px"
+      && stored.preset === "rain"
+      && stored.opacity === 0.55
+      && stored.blur === 30;
+    document.querySelector("[data-material-drawer-close]")?.click();
+    await sleep(150);
+    const closed = !document.querySelector("[data-material-drawer]")?.classList.contains("open");
+    openBtn.click();
+    await sleep(120);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(150);
+    const escClosed = !document.querySelector("[data-material-drawer]")?.classList.contains("open");
+    setNativeValue(preset, "cyan");
+    setNativeValue(opacity, "0.3");
+    setNativeValue(blur, "18");
+    return {
+      ok: applied && closed && escClosed,
+      applied,
+      closed,
+      escClosed,
+      computedOpacity,
+      computedBlur,
+      stored,
+    };
+  })()`);
+  if (!results.materialDrawer.ok) {
+    throw new Error(`Material drawer assertion failed: ${JSON.stringify(results.materialDrawer)}`);
+  }
+
+  await clickDock('Actions');
+  results.uiDynamics.material = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const card = document.querySelector(".material-card[data-material]");
+    if (!card) return { ok: false, reason: "no material card" };
+    const presets = ["cyan", "original", "rain", "chrome"];
+    const valid = presets.includes(card.dataset.material);
+    const before = [card.offsetWidth, card.offsetHeight];
+    card.classList.add("hovering");
+    await sleep(180);
+    const pseudo = getComputedStyle(card, "::before").animationDuration;
+    const after = [card.offsetWidth, card.offsetHeight];
+    card.classList.remove("hovering");
+    const fixed = before[0] === after[0] && before[1] === after[1];
+    const overflow = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    const transition = getComputedStyle(card).transitionDuration;
+    return { ok: valid && fixed && overflow <= 1, valid, fixed, overflow, transition, pseudo };
+  })()`);
+  if (
+    !results.uiDynamics.material.ok ||
+    durationSeconds(results.uiDynamics.material.transition) > 0.16 ||
+    durationSeconds(results.uiDynamics.material.pseudo) > 0.16 ||
+    durationSeconds(results.uiDynamics.composerTransition) > 0.16
+  ) {
+    throw new Error(`UI material assertion failed: ${JSON.stringify(results.uiDynamics.material)}`);
+  }
+
+  await clickDock('AI Studio');
+  results.quickPrompts = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chips = [...document.querySelectorAll("[data-quick-prompt]")];
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (chips.length < 4 || !input) {
+      return { ok: false, chips: chips.length, hasInput: !!input };
+    }
+    const labels = chips.map((chip) => chip.getAttribute("data-quick-prompt-label"));
+    const categories = chips.map((chip) => chip.getAttribute("data-quick-prompt-category"));
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    const dailyValue = input.value;
+    document.querySelector('[data-quick-prompt="week-plan"]')?.click();
+    await sleep(80);
+    const weekValue = input.value;
+    const ok =
+      dailyValue.includes("复盘") &&
+      weekValue.includes("本周") &&
+      categories.includes("life") &&
+      categories.includes("work");
+    return {
+      ok,
+      chips: chips.length,
+      labels,
+      dailyValue: dailyValue.slice(0, 60),
+      weekValue: weekValue.slice(0, 60),
+    };
+  })()`);
+  if (!results.quickPrompts.ok) {
+    throw new Error(`Quick prompt assertion failed: ${JSON.stringify(results.quickPrompts)}`);
+  }
+  results.quickPromptManager = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(80);
+    const manager = document.querySelector("[data-quick-prompt-manager]");
+    if (!manager) return { ok: false, reason: "manager panel missing" };
+    const name = document.querySelector("[data-quick-prompt-name]");
+    const text = document.querySelector("[data-quick-prompt-text]");
+    const category = document.querySelector("[data-quick-prompt-category]");
+    if (!name || !text || !category) return { ok: false, reason: "manager inputs missing" };
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setInput(name, "Review day");
+    setInput(text, "帮我复盘今天，并给明天定 3 件优先事。");
+    await sleep(60);
+    document.querySelector("[data-quick-prompt-add]")?.click();
+    await sleep(120);
+    const chip = [...document.querySelectorAll("[data-quick-prompt]")].find(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const storedOk = Array.isArray(stored) && stored.some((p) => p.label === "Review day" && p.category === "work");
+    if (!chip) return { ok: false, reason: "custom chip missing", stored };
+    const chipCategory = chip.getAttribute("data-quick-prompt-category");
+    chip.click();
+    await sleep(80);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    const filled = input ? input.value.includes("复盘今天") : false;
+    return { ok: storedOk && filled && chipCategory === "work", stored, filled, chipCategory };
+  })()`);
+  if (!results.quickPromptManager.ok) {
+    throw new Error(
+      `Quick prompt manager assertion failed: ${JSON.stringify(results.quickPromptManager)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDockFast('AI Studio');
+  results.quickPromptPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const persisted = [...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(80);
+    const deleteBtn = [...document.querySelectorAll("[data-quick-prompt-custom-delete]")].find(
+      (btn) => btn.parentElement?.textContent?.includes("Review day"),
+    );
+    if (!deleteBtn) return { ok: false, reason: "delete button missing", persisted };
+    deleteBtn.click();
+    await sleep(120);
+    const gone = ![...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
+    );
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const storedGone = !stored.some((p) => p.label === "Review day");
+    return { ok: persisted && gone && storedGone, persisted, gone, storedGone };
+  })()`);
+  if (!results.quickPromptPersist.ok) {
+    throw new Error(
+      `Quick prompt persistence assertion failed: ${JSON.stringify(results.quickPromptPersist)}`,
+    );
+  }
+  await evaluate(`(async () => {
+    localStorage.removeItem("ai-workbench:quick-prompt-usage:v1");
+    return { ok: true };
+  })()`);
+  await reloadAndWait();
+  await clickDockFast('AI Studio');
+  results.quickPromptUsage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
+    const firstLabel = () => chips()[0]?.getAttribute("data-quick-prompt-label") ?? "";
+    const first = firstLabel();
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    await sleep(80);
+    const afterTwo = firstLabel();
+    const dailyUsage = chips()
+      .find((el) => el.getAttribute("data-quick-prompt") === "daily-recap")
+      ?.getAttribute("data-quick-prompt-usage");
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    await sleep(80);
+    const afterWindDown = firstLabel();
+    const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      first === "Daily recap" &&
+      afterTwo === "Daily recap" &&
+      dailyUsage === "2" &&
+      afterWindDown === "Wind down" &&
+      order[0] === "wind-down" &&
+      order[1] === "daily-recap" &&
+      stored["daily-recap"] === 2 &&
+      stored["wind-down"] === 3;
+    return {
+      ok,
+      first,
+      afterTwo,
+      dailyUsage,
+      afterWindDown,
+      order: order.slice(0, 4),
+      stored,
+    };
+  })()`);
+  if (!results.quickPromptUsage.ok) {
+    throw new Error(
+      `Quick prompt usage assertion failed: ${JSON.stringify(results.quickPromptUsage)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDockFast('AI Studio');
+  results.quickPromptUsagePersist = await evaluate(`(async () => {
+    const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
+    const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      order[0] === "wind-down" &&
+      order[1] === "daily-recap" &&
+      stored["wind-down"] === 3 &&
+      stored["daily-recap"] === 2;
+    return { ok, order: order.slice(0, 4), stored };
+  })()`);
+  if (!results.quickPromptUsagePersist.ok) {
+    throw new Error(
+      `Quick prompt usage persistence assertion failed: ${JSON.stringify(results.quickPromptUsagePersist)}`,
+    );
+  }
+
+  await clickDock('System');
+  results.quickPromptSync = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const remote = {
+      deviceId: "device-sync-quick",
+      exportedAt: Date.now() + 1000,
+      clipboard: [],
+      logs: [],
+      quickPrompts: [
+        {
+          id: "sync-quick-custom",
+          label: "Sync quick",
+          category: "work",
+          text: "sprint 87 sync quick prompt",
+          custom: true,
+          updatedAt: Date.now() + 1000,
+          createdAt: Date.now() + 1000,
+        },
+      ],
+      quickPromptUsage: [
+        { id: "sync-quick-custom", count: 2, updatedAt: Date.now() + 1000 },
+        { id: "daily-recap", count: 5, updatedAt: Date.now() + 1000 },
+      ],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(remote));
+    document.querySelector('button[aria-label="Import sync snapshot"]')?.click();
+    let imported = false;
+    for (let i = 0; i < 20; i++) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+      const usage = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+      imported =
+        stored.some((p) => p.id === "sync-quick-custom") &&
+        usage["sync-quick-custom"] === 2 &&
+        usage["daily-recap"] === 5;
+      if (imported) break;
+      await sleep(100);
+    }
+    return { ok: imported, imported };
+  })()`);
+  if (!results.quickPromptSync.ok) {
+    throw new Error(
+      `Quick prompt sync merge assertion failed: ${JSON.stringify(results.quickPromptSync)}`,
+    );
+  }
+  await clickDock('AI Studio');
+  results.quickPromptSyncVisible = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom")) break;
+      await sleep(100);
+    }
+    const order = chips.map((el) => el.getAttribute("data-quick-prompt"));
+    const syncChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom");
+    const dailyChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "daily-recap");
+    const ok =
+      !!syncChip &&
+      order[0] === "daily-recap" &&
+      dailyChip?.getAttribute("data-quick-prompt-usage") === "5" &&
+      syncChip.getAttribute("data-quick-prompt-usage") === "2";
+    return {
+      ok,
+      order: order.slice(0, 5),
+      dailyUsage: dailyChip?.getAttribute("data-quick-prompt-usage") ?? "",
+      syncUsage: syncChip?.getAttribute("data-quick-prompt-usage") ?? "",
+    };
+  })()`);
+  if (!results.quickPromptSyncVisible.ok) {
+    throw new Error(
+      `Quick prompt sync visibility assertion failed: ${JSON.stringify(results.quickPromptSyncVisible)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDockFast('AI Studio');
+  results.quickPromptSyncPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const usage = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
+    const ok =
+      chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom") &&
+      stored.some((p) => p.id === "sync-quick-custom") &&
+      usage["sync-quick-custom"] === 2 &&
+      usage["daily-recap"] === 5;
+    return { ok, stored, usage };
+  })()`);
+  if (!results.quickPromptSyncPersist.ok) {
+    throw new Error(
+      `Quick prompt sync persistence assertion failed: ${JSON.stringify(results.quickPromptSyncPersist)}`,
+    );
+  }
+
+  results.quickPromptEditSort = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    document.querySelector("[data-quick-prompt-manage]")?.click();
+    await sleep(100);
+    const addPrompt = async (label, text) => {
+      const name = document.querySelector("[data-quick-prompt-name]");
+      const promptText = document.querySelector("[data-quick-prompt-text]");
+      if (!name || !promptText) return false;
+      setInput(name, label);
+      setInput(promptText, text);
+      await sleep(60);
+      document.querySelector("[data-quick-prompt-add]")?.click();
+      await sleep(160);
+      return !![...document.querySelectorAll("[data-quick-prompt-custom-row]")].some(
+        (row) => row.textContent?.includes(label),
+      );
+    };
+    const alphaAdded = await addPrompt("Alpha", "alpha text");
+    const betaAdded = await addPrompt("Beta", "beta text");
+    if (!alphaAdded || !betaAdded) {
+      return { ok: false, reason: "custom prompts not added", alphaAdded, betaAdded };
+    }
+    const rows = () => [...document.querySelectorAll("[data-quick-prompt-custom-row]")];
+    const alphaRow = rows().find((row) => row.textContent?.includes("Alpha"));
+    const editBtn = alphaRow?.querySelector("[data-quick-prompt-custom-edit]");
+    if (!editBtn) return { ok: false, reason: "edit button missing" };
+    const before = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const beforeAlpha = before.find((p) => p.label === "Alpha");
+    editBtn.click();
+    await sleep(100);
+    const name = document.querySelector("[data-quick-prompt-name]");
+    const promptText = document.querySelector("[data-quick-prompt-text]");
+    const prefilled = name?.value === "Alpha" && promptText?.value === "alpha text";
+    setInput(name, "Alpha edited");
+    setInput(promptText, "edited text");
+    await sleep(60);
+    document.querySelector("[data-quick-prompt-save]")?.click();
+    await sleep(200);
+    const chipVisible = [...document.querySelectorAll("[data-quick-prompt]")].some(
+      (el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited",
+    );
+    const after = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const afterAlpha = after.find((p) => p.label === "Alpha edited");
+    const editedOk =
+      prefilled &&
+      chipVisible &&
+      !!afterAlpha &&
+      afterAlpha.text === "edited text" &&
+      (afterAlpha.updatedAt ?? 0) >= (beforeAlpha?.updatedAt ?? 0);
+    const alphaId = afterAlpha?.id;
+    const betaId = after.find((p) => p.label === "Beta")?.id;
+    const alphaRowAfter = rows().find((row) => row.textContent?.includes("Alpha edited"));
+    alphaRowAfter?.querySelector("[data-quick-prompt-custom-move-down]")?.click();
+    await sleep(200);
+    const reorderedRows = rows();
+    const rowIds = reorderedRows.map((row) => row.getAttribute("data-quick-prompt-custom-row"));
+    const storedOrder = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const alphaOrder = storedOrder.find((p) => p.id === alphaId)?.order;
+    const betaOrder = storedOrder.find((p) => p.id === betaId)?.order;
+    const alphaIndex = rowIds.indexOf(alphaId);
+    const betaIndex = rowIds.indexOf(betaId);
+    const sortedOk =
+      alphaIndex > betaIndex &&
+      alphaOrder > betaOrder &&
+      storedOrder.filter((p) => p.custom === true).every((p, index) => p.order === index);
+    return {
+      ok: editedOk && sortedOk,
+      editedOk,
+      sortedOk,
+      prefilled,
+      chipVisible,
+      rowIds,
+      alphaOrder,
+      betaOrder,
+      stored: storedOrder.map((p) => ({ label: p.label, order: p.order })),
+    };
+  })()`);
+  if (!results.quickPromptEditSort.ok) {
+    throw new Error(
+      `Quick prompt edit/sort assertion failed: ${JSON.stringify(results.quickPromptEditSort)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDockFast('AI Studio');
+  results.quickPromptEditSortPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let chips = [];
+    for (let i = 0; i < 20; i++) {
+      chips = [...document.querySelectorAll("[data-quick-prompt]")];
+      if (chips.some((el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompts:v1") ?? "[]");
+    const alpha = stored.find((p) => p.label === "Alpha edited");
+    const beta = stored.find((p) => p.label === "Beta");
+    const ok =
+      chips.some((el) => el.getAttribute("data-quick-prompt-label") === "Alpha edited") &&
+      !!alpha &&
+      alpha.text === "edited text" &&
+      alpha.order > (beta?.order ?? -1);
+    return { ok, stored: stored.map((p) => ({ label: p.label, order: p.order, text: p.text })) };
+  })()`);
+  if (!results.quickPromptEditSortPersist.ok) {
+    throw new Error(
+      `Quick prompt edit/sort persistence assertion failed: ${JSON.stringify(results.quickPromptEditSortPersist)}`,
+    );
+  }
+
+  results.aiDailyRecap = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-ai-daily-recap]");
+    if (!btn) return { ok: false, reason: "no recap button" };
+    btn.click();
+    let userText = "";
+    for (let i = 0; i < 20; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      userText = bubbles.find((t) => t.includes("请帮我生成今日复盘")) ?? "";
+      if (userText) break;
+      await sleep(80);
+    }
+    if (!userText) return { ok: false, reason: "recap user message missing" };
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      reply =
+        bubbles.find((t) => t.includes("Streaming fallback") && !t.includes("请帮我生成今日复盘")) ??
+        "";
+      if (reply) break;
+      await sleep(100);
+    }
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const newChatBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent?.trim() === "New chat",
+    );
+    newChatBtn?.click();
+    await sleep(200);
+    const ok =
+      userText.includes("Ship App Shell") &&
+      userText.includes("晨间阅读") &&
+      userText.includes("每日复盘") &&
+      userText.includes("Overall") &&
+      reply.length > 0 &&
+      idle &&
+      !!newChatBtn;
+    return {
+      ok,
+      hasFocus: userText.includes("Ship App Shell"),
+      hasHabit: userText.includes("晨间阅读"),
+      hasEvent: userText.includes("每日复盘"),
+      hasOverall: userText.includes("Overall"),
+      replySeen: !!reply,
+      idle,
+      freshStarted: !!newChatBtn,
+      userPreview: userText.slice(0, 90),
+      replyPreview: reply.slice(0, 60),
+    };
+  })()`);
+  if (!results.aiDailyRecap.ok) {
+    throw new Error(`AI daily recap assertion failed: ${JSON.stringify(results.aiDailyRecap)}`);
+  }
+  results.aiRecapSave = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-ai-daily-recap]");
+    if (!btn) return { ok: false, reason: "no recap button" };
+    const recapPrompt = "请帮我生成今日复盘";
+    const userBefore = [...document.querySelectorAll(".message-in")].filter(
+      (n) => (n.textContent ?? "").includes(recapPrompt),
+    ).length;
+    btn.click();
+    let userAdded = false;
+    for (let i = 0; i < 20; i++) {
+      const count = [...document.querySelectorAll(".message-in")].filter(
+        (n) => (n.textContent ?? "").includes(recapPrompt),
+      ).length;
+      if (count > userBefore) {
+        userAdded = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      reply = [...bubbles]
+        .reverse()
+        .find((t) => t.includes("Streaming fallback") && !t.includes(recapPrompt)) ?? "";
+      if (reply) break;
+      await sleep(100);
+    }
+    if (!reply) return { ok: false, reason: "recap reply missing" };
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const saveBtn = document.querySelector("[data-ai-recap-save]");
+    if (!saveBtn) return { ok: false, reason: "no save button" };
+    let enabled = false;
+    for (let i = 0; i < 40; i++) {
+      if (!saveBtn.disabled) {
+        enabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!enabled) return { ok: false, reason: "save button disabled", idle, userAdded };
+    if (!userAdded) return { ok: false, reason: "recap user message not added", idle };
+    saveBtn.click();
+    let result = "";
+    for (let i = 0; i < 30; i++) {
+      result = document.querySelector("[data-ai-recap-save-result]")?.textContent ?? "";
+      if (result.includes("Saved")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const saved = (stored.thoughts ?? []).find((t) => (t.content ?? "").includes("# 今日复盘"));
+    const ok =
+      result.includes("Saved") &&
+      !!saved &&
+      saved.tags === "#daily,#recap" &&
+      saved.type === "note";
+    return {
+      ok,
+      idle,
+      userAdded,
+      result,
+      savedTags: saved?.tags,
+      savedType: saved?.type,
+      replyPreview: reply.slice(0, 60),
+    };
+  })()`);
+  if (!results.aiRecapSave.ok) {
+    throw new Error(`AI recap save assertion failed: ${JSON.stringify(results.aiRecapSave)}`);
+  }
+  await clickDock('Knowledge');
+  results.aiRecapKnowledgeVisible = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const body = document.body.innerText;
+      if (body.includes("# 今日复盘") || body.includes("今日复盘")) {
+        return { ok: true, visible: true };
+      }
+      await sleep(100);
+    }
+    return { ok: false, visible: false, body: document.body.innerText.slice(0, 200) };
+  })()`);
+  if (!results.aiRecapKnowledgeVisible.ok) {
+    throw new Error(
+      `AI recap knowledge visibility assertion failed: ${JSON.stringify(results.aiRecapKnowledgeVisible)}`,
+    );
+  }
+  results.recapSaveEntries = await evaluate(`(async () => {
+    localStorage.removeItem("ai-workbench:recap-draft:v1");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll('nav button[aria-label]')]
+      .find((b) => b.getAttribute("aria-label") === "AI Studio");
+    if (!dock) return { ok: false, reason: "dock missing" };
+    dock.click();
+    await sleep(300);
+    [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "New chat")
+      ?.click();
+    await sleep(200);
+    const recapBtn = document.querySelector("[data-ai-daily-recap]");
+    if (!recapBtn) return { ok: false, reason: "no recap button" };
+    recapBtn.click();
+    let reply = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map(
+        (n) => n.textContent ?? "",
+      );
+      reply =
+        [...bubbles]
+          .reverse()
+          .find(
+            (t) =>
+              t.includes("Streaming fallback") &&
+              !t.includes("请帮我生成今日复盘"),
+          ) ?? "";
+      if (reply) break;
+      await sleep(100);
+    }
+    if (!reply) return { ok: false, reason: "recap reply missing" };
+    let idle = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-streaming="true"]')
+      ) {
+        idle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let messageSave = null;
+    for (let i = 0; i < 30; i++) {
+      messageSave = document.querySelector("[data-ai-recap-message-save]");
+      if (messageSave && !messageSave.disabled) break;
+      await sleep(100);
+    }
+    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
+    return {
+      ok: idle && !!messageSave && !messageSave.disabled && draft?.saved === false,
+      idle,
+      messageSaveSeen: !!messageSave,
+      messageSaveDisabled: messageSave?.disabled ?? null,
+      draftSaved: draft?.saved ?? null,
+      replyPreview: reply.slice(0, 40),
+    };
+  })()`);
+  if (!results.recapSaveEntries.ok) {
+    throw new Error(
+      `AI recap message entry assertion failed: ${JSON.stringify(results.recapSaveEntries)}`,
+    );
+  }
+  await clickDock('Knowledge');
+  results.recapSaveKnowledge = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let saveBtn = null;
+    for (let i = 0; i < 20; i++) {
+      saveBtn = document.querySelector("[data-knowledge-recap-save]");
+      if (saveBtn) break;
+      await sleep(100);
+    }
+    if (!saveBtn) return { ok: false, reason: "no knowledge recap save" };
+    let enabled = false;
+    for (let i = 0; i < 20; i++) {
+      if (!saveBtn.disabled) {
+        enabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const storedBefore = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const recapCountBefore = (storedBefore.thoughts ?? []).filter((t) =>
+      (t.content ?? "").includes("# 今日复盘"),
+    ).length;
+    saveBtn.click();
+    let status = "";
+    for (let i = 0; i < 30; i++) {
+      status = document.querySelector("[data-knowledge-recap-status]")?.textContent ?? "";
+      if (status.includes("saved")) break;
+      await sleep(100);
+    }
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const recapCountAfter = (storedAfter.thoughts ?? []).filter((t) =>
+      (t.content ?? "").includes("# 今日复盘"),
+    ).length;
+    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
+    const saved = draft?.saved === true && recapCountAfter === recapCountBefore + 1;
+    return {
+      ok: enabled && saved && status.includes("saved"),
+      enabled,
+      status,
+      saved,
+      recapCountBefore,
+      recapCountAfter,
+      draftSaved: draft?.saved ?? null,
+    };
+  })()`);
+  if (!results.recapSaveKnowledge.ok) {
+    throw new Error(
+      `Knowledge recap save assertion failed: ${JSON.stringify(results.recapSaveKnowledge)}`,
+    );
+  }
+  await clickDock('AI Studio');
+  results.recapSaveMessageState = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let btn = null;
+    for (let i = 0; i < 30; i++) {
+      btn = document.querySelector("[data-ai-recap-message-save]");
+      if (btn) break;
+      await sleep(100);
+    }
+    return {
+      ok: !!btn && btn.disabled === true,
+      seen: !!btn,
+      disabled: btn?.disabled ?? null,
+      chip: document.querySelector("[data-ai-recap-save]")?.getAttribute("data-recap-saved") ?? "",
+    };
+  })()`);
+  if (!results.recapSaveMessageState.ok) {
+    throw new Error(
+      `AI recap saved state assertion failed: ${JSON.stringify(results.recapSaveMessageState)}`,
+    );
+  }
+  await clickDock('AI Studio');
+  await evaluate(
+    `[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`,
+  );
+  await delay(200);
+  const streamStarted = await evaluate(`(async () => {
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "sprint RAG check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 120));
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let earlyCaret = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".stream-caret") || document.querySelector(".thinking-dot")) {
+        earlyCaret = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    await new Promise((r) => setTimeout(r, 900));
+    const bodyText = document.body.innerText;
+    let ragBadge = "";
+    let inspectorText = "";
+    for (let i = 0; i < 20; i++) {
+      ragBadge = document.querySelector(".rag-badge")?.textContent?.trim() ?? "";
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      if (ragBadge.includes("RAG +") && inspectorText.toLowerCase().includes("rag context")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return {
+      ok: true,
+      earlyCaret,
+      replyVisible: bodyText.includes("Streaming fallback") || bodyText.includes("分块模拟"),
+      streamingCaretGone: !document.querySelector(".stream-caret"),
+      busyGone: !document.querySelector(".thinking-dot"),
+      ragBadge,
+      inspectorText,
+    };
+  })()`);
+  if (!streamStarted.ok || !streamStarted.earlyCaret || !streamStarted.replyVisible) {
+    throw new Error('AI Studio streaming assertion failed');
+  }
+  if (
+    !streamStarted.ragBadge.includes('RAG +') ||
+    !streamStarted.inspectorText.toLowerCase().includes('rag context')
+  ) {
+    throw new Error(
+      `AI Studio RAG injection assertion failed: badge=${JSON.stringify(streamStarted.ragBadge)} inspector=${JSON.stringify(streamStarted.inspectorText.slice(0, 160))}`,
+    );
+  }
+  if (
+    !streamStarted.inspectorText.toLowerCase().includes('department') ||
+    !streamStarted.inspectorText.includes('UI Designer') ||
+    !streamStarted.inspectorText.includes('设计部')
+  ) {
+    throw new Error(
+      `AI Studio agent trace assertion failed: ${JSON.stringify(streamStarted.inspectorText.slice(0, 220))}`,
+    );
+  }
+  results.streaming = streamStarted;
+  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
+  await delay(250);
+
+  const ragConfirmSend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();
+    await sleep(200);
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) return { ok: false, reason: "rag confirm controls missing" };
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "sprint rag confirm");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const send = document.querySelector('main button[aria-label="Send"]');
+    send.click();
+    let panel = null;
+    let hitRows = 0;
+    for (let i = 0; i < 20; i++) {
+      panel = document.querySelector("[data-rag-confirm-panel]");
+      hitRows = panel ? panel.querySelectorAll("[data-rag-confirm-hit]").length : 0;
+      if (panel && hitRows > 0) break;
+      await sleep(100);
+    }
+    if (!panel || hitRows === 0) {
+      return { ok: false, reason: "confirm panel not shown", hitRows };
+    }
+    panel.querySelector("[data-rag-confirm-hit]")?.click();
+    await sleep(120);
+    const sendBtn = panel.querySelector("[data-rag-confirm-send]");
+    const expected = hitRows - 1;
+    const countOk = (sendBtn?.textContent ?? "").includes(String(expected));
+    sendBtn.click();
+    let badge = "";
+    let replySeen = false;
+    for (let i = 0; i < 20; i++) {
+      badge = document.querySelector(".rag-badge")?.textContent?.trim() ?? "";
+      replySeen =
+        document.body.innerText.includes("Streaming fallback") ||
+        document.body.innerText.includes("分块模拟");
+      if (badge.includes("RAG +" + expected) && replySeen) break;
+      await sleep(150);
+    }
+    const badgeOk = badge.includes("RAG +" + expected);
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('main button[aria-label="Send"]')) break;
+      await sleep(100);
+    }
+    modeToggle.click();
+    await sleep(100);
+    setter.call(input, "sprint rag direct");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const send2 = document.querySelector('main button[aria-label="Send"]');
+    send2.click();
+    let directOk = true;
+    let inputCleared = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector("[data-rag-confirm-panel]")) {
+        directOk = false;
+        break;
+      }
+      if (!input.value) inputCleared = true;
+      await sleep(100);
+    }
+    return {
+      ok: countOk && badgeOk && replySeen && directOk && inputCleared,
+      hitRows,
+      expected,
+      countOk,
+      badgeOk,
+      replySeen,
+      directOk,
+      inputCleared,
+    };
+  })()`);
+  if (!ragConfirmSend.ok) {
+    throw new Error(`RAG confirm send assertion failed: ${JSON.stringify(ragConfirmSend)}`);
+  }
+  results.ragConfirmSend = ragConfirmSend;
+
+  const streamStop = await evaluate(`(async () => {
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "stop check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let caretSeen = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".stream-caret") || document.querySelector(".thinking-dot")) {
+        caretSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    if (!caretSeen) return { ok: false, reason: "no caret before stop" };
+    const stopBtn = document.querySelector('main button[aria-label="Stop streaming"]');
+    if (!stopBtn) return { ok: false, reason: "no stop button" };
+    stopBtn.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const stoppedMessage = () => {
+      const el = [...document.querySelectorAll(".message-in")].find((n) => n.textContent.includes("[stopped]"));
+      return el ? el.textContent : "";
+    };
+    const beforeWait = stoppedMessage();
+    const busyGone = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+    await new Promise((r) => setTimeout(r, 500));
+    const afterWait = stoppedMessage();
+    return {
+      ok: true,
+      caretSeen,
+      stopped: beforeWait.endsWith("[stopped]"),
+      stable: beforeWait.length > 0 && beforeWait === afterWait,
+      busyGone,
+    };
+  })()`);
+  if (!streamStop.ok || !streamStop.stopped || !streamStop.stable || !streamStop.busyGone) {
+    throw new Error(`AI Studio stream stop assertion failed: ${JSON.stringify(streamStop)}`);
+  }
+  results.streamStop = streamStop;
+
+  results.teamDispatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const teamBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Team");
+    if (!teamBtn) return { ok: false, reason: "no team mode button" };
+    teamBtn.click();
+    await sleep(120);
+    const deptSelect = document.querySelector('select[aria-label="Dispatch department"]');
+    if (!deptSelect) return { ok: false, reason: "no department select" };
+    const designOption = [...deptSelect.options].find((o) => o.textContent.includes("设计部"));
+    if (designOption) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(deptSelect, designOption.value);
+      deptSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await sleep(120);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "team dispatch check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const send = document.querySelector('main button[aria-label="Send"]');
+    if (!send) return { ok: false, reason: "no send button" };
+    send.click();
+    let busySeen = false;
+    for (let i = 0; i < 12; i++) {
+      if (document.querySelector(".thinking-dot")) {
+        busySeen = true;
+        break;
+      }
+      await sleep(30);
+    }
+    let inspectorText = "";
+    for (let i = 0; i < 60; i++) {
+      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      const summaryBubble = document.querySelector(".team-summary");
+      const allThree =
+        bubbles.some((t) => t.includes("UI Designer")) &&
+        bubbles.some((t) => t.includes("Frontend Developer")) &&
+        bubbles.some((t) => t.includes("UI Finish-Gate Reviewer"));
+      if (
+        allThree &&
+        summaryBubble &&
+        !document.querySelector(".thinking-dot") &&
+        inspectorText.toLowerCase().includes("team trace")
+      ) {
+        break;
+      }
+      await sleep(120);
+    }
+    const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
+    const summaryBubble = document.querySelector(".team-summary");
+    return {
+      ok: true,
+      busySeen,
+      busyGone: !document.querySelector(".thinking-dot"),
+      designBubbles: bubbles.filter(
+        (t) => t.includes("UI Designer") || t.includes("Frontend Developer") || t.includes("UI Finish-Gate Reviewer"),
+      ).length,
+      teamVisible: inspectorText.toLowerCase().includes("team trace"),
+      hasAgents: inspectorText.includes("UI Designer") && inspectorText.includes("Frontend Developer"),
+      summaryOk:
+        !!summaryBubble &&
+        summaryBubble.textContent.includes("Team Summary") &&
+        summaryBubble.textContent.split(/\\n/).length >= 2,
+      inspectorText: inspectorText.slice(0, 160),
+    };
+  })()`);
+  if (
+    !results.teamDispatch.ok ||
+    !results.teamDispatch.busySeen ||
+    !results.teamDispatch.busyGone ||
+    results.teamDispatch.designBubbles < 3 ||
+    !results.teamDispatch.teamVisible ||
+    !results.teamDispatch.hasAgents ||
+    !results.teamDispatch.summaryOk
+  ) {
+    throw new Error(
+      `AI Studio team dispatch assertion failed: ${JSON.stringify(results.teamDispatch)}`,
+    );
+  }
+  await evaluate(
+    `document.querySelector('aside button[aria-label="Close inspector"]')?.click(); [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Single")?.click();`,
+  );
+  await delay(250);
+
+  await clickDock('Projects');
+  results.projectCarousel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let carouselBtn = null;
+    for (let i = 0; i < 20; i++) {
+      carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) break;
+      await sleep(100);
+    }
+    if (!carouselBtn) return { ok: false, reason: "carousel toggle missing" };
+    carouselBtn.click();
+    await sleep(300);
+    let carousel = null;
+    for (let i = 0; i < 20; i++) {
+      carousel = document.querySelector("[data-project-carousel]");
+      if (carousel) break;
+      await sleep(100);
+    }
+    if (!carousel) return { ok: false, reason: "project carousel missing" };
+    const scene = document.querySelector("[data-carousel-scene]");
+    const cards = [...document.querySelectorAll("[data-carousel-card]")];
+    if (!scene || cards.length < 2) {
+      return { ok: false, reason: "carousel cards missing", cards: cards.length };
+    }
+    const firstSelected = cards.find((c) => c.getAttribute("data-carousel-selected") === "true")?.getAttribute("data-carousel-project");
+    document.querySelector("[data-carousel-next]")?.click();
+    await sleep(200);
+    const afterNext = document.querySelector("[data-carousel-index]")?.textContent ?? "";
+    const secondSelected = cards.find((c) => c.getAttribute("data-carousel-selected") === "true")?.getAttribute("data-carousel-project");
+    const orbitOk = afterNext.includes("2 /") && firstSelected !== secondSelected;
+    document.querySelector('[data-carousel-mode="fan"]')?.click();
+    await sleep(200);
+    const fanMode = scene.getAttribute("data-carousel-scene-mode") === "fan";
+    const fanPressed = document.querySelector('[data-carousel-mode="fan"]')?.getAttribute("aria-pressed") === "true";
+    const playBtn = document.querySelector("[data-carousel-play]");
+    playBtn?.click();
+    await sleep(120);
+    const playing = playBtn?.getAttribute("aria-pressed") === "true"
+      && playBtn?.getAttribute("data-carousel-playing") === "true";
+    playBtn?.click();
+    await sleep(120);
+    const paused = playBtn?.getAttribute("data-carousel-playing") === "false";
+    const ok = orbitOk && fanMode && fanPressed && playing && paused;
+    return {
+      ok,
+      cards: cards.length,
+      firstSelected,
+      secondSelected,
+      afterNext,
+      fanMode,
+      fanPressed,
+      playing,
+      paused,
+    };
+  })()`);
+  if (!results.projectCarousel.ok) {
+    throw new Error(
+      `Project carousel assertion failed: ${JSON.stringify(results.projectCarousel)}`,
+    );
+  }
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+  });
+  await delay(200);
+  results.projectCarouselReduced = await evaluate(`(() => {
+    const card = document.querySelector("[data-carousel-card]");
+    const playBtn = document.querySelector("[data-carousel-play]");
+    const transition = card ? getComputedStyle(card).transitionDuration : "";
+    const playState = playBtn?.getAttribute("aria-pressed") ?? "";
+    return { transition, playState };
+  })()`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  results.projectCarouselReduced.ok =
+    durationSeconds(results.projectCarouselReduced.transition) <= 0.02 &&
+    results.projectCarouselReduced.playState === 'false';
+  if (!results.projectCarouselReduced.ok) {
+    throw new Error(
+      `Project carousel reduced motion assertion failed: ${JSON.stringify(results.projectCarouselReduced)}`,
+    );
+  }
+
+  await reloadAndWait();
+  await clickDock('Projects');
+  const carouselReorderBefore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    const scene = document.querySelector("[data-carousel-scene]");
+    const handles = [...document.querySelectorAll("[data-carousel-drag-handle]")];
+    const speed = document.querySelector("[data-carousel-speed]");
+    if (!scene || handles.length < 2 || !speed) {
+      return { ok: false, reason: "carousel drag controls missing", handles: handles.length };
+    }
+    const initialOrder = scene.getAttribute("data-carousel-order") ?? "";
+    const initialSpeed = Number(speed.value ?? 4);
+    const firstCard = handles[0].closest("[data-carousel-card]");
+    const rect = firstCard.getBoundingClientRect();
+    handles[0].dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      clientX: rect.left + 10,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(60);
+    scene.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      clientX: rect.left + 10 + rect.width * 1.2,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(120);
+    scene.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      clientX: rect.left + 10 + rect.width * 1.2,
+      clientY: rect.top + 10,
+      pointerId: 1,
+      pointerType: "mouse",
+    }));
+    await sleep(400);
+    const orderAfterDrag = scene.getAttribute("data-carousel-order") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedOrder = (stored.projects ?? []).map((project) => project.name).join(",");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(speed, "8");
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    const storedSpeed = Number(localStorage.getItem("ai-workbench:carousel-speed:v1") ?? 0);
+    return { initialOrder, initialSpeed, orderAfterDrag, storedOrder, storedSpeed };
+  })()`);
+  if (
+    !carouselReorderBefore.initialOrder ||
+    !carouselReorderBefore.orderAfterDrag ||
+    carouselReorderBefore.initialOrder === carouselReorderBefore.orderAfterDrag ||
+    carouselReorderBefore.orderAfterDrag !== carouselReorderBefore.storedOrder ||
+    carouselReorderBefore.storedSpeed !== 8
+  ) {
+    throw new Error(`Carousel reorder assertion failed: ${JSON.stringify(carouselReorderBefore)}`);
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
+  await delay(200);
+  const carouselReorderAfter = await evaluate(`(() => {
+    const restoredSpeed = Number(
+      document.querySelector("[data-carousel-speed]")?.value ?? 0,
+    );
+    const restoredOrder =
+      document.querySelector("[data-carousel-scene]")?.getAttribute("data-carousel-order") ?? "";
+    return { restoredSpeed, restoredOrder };
+  })()`);
+  if (
+    carouselReorderAfter.restoredSpeed !== 8 ||
+    carouselReorderAfter.restoredOrder !== carouselReorderBefore.storedOrder
+  ) {
+    throw new Error(
+      `Carousel restore assertion failed: ${JSON.stringify({
+        before: carouselReorderBefore,
+        after: carouselReorderAfter,
+      })}`,
+    );
+  }
+  const carouselReorderRestore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const scene = document.querySelector("[data-carousel-scene]");
+    const handles = [...document.querySelectorAll("[data-carousel-drag-handle]")];
+    const speed = document.querySelector("[data-carousel-speed]");
+    const targetOrder = ${JSON.stringify(carouselReorderBefore.initialOrder)};
+    if (!scene || !speed || handles.length < 2) {
+      return { ok: false, reason: "carousel controls missing on restore" };
+    }
+    const currentOrder = scene.getAttribute("data-carousel-order") ?? "";
+    if (currentOrder !== targetOrder) {
+      const targetName = ${JSON.stringify(carouselReorderBefore.initialOrder.split(',')[0])};
+      const handle = handles.find(
+        (candidate) =>
+          candidate.closest("[data-carousel-card]")?.getAttribute("data-carousel-project") ===
+          targetName,
+      );
+      if (!handle) {
+        return { ok: false, reason: "moved card handle missing on restore", currentOrder };
+      }
+      const card = handle.closest("[data-carousel-card]");
+      const rect = card.getBoundingClientRect();
+      handle.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        clientX: rect.left + 10,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(60);
+      scene.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true,
+        clientX: rect.left + 10 - rect.width * 1.2,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(120);
+      scene.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        clientX: rect.left + 10 - rect.width * 1.2,
+        clientY: rect.top + 10,
+        pointerId: 2,
+        pointerType: "mouse",
+      }));
+      await sleep(400);
+    }
+    const restoredOrder = scene.getAttribute("data-carousel-order") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedOrder = (stored.projects ?? []).map((project) => project.name).join(",");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(speed, String(${JSON.stringify(carouselReorderBefore.initialSpeed)}));
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    return {
+      ok: restoredOrder === targetOrder && storedOrder === restoredOrder,
+      restoredOrder,
+      storedOrder,
+    };
+  })()`);
+  if (!carouselReorderRestore.ok) {
+    throw new Error(
+      `Carousel restore rollback assertion failed: ${JSON.stringify({
+        before: carouselReorderBefore,
+        restore: carouselReorderRestore,
+      })}`,
+    );
+  }
+  const carouselReorder = {
+    ...carouselReorderBefore,
+    ...carouselReorderAfter,
+    ...carouselReorderRestore,
+    ok: true,
+  };
+  results.carouselReorder = carouselReorder;
+  laneLog('carouselReorder ok');
+
+  const carouselMaterialMemoryBefore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const controls = document.querySelector("[data-carousel-material-controls]");
+    const optionRain = document.querySelector('[data-carousel-material-option="rain"]');
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    const scene = document.querySelector("[data-carousel-scene]");
+    if (!controls || !optionRain || !autoBtn || !scene) {
+      return { ok: false, reason: "carousel material controls missing" };
+    }
+    const firstCard = scene.querySelector('[data-carousel-project="AI Workbench"]');
+    const initialMemory = firstCard?.getAttribute("data-carousel-material-memory") ?? "missing";
+    optionRain.click();
+    await sleep(350);
+    const afterMaterial = firstCard?.getAttribute("data-carousel-material") ?? "";
+    const afterMemory = firstCard?.getAttribute("data-carousel-material-memory") ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedProject = (stored.projects ?? []).find((p) => p.name === "AI Workbench");
+    return {
+      initialMemory,
+      afterMaterial,
+      afterMemory,
+      storedMaterial: storedProject?.material ?? "missing",
+      rainPressed: optionRain.getAttribute("aria-pressed") ?? "false",
+    };
+  })()`);
+  if (
+    carouselMaterialMemoryBefore.afterMaterial !== 'rain' ||
+    carouselMaterialMemoryBefore.afterMemory !== 'rain' ||
+    carouselMaterialMemoryBefore.storedMaterial !== 'rain' ||
+    carouselMaterialMemoryBefore.rainPressed !== 'true'
+  ) {
+    throw new Error(
+      `Carousel material memory assertion failed: ${JSON.stringify(carouselMaterialMemoryBefore)}`,
+    );
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const carouselBtn = document.querySelector("[data-projects-view-carousel]");
+      if (carouselBtn) {
+        carouselBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
+  await delay(250);
+  const carouselMaterialMemoryAfter = await evaluate(`(() => {
+    const scene = document.querySelector("[data-carousel-scene]");
+    const card = scene?.querySelector('[data-carousel-project="AI Workbench"]');
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    const restoredMaterial = card?.getAttribute("data-carousel-material") ?? "";
+    const restoredMemory = card?.getAttribute("data-carousel-material-memory") ?? "";
+    autoBtn?.click();
+    return { restoredMaterial, restoredMemory };
+  })()`);
+  await delay(350);
+  const carouselMaterialMemoryReset = await evaluate(`(() => {
+    const scene = document.querySelector("[data-carousel-scene]");
+    const card = scene?.querySelector('[data-carousel-project="AI Workbench"]');
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedProject = (stored.projects ?? []).find((p) => p.name === "AI Workbench");
+    const autoBtn = document.querySelector("[data-carousel-material-auto]");
+    return {
+      resetMaterial: card?.getAttribute("data-carousel-material") ?? "",
+      resetMemory: card?.getAttribute("data-carousel-material-memory") ?? "",
+      storedMaterial: storedProject?.material ?? "missing",
+      autoPressed: autoBtn?.getAttribute("aria-pressed") ?? "false",
+    };
+  })()`);
+  if (
+    carouselMaterialMemoryAfter.restoredMaterial !== 'rain' ||
+    carouselMaterialMemoryAfter.restoredMemory !== 'rain' ||
+    carouselMaterialMemoryReset.resetMemory !== 'auto' ||
+    carouselMaterialMemoryReset.storedMaterial !== '' ||
+    carouselMaterialMemoryReset.autoPressed !== 'true'
+  ) {
+    throw new Error(
+      `Carousel material restore assertion failed: ${JSON.stringify({
+        after: carouselMaterialMemoryAfter,
+        reset: carouselMaterialMemoryReset,
+      })}`,
+    );
+  }
+  const carouselMaterialMemory = {
+    ...carouselMaterialMemoryBefore,
+    ...carouselMaterialMemoryAfter,
+    ...carouselMaterialMemoryReset,
+    ok: true,
+  };
+  results.carouselMaterialMemory = carouselMaterialMemory;
+  laneLog('carouselMaterialMemory ok');
+
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const gridBtn = document.querySelector("[data-projects-view-grid]");
+      if (gridBtn) {
+        gridBtn.click();
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(300);
+    return true;
+  })()`);
+
+  const gitGraph = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const graph = document.querySelector(".project-git-graph");
+      if (graph?.textContent?.includes("develop") && graph.textContent.includes("21 commits")) {
+        return {
+          ok: true,
+          branch: graph.textContent.includes("develop"),
+          commits: graph.textContent.includes("21 commits"),
+          latest: graph.textContent.includes("sprint-20"),
+          changes: graph.textContent.includes("ProjectsView.tsx"),
+        };
+      }
+      await sleep(100);
+    }
+    return { ok: false, text: document.body.innerText.slice(0, 300) };
+  })()`);
+  if (!gitGraph.ok) {
+    throw new Error(`project git graph assertion failed: ${JSON.stringify(gitGraph)}`);
+  }
+  results.gitGraph = gitGraph;
+  const gitActivity = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const board = () => document.querySelector("[data-git-activity]");
+    for (let i = 0; i < 20; i++) {
+      const projects = board()?.querySelectorAll("[data-git-activity-project]") ?? [];
+      if (projects.length >= 2) break;
+      await sleep(100);
+    }
+    const projects = [...document.querySelectorAll("[data-git-activity-project]")];
+    const summary = document.querySelector("[data-git-activity-total]");
+    const totalProjects = Number(summary?.getAttribute("data-git-activity-total") ?? 0);
+    const totalCommits = Number(summary?.getAttribute("data-git-activity-commits") ?? 0);
+    const dirtyProjects = Number(summary?.getAttribute("data-git-activity-dirty") ?? 0);
+    const branches = projects.map((p) => p.getAttribute("data-git-activity-branch"));
+    const dirtyRows = projects.filter(
+      (p) => p.getAttribute("data-git-activity-dirty") === "true",
+    );
+    const commits = projects.reduce(
+      (sum, p) => sum + Number(p.getAttribute("data-git-activity-commits") ?? 0),
+      0,
+    );
+    const latestOk = projects.some((p) =>
+      (p.getAttribute("data-git-activity-latest") ?? "").includes("sprint-20"),
+    );
+    const ok =
+      projects.length >= 2 &&
+      totalProjects === projects.length &&
+      totalCommits === commits &&
+      dirtyProjects >= 1 &&
+      dirtyRows.length >= 1 &&
+      branches.includes("develop") &&
+      latestOk;
+    return {
+      ok,
+      totalProjects,
+      totalCommits,
+      dirtyProjects,
+      branches,
+      rows: projects.length,
+      latestOk,
+    };
+  })()`);
+  if (!gitActivity.ok) {
+    throw new Error(`Git activity board assertion failed: ${JSON.stringify(gitActivity)}`);
+  }
+  results.gitActivity = gitActivity;
+  const portfolioSummaryExport = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const card = document.querySelector("[data-portfolio-summary]");
+    if (!card) return { ok: false, reason: "portfolio summary card missing" };
+    const text = card.textContent;
+    const exportBtn = document.querySelector("[data-portfolio-export]");
+    if (!exportBtn) return { ok: false, reason: "export button missing" };
+    exportBtn.click();
+    await sleep(150);
+    const preview = document.querySelector("[data-portfolio-export-preview]");
+    const previewText = preview ? preview.textContent : "";
+    const cardText = card.textContent || "";
+    const summaryOk =
+      cardText.includes("Projects") &&
+      cardText.includes("Revenue") &&
+      cardText.includes("Commits") &&
+      cardText.includes("Dirty");
+    const reportOk =
+      previewText.includes("# Portfolio Summary") &&
+      previewText.includes("AI Workbench") &&
+      previewText.includes("Hermes Station") &&
+      previewText.includes("$0.00") &&
+      previewText.includes("## Git Activity");
+    const copyBtn = document.querySelector("[data-portfolio-copy]");
+    if (!copyBtn) return { ok: false, reason: "copy button missing", summaryOk, reportOk };
+    copyBtn.click();
+    await sleep(200);
+    await sleep(300);
+    const copied = copyBtn.textContent.includes("Copied");
+    return {
+      ok: summaryOk && reportOk && copied,
+      summaryOk,
+      reportOk,
+      copied,
+      previewLength: previewText.length,
+      cardText: cardText.slice(0, 200),
+    };
+  })()`);
+  results.portfolioSummaryExport = portfolioSummaryExport;
+  const projectRevenueExport = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector("[data-project-revenue-export]");
+    if (!btn) return { ok: false, reason: "revenue export button missing" };
+    btn.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-project-revenue-csv-preview]")?.textContent ?? "";
+      if (preview.includes("Project,ProjectId,Status,RecordedAt,Revenue")) break;
+      await sleep(100);
+    }
+    const result =
+      document.querySelector("[data-project-revenue-export-result]")?.textContent ?? "";
+    const copyBtn = document.querySelector("[data-project-revenue-csv-copy]");
+    if (!copyBtn) return { ok: false, reason: "revenue csv copy missing", preview };
+    copyBtn.click();
+    await sleep(250);
+    const copied = copyBtn.textContent.includes("Copied");
+    const rows = preview.split("\\n").length;
+    const ok =
+      preview.includes("Project,ProjectId,Status,RecordedAt,Revenue") &&
+      preview.includes("AI Workbench") &&
+      preview.includes("Hermes Station") &&
+      rows >= 3 &&
+      result.includes("rows") &&
+      copied;
+    return {
+      ok,
+      rows,
+      result,
+      copied,
+      header: preview.split("\\n")[0] ?? "",
+      hasWorkbench: preview.includes("AI Workbench"),
+      hasHermes: preview.includes("Hermes Station"),
+    };
+  })()`);
+  if (!projectRevenueExport.ok) {
+    throw new Error(
+      `Project revenue CSV export assertion failed: ${JSON.stringify(projectRevenueExport)}`,
+    );
+  }
+  results.projectRevenueExport = projectRevenueExport;
+
+  const projectRevenueSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const original = {
+      projects: shape.projects ?? [],
+      history: shape.projectRevenueHistory ?? [],
+    };
+    shape.projects = [
+      {
+        id: "pa",
+        name: "Alpha Income",
+        path: null,
+        revenue: 40,
+        status: "active",
+        createdAt: now - 1000,
+      },
+      {
+        id: "pb",
+        name: "Beta Stash",
+        path: null,
+        revenue: 0,
+        status: "paused",
+        createdAt: now - 500,
+      },
+    ];
+    shape.projectRevenueHistory = [
+      { id: "pa1", projectId: "pa", revenue: 10, recordedAt: now - 60 * day },
+      { id: "pa2", projectId: "pa", revenue: 20, recordedAt: now - 20 * day },
+      { id: "pa3", projectId: "pa", revenue: 30, recordedAt: now - 3 * day },
+      { id: "pa4", projectId: "pa", revenue: 40, recordedAt: now },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return original;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+
+  const projectRevenueSummary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? "";
+    const statusChips = () => [...document.querySelectorAll("[data-project-revenue-status]")];
+    let latest = "";
+    let points = "";
+    let delta7d = "";
+    let delta30d = "";
+    let chips = [];
+    for (let i = 0; i < 40; i++) {
+      latest = text("[data-project-revenue-latest]");
+      points = text("[data-project-revenue-points]");
+      delta7d = text("[data-project-revenue-delta7d]");
+      delta30d = text("[data-project-revenue-delta30d]");
+      chips = statusChips();
+      if (
+        latest.includes("40.00") &&
+        points === "4" &&
+        delta7d.includes("20.00") &&
+        delta30d.includes("30.00") &&
+        chips.length >= 2
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const active = chips.find((el) => el.getAttribute("data-project-revenue-status") === "active");
+    const paused = chips.find((el) => el.getAttribute("data-project-revenue-status") === "paused");
+    const activeText = active?.textContent ?? "";
+    const pausedText = paused?.textContent ?? "";
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const ok =
+      latest.includes("40.00") &&
+      points === "4" &&
+      delta7d.includes("+20.00") &&
+      delta30d.includes("+30.00") &&
+      activeText.includes("40.00") &&
+      activeText.includes("1") &&
+      pausedText.includes("0.00") &&
+      pausedText.includes("1") &&
+      summary.includes("$40.00");
+    return {
+      ok,
+      latest,
+      points,
+      delta7d,
+      delta30d,
+      activeText,
+      pausedText,
+      chips: chips.map((el) => el.textContent),
+    };
+  })()`);
+  if (!projectRevenueSummary.ok) {
+    throw new Error(
+      `Project revenue summary assertion failed: ${JSON.stringify(projectRevenueSummary)}`,
+    );
+  }
+  results.projectRevenueSummary = projectRevenueSummary;
+  laneLog('projectRevenueSummary ok');
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = ${JSON.stringify(projectRevenueSeed.projects)};
+    shape.projectRevenueHistory = ${JSON.stringify(projectRevenueSeed.history)};
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+
+  const projectEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const edit = document.querySelector("[data-project-edit]");
+    if (!edit) return { ok: false, reason: "project edit missing" };
+    const projectId = edit.getAttribute("data-project-edit");
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!status || !revenue || !save) {
+      return { ok: false, reason: "project controls missing", projectId };
+    }
+    const setSelect = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    setSelect.call(status, "paused");
+    status.dispatchEvent(new Event("change", { bubbles: true }));
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "1234.56");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    await sleep(600);
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const cardText = edit.closest("section")?.textContent ?? "";
+    const resultText = edit.querySelector("[data-project-edit-result]")?.textContent ?? "";
+    const ok =
+      status.value === "paused" &&
+      revenue.value === "1234.56" &&
+      resultText.includes("Saved") &&
+      cardText.includes("$1234.56") &&
+      cardText.includes("paused") &&
+      summary.includes("$1234.56");
+    return {
+      ok,
+      projectId,
+      status: status.value,
+      revenue: revenue.value,
+      resultText,
+      cardHasRevenue: cardText.includes("$1234.56"),
+      summaryHasRevenue: summary.includes("$1234.56"),
+    };
+  })()`);
+  results.projectEdit = projectEdit;
+  if (!results.projectEdit.ok) {
+    throw new Error(`Project edit assertion failed: ${JSON.stringify(results.projectEdit)}`);
+  }
+  const projectEditId = results.projectEdit.projectId ?? '';
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(projectEditId)};
+    let edit = null;
+    for (let i = 0; i < 20; i++) {
+      edit = document.querySelector('[data-project-edit="' + id + '"]');
+      if (edit) break;
+      await sleep(100);
+    }
+    if (!edit) return { ok: false, reason: "project edit missing after reload" };
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const ok =
+      status?.value === "paused" &&
+      revenue?.value === "1234.56" &&
+      summary.includes("$1234.56");
+    return {
+      ok,
+      status: status?.value,
+      revenue: revenue?.value,
+      summaryHasRevenue: summary.includes("$1234.56"),
+    };
+  })()`);
+  results.projectEditPersisted = projectEditPersisted;
+  const projectEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(projectEditId)};
+    const edit = document.querySelector('[data-project-edit="' + id + '"]');
+    if (!edit) return { ok: false, reason: "project edit missing for restore" };
+    const status = edit.querySelector("[data-project-status]");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!status || !revenue || !save) return { ok: false, reason: "project controls missing" };
+    const setSelect = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    setSelect.call(status, "active");
+    status.dispatchEvent(new Event("change", { bubbles: true }));
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "0");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    await sleep(600);
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const cardText = edit.closest("section")?.textContent ?? "";
+    const ok =
+      status.value === "active" &&
+      revenue.value === "0" &&
+      summary.includes("$0.00") &&
+      !cardText.includes("$1234.56");
+    return { ok, status: status.value, revenue: revenue.value };
+  })()`);
+  results.projectEditRestored = projectEditRestored;
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = (shape.projects ?? []).filter((p) => p.id !== "delete-me");
+    shape.projects.push({
+      id: "delete-me",
+      name: "Temporary Delete",
+      path: null,
+      revenue: 42,
+      status: "paused",
+      createdAt: now - 5000,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDelete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = () => document.querySelector('[data-project-edit="delete-me"]');
+    const ready = await waitFor(() => !!edit());
+    if (!ready) return { ok: false, reason: "delete-me project missing" };
+    const deleteBtn = edit()?.querySelector('[data-project-delete="delete-me"]');
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    const confirmShown = await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-me"]'),
+    );
+    if (!confirmShown) return { ok: false, reason: "delete confirm missing" };
+    edit()?.querySelector('[data-project-delete-confirm="delete-me"]')?.click();
+    const deleted = await waitFor(() => !edit());
+    const summary = document.querySelector("[data-portfolio-summary]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-me");
+    return {
+      ok: deleted && !summary.includes("Temporary Delete") && storedGone,
+      deleted,
+      summaryClean: !summary.includes("Temporary Delete"),
+      storedGone,
+    };
+  })()`);
+  results.projectDelete = projectDelete;
+  if (!results.projectDelete.ok) {
+    throw new Error(`Project delete assertion failed: ${JSON.stringify(results.projectDelete)}`);
+  }
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDeletePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const loaded = await waitFor(
+      () => document.querySelectorAll("[data-project-edit]").length >= 2,
+    );
+    const gone = !document.querySelector('[data-project-edit="delete-me"]');
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-me");
+    return { ok: loaded && gone && storedGone, loaded, gone, storedGone };
+  })()`);
+  results.projectDeletePersisted = projectDeletePersisted;
+  if (!results.projectDeletePersisted.ok) {
+    throw new Error(
+      `Project delete persistence assertion failed: ${JSON.stringify(
+        results.projectDeletePersisted,
+      )}`,
+    );
+  }
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.projects = (shape.projects ?? []).filter((p) => p.id !== "delete-cancel");
+    shape.projects.push({
+      id: "delete-cancel",
+      name: "Cancel Delete Project",
+      path: null,
+      revenue: 7,
+      status: "active",
+      createdAt: now - 4000,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectDeleteCancel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = () => document.querySelector('[data-project-edit="delete-cancel"]');
+    const ready = await waitFor(() => !!edit());
+    if (!ready) return { ok: false, reason: "delete-cancel project missing" };
+    edit()?.querySelector('[data-project-delete="delete-cancel"]')?.click();
+    const confirmShown = await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    edit()?.querySelector('[data-project-delete-cancel="delete-cancel"]')?.click();
+    const cancelClosed = await waitFor(
+      () => !edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    const stillVisible = !!edit();
+    edit()?.querySelector('[data-project-delete="delete-cancel"]')?.click();
+    await waitFor(
+      () => !!edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]'),
+    );
+    edit()?.querySelector('[data-project-delete-confirm="delete-cancel"]')?.click();
+    const deleted = await waitFor(() => !edit());
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !stored.projects.some((p) => p.id === "delete-cancel");
+    return {
+      ok: confirmShown && cancelClosed && stillVisible && deleted && storedGone,
+      confirmShown,
+      cancelClosed,
+      stillVisible,
+      deleted,
+      storedGone,
+    };
+  })()`);
+  results.projectDeleteCancel = projectDeleteCancel;
+  if (!results.projectDeleteCancel.ok) {
+    throw new Error(
+      `Project delete cancel assertion failed: ${JSON.stringify(results.projectDeleteCancel)}`,
+    );
+  }
+  const projectRevenueTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const edit = document.querySelector("[data-project-edit]");
+    if (!edit) return { ok: false, reason: "project edit missing for trend" };
+    const projectId = edit.getAttribute("data-project-edit");
+    const revenue = edit.querySelector("[data-project-revenue]");
+    const save = edit.querySelector("[data-project-save]");
+    if (!revenue || !save) return { ok: false, reason: "project controls missing for trend" };
+    const pointsOf = (section) => section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    const pointsBefore = pointsOf(edit.closest("section")).length;
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(revenue, "250");
+    revenue.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    save.click();
+    const updated = await waitFor(() => {
+      const section = document
+        .querySelector('[data-project-edit="' + projectId + '"]')
+        ?.closest("section");
+      const points = pointsOf(section);
+      const last = points[points.length - 1];
+      return points.length > pointsBefore && last?.getAttribute("data-project-revenue-value") === "250";
+    });
+    const section = document
+      .querySelector('[data-project-edit="' + projectId + '"]')
+      ?.closest("section");
+    const points = pointsOf(section);
+    const last = points[points.length - 1];
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedPoints = (stored.projectRevenueHistory ?? []).filter(
+      (point) => point.projectId === projectId,
+    );
+    const storedLast = storedPoints[storedPoints.length - 1];
+    return {
+      ok:
+        updated &&
+        Number(last?.getAttribute("data-project-revenue-value")) === 250 &&
+        storedLast?.revenue === 250,
+      projectId,
+      pointsBefore,
+      pointsAfter: points.length,
+      lastValue: last?.getAttribute("data-project-revenue-value") ?? "",
+      storedCount: storedPoints.length,
+      storedLast: storedLast?.revenue,
+    };
+  })()`);
+  results.projectRevenueTrend = projectRevenueTrend;
+  if (!results.projectRevenueTrend.ok) {
+    throw new Error(
+      `Project revenue trend assertion failed: ${JSON.stringify(results.projectRevenueTrend)}`,
+    );
+  }
+  const projectRevenueTrendId = results.projectRevenueTrend.projectId ?? '';
+  await reloadAndWait();
+  await clickDock('Projects');
+  const projectRevenueTrendPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const id = ${JSON.stringify(projectRevenueTrendId)};
+    let edit = null;
+    for (let i = 0; i < 20; i++) {
+      edit = document.querySelector('[data-project-edit="' + id + '"]');
+      if (edit) break;
+      await sleep(100);
+    }
+    if (!edit) return { ok: false, reason: "project edit missing after trend reload" };
+    const section = edit.closest("section");
+    let points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    for (let i = 0; i < 40 && points.length < 2; i++) {
+      await sleep(100);
+      points = section?.querySelectorAll("[data-project-revenue-point]") ?? [];
+    }
+    const last = points[points.length - 1];
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedPoints = (stored.projectRevenueHistory ?? []).filter(
+      (point) => point.projectId === id,
+    );
+    const storedCount = storedPoints.length;
+    const storedLast = storedPoints[storedPoints.length - 1];
+    const ok =
+      points.length >= 2 &&
+      points.length === storedCount &&
+      Number(last?.getAttribute("data-project-revenue-value")) === 250 &&
+      storedLast?.revenue === 250;
+    return {
+      ok,
+      points: points.length,
+      lastValue: last?.getAttribute("data-project-revenue-value") ?? "",
+      storedCount: storedPoints.length,
+      storedLast: storedLast?.revenue,
+    };
+  })()`);
+  results.projectRevenueTrendPersisted = projectRevenueTrendPersisted;
+  if (!results.projectRevenueTrendPersisted?.ok) {
+    throw new Error(
+      `Project revenue trend persistence assertion failed: ${JSON.stringify(
+        results.projectRevenueTrendPersisted,
+      )}`,
+    );
+  }
+  results.gitActivityFilters = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const board = () => document.querySelector("[data-git-activity]");
+    const setSelect = (selector, value) => {
+      const el = document.querySelector(selector);
+      if (!el) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    };
+    for (let i = 0; i < 20; i++) {
+      if (board()?.querySelectorAll("[data-git-activity-project]").length >= 2) break;
+      await sleep(100);
+    }
+    const initialRows = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const committerOptions = [...document.querySelectorAll("[data-git-activity-committer-select] option")]
+      .map((o) => o.textContent.trim())
+      .filter((t) => t !== "All committers");
+    setSelect("[data-git-activity-range]", "24h");
+    await sleep(400);
+    const after24h = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const after24hTotal = Number(document.querySelector("[data-git-activity-total]")?.getAttribute("data-git-activity-total") ?? 0);
+    const after24hCommits = Number(document.querySelector("[data-git-activity-commits]")?.getAttribute("data-git-activity-commits") ?? 0);
+    setSelect("[data-git-activity-range]", "all");
+    await sleep(400);
+    const afterAll = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    setSelect("[data-git-activity-committer-select]", "Alice");
+    await sleep(400);
+    const afterAlice = board()?.querySelectorAll("[data-git-activity-project]").length ?? 0;
+    const aliceRows = [...(board()?.querySelectorAll("[data-git-activity-project]") ?? [])]
+      .filter((p) => p.getAttribute("data-git-activity-committer") === "Alice").length;
+    const ok =
+      initialRows >= 2 &&
+      committerOptions.includes("Alice") &&
+      committerOptions.includes("Bob") &&
+      after24h === 1 &&
+      after24hTotal === 1 &&
+      after24hCommits === 21 &&
+      afterAll === initialRows &&
+      afterAlice === 1 &&
+      aliceRows === 1;
+    return { ok, initialRows, committerOptions, after24h, after24hTotal, after24hCommits, afterAll, afterAlice, aliceRows };
+  })()`);
+  if (!results.portfolioSummaryExport?.ok) {
+    throw new Error(
+      `Portfolio summary export assertion failed: ${JSON.stringify(results.portfolioSummaryExport)}`,
+    );
+  }
+  if (!results.gitActivityFilters.ok) {
+    throw new Error(
+      `Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`,
+    );
+  }
+  if (!results.projectEditPersisted?.ok) {
+    throw new Error(
+      `Project edit persistence assertion failed: ${JSON.stringify(results.projectEditPersisted)}`,
+    );
+  }
+  if (!results.projectEditRestored?.ok) {
+    throw new Error(
+      `Project edit restore assertion failed: ${JSON.stringify(results.projectEditRestored)}`,
+    );
+  }
+  results.gitDirtyPreview = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (dirty) {
+        const button = dirty.querySelector("[data-git-activity-preview]");
+        if (button) {
+          const projectId = button.getAttribute("data-git-activity-preview");
+          button.click();
+          for (let j = 0; j < 20; j++) {
+            const panel = document.querySelector(
+              '[data-git-activity-preview-files="' + projectId + '"]',
+            );
+            if (panel && panel.textContent.includes("ProjectsView.tsx")) {
+              const filesText = panel.textContent;
+              button.click();
+              for (let k = 0; k < 20; k++) {
+                if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+                  return {
+                    ok: true,
+                    projectId,
+                    filesText,
+                    collapsed: true,
+                  };
+                }
+                await sleep(100);
+              }
+              return { ok: false, reason: "preview did not collapse", filesText };
+            }
+            await sleep(100);
+          }
+          return { ok: false, reason: "preview files missing", projectId };
+        }
+      }
+      await sleep(100);
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitDirtyPreview.ok) {
+    throw new Error(
+      `Git dirty preview assertion failed: ${JSON.stringify(results.gitDirtyPreview)}`,
+    );
+  }
+  results.gitStagedUnstaged = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const panel = document.querySelector(
+        '[data-git-activity-preview-files="' + projectId + '"]',
+      );
+      const headers = [...(panel?.querySelectorAll("[data-git-change-group-header]") ?? [])].map(
+        (el) => el.getAttribute("data-git-change-group-header"),
+      );
+      const fileGroups = [...(panel?.querySelectorAll("[data-git-change-group]") ?? [])].map(
+        (el) => ({
+          file: el.getAttribute("data-git-file"),
+          group: el.getAttribute("data-git-change-group"),
+        }),
+      );
+      const staged = fileGroups.find(
+        (g) => (g.file ?? "").includes("ProjectsView.tsx") && g.group === "staged",
+      );
+      const unstaged = fileGroups.find(
+        (g) =>
+          (g.file ?? "").includes("sprint-21-project-git-graph.md") && g.group === "unstaged",
+      );
+      const untracked = fileGroups.find(
+        (g) => (g.file ?? "").includes("broken-lint.json") && g.group === "untracked",
+      );
+      if (
+        headers.includes("staged") &&
+        headers.includes("unstaged") &&
+        headers.includes("untracked") &&
+        staged &&
+        unstaged &&
+        untracked
+      ) {
+        previewBtn.click();
+        for (let k = 0; k < 20; k++) {
+          if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+            break;
+          }
+          await sleep(50);
+        }
+        return {
+          ok: true,
+          projectId,
+          headers,
+          staged: staged.file,
+          unstaged: unstaged.file,
+          untracked: untracked.file,
+        };
+      }
+      return {
+        ok: false,
+        reason: "group assertions missing",
+        headers,
+        fileGroups: fileGroups.slice(0, 8),
+      };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitStagedUnstaged.ok) {
+    throw new Error(
+      `Git staged/unstaged grouping assertion failed: ${JSON.stringify(results.gitStagedUnstaged)}`,
+    );
+  }
+  results.gitDirtyDiff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const preview = dirty.querySelector("[data-git-activity-preview]");
+      if (!preview) return { ok: false, reason: "no preview button" };
+      preview.click();
+      await sleep(80);
+      const toggle = [...dirty.querySelectorAll("[data-git-diff-toggle]")].find((btn) =>
+        (btn.getAttribute("data-git-diff-toggle") || "").includes("ProjectsView.tsx"),
+      );
+      if (!toggle) return { ok: false, reason: "no diff toggle for ProjectsView.tsx" };
+      toggle.click();
+      for (let j = 0; j < 20; j++) {
+        const pre = dirty.querySelector('[data-git-diff-content="src/views/ProjectsView.tsx"]');
+        const text = pre?.textContent ?? "";
+        if (pre && text.includes("diff --git") && text.includes("+added line") && text.includes("-removed line")) {
+          return {
+            ok: true,
+            status: pre.getAttribute("data-git-diff-status"),
+            hasHeader: text.includes("diff --git"),
+            hasAdded: text.includes("+added line"),
+            hasRemoved: text.includes("-removed line"),
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "diff content missing" };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitDirtyDiff.ok) {
+    throw new Error(`Git dirty diff assertion failed: ${JSON.stringify(results.gitDirtyDiff)}`);
+  }
+  results.gitInlineDiffSideBySide = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const panel = document.querySelector(
+      '[data-git-diff-content="src/views/ProjectsView.tsx"]',
+    );
+    if (!panel) return { ok: false, reason: "diff panel missing" };
+    const lines = [...panel.querySelectorAll("[data-git-diff-line]")];
+    const types = new Set(lines.map((el) => el.getAttribute("data-git-diff-line-type")));
+    const highlighted = !!panel.querySelector(
+      '[data-git-diff-line] span[class*="text-"]',
+    );
+    const inlineOk =
+      lines.length > 0 &&
+      ["add", "del", "hunk", "context"].every((kind) => types.has(kind)) &&
+      highlighted;
+    const toggle = panel.querySelector("[data-git-side-by-side-toggle]");
+    if (!toggle) return { ok: false, reason: "side-by-side toggle missing", inlineOk };
+    toggle.click();
+    let sideOk = false;
+    for (let i = 0; i < 20; i++) {
+      const side = panel.querySelector('[data-git-side-by-side="src/views/ProjectsView.tsx"]');
+      const oldLines = panel.querySelectorAll('[data-git-file-version="old"]');
+      const newLines = panel.querySelectorAll('[data-git-file-version="new"]');
+      const firstOld = oldLines[0];
+      const firstNew = newLines[0];
+      sideOk =
+        !!side &&
+        oldLines.length > 0 &&
+        newLines.length > 0 &&
+        (firstOld?.textContent ?? "").includes("1") &&
+        (firstNew?.textContent ?? "").includes("1");
+      if (sideOk) break;
+      await sleep(100);
+    }
+    toggle.click();
+    await sleep(120);
+    const backToInline = !!panel.querySelector("[data-git-diff-line]");
+    return {
+      ok: inlineOk && sideOk && backToInline,
+      inlineOk,
+      sideOk,
+      backToInline,
+      types: [...types],
+      lineCount: lines.length,
+      highlighted,
+    };
+  })()`);
+  if (!results.gitInlineDiffSideBySide.ok) {
+    throw new Error(
+      `Git inline diff / side-by-side assertion failed: ${JSON.stringify(results.gitInlineDiffSideBySide)}`,
+    );
+  }
+  results.gitBatchPreview = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      const panel = document.querySelector(
+        '[data-git-activity-preview-files="' + projectId + '"]',
+      );
+      if (!panel) {
+        previewBtn.click();
+        for (let j = 0; j < 20; j++) {
+          if (document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+            break;
+          }
+          await sleep(100);
+        }
+      }
+      const batchBtn = dirty.querySelector("[data-git-batch-preview]");
+      if (!batchBtn) return { ok: false, reason: "no batch preview button", projectId };
+      batchBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const pre = document.querySelector(
+          '[data-git-batch-preview-content="' + projectId + '"]',
+        );
+        const text = pre?.textContent ?? "";
+        const diffCount = (text.match(/diff --git/g) ?? []).length;
+        if (
+          pre &&
+          diffCount >= 2 &&
+          text.includes("ProjectsView.tsx") &&
+          text.includes("sprint-21-project-git-graph.md")
+        ) {
+          batchBtn.click();
+          await sleep(120);
+          const collapsed = !document.querySelector(
+            '[data-git-batch-preview-content="' + projectId + '"]',
+          );
+          return {
+            ok: collapsed,
+            projectId,
+            diffCount,
+            hasProjects: text.includes("ProjectsView.tsx"),
+            hasPlanDoc: text.includes("sprint-21-project-git-graph.md"),
+            collapsed,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "batch content missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitBatchPreview.ok) {
+    throw new Error(
+      `Git batch preview assertion failed: ${JSON.stringify(results.gitBatchPreview)}`,
+    );
+  }
+  results.gitCommitSelected = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const checkbox = dirty.querySelector(
+        '[data-git-select-file="src/views/ProjectsView.tsx"]',
+      );
+      if (!checkbox) return { ok: false, reason: "no select checkbox" };
+      checkbox.click();
+      await sleep(80);
+      const commitBtn = dirty.querySelector("[data-git-commit-selected]");
+      if (!commitBtn) return { ok: false, reason: "no commit selected button" };
+      commitBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const result =
+          dirty.querySelector('[data-git-commit-selected-result="' + projectId + '"]')
+            ?.textContent ?? "";
+        if (result.includes("Committed")) {
+          const stillChecked = dirty.querySelector(
+            '[data-git-select-file="src/views/ProjectsView.tsx"]',
+          )?.checked;
+          return {
+            ok: stillChecked === false,
+            projectId,
+            result: result.slice(0, 60),
+            selectionCleared: stillChecked === false,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "commit result missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitCommitSelected.ok) {
+    throw new Error(
+      `Git commit selected assertion failed: ${JSON.stringify(results.gitCommitSelected)}`,
+    );
+  }
+  results.gitCommitLintGate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const dirty = [...document.querySelectorAll("[data-git-activity-project]")].find(
+        (row) => row.getAttribute("data-git-activity-dirty") === "true",
+      );
+      if (!dirty) {
+        await sleep(100);
+        continue;
+      }
+      const previewBtn = dirty.querySelector("[data-git-activity-preview]");
+      if (!previewBtn) return { ok: false, reason: "no preview button" };
+      const projectId = previewBtn.getAttribute("data-git-activity-preview");
+      if (!document.querySelector('[data-git-activity-preview-files="' + projectId + '"]')) {
+        previewBtn.click();
+        await sleep(120);
+      }
+      const checkbox = dirty.querySelector('[data-git-select-file="broken-lint.json"]');
+      if (!checkbox) return { ok: false, reason: "no broken-lint.json checkbox" };
+      checkbox.click();
+      await sleep(80);
+      const commitBtn = dirty.querySelector("[data-git-commit-selected]");
+      if (!commitBtn) return { ok: false, reason: "no commit selected button" };
+      commitBtn.click();
+      for (let j = 0; j < 30; j++) {
+        const gate = dirty.querySelector('[data-git-lint-gate="' + projectId + '"]');
+        const issues = Number(gate?.getAttribute("data-git-lint-gate-issues") ?? 0);
+        const result =
+          dirty.querySelector('[data-git-commit-selected-result="' + projectId + '"]')
+            ?.textContent ?? "";
+        const text = gate?.textContent ?? "";
+        if (
+          gate &&
+          issues >= 1 &&
+          text.includes("Lint gate blocked") &&
+          !result.includes("Committed")
+        ) {
+          return {
+            ok: true,
+            projectId,
+            issues,
+            text: text.slice(0, 140),
+            noCommit: true,
+          };
+        }
+        await sleep(100);
+      }
+      return { ok: false, reason: "lint gate result missing", projectId };
+    }
+    return { ok: false, reason: "no dirty project row" };
+  })()`);
+  if (!results.gitCommitLintGate.ok) {
+    throw new Error(
+      `Git commit lint gate assertion failed: ${JSON.stringify(results.gitCommitLintGate)}`,
+    );
+  }
+  results.gitCommitTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const bars = [...document.querySelectorAll("[data-git-trend-bar]")];
+      if (bars.length >= 7) {
+        const counts = bars.map((bar) => Number(bar.getAttribute("data-git-trend-bar-count") ?? 0));
+        const days = bars.map((bar) => Number(bar.getAttribute("data-git-trend-bar-day") ?? 0));
+        const max = Math.max(...counts);
+        const total = counts.reduce((sum, count) => sum + count, 0);
+        const ok = max > 0 && total > 0 && days.every((day) => day > 0);
+        return { ok, bars: bars.length, max, total, days };
+      }
+      await sleep(100);
+    }
+    return { ok: false, bars: 0 };
+  })()`);
+  if (!results.gitCommitTrend.ok) {
+    throw new Error(`Git commit trend assertion failed: ${JSON.stringify(results.gitCommitTrend)}`);
+  }
+  results.rebaseApply = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-rebase-branch]');
+    if (!btn) return { ok: false, reason: "no rebase button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-rebase-result]')) break;
+      await sleep(100);
+    }
+    const text = document.querySelector('[data-rebase-result]')?.textContent ?? "";
+    return { ok: text.includes("Rebased"), text };
+  })()`);
+  if (!results.rebaseApply.ok) {
+    throw new Error(`Git rebase assertion failed: ${JSON.stringify(results.rebaseApply)}`);
+  }
+  results.rebaseResolve = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const buttons = document.querySelectorAll('[data-rebase-branch]');
+    if (buttons.length < 2) {
+      return { ok: false, reason: "second rebase button missing", count: buttons.length };
+    }
+    const card = buttons[1].closest(".project-git-graph");
+    buttons[1].click();
+    let conflicted = false;
+    for (let i = 0; i < 20; i++) {
+      const text = card?.querySelector('[data-rebase-result]')?.textContent ?? "";
+      conflicted = text.includes("Conflicts") && text.includes("docs/conflict.md");
+      if (conflicted) break;
+      await sleep(100);
+    }
+    if (!conflicted) {
+      return { ok: false, reason: "conflict result missing", text: document.body.innerText.slice(0, 300) };
+    }
+    const unionBtn = card?.querySelector('[data-resolve-conflicts="union"]');
+    if (!unionBtn) return { ok: false, reason: "union resolve button missing" };
+    unionBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 20; i++) {
+      const text = card?.querySelector('[data-resolve-result]')?.textContent ?? "";
+      resolved = text.includes("Resolved") && text.includes("continued rebase");
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: conflicted && resolved, conflicted, resolved };
+  })()`);
+  if (!results.rebaseResolve.ok) {
+    throw new Error(
+      `rebase conflict resolution assertion failed: ${JSON.stringify(results.rebaseResolve)}`,
+    );
+  }
+  results.commitPrDraft = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = [...document.querySelectorAll("main button")].find(
+      (b) => b.getAttribute("aria-label") === "Generate commit PR draft",
+    );
+    if (!btn) return { ok: false, reason: "no draft button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector(".commit-pr-draft")) break;
+      await sleep(100);
+    }
+    const panel = document.querySelector(".commit-pr-draft");
+    if (!panel) return { ok: false, reason: "no draft panel" };
+    const text = panel.innerText;
+    return {
+      ok: true,
+      conventional: text
+        .split("\\n")
+        .some((line) => /^(feat|fix|docs|test|chore)\\([^)]+\\): /.test(line.trim())),
+      hasDoD: text.includes("DoD") && text.includes("- [ ]"),
+      hasChanges: text.includes("Changes") && text.includes("- docs/plans"),
+      hasSummary: text.includes("AI Workbench"),
+    };
+  })()`);
+  if (
+    !results.commitPrDraft.ok ||
+    !results.commitPrDraft.conventional ||
+    !results.commitPrDraft.hasDoD ||
+    !results.commitPrDraft.hasChanges ||
+    !results.commitPrDraft.hasSummary
+  ) {
+    throw new Error(`Commit PR draft assertion failed: ${JSON.stringify(results.commitPrDraft)}`);
+  }
+  results.commitApply = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const applyBtn = document.querySelector('[data-apply-commit]');
+    if (!applyBtn) return { ok: false, reason: "no apply commit button" };
+    applyBtn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-commit-result]')) break;
+      await sleep(100);
+    }
+    const result = document.querySelector('[data-commit-result]')?.textContent ?? "";
+    const ok = result.includes("Committed local-") || result.includes("Nothing to commit");
+    const graphRefreshed = document.querySelector(".project-git-graph")?.textContent?.includes("develop") ?? false;
+    return { ok, result, graphRefreshed };
+  })()`);
+  if (!results.commitApply.ok) {
+    throw new Error(`Commit apply assertion failed: ${JSON.stringify(results.commitApply)}`);
+  }
+  results.remotePr = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const prBtn = document.querySelector('[data-create-pr]');
+    if (!prBtn) return { ok: false, reason: "no create pr button" };
+    prBtn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-pr-result]')) break;
+      await sleep(100);
+    }
+    const result = document.querySelector('[data-pr-result]')?.textContent ?? "";
+    return { ok: result.includes("pull/1"), result };
+  })()`);
+  if (!results.remotePr.ok) {
+    throw new Error(`Remote PR assertion failed: ${JSON.stringify(results.remotePr)}`);
+  }
+  const widthBefore = await evaluate(
+    `document.querySelector('main').getBoundingClientRect().width`,
+  );
+  const inspectorOpened = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === "AI Coding");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`);
+  if (!inspectorOpened) throw new Error('AI Coding button missing for inspector layout check');
+  await delay(300);
+  const inspectorInfo = await evaluate(`(() => {
+    const aside = document.querySelector('aside.drawer-panel');
+    const main = document.querySelector('main');
+    return {
+      asideWidth: aside ? getComputedStyle(aside).width : "",
+      mainWidth: main?.getBoundingClientRect().width ?? 0,
+      asideTransform: aside ? getComputedStyle(aside).transform : "",
+    };
+  })()`);
+  await evaluate(`document.querySelector('aside button[aria-label="Close inspector"]')?.click()`);
+  await delay(250);
+  const widthAfterClose = await evaluate(
+    `document.querySelector('main').getBoundingClientRect().width`,
+  );
+  const layoutStable =
+    widthBefore === inspectorInfo.mainWidth &&
+    widthAfterClose === inspectorInfo.mainWidth &&
+    inspectorInfo.asideWidth === '288px';
+  results.motion.inspector = { widthBefore, inspectorInfo, widthAfterClose, layoutStable };
+
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+  });
+  await clickDock('Actions');
+  await delay(300);
+  results.motion.reducedMotion = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const material = document.querySelector('.material-card[data-material]');
+    const tilt = document.querySelector('.tilt-card');
+    let tiltTransform = tilt ? getComputedStyle(tilt).transform : "";
+    for (let i = 0; i < 30 && tiltTransform !== "none"; i++) {
+      await sleep(100);
+      tiltTransform = tilt ? getComputedStyle(tilt).transform : "";
+    }
+    return {
+      viewAnimationDuration: getComputedStyle(document.querySelector('.view-enter')).animationDuration,
+      dockTransitionDuration: getComputedStyle(document.querySelector('nav button')).transitionDuration,
+      materialAnimationDuration: material ? getComputedStyle(material, '::before').animationDuration : "",
+      tiltTransform,
+    };
+  })()`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+
+  const maxNav = durationSeconds(results.motion.navTransitionDuration);
+  const maxView = durationSeconds(results.motion.viewAnimationDuration);
+  const reducedView = durationSeconds(results.motion.reducedMotion.viewAnimationDuration);
+  const reducedDock = durationSeconds(results.motion.reducedMotion.dockTransitionDuration);
+  const reducedMaterial = durationSeconds(results.motion.reducedMotion.materialAnimationDuration);
+  const reducedTilt = results.motion.reducedMotion.tiltTransform;
+  results.motion.pass =
+    maxNav <= 0.16 &&
+    maxView <= 0.16 &&
+    results.motion.bodyOverflowX <= 1 &&
+    layoutStable &&
+    reducedView <= 0.02 &&
+    reducedDock <= 0.02 &&
+    reducedMaterial <= 0.02 &&
+    reducedTilt === 'none';
+  if (!results.motion.pass) {
+    throw new Error(`UI motion DoD assertion failed: ${JSON.stringify(results.motion)}`);
+  }
+
+  await clickDock('Actions');
+  const created = await evaluate(`(async () => {
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "DoD persistence check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 100));
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const visible = document.body.innerText.includes("DoD persistence check");
+    return { ok: true, visible };
+  })()`);
+  results.dailyProgress = await evaluate(`(() => {
+    const focus = document.querySelector("[data-daily-focus]")?.getAttribute("data-daily-focus") ?? "";
+    const habits = document.querySelector("[data-daily-habits]")?.getAttribute("data-daily-habits") ?? "";
+    const schedule = document.querySelector("[data-daily-schedule]")?.getAttribute("data-daily-schedule") ?? "";
+    const next = document.querySelector("[data-daily-next-event]")?.textContent ?? "";
+    const overall = document.querySelector("[data-daily-overall]")?.textContent ?? "";
+    const progressBar = document.querySelector("[data-daily-progress-bar]");
+    const focusParts = focus.split("/").map(Number);
+    const habitParts = habits.split("/").map(Number);
+    const scheduleParts = schedule.split("/").map(Number);
+    const ok =
+      focus === "0/3" &&
+      habits === "0/3" &&
+      schedule === "0/2" &&
+      focusParts.length === 2 &&
+      habitParts.length === 2 &&
+      scheduleParts.length === 2 &&
+      focusParts.every(Number.isFinite) &&
+      habitParts.every(Number.isFinite) &&
+      scheduleParts.every(Number.isFinite) &&
+      next.includes("每日复盘") &&
+      !!progressBar;
+    return { ok, focus, habits, schedule, next, overall };
+  })()`);
+  if (!results.dailyProgress.ok) {
+    throw new Error(`Daily progress assertion failed: ${JSON.stringify(results.dailyProgress)}`);
+  }
+  await delay(400);
+  const beforeReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
+  const habitToggle = await evaluate(`(async () => {
+    const btn = document.querySelector("main [data-habit-toggle]");
+    if (!btn) return { ok: false, reason: "no habit toggle" };
+    const row = btn.parentElement;
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const streaks = [...document.querySelectorAll("[data-habit-streak]")]
+      .map((el) => Number(el.getAttribute("data-habit-streak") || 0));
+    const recentRows = document.querySelectorAll("[data-habit-recent-days]").length;
+    const streakBefore = Number(row.querySelector("[data-habit-streak]")?.getAttribute("data-habit-streak") || 0);
+    let weekBefore = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    for (let i = 0; i < 20 && (weekBefore === "" || weekBefore === "0/5"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      weekBefore = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    }
+    const todayBefore = row.querySelector('[data-habit-day="' + todayKey + '"]')?.getAttribute("data-habit-day-checked") ?? "";
+    const recentCountBefore = row.querySelectorAll("[data-habit-day]").length;
+    btn.click();
+    await new Promise((r) => setTimeout(r, 350));
+    const doneClass = row ? row.className.includes("border-emerald-500/30") : false;
+    const streakAfter = Number(row.querySelector("[data-habit-streak]")?.getAttribute("data-habit-streak") || 0);
+    const weekAfter = row.querySelector("[data-habit-week]")?.getAttribute("data-habit-week") ?? "";
+    const todayAfter = row.querySelector('[data-habit-day="' + todayKey + '"]')?.getAttribute("data-habit-day-checked") ?? "";
+    return {
+      ok: true,
+      doneClass,
+      streaks,
+      recentRows,
+      streakBefore,
+      streakAfter,
+      weekBefore,
+      weekAfter,
+      todayBefore,
+      todayAfter,
+      recentCountBefore,
+    };
+  })()`);
+  const actionsSections = await evaluate(`(() => {
+    const titles = [...document.querySelectorAll("main section h2")].map((h) => h.textContent.trim());
+    const rects = [...document.querySelectorAll("main section")].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    });
+    let overlap = 0;
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) overlap += 1;
+      }
+    }
+    return { titles, overlap };
+  })()`);
+  results.actions = { habitToggle, sections: actionsSections };
+  await reloadAndWait();
+  await clickDock('Actions');
+  const afterReload = await evaluate(`document.body.innerText.includes("DoD persistence check")`);
+  const habitPersisted = await evaluate(`(() => {
+    const btn = document.querySelector("main [data-habit-toggle]");
+    if (!btn) return false;
+    const row = btn.parentElement;
+    if (!row) return false;
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const streak = Number(row.querySelector("[data-habit-streak]")?.getAttribute("data-habit-streak") || 0);
+    const todayChecked =
+      row.querySelector('[data-habit-day="' + todayKey + '"]')?.getAttribute("data-habit-day-checked") === "true";
+    return {
+      ok: row.className.includes("border-emerald-500/30"),
+      streak,
+      todayChecked,
+    };
+  })()`);
+  results.persistence = { created, beforeReload, afterReload, habitPersisted };
+
+  const habitManage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing" };
+    const editBtn = row.querySelector("[data-habit-week-edit]");
+    const weekBadge = row.querySelector("[data-habit-week]");
+    if (!editBtn || !weekBadge) return { ok: false, reason: "habit edit controls missing" };
+    const habitId = editBtn.getAttribute("data-habit-week-edit");
+    const originalGoal = weekBadge.getAttribute("data-habit-week")?.split("/")[1] ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = row.querySelector('[data-habit-week-input="' + habitId + '"]');
+    if (!input) return { ok: false, reason: "habit week input missing", habitId, originalGoal };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "7");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const saveBtn = row.querySelector('[data-habit-week-save="' + habitId + '"]');
+    if (!saveBtn) return { ok: false, reason: "habit week save missing", habitId, originalGoal };
+    saveBtn.click();
+    await sleep(600);
+    const afterWeek = weekBadge.getAttribute("data-habit-week") ?? "";
+    const result = row.querySelector('[data-habit-edit-result="' + habitId + '"]')?.textContent ?? "";
+    const ok = afterWeek.split("/")[1] === "7" && result.includes("Saved");
+    return { ok, habitId, originalGoal, afterWeek, result };
+  })()`);
+  results.habitManage = habitManage;
+  if (!results.habitManage.ok) {
+    throw new Error(`Habit manage assertion failed: ${JSON.stringify(results.habitManage)}`);
+  }
+  const habitManageId = results.habitManage.habitId ?? '';
+  const habitManageOriginal = results.habitManage.originalGoal ?? '';
+  await reloadAndWait();
+  await clickDock('Actions');
+  const habitManagePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(habitManageId)};
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing after reload" };
+    const editBtn = row.querySelector('[data-habit-week-edit="' + id + '"]');
+    const weekBadge = row.querySelector("[data-habit-week]");
+    if (!editBtn || !weekBadge) return { ok: false, reason: "habit controls missing after reload" };
+    const current = weekBadge.getAttribute("data-habit-week") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = row.querySelector('[data-habit-week-input="' + id + '"]');
+    const ok = current.split("/")[1] === "7" && input?.value === "7";
+    return { ok, current, inputValue: input?.value ?? "" };
+  })()`);
+  results.habitManagePersisted = habitManagePersisted;
+  if (!results.habitManagePersisted?.ok) {
+    throw new Error(
+      `Habit manage persistence assertion failed: ${JSON.stringify(results.habitManagePersisted)}`,
+    );
+  }
+  const habitManageRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(habitManageId)};
+    const original = ${JSON.stringify(habitManageOriginal)};
+    const row = document.querySelector("main [data-habit-toggle]")?.parentElement;
+    if (!row) return { ok: false, reason: "habit row missing for restore" };
+    const input = row.querySelector('[data-habit-week-input="' + id + '"]');
+    const saveBtn = row.querySelector('[data-habit-week-save="' + id + '"]');
+    if (!input || !saveBtn) return { ok: false, reason: "habit editor missing for restore" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, original);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    await sleep(600);
+    const weekBadge = row.querySelector("[data-habit-week]");
+    const current = weekBadge?.getAttribute("data-habit-week") ?? "";
+    return { ok: current.split("/")[1] === original, current, original };
+  })()`);
+  results.habitManageRestored = habitManageRestored;
+  if (!results.habitManageRestored?.ok) {
+    throw new Error(
+      `Habit manage restore assertion failed: ${JSON.stringify(results.habitManageRestored)}`,
+    );
+  }
+  const habitDeleteCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New habit..."]');
+    if (!input) return { ok: false, reason: "no habit input" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "Habit delete check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find(
+      (b) => b.getAttribute("aria-label") === "Add habit",
+    );
+    if (!add) return { ok: false, reason: "no add habit button" };
+    add.click();
+    await sleep(600);
+    const habitsBefore = document.querySelectorAll("[data-habit-recent-days]").length;
+    let toggle = null;
+    for (let i = 0; i < 20; i++) {
+      toggle = [...document.querySelectorAll("[data-habit-toggle]")].find((btn) =>
+        btn.parentElement?.textContent?.includes("Habit delete check"),
+      );
+      if (toggle) break;
+      await sleep(100);
+    }
+    if (!toggle) return { ok: false, reason: "test habit missing", habitsBefore };
+    const habitRow = toggle.parentElement;
+    const deleteBtn = habitRow?.querySelector("[data-habit-delete]");
+    if (!habitRow || !deleteBtn) {
+      return { ok: false, reason: "delete button missing", habitsBefore };
+    }
+    deleteBtn.click();
+    await sleep(150);
+    const confirmBtn = habitRow.querySelector("[data-habit-delete-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing", habitsBefore };
+    confirmBtn.click();
+    await sleep(600);
+    const habitsAfter = document.querySelectorAll("[data-habit-recent-days]").length;
+    const gone = ![...document.querySelectorAll("[data-habit-toggle]")].some((btn) =>
+      btn.parentElement?.textContent?.includes("Habit delete check"),
+    );
+    const daily = document.querySelector("[data-daily-habits]")?.getAttribute("data-daily-habits") ?? "";
+    const ok = habitsBefore === 4 && habitsAfter === 3 && gone && daily.split("/")[1] === "3";
+    return { ok, habitsBefore, habitsAfter, gone, daily };
+  })()`);
+  results.habitDeleteCheck = habitDeleteCheck;
+  if (!results.habitDeleteCheck?.ok) {
+    throw new Error(`Habit delete assertion failed: ${JSON.stringify(results.habitDeleteCheck)}`);
+  }
+
+  const taskManage = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Task rename delete check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task rename delete check"));
+    if (!row) return { ok: false, reason: "created task row not found" };
+    const renameBtn = row.querySelector("[data-task-rename]");
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(150);
+    const renameInput = row.querySelector("[data-task-rename-input]");
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    const setter2 = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter2.call(renameInput, "Task renamed check");
+    renameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(400);
+    const renamed = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!renamed) return { ok: false, reason: "rename not applied" };
+    const row2 = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!row2) return { ok: false, reason: "renamed row not found" };
+    const deleteBtn = row2.querySelector("[data-task-delete]");
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    await sleep(150);
+    const deleteCancel = row2.querySelector("[data-task-delete-cancel]");
+    if (!deleteCancel) return { ok: false, reason: "delete cancel missing" };
+    deleteCancel.click();
+    await sleep(150);
+    const stillThere = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    if (!stillThere) return { ok: false, reason: "cancel delete removed task" };
+    const row3 = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task renamed check"));
+    const deleteBtn2 = row3.querySelector("[data-task-delete]");
+    deleteBtn2.click();
+    await sleep(150);
+    const deleteConfirm = row3.querySelector("[data-task-delete-confirm]");
+    if (!deleteConfirm) return { ok: false, reason: "delete confirm missing" };
+    deleteConfirm.click();
+    await sleep(600);
+    const gone = ![...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task renamed check"));
+    return { ok: renamed && stillThere && gone, renamed, stillThere, gone };
+  })()`);
+  results.taskManage = taskManage;
+  if (!results.taskManage?.ok) {
+    throw new Error(`Task manage assertion failed: ${JSON.stringify(results.taskManage)}`);
+  }
+
+  const focusWeekArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Focus week archive check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const created = [...document.querySelectorAll("[data-focus-week-day]")].map((el) => {
+      const tasks = el.getAttribute("data-focus-week-day") || "";
+      const done = el.getAttribute("data-focus-day-done") || "false";
+      return { key: tasks, done };
+    });
+    if (!created.length) return { ok: false, reason: "no week strip" };
+    const now = new Date();
+    const localToday =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const todayKey = [...created].find((c) => c.key === localToday);
+    if (!todayKey) return { ok: false, reason: "today chip not found", keys: created.map((c) => c.key) };
+    const todayIndex = created.findIndex((c) => c.key === todayKey.key);
+    const tomorrow = created[(todayIndex + 1) % created.length];
+    if (!tomorrow) return { ok: false, reason: "no tomorrow chip" };
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    if (!row) {
+      return {
+        ok: false,
+        reason: "planned task row not found",
+      };
+    }
+    const nextDay = row.querySelector("[data-task-next-day]");
+    if (!nextDay) return { ok: false, reason: "next day button not found" };
+    nextDay.click();
+    await sleep(400);
+    const tomorrowChip = document.querySelector('[data-focus-week-day="' + tomorrow.key + '"]');
+    tomorrowChip.click();
+    await sleep(250);
+    const plannedRow = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    const toggle = plannedRow ? plannedRow.querySelector('button[aria-label^="Toggle "]') : null;
+    if (!toggle) {
+      return {
+        ok: false,
+        reason: "planned task toggle not found after reassign",
+        rows: [...document.querySelectorAll("[data-task-row]")].map((el) =>
+          el.textContent?.trim().slice(0, 60),
+        ),
+      };
+    }
+    toggle.click();
+    await sleep(400);
+    const archive = document.querySelector("[data-focus-archive-count]");
+    const archiveText = archive ? archive.textContent : "";
+    const archiveSeen = archiveText.includes("Completed archive");
+    if (!archiveSeen) return { ok: false, reason: "archive not shown", archiveText };
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    const archiveRowText = archiveRow ? archiveRow.textContent : "";
+    const today = document.querySelector('[data-focus-week-day="' + todayKey.key + '"]');
+    today.click();
+    await sleep(600);
+    const todayTaskVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    const todayRows = [...document.querySelectorAll("[data-task-row]")].map((el) =>
+      el.textContent?.trim().slice(0, 50),
+    );
+    return {
+      ok: archiveSeen && !!archiveRow,
+      chips: created.length,
+      archiveText,
+      archiveRowText,
+      todayTaskVisible,
+      todayRows,
+    };
+  })()`);
+  results.focusWeekArchive = focusWeekArchive;
+  await reloadAndWait();
+  await clickDock('Actions');
+  const focusWeekPersisted = await evaluate(`(async () => {
+    const archive = document.querySelector("[data-focus-archive-count]");
+    const archiveText = archive ? archive.textContent : "";
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    const activeTaskVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    const chips = document.querySelectorAll("[data-focus-week-day]").length;
+    return {
+      ok:
+        chips === 7 &&
+        archiveText.includes("Completed archive") &&
+        !!archiveRow &&
+        !activeTaskVisible,
+      chips,
+      archiveText,
+      archiveRow: !!archiveRow,
+      activeTaskVisible,
+    };
+  })()`);
+  results.focusWeekPersisted = focusWeekPersisted;
+  const focusWeekRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .find((el) => (el.textContent || "").includes("Focus week archive check"));
+    if (!archiveRow) return { ok: false, reason: "archived row missing" };
+    const restore = archiveRow.querySelector("[data-focus-archive-restore]");
+    if (!restore) return { ok: false, reason: "restore button missing" };
+    restore.click();
+    await sleep(600);
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const today = document.querySelector('[data-focus-week-day="' + todayKey + '"]');
+    if (!today) return { ok: false, reason: "today chip missing" };
+    today.click();
+    await sleep(400);
+    const taskVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    const stillArchived = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .some((el) => (el.textContent || "").includes("Focus week archive check"));
+    return { ok: taskVisible && !stillArchived, taskVisible, stillArchived };
+  })()`);
+  results.focusWeekRestored = focusWeekRestored;
+
+  const taskManagePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Task persist check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(350);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist check"));
+    if (!row) return { ok: false, reason: "created persist task not found" };
+    const renameBtn = row.querySelector("[data-task-rename]");
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(150);
+    const renameInput = row.querySelector("[data-task-rename-input]");
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    const setter2 = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter2.call(renameInput, "Task persist renamed");
+    renameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(400);
+    return { ok: true };
+  })()`);
+  results.taskManagePersisted = taskManagePersisted;
+  await reloadAndWait();
+  await clickDock('Actions');
+  const taskManagePersistedCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const renamed = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Task persist renamed"));
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist renamed"));
+    let deleteOk = false;
+    if (row) {
+      const deleteBtn = row.querySelector("[data-task-delete]");
+      if (deleteBtn) {
+        deleteBtn.click();
+        await sleep(150);
+        const cancelBtn = row.querySelector("[data-task-delete-cancel]");
+        if (cancelBtn) cancelBtn.click();
+        deleteOk = true;
+      }
+    }
+    await sleep(150);
+    return { ok: renamed && deleteOk, renamed, deleteOk };
+  })()`);
+  results.taskManagePersistedCheck = taskManagePersistedCheck;
+  if (!results.taskManagePersistedCheck?.ok) {
+    throw new Error(
+      `Task manage persistence assertion failed: ${JSON.stringify(results.taskManagePersistedCheck)}`,
+    );
+  }
+  const taskManagePersistedCleanup = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Task persist renamed"));
+    if (!row) return { ok: false, reason: "persist task row not found for cleanup" };
+    const deleteBtn = row.querySelector("[data-task-delete]");
+    if (!deleteBtn) return { ok: false, reason: "delete button missing" };
+    deleteBtn.click();
+    await sleep(150);
+    const confirmBtn = row.querySelector("[data-task-delete-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing" };
+    confirmBtn.click();
+    await sleep(500);
+    return { ok: true };
+  })()`);
+  results.taskManagePersistedCleanup = taskManagePersistedCleanup;
+  if (!results.taskManagePersistedCleanup?.ok) {
+    throw new Error(
+      `Task manage cleanup assertion failed: ${JSON.stringify(results.taskManagePersistedCleanup)}`,
+    );
+  }
+
+  const weekReviewStats = await evaluate(`(() => {
+    const card = document.querySelector("[data-week-review]");
+    if (!card) return { ok: false, reason: "week review card missing" };
+    const days = [...card.querySelectorAll("[data-week-review-day]")];
+    const total = document.querySelector("[data-week-review-total]")?.textContent ?? "";
+    const rate = document.querySelector("[data-week-review-rate]")?.textContent ?? "";
+    const best = document.querySelector("[data-week-review-best]")?.textContent ?? "";
+    const streak = document.querySelector("[data-week-review-streak]")?.textContent ?? "";
+    const archive = document.querySelector("[data-week-review-archive]");
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const selected = days.find((d) => d.getAttribute("data-week-review-day-selected") === "true");
+    const ok =
+      days.length === 7 &&
+      !!archive &&
+      !!selected &&
+      selected.getAttribute("data-week-review-day") === todayKey &&
+      total.includes("/") &&
+      rate.endsWith("%") &&
+      streak.endsWith("d");
+    return {
+      ok,
+      days: days.length,
+      total,
+      rate,
+      best,
+      streak,
+      selectedDay: selected?.getAttribute("data-week-review-day") ?? "",
+    };
+  })()`);
+  results.weekReviewStats = weekReviewStats;
+  if (!results.weekReviewStats.ok) {
+    throw new Error(
+      `Week review stats assertion failed: ${JSON.stringify(results.weekReviewStats)}`,
+    );
+  }
+
+  const weekReviewArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="New task..."]');
+    if (!input) return { ok: false, reason: "no task input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Week review archive check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
+    if (!add) return { ok: false, reason: "no add button" };
+    add.click();
+    await sleep(400);
+    const row = [...document.querySelectorAll("[data-task-row]")]
+      .find((el) => (el.textContent || "").includes("Week review archive check"));
+    if (!row) return { ok: false, reason: "week review task row missing" };
+    const toggle = row.querySelector('button[aria-label^="Toggle "]');
+    if (!toggle) return { ok: false, reason: "week review toggle missing" };
+    toggle.click();
+    await sleep(500);
+    const archiveBtn = document.querySelector("[data-week-review-archive]");
+    if (!archiveBtn) return { ok: false, reason: "week review archive button missing" };
+    archiveBtn.click();
+    await sleep(200);
+    const archiveBtn2 = document.querySelector("[data-week-review-archive]");
+    const armed = archiveBtn2?.getAttribute("data-archive-confirming") === "true";
+    archiveBtn2?.click();
+    await sleep(800);
+    const archivedText = document.querySelector("[data-week-review-archived]")?.textContent ?? "";
+    const activeVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    return {
+      ok: armed && archivedText.includes("1") && !activeVisible && archiveRow,
+      armed,
+      archivedText,
+      activeVisible,
+      archiveRow,
+    };
+  })()`);
+  results.weekReviewArchive = weekReviewArchive;
+  if (!results.weekReviewArchive.ok) {
+    throw new Error(
+      `Week review archive assertion failed: ${JSON.stringify(results.weekReviewArchive)}`,
+    );
+  }
+
+  await reloadAndWait();
+  await clickDock('Actions');
+  const weekReviewArchivePersisted = await evaluate(`(() => {
+    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const activeVisible = [...document.querySelectorAll("[data-task-row]")]
+      .some((el) => (el.textContent || "").includes("Week review archive check"));
+    const card = !!document.querySelector("[data-week-review]");
+    return { ok: card && archiveRow && !activeVisible, card, archiveRow, activeVisible };
+  })()`);
+  results.weekReviewArchivePersisted = weekReviewArchivePersisted;
+  if (!results.weekReviewArchivePersisted?.ok) {
+    throw new Error(
+      `Week review archive persistence assertion failed: ${JSON.stringify(
+        results.weekReviewArchivePersisted,
+      )}`,
+    );
+  }
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.tasks = [];
+    shape.scheduleEvents = [];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Actions');
+
+  const weekPlanTemplate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn) => {
+      for (let i = 0; i < 80; i += 1) {
+        if (fn()) return true;
+        await sleep(150);
+      }
+      return false;
+    };
+    const now = new Date();
+    const todayKey =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const mondayOffset = (now.getDay() + 6) % 7;
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
+    const weekDays = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+      return (
+        d.getFullYear() +
+        "-" +
+        String(d.getMonth() + 1).padStart(2, "0") +
+        "-" +
+        String(d.getDate()).padStart(2, "0")
+      );
+    });
+    const card = document.querySelector("[data-week-plan]");
+    const select = document.querySelector("[data-week-plan-template]");
+    const apply = document.querySelector("[data-week-plan-apply]");
+    const previewDays = document.querySelectorAll("[data-week-plan-day]");
+    const counts = document.querySelector("[data-week-plan-counts]")?.textContent ?? "";
+    if (!card || !select || !apply || previewDays.length !== 7) {
+      return { ok: false, reason: "week plan card incomplete" };
+    }
+    apply.click();
+    const applied = await waitFor(() =>
+      (document.querySelector("[data-week-plan-result]")?.textContent ?? "").includes("Applied"),
+    );
+    const resultText = document.querySelector("[data-week-plan-result]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const tasks = stored.tasks ?? [];
+    const events = stored.scheduleEvents ?? [];
+    const taskDatesOk = tasks.length === 9 && tasks.every((t) => weekDays.includes(t.dueDate));
+    const eventDatesOk = events.length === 8 && events.every((e) => weekDays.includes(e.date));
+    const domRows = document.querySelectorAll(
+      "[data-task-row], [data-schedule-event-row]",
+    ).length;
+    const ok =
+      applied &&
+      resultText.includes("9 focus") &&
+      resultText.includes("8 events") &&
+      counts.includes("9 focus") &&
+      taskDatesOk &&
+      eventDatesOk;
+    return {
+      ok,
+      applied,
+      resultText,
+      counts,
+      previewDays: previewDays.length,
+      taskCount: tasks.length,
+      eventCount: events.length,
+      taskDatesOk,
+      eventDatesOk,
+      taskTitles: tasks.map((t) => t.title),
+      eventTitles: events.map((e) => e.title),
+    };
+  })()`);
+  if (!weekPlanTemplate.ok) {
+    throw new Error(`Week plan template assertion failed: ${JSON.stringify(weekPlanTemplate)}`);
+  }
+  results.weekPlanTemplate = weekPlanTemplate;
+  laneLog('weekPlanTemplate ok');
+
+  await reloadAndWait();
+  await clickDock('Actions');
+  const weekPlanPersisted = await evaluate(`(() => {
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const tasks = stored.tasks ?? [];
+    const events = stored.scheduleEvents ?? [];
+    const card = !!document.querySelector("[data-week-plan]");
+    const scheduleRows = document.querySelectorAll(
+      "[data-schedule-event-row]",
+    ).length;
+    return {
+      ok: card && tasks.length === 9 && events.length === 8 && scheduleRows === 8,
+      card,
+      taskCount: tasks.length,
+      eventCount: events.length,
+      scheduleRows,
+    };
+  })()`);
+  if (!weekPlanPersisted.ok) {
+    throw new Error(`Week plan persistence assertion failed: ${JSON.stringify(weekPlanPersisted)}`);
+  }
+  results.weekPlanPersisted = weekPlanPersisted;
+  laneLog('weekPlanPersisted ok');
+
+  await clickDock('Knowledge');
+  const selectedMarkdownThought = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!btn) return false;
+    btn.click();
+    await new Promise((r) => setTimeout(r, 300));
+    return true;
+  })()`);
+  results.knowledge = await evaluate(`(() => {
+    const preview = document.querySelector(".markdown-body");
+    const heading = preview?.querySelector("h1, h2")?.textContent ?? "";
+    const code = preview?.querySelector("pre code")?.textContent ?? "";
+    const list = preview?.querySelectorAll("li").length ?? 0;
+    const rawText = preview?.textContent ?? "";
+    const badgeText = [...document.querySelectorAll("main span")].map((s) => s.textContent ?? "").join(" | ");
+    return { hasMarkdown: !!preview, heading, code, list, rawText, badgeText };
+  })()`);
+  const knowledgeTagLibrary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const library = document.querySelector("[data-knowledge-tag-library]");
+    if (!library) return { ok: false, reason: "tag library missing" };
+    const chips = [...document.querySelectorAll("[data-knowledge-tag]")];
+    const work = chips.find((c) => c.getAttribute("data-knowledge-tag") === "#work");
+    const all = chips.find((c) => c.getAttribute("data-knowledge-tag") === "all");
+    if (!work || !all) {
+      return {
+        ok: false,
+        reason: "tag chips missing",
+        tags: chips.map((c) => c.getAttribute("data-knowledge-tag")),
+      };
+    }
+    const workCount = Number(work.getAttribute("data-knowledge-tag-count") || 0);
+    const allCount = Number(all.getAttribute("data-knowledge-tag-count") || 0);
+    work.click();
+    await sleep(300);
+    const workActive = work.getAttribute("data-knowledge-tag-active") === "true";
+    const sidebar = [...document.querySelectorAll("main button")]
+      .filter((b) => b.textContent.trim() === "#work")
+      .some((b) => b.className.includes("text-emerald-400"));
+    const notesText = document.querySelector("[data-knowledge-tag-notes]")?.textContent ?? "";
+    const filteredVisible =
+      document.querySelectorAll("[data-rag-result]").length === workCount && workCount >= 2;
+    all.click();
+    await sleep(300);
+    const allActive = all.getAttribute("data-knowledge-tag-active") === "true";
+    const restored = [...document.querySelectorAll("[data-rag-result]")].length >= 3;
+    return {
+      ok:
+        workCount >= 2 &&
+        allCount >= 3 &&
+        workActive &&
+        sidebar &&
+        notesText.length > 0 &&
+        filteredVisible &&
+        allActive &&
+        restored,
+      workCount,
+      allCount,
+      workActive,
+      sidebar,
+      filteredVisible,
+      allActive,
+      restored,
+      tags: chips.map((c) => c.getAttribute("data-knowledge-tag")),
+    };
+  })()`);
+  results.knowledgeTagLibrary = knowledgeTagLibrary;
+  const thoughtTagEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing" };
+    noteBtn.click();
+    await sleep(300);
+    const editBtn = document.querySelector("[data-thought-tags-edit]");
+    if (!editBtn) return { ok: false, reason: "tag edit button missing" };
+    const thoughtId = editBtn.getAttribute("data-thought-tags-edit");
+    const originalTags = editBtn.getAttribute("data-thought-tags-current") || "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-tags-input="' + thoughtId + '"]');
+    if (!input) return { ok: false, reason: "tag input missing", thoughtId, originalTags };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, "#work,#review");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const saveBtn = document.querySelector('[data-thought-tags-save="' + thoughtId + '"]');
+    if (!saveBtn) return { ok: false, reason: "tag save missing", thoughtId, originalTags };
+    saveBtn.click();
+    await sleep(600);
+    const badge = document.querySelector('[data-thought-tags-edit="' + thoughtId + '"]');
+    const result = document.querySelector('[data-thought-tags-result="' + thoughtId + '"]')?.textContent ?? "";
+    const current = badge?.getAttribute("data-thought-tags-current") ?? "";
+    const ok = current === "#work,#review" && result.includes("Saved");
+    return { ok, thoughtId, originalTags, current, result };
+  })()`);
+  results.thoughtTagEdit = thoughtTagEdit;
+  if (!results.thoughtTagEdit.ok) {
+    throw new Error(`Thought tag edit assertion failed: ${JSON.stringify(results.thoughtTagEdit)}`);
+  }
+  const thoughtTagEditId = results.thoughtTagEdit.thoughtId ?? '';
+  const thoughtTagOriginal = results.thoughtTagEdit.originalTags ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtTagEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTagEditId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let editBtn = null;
+    for (let i = 0; i < 20; i++) {
+      editBtn = document.querySelector('[data-thought-tags-edit="' + id + '"]');
+      if (editBtn) break;
+      await sleep(100);
+    }
+    if (!editBtn) return { ok: false, reason: "tag edit missing after reload" };
+    const current = editBtn.getAttribute("data-thought-tags-current") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-tags-input="' + id + '"]');
+    const ok = current === "#work,#review" && input?.value === "#work,#review";
+    return { ok, current, inputValue: input?.value ?? "" };
+  })()`);
+  results.thoughtTagEditPersisted = thoughtTagEditPersisted;
+  if (!results.thoughtTagEditPersisted?.ok) {
+    throw new Error(
+      `Thought tag edit persistence assertion failed: ${JSON.stringify(results.thoughtTagEditPersisted)}`,
+    );
+  }
+  const thoughtTagEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTagEditId)};
+    const original = ${JSON.stringify(thoughtTagOriginal)};
+    const input = document.querySelector('[data-thought-tags-input="' + id + '"]');
+    const saveBtn = document.querySelector('[data-thought-tags-save="' + id + '"]');
+    if (!input || !saveBtn) return { ok: false, reason: "tag editor missing for restore" };
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setInput.call(input, original);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    await sleep(600);
+    const badge = document.querySelector('[data-thought-tags-edit="' + id + '"]');
+    const current = badge?.getAttribute("data-thought-tags-current") ?? "";
+    return { ok: current === original, current, original };
+  })()`);
+  results.thoughtTagEditRestored = thoughtTagEditRestored;
+  if (!results.thoughtTagEditRestored?.ok) {
+    throw new Error(
+      `Thought tag edit restore assertion failed: ${JSON.stringify(results.thoughtTagEditRestored)}`,
+    );
+  }
+  const thoughtBodyEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing for body edit" };
+    noteBtn.click();
+    await sleep(300);
+    const editBtn = document.querySelector("[data-thought-body-edit]");
+    if (!editBtn) return { ok: false, reason: "body edit button missing" };
+    const thoughtId = editBtn.getAttribute("data-thought-body-edit");
+    const originalBody = editBtn.getAttribute("data-thought-body-current") || "";
+    const editedBody = "# Sprint 3 笔记\\n\\n## 编辑正文\\n\\nbody edit check phrase 124";
+    editBtn.click();
+    await sleep(150);
+    const textarea = document.querySelector('[data-thought-body-input="' + thoughtId + '"]');
+    if (!textarea) return { ok: false, reason: "body input missing", thoughtId, originalBody };
+    const setTextarea = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setTextarea.call(textarea, editedBody);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-thought-body-mode="preview"]')?.click();
+    let previewOk = false;
+    for (let i = 0; i < 20; i++) {
+      const preview = document.querySelector('[data-thought-body-preview="' + thoughtId + '"]');
+      previewOk = !!preview && preview.textContent?.includes("body edit check phrase 124");
+      if (previewOk) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-thought-body-mode="edit"]')?.click();
+    await sleep(100);
+    const draftPreserved =
+      document.querySelector('[data-thought-body-input="' + thoughtId + '"]')?.value === editedBody;
+    document.querySelector('[data-thought-body-save="' + thoughtId + '"]')?.click();
+    let saved = false;
+    let current = "";
+    for (let i = 0; i < 30; i++) {
+      current =
+        document.querySelector('[data-thought-body-edit="' + thoughtId + '"]')
+          ?.getAttribute("data-thought-body-current") ?? "";
+      const result = document.querySelector('[data-thought-body-result="' + thoughtId + '"]')
+        ?.textContent ?? "";
+      saved = current.includes("body edit check phrase 124") && result.includes("Saved");
+      if (saved) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedUpdated = (shape.thoughts.find((t) => t.id === thoughtId)?.content ?? "").includes(
+      "body edit check phrase 124",
+    );
+    return {
+      ok: previewOk && draftPreserved && saved && storedUpdated,
+      thoughtId,
+      originalBody,
+      current,
+      previewOk,
+      draftPreserved,
+      saved,
+      storedUpdated,
+    };
+  })()`);
+  results.thoughtBodyEdit = thoughtBodyEdit;
+  if (!results.thoughtBodyEdit.ok) {
+    throw new Error(
+      `Thought body edit assertion failed: ${JSON.stringify(results.thoughtBodyEdit)}`,
+    );
+  }
+  const thoughtBodyEditId = results.thoughtBodyEdit.thoughtId ?? '';
+  const thoughtBodyOriginal = results.thoughtBodyEdit.originalBody ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtBodyEditPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtBodyEditId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let editBtn = null;
+    for (let i = 0; i < 20; i++) {
+      editBtn = document.querySelector('[data-thought-body-edit="' + id + '"]');
+      if (editBtn) break;
+      await sleep(100);
+    }
+    if (!editBtn) return { ok: false, reason: "body edit missing after reload" };
+    const current = editBtn.getAttribute("data-thought-body-current") ?? "";
+    editBtn.click();
+    await sleep(150);
+    const input = document.querySelector('[data-thought-body-input="' + id + '"]');
+    const inputValue = input?.value ?? "";
+    const ok = current.includes("body edit check phrase 124") && inputValue.includes("body edit check phrase 124");
+    return { ok, current, inputValue };
+  })()`);
+  results.thoughtBodyEditPersisted = thoughtBodyEditPersisted;
+  if (!results.thoughtBodyEditPersisted?.ok) {
+    throw new Error(
+      `Thought body edit persistence assertion failed: ${JSON.stringify(
+        results.thoughtBodyEditPersisted,
+      )}`,
+    );
+  }
+  const thoughtBodyEditRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtBodyEditId)};
+    const original = ${JSON.stringify(thoughtBodyOriginal)};
+    const textarea = document.querySelector('[data-thought-body-input="' + id + '"]');
+    const saveBtn = document.querySelector('[data-thought-body-save="' + id + '"]');
+    if (!textarea || !saveBtn) return { ok: false, reason: "body editor missing for restore" };
+    const setTextarea = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setTextarea.call(textarea, original);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    saveBtn.click();
+    let current = "";
+    for (let i = 0; i < 30; i++) {
+      current =
+        document.querySelector('[data-thought-body-edit="' + id + '"]')
+          ?.getAttribute("data-thought-body-current") ?? "";
+      if (current === original) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedRestored = (shape.thoughts.find((t) => t.id === id)?.content ?? "") === original;
+    return { ok: current === original && storedRestored, current, original, storedRestored };
+  })()`);
+  results.thoughtBodyEditRestored = thoughtBodyEditRestored;
+  if (!results.thoughtBodyEditRestored?.ok) {
+    throw new Error(
+      `Thought body edit restore assertion failed: ${JSON.stringify(
+        results.thoughtBodyEditRestored,
+      )}`,
+    );
+  }
+  const thoughtTypeConvert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing for type convert" };
+    noteBtn.click();
+    await sleep(300);
+    const select = document.querySelector("[data-thought-type-select]");
+    if (!select) return { ok: false, reason: "type select missing" };
+    const thoughtId = select.getAttribute("data-thought-type-select");
+    const originalType = select.getAttribute("data-thought-type-current") || "";
+    const docBtn = document.querySelector('[data-thought-type-option="doc"]');
+    if (!docBtn) return { ok: false, reason: "doc option missing", thoughtId, originalType };
+    docBtn.click();
+    let converted = false;
+    let currentType = "";
+    for (let i = 0; i < 30; i++) {
+      currentType =
+        document.querySelector('[data-thought-type-select="' + thoughtId + '"]')
+          ?.getAttribute("data-thought-type-current") ?? "";
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const stored = shape.thoughts.find((t) => t.id === thoughtId)?.type ?? "";
+      converted = currentType === "doc" && stored === "doc";
+      if (converted) break;
+      await sleep(100);
+    }
+    const active =
+      document.querySelector('[data-thought-type-option="doc"]')
+        ?.getAttribute("data-thought-type-active") === "true";
+    return { ok: converted && active, thoughtId, originalType, currentType, active };
+  })()`);
+  results.thoughtTypeConvert = thoughtTypeConvert;
+  if (!results.thoughtTypeConvert.ok) {
+    throw new Error(
+      `Thought type convert assertion failed: ${JSON.stringify(results.thoughtTypeConvert)}`,
+    );
+  }
+  const thoughtTypeConvertId = results.thoughtTypeConvert.thoughtId ?? '';
+  const thoughtTypeOriginal = results.thoughtTypeConvert.originalType ?? 'note';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtTypeConvertPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTypeConvertId)};
+    const noteBtn = [...document.querySelectorAll("main button")]
+      .find((b) => (b.textContent || "").trim().startsWith("# Sprint 3 笔记"));
+    if (!noteBtn) return { ok: false, reason: "thought button missing after reload" };
+    noteBtn.click();
+    await sleep(300);
+    let select = null;
+    for (let i = 0; i < 20; i++) {
+      select = document.querySelector('[data-thought-type-select="' + id + '"]');
+      if (select) break;
+      await sleep(100);
+    }
+    if (!select) return { ok: false, reason: "type select missing after reload" };
+    const currentType = select.getAttribute("data-thought-type-current") ?? "";
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stored = shape.thoughts.find((t) => t.id === id)?.type ?? "";
+    const active =
+      document.querySelector('[data-thought-type-option="doc"]')
+        ?.getAttribute("data-thought-type-active") === "true";
+    return {
+      ok: currentType === "doc" && stored === "doc" && active,
+      currentType,
+      stored,
+      active,
+    };
+  })()`);
+  results.thoughtTypeConvertPersisted = thoughtTypeConvertPersisted;
+  if (!results.thoughtTypeConvertPersisted?.ok) {
+    throw new Error(
+      `Thought type convert persistence assertion failed: ${JSON.stringify(
+        results.thoughtTypeConvertPersisted,
+      )}`,
+    );
+  }
+  const thoughtTypeConvertRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = ${JSON.stringify(thoughtTypeConvertId)};
+    const original = ${JSON.stringify(thoughtTypeOriginal)};
+    const noteBtn = document.querySelector('[data-thought-type-option="' + original + '"]');
+    if (!noteBtn) return { ok: false, reason: "original type option missing" };
+    noteBtn.click();
+    let restored = false;
+    let currentType = "";
+    for (let i = 0; i < 30; i++) {
+      currentType =
+        document.querySelector('[data-thought-type-select="' + id + '"]')
+          ?.getAttribute("data-thought-type-current") ?? "";
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const stored = shape.thoughts.find((t) => t.id === id)?.type ?? "";
+      restored = currentType === original && stored === original;
+      if (restored) break;
+      await sleep(100);
+    }
+    return { ok: restored, currentType, original };
+  })()`);
+  results.thoughtTypeConvertRestored = thoughtTypeConvertRestored;
+  if (!results.thoughtTypeConvertRestored?.ok) {
+    throw new Error(
+      `Thought type convert restore assertion failed: ${JSON.stringify(
+        results.thoughtTypeConvertRestored,
+      )}`,
+    );
+  }
+  const thoughtDelete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector("[data-thought-inbox-input]");
+    const addBtn = document.querySelector("[data-thought-inbox-add]");
+    if (!input || !addBtn) return { ok: false, reason: "inbox input or add button missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    const title = "Delete E2E thought 127";
+    setter.call(input, title);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const beforeCount = document.querySelectorAll("[data-rag-result]").length;
+    addBtn.click();
+    let row = null;
+    let thoughtId = "";
+    for (let i = 0; i < 30; i++) {
+      row = [...document.querySelectorAll("[data-rag-result]")]
+        .find((b) => (b.textContent || "").includes(title));
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "created thought row missing", beforeCount };
+    thoughtId = row.getAttribute("data-rag-result") || "";
+    row.click();
+    await sleep(300);
+    const deleteBtn = document.querySelector('[data-thought-delete="' + thoughtId + '"]');
+    if (!deleteBtn) return { ok: false, reason: "delete button missing", thoughtId, beforeCount };
+    deleteBtn.click();
+    await sleep(150);
+    const cancelBtn = document.querySelector('[data-thought-delete-cancel="' + thoughtId + '"]');
+    if (!cancelBtn) return { ok: false, reason: "delete cancel missing", thoughtId, beforeCount };
+    cancelBtn.click();
+    await sleep(150);
+    const shapeAfterCancel = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stillExistsAfterCancel = shapeAfterCancel.thoughts.some((t) => t.id === thoughtId);
+    const deleteBtnAgain = document.querySelector('[data-thought-delete="' + thoughtId + '"]');
+    if (!stillExistsAfterCancel || !deleteBtnAgain) {
+      return {
+        ok: false,
+        reason: "cancel did not preserve thought",
+        thoughtId,
+        stillExistsAfterCancel,
+        beforeCount,
+      };
+    }
+    deleteBtnAgain.click();
+    await sleep(150);
+    const confirmBtn = document.querySelector('[data-thought-delete-confirm="' + thoughtId + '"]');
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing", thoughtId, beforeCount };
+    confirmBtn.click();
+    let deleted = false;
+    let afterCount = 0;
+    let detailGone = false;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      afterCount = document.querySelectorAll("[data-rag-result]").length;
+      deleted = !shape.thoughts.some((t) => t.id === thoughtId) && afterCount === beforeCount;
+      detailGone = !(document.querySelector(".markdown-body")?.textContent ?? "").includes(title);
+      if (deleted && detailGone) break;
+      await sleep(100);
+    }
+    return {
+      ok: deleted && detailGone,
+      thoughtId,
+      beforeCount,
+      afterCount,
+      deleted,
+      detailGone,
+    };
+  })()`);
+  results.thoughtDelete = thoughtDelete;
+  if (!results.thoughtDelete.ok) {
+    throw new Error(`Thought delete assertion failed: ${JSON.stringify(results.thoughtDelete)}`);
+  }
+  const thoughtDeleteId = results.thoughtDelete.thoughtId ?? '';
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const thoughtDeletePersisted = await evaluate(`(async () => {
+    const id = ${JSON.stringify(thoughtDeleteId)};
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedGone = !shape.thoughts.some((t) => t.id === id);
+    const rowGone = ![...document.querySelectorAll("[data-rag-result]")]
+      .some((b) => (b.textContent || "").includes("Delete E2E thought 127"));
+    return { ok: storedGone && rowGone, storedGone, rowGone };
+  })()`);
+  results.thoughtDeletePersisted = thoughtDeletePersisted;
+  if (!results.thoughtDeletePersisted?.ok) {
+    throw new Error(
+      `Thought delete persistence assertion failed: ${JSON.stringify(
+        results.thoughtDeletePersisted,
+      )}`,
+    );
+  }
+  const ragSearch = await evaluate(`(async () => {
+    const input = document.querySelector('input[placeholder="RAG search..."]');
+    if (!input) return { ok: false, reason: "no rag input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "sprint");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    return {
+      ok: true,
+      matches: document.body.innerText.includes("RAG matches"),
+      resultVisible: document.body.innerText.includes("Sprint 3"),
+      indexStatusVisible: document.body.innerText.includes("docs") || document.body.innerText.includes("pending"),
+    };
+  })()`);
+  if (
+    !ragSearch.ok ||
+    !ragSearch.matches ||
+    !ragSearch.resultVisible ||
+    !ragSearch.indexStatusVisible
+  ) {
+    throw new Error('RAG search assertion failed');
+  }
+  results.ragSearch = ragSearch;
+  const vaultIndex = await evaluate(`(async () => {
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (!input) return { ok: false, reason: "no vault input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "C:/vault");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const concurrencyInput = document.querySelector('input[aria-label="Index concurrency"]');
+    if (!concurrencyInput) return { ok: false, reason: "no concurrency input" };
+    setter.call(concurrencyInput, "2");
+    concurrencyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let workersAttr = "";
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      workersAttr =
+        document.querySelector("[data-index-result-workers]")?.getAttribute("data-index-result-workers") ?? "";
+      if (workersAttr && Number(workersAttr) >= 1) break;
+    }
+    const filesVisible = document.body.innerText.includes(" files");
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const fileResultVisible =
+      document.body.innerText.includes("Obsidian Roadmap") || document.body.innerText.includes("Obsidian");
+    return {
+      ok: true,
+      filesVisible,
+      fileResultVisible,
+      concurrencyVisible: concurrencyInput.getAttribute("data-index-concurrency") === "2",
+      concurrencyUsed: Number(workersAttr) >= 1 && Number(workersAttr) <= 2,
+    };
+  })()`);
+  if (
+    !vaultIndex.ok ||
+    !vaultIndex.filesVisible ||
+    !vaultIndex.fileResultVisible ||
+    !vaultIndex.concurrencyVisible ||
+    !vaultIndex.concurrencyUsed
+  ) {
+    throw new Error(`Vault index assertion failed: ${JSON.stringify(vaultIndex)}`);
+  }
+  results.vaultIndex = vaultIndex;
+
+  const vectorRagCrossFile = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    await sleep(400);
+    const picker = document.querySelector("[data-cross-file-hits]");
+    if (!picker) return { ok: false, reason: "no cross file picker" };
+    const chips = [...picker.querySelectorAll("[data-cross-file-hit]")];
+    if (chips.length < 2) {
+      return {
+        ok: false,
+        reason: "cross file chips below 2",
+        chips: chips.map((el) => el.getAttribute("data-cross-file-hit") ?? ""),
+      };
+    }
+    const vectorScores = [...document.querySelectorAll("[data-rag-vector-score]")]
+      .map((el) => el.getAttribute("data-rag-vector-score") ?? "")
+      .filter((value) => Number(value) > 0);
+    const vectorStatus = document.querySelector("[data-vector-status]")?.getAttribute("data-vector-status") ?? "";
+    const firstPath = chips[0].getAttribute("data-cross-file-hit") ?? "";
+    chips[0].click();
+    await sleep(150);
+    const visibleDocFiles = [...document.querySelectorAll("[data-rag-result][data-rag-file]")]
+      .map((el) => el.getAttribute("data-rag-file") ?? "")
+      .filter(Boolean);
+    const activeAfterToggle =
+      document.querySelectorAll("[data-cross-file-hit]")[0]?.getAttribute("data-cross-file-active") === "false";
+    const onlyOtherFile = visibleDocFiles.every((file) => file !== firstPath);
+    document.querySelectorAll("[data-cross-file-hit]")[0]?.click();
+    await sleep(150);
+    const restoredActive = [...document.querySelectorAll("[data-cross-file-hit]")]
+      .every((el) => el.getAttribute("data-cross-file-active") === "true");
+    return {
+      ok: true,
+      chipCount: chips.length,
+      hasVectorScore: vectorScores.length > 0,
+      vectorStatus,
+      activeAfterToggle,
+      onlyOtherFile,
+      restoredActive,
+    };
+  })()`);
+  if (
+    !vectorRagCrossFile.ok ||
+    vectorRagCrossFile.chipCount < 2 ||
+    !vectorRagCrossFile.hasVectorScore ||
+    vectorRagCrossFile.vectorStatus !== 'on' ||
+    !vectorRagCrossFile.activeAfterToggle ||
+    !vectorRagCrossFile.onlyOtherFile ||
+    !vectorRagCrossFile.restoredActive
+  ) {
+    throw new Error(
+      `Vector RAG cross file assertion failed: ${JSON.stringify(vectorRagCrossFile)}`,
+    );
+  }
+  results.vectorRagCrossFile = vectorRagCrossFile;
+
+  await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    const vault = [
+      ...JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]"),
+      {
+        path: "C:/vault/Vector Config A.md",
+        title: "Vector Config A",
+        tags: "#work,#vector",
+        content: "# Vector Config A\\n\\nEmbedding model and shard configuration notes for vault indexing.",
+        indexedAt: now - 2000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify(Array.from({ length: 8 }, (_, i) => i + 1)),
+        shardId: "2",
+        embeddingModel: "local",
+        embeddingDim: 8,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/vault/Vector Config B.md",
+        title: "Vector Config B",
+        tags: "#life,#vector",
+        content: "# Vector Config B\\n\\nShard assignment and vector status summaries.",
+        indexedAt: now - 1000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify(Array.from({ length: 8 }, (_, i) => (i + 1) * 2)),
+        shardId: "3",
+        embeddingModel: "local",
+        embeddingDim: 8,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    localStorage.setItem(
+      "ai-workbench:vector-shards:v1",
+      JSON.stringify(
+        [
+          { shardId: "0", centroid: "" },
+          { shardId: "1", centroid: "" },
+          {
+            shardId: "2",
+            centroid: JSON.stringify(
+              Array.from({ length: 8 }, (_, i) => i + 1).map((v) => v / Math.sqrt(204)),
+            ),
+          },
+          {
+            shardId: "3",
+            centroid: JSON.stringify(
+              Array.from({ length: 8 }, (_, i) => (i + 1) * 2).map((v) => v / Math.sqrt(816)),
+            ),
+          },
+        ].map((extra, index) => ({
+          shardId: String(index),
+          model: "local",
+          dimension: 8,
+          documents: index >= 2 ? 1 : 0,
+          status: index >= 2 ? "ready" : "idle",
+          centroid: extra.centroid,
+          updatedAt: now,
+          createdAt: now,
+        })),
+      ),
+    );
+    localStorage.setItem(
+      "ai-workbench:embedding-config:v1",
+      JSON.stringify({
+        mode: "local",
+        providerId: "",
+        baseUrl: "",
+        apiKey: "",
+        model: "local",
+        dimension: 8,
+        shardCount: 4,
+        autoRebuild: false,
+        annEnabled: true,
+        probeCount: 2,
+        updatedAt: now,
+      }),
+    );
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorConfigAssert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i += 1) {
+      if (document.querySelectorAll("[data-vector-shard-item]").length === 4) break;
+      await sleep(100);
+    }
+    const mode = document.querySelector("[data-embedding-mode]")?.value ?? "";
+    const shardsInput = document.querySelector("[data-embedding-shards]")?.value ?? "";
+    const shardItems = [...document.querySelectorAll("[data-vector-shard-item]")];
+    const shardIds = shardItems.map((el) => el.getAttribute("data-vector-shard-id") ?? "");
+    const annChecked = document.querySelector("[data-vector-ann-enabled]")?.checked === true;
+    const probeValue = document.querySelector("[data-vector-probe-count]")?.value ?? "";
+    const centroidReady = shardItems.filter(
+      (el) => el.getAttribute("data-vector-shard-centroid") === "ready",
+    ).length;
+    const total = Number(document.querySelector("[data-vector-total]")?.textContent ?? -1);
+    const indexed = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    if (
+      mode !== "local" ||
+      shardsInput !== "4" ||
+      shardItems.length !== 4 ||
+      !annChecked ||
+      probeValue !== "2" ||
+      centroidReady !== 2 ||
+      total !== 4 ||
+      indexed !== 4
+    ) {
+      return {
+        ok: false,
+        reason: "initial vector state mismatch",
+        mode,
+        shardsInput,
+        shardCount: shardItems.length,
+        shardIds,
+        annChecked,
+        probeValue,
+        centroidReady,
+        total,
+        indexed,
+      };
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    const modelInput = document.querySelector("[data-embedding-model]");
+    if (!modelInput) return { ok: false, reason: "no embedding model input" };
+    setter.call(modelInput, "local-verify");
+    modelInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    document.querySelector("[data-embedding-save]")?.click();
+    for (let i = 0; i < 30; i += 1) {
+      const raw = localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}";
+      if ((JSON.parse(raw).model ?? "") === "local-verify") break;
+      await sleep(100);
+    }
+    const saved = JSON.parse(localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}");
+    const savedOk =
+      saved.mode === "local" &&
+      saved.model === "local-verify" &&
+      Number(saved.shardCount) === 4 &&
+      saved.autoRebuild === false &&
+      saved.annEnabled === true &&
+      Number(saved.probeCount) === 2;
+    for (let i = 0; i < 30; i += 1) {
+      if (
+        (document.querySelector("[data-embedding-model]")?.value ?? "") === "local-verify"
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const pending = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const modelLabel = document.querySelector("[data-vector-model]")?.textContent ?? "";
+    const modelInputAfter = document.querySelector("[data-embedding-model]")?.value ?? "";
+    return {
+      ok: savedOk && pending === 0 && modelLabel === "local" && modelInputAfter === "local-verify",
+      mode,
+      shardCount: document.querySelectorAll("[data-vector-shard-item]").length,
+      shardIds,
+      total,
+      indexed,
+      pending,
+      modelLabel,
+      modelInputAfter,
+      savedOk,
+    };
+  })()`);
+  if (!vectorConfigAssert.ok) {
+    throw new Error(`Vector index config assertion failed: ${JSON.stringify(vectorConfigAssert)}`);
+  }
+  results.vectorIndexConfig = vectorConfigAssert;
+  laneLog('vectorIndexConfig ok');
+
+  await evaluate(`(() => {
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    if (files.length === 0) return false;
+    files[0].embeddingStatus = "pending";
+    files[0].embedding = "";
+    files[0].embeddingModel = "";
+    files[0].embeddingDim = 0;
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(files));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorIndexRebuild = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i += 1) {
+      if (Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1) >= 1) break;
+      await sleep(100);
+    }
+    const pendingBefore = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const indexedBefore = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    document.querySelector("[data-vector-rebuild]")?.click();
+    for (let i = 0; i < 40; i += 1) {
+      const text = document.querySelector("[data-vector-rebuild-result]")?.textContent ?? "";
+      if (text.includes("Rebuilt")) break;
+      await sleep(100);
+    }
+    const message = document.querySelector("[data-vector-rebuild-result]")?.textContent ?? "";
+    const pendingAfter = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+    const indexedAfter = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const firstIndexed = stored[0]?.embeddingStatus === "indexed" && (stored[0]?.embedding ?? "").length > 0;
+    return {
+      ok:
+        pendingBefore === 1 &&
+        indexedBefore === 3 &&
+        message.includes("Rebuilt 1") &&
+        pendingAfter === 0 &&
+        indexedAfter === 4 &&
+        firstIndexed,
+      pendingBefore,
+      indexedBefore,
+      message,
+      pendingAfter,
+      indexedAfter,
+      firstIndexed,
+    };
+  })()`);
+  if (!vectorIndexRebuild.ok) {
+    throw new Error(`Vector index rebuild assertion failed: ${JSON.stringify(vectorIndexRebuild)}`);
+  }
+  results.vectorIndexRebuild = vectorIndexRebuild;
+  laneLog('vectorIndexRebuild ok');
+
+  const vectorShardSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const search = document.querySelector('input[placeholder="RAG search..."]');
+    if (!search) return { ok: false, reason: "no rag search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(search, "vault");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const searchBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Search");
+    if (!searchBtn) return { ok: false, reason: "no search button" };
+    searchBtn.click();
+    for (let i = 0; i < 30; i += 1) {
+      if (
+        [...document.querySelectorAll("[data-rag-vector-score]")].some(
+          (el) => (el.getAttribute("data-rag-vector-score") ?? "") !== "",
+        )
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const rows = [...document.querySelectorAll("[data-rag-result]")];
+    const docRows = rows.filter((el) => el.getAttribute("data-rag-file"));
+    const withShard = rows.filter(
+      (el) =>
+        el.getAttribute("data-rag-shard") !== "" &&
+        el.getAttribute("data-rag-shard") !== null,
+    );
+    const withModel = rows.filter(
+      (el) =>
+        el.getAttribute("data-rag-embedding-model") !== "" &&
+        el.getAttribute("data-rag-embedding-model") !== null,
+    );
+    return {
+      ok: rows.length > 0 && docRows.length > 0 && withShard.length > 0 && withModel.length > 0,
+      rows: rows.length,
+      docs: docRows.length,
+      withShard: withShard.length,
+      withModel: withModel.length,
+      firstHtml: rows[0] ? rows[0].outerHTML.slice(0, 400) : "",
+      docHtml: docRows[0] ? docRows[0].outerHTML.slice(0, 400) : "",
+      sample: rows[0]
+        ? {
+            file: rows[0].getAttribute("data-rag-file") ?? "",
+            shard: rows[0].getAttribute("data-rag-shard") ?? "",
+            model: rows[0].getAttribute("data-rag-embedding-model") ?? "",
+          }
+        : null,
+    };
+  })()`);
+  if (!vectorShardSearch.ok) {
+    throw new Error(`Vector shard search assertion failed: ${JSON.stringify(vectorShardSearch)}`);
+  }
+  results.vectorShardSearch = vectorShardSearch;
+  laneLog('vectorShardSearch ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "ai-workbench:vault:before-ann:v1",
+      localStorage.getItem("ai-workbench:vault:v1") ?? "[]",
+    );
+    const vault = Array.from({ length: 4 }, (_, index) => ({
+      path: "C:/vault/ann-" + index + ".md",
+      title: "ANN Probe " + index,
+      tags: "#work,#ann",
+      content:
+        "# ANN Probe " + index + "\\n\\nAnnVectorProbe shard " + index + " for approximate search.",
+      indexedAt: now - 1000 * index,
+      exists: true,
+      stale: false,
+      embedding: "",
+      shardId: String(index),
+      embeddingModel: "",
+      embeddingDim: 0,
+      embeddingStatus: "pending",
+      embeddingError: "",
+    }));
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    localStorage.setItem(
+      "ai-workbench:vector-shards:v1",
+      JSON.stringify(
+        Array.from({ length: 4 }, (_, index) => ({
+          shardId: String(index),
+          model: "local",
+          dimension: 256,
+          documents: 0,
+          status: "idle",
+          centroid: "",
+          updatedAt: now,
+          createdAt: now,
+        })),
+      ),
+    );
+    localStorage.setItem(
+      "ai-workbench:embedding-config:v1",
+      JSON.stringify({
+        mode: "local",
+        providerId: "",
+        baseUrl: "",
+        apiKey: "",
+        model: "local",
+        dimension: 256,
+        shardCount: 4,
+        autoRebuild: true,
+        annEnabled: true,
+        probeCount: 2,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vectorAnnSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rebuild = document.querySelector("[data-vector-rebuild]");
+    if (!rebuild) return { ok: false, reason: "no rebuild button" };
+    rebuild.click();
+    for (let i = 0; i < 40; i += 1) {
+      const pending = Number(document.querySelector("[data-vector-pending]")?.textContent ?? -1);
+      const indexed = Number(document.querySelector("[data-vector-indexed]")?.textContent ?? -1);
+      if (pending === 0 && indexed === 4) break;
+      await sleep(100);
+    }
+    const centroidReady = [...document.querySelectorAll("[data-vector-shard-item]")].filter(
+      (el) => el.getAttribute("data-vector-shard-centroid") === "ready",
+    ).length;
+    const runSearch = async (term) => {
+      const search = document.querySelector('input[placeholder="RAG search..."]');
+      if (!search) return { ok: false, reason: "no rag search input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      const clearBtn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Clear",
+      );
+      if (clearBtn) clearBtn.click();
+      await sleep(80);
+      setter.call(search, term);
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const searchBtn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Search",
+      );
+      if (!searchBtn) return { ok: false, reason: "no search button" };
+      searchBtn.click();
+      for (let i = 0; i < 30; i += 1) {
+        if (document.body.innerText.includes("RAG matches")) break;
+        await sleep(100);
+      }
+      return [
+        ...new Set(
+          [...document.querySelectorAll("[data-rag-result][data-rag-file]")]
+            .map((el) => el.getAttribute("data-rag-shard") ?? "")
+            .filter(Boolean),
+        ),
+      ];
+    };
+    const annShards = await runSearch("AnnVectorProbe");
+    const annToggle = document.querySelector("[data-vector-ann-enabled]");
+    if (!annToggle) return { ok: false, reason: "no ann toggle", annShards, centroidReady };
+    annToggle.click();
+    for (let i = 0; i < 30; i += 1) {
+      if (document.querySelector("[data-vector-ann-enabled]")?.checked === false) break;
+      await sleep(50);
+    }
+    document.querySelector("[data-embedding-save]")?.click();
+    let annDisabledSaved = false;
+    for (let i = 0; i < 30; i += 1) {
+      const raw = JSON.parse(localStorage.getItem("ai-workbench:embedding-config:v1") ?? "{}");
+      if (raw.annEnabled === false) {
+        annDisabledSaved = true;
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(120);
+    const fullShards = await runSearch("AnnVectorProbe");
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      localStorage.getItem("ai-workbench:vault:before-ann:v1") ?? "[]",
+    );
+    localStorage.removeItem("ai-workbench:vault:before-ann:v1");
+    return {
+      ok:
+        annDisabledSaved &&
+        centroidReady === 4 &&
+        annShards.length >= 1 &&
+        annShards.length <= 2 &&
+        fullShards.length === 4,
+      annDisabledSaved,
+      centroidReady,
+      annShards,
+      fullShards,
+    };
+  })()`);
+  if (!vectorAnnSearch.ok) {
+    throw new Error(`Vector ANN search assertion failed: ${JSON.stringify(vectorAnnSearch)}`);
+  }
+  results.vectorAnnSearch = vectorAnnSearch;
+  laneLog('vectorAnnSearch ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const existing = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const vault = [
+      ...existing,
+      {
+        path: "C:/clusters/graph-a.md",
+        title: "Graph A",
+        tags: "#work,#clusters",
+        content: "# Graph A\\n\\nKnowledge graph vector search embedding cluster.",
+        indexedAt: now - 3000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+        shardId: "1",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/graph-b.md",
+        title: "Graph B",
+        tags: "#work,#clusters",
+        content: "# Graph B\\n\\nKnowledge graph vector search embedding cluster notes.",
+        indexedAt: now - 2000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+        shardId: "2",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/weather-c.md",
+        title: "Weather C",
+        tags: "#life,#clusters",
+        content: "# Weather C\\n\\nWeekend weather forecast running plan.",
+        indexedAt: now - 1000,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([2, 4, 6, 8, 10, 12, 14, 16, 18, 20]),
+        shardId: "3",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/copy-x.md",
+        title: "Copy X",
+        tags: "#work,#clusters",
+        content: "# Copy X\\n\\nExact duplicate document body with identical embedding.",
+        indexedAt: now,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        shardId: "4",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+      {
+        path: "C:/clusters/copy-y.md",
+        title: "Copy Y",
+        tags: "#work,#clusters",
+        content: "# Copy X\\n\\nExact duplicate document body with identical embedding.",
+        indexedAt: now,
+        exists: true,
+        stale: false,
+        embedding: JSON.stringify([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        shardId: "5",
+        embeddingModel: "local",
+        embeddingDim: 10,
+        embeddingStatus: "indexed",
+        embeddingError: "",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(vault));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const knowledgeClusters = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const recompute = document.querySelector("[data-cluster-recompute]");
+    if (!recompute) return { ok: false, reason: "no cluster recompute button" };
+    recompute.click();
+    for (let i = 0; i < 40; i += 1) {
+      const message = document.querySelector("[data-cluster-message]")?.textContent ?? "";
+      if (message.includes("Recomputed")) break;
+      await sleep(100);
+    }
+    const items = [...document.querySelectorAll("[data-cluster-item]")];
+    const docsPerCluster = items.map((el) =>
+      Number(el.getAttribute("data-cluster-docs") ?? 0),
+    );
+    const multi = items.filter((el) => Number(el.getAttribute("data-cluster-docs") ?? 0) > 1);
+    const single = items.filter((el) => Number(el.getAttribute("data-cluster-docs") ?? 0) === 1);
+    const dupes = [...document.querySelectorAll("[data-dedup-item]")];
+    const dupSimilarity = Number(
+      document.querySelector("[data-dedup-similarity]")?.getAttribute("data-dedup-similarity") ?? 0,
+    );
+    return {
+      ok: items.length >= 3 && multi.length >= 1 && single.length >= 1 && dupes.length >= 1 && dupSimilarity > 0.9,
+      items: items.length,
+      docsPerCluster,
+      multi: multi.length,
+      single: single.length,
+      dupes: dupes.length,
+      dupSimilarity,
+    };
+  })()`);
+  if (!knowledgeClusters.ok) {
+    throw new Error(`Knowledge clusters assertion failed: ${JSON.stringify(knowledgeClusters)}`);
+  }
+  results.knowledgeClusters = knowledgeClusters;
+  laneLog('knowledgeClusters ok');
+
+  const knowledgeDedupActions = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dismissBtn = document.querySelector("[data-dedup-dismiss]");
+    if (!dismissBtn) return { ok: false, reason: "no dismiss button" };
+    const openBefore = [...document.querySelectorAll("[data-dedup-item]")].length;
+    dismissBtn.click();
+    await sleep(300);
+    const openAfterDismiss = [...document.querySelectorAll("[data-dedup-item]")].length;
+    const mergeBtn = document.querySelector("[data-dedup-merge]");
+    if (!mergeBtn) return { ok: false, reason: "no merge button" };
+    const mergeId = mergeBtn.getAttribute("data-dedup-id") ?? "";
+    const storedBefore = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+    const pair = storedBefore.find((item) => item.id === mergeId) ?? { docA: "", docB: "" };
+    mergeBtn.click();
+    for (let i = 0; i < 40; i += 1) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+      if (stored.some((item) => item.id === mergeId && item.status === "merged")) break;
+      await sleep(100);
+    }
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]");
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:knowledge-dedup:v1") ?? "[]");
+    const filePaths = new Set(files.map((file) => file.path));
+    return {
+      ok:
+        openBefore > 0 &&
+        openAfterDismiss < openBefore &&
+        filePaths.has(pair.docA) &&
+        !filePaths.has(pair.docB),
+      openBefore,
+      openAfterDismiss,
+      mergeId,
+      pairDocA: pair.docA,
+      pairDocB: pair.docB,
+      mergeStored: stored.find((item) => item.id === mergeId)?.status ?? "",
+      fileCount: files.length,
+    };
+  })()`);
+  if (!knowledgeDedupActions.ok) {
+    throw new Error(
+      `Knowledge dedup actions assertion failed: ${JSON.stringify(knowledgeDedupActions)}`,
+    );
+  }
+  results.knowledgeDedupActions = knowledgeDedupActions;
+  laneLog('knowledgeDedupActions ok');
+
+  await evaluate(`(() => {
+    const files = JSON.parse(localStorage.getItem("ai-workbench:vault:v1") ?? "[]")
+      .filter((file) => !file.path.includes("Vector Config"))
+      .slice(0, 2);
+    localStorage.setItem("ai-workbench:vault:v1", JSON.stringify(files));
+    return true;
+  })()`);
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.thoughts = [
+      {
+        id: "bl-a",
+        content: "# Alpha\\n\\nSee [[Beta]] and [[Gamma]] and [[Missing Note]]",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 3000,
+      },
+      {
+        id: "bl-b",
+        content: "# Beta\\n\\nBack to [[Alpha]]",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 2000,
+      },
+      {
+        id: "bl-c",
+        content: "# Gamma\\n\\nNo links",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 1000,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+
+  const knowledgeBacklinks = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const clickThought = async (id) => {
+      const btn = document.querySelector('[data-rag-result="' + id + '"]');
+      if (!btn) return false;
+      btn.click();
+      for (let i = 0; i < 30; i++) {
+        if (document.querySelector('[data-thought-links]')) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    if (!(await clickThought("bl-a"))) {
+      return { ok: false, reason: "alpha note not selectable" };
+    }
+    const outgoing = () => [...document.querySelectorAll("[data-thought-link-out]")];
+    const incoming = () => [...document.querySelectorAll("[data-thought-link-back]")];
+    const missing = () => [...document.querySelectorAll("[data-thought-link-missing]")];
+    const stats = () =>
+      document.querySelector("[data-knowledge-graph-stats]")?.textContent ?? "";
+    let outTargets = [];
+    let backTargets = [];
+    let missingTargets = [];
+    let statsText = "";
+    for (let i = 0; i < 30; i++) {
+      outTargets = outgoing().map((el) => el.getAttribute("data-thought-link-target"));
+      backTargets = incoming().map((el) => el.getAttribute("data-thought-link-target"));
+      missingTargets = missing().map((el) => el.getAttribute("data-thought-link-target"));
+      statsText = stats();
+      if (
+        outTargets.includes("Beta") &&
+        outTargets.includes("Gamma") &&
+        missingTargets.includes("Missing Note") &&
+        backTargets.includes("Alpha") &&
+        statsText.includes("3 links") &&
+        statsText.includes("1 backlinks") &&
+        statsText.includes("1 missing")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const alphaOk =
+      outTargets.includes("Beta") &&
+      outTargets.includes("Gamma") &&
+      missingTargets.includes("Missing Note") &&
+      backTargets.includes("Alpha") &&
+      incoming().some((el) => el.getAttribute("data-thought-link-source") === "bl-b") &&
+      statsText.includes("3 links") &&
+      statsText.includes("1 backlinks") &&
+      statsText.includes("1 missing");
+
+    incoming()[0]?.click();
+    let betaBack = "";
+    let betaOut = "";
+    for (let i = 0; i < 30; i++) {
+      const back = [...document.querySelectorAll("[data-thought-link-back]")];
+      const out = [...document.querySelectorAll("[data-thought-link-out]")];
+      betaBack = back.map((el) => el.getAttribute("data-thought-link-target")).join(",");
+      betaOut = out.map((el) => el.getAttribute("data-thought-link-target")).join(",");
+      if (betaBack.includes("Beta") && betaOut.includes("Alpha")) break;
+      await sleep(100);
+    }
+    const betaOk = betaBack.includes("Beta") && betaOut.includes("Alpha");
+    return {
+      ok: alphaOk && betaOk,
+      outTargets,
+      backTargets,
+      missingTargets,
+      statsText,
+      betaBack,
+      betaOut,
+      alphaOk,
+      betaOk,
+    };
+  })()`);
+  if (!knowledgeBacklinks.ok) {
+    throw new Error(`Knowledge backlinks assertion failed: ${JSON.stringify(knowledgeBacklinks)}`);
+  }
+  results.knowledgeBacklinks = knowledgeBacklinks;
+  laneLog('knowledgeBacklinks ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.thoughts = [
+      {
+        id: "wl-alpha",
+        content: "# Alpha\\n\\nDraft body",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 5000,
+      },
+      {
+        id: "wl-beta",
+        content: "# Beta\\n\\nBeta detail",
+        tags: "#work",
+        type: "note",
+        createdAt: now - 4000,
+      },
+      {
+        id: "wl-begin",
+        content: "# Beginner\\n\\nBeginner detail",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 3000,
+      },
+      {
+        id: "wl-gamma",
+        content: "# Gamma\\n\\nGamma detail",
+        tags: "#life",
+        type: "note",
+        createdAt: now - 2000,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+
+  const wikiLinkAutocomplete = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = () => document.querySelector('[data-thought-body-input="wl-alpha"]');
+    const suggestions = () => [...document.querySelectorAll("[data-wiki-link-suggestion]")];
+    const suggestionTitles = () =>
+      suggestions().map((el) => el.getAttribute("data-wiki-link-suggestion") ?? "");
+    const activeIndex = () =>
+      suggestions().findIndex((el) => el.getAttribute("data-wiki-link-active") === "true");
+    const waitFor = async (fn) => {
+      for (let i = 0; i < 40; i += 1) {
+        if (fn()) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const typeText = async (text) => {
+      const el = input();
+      if (!el) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, text);
+      el.setSelectionRange(text.length, text.length);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    };
+    const press = (key) => {
+      input()?.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+    };
+    document.querySelector('[data-rag-result="wl-alpha"]')?.click();
+    if (
+      !(await waitFor(() => document.querySelector('[data-thought-body-edit="wl-alpha"]')))
+    ) {
+      return { ok: false, reason: "alpha detail not rendered" };
+    }
+    document.querySelector('[data-thought-body-edit="wl-alpha"]')?.click();
+    if (!(await waitFor(() => input()))) {
+      return { ok: false, reason: "editor not opened" };
+    }
+
+    await typeText("# Alpha\\n\\nSee [[Be");
+    const clickCandidates = await waitFor(
+      () =>
+        suggestions().length >= 2 &&
+        suggestionTitles().includes("Beta") &&
+        suggestionTitles().includes("Beginner"),
+    );
+    const beforeArrow = activeIndex();
+    press("ArrowDown");
+    await sleep(80);
+    const afterArrow = activeIndex();
+    suggestions()
+      .find((el) => el.getAttribute("data-wiki-link-suggestion") === "Beta")
+      ?.click();
+    const clickInserted = await waitFor(() =>
+      (input()?.value ?? "").includes("[[Beta]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Gam");
+    const enterCandidates = await waitFor(() =>
+      suggestionTitles().includes("Gamma"),
+    );
+    press("Enter");
+    const enterInserted = await waitFor(() =>
+      (input()?.value ?? "").includes("[[Gamma]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Be");
+    const tabCandidates = await waitFor(() => suggestions().length >= 2);
+    const tabTarget = suggestionTitles()[0] ?? "";
+    press("Tab");
+    const tabInserted = await waitFor(() =>
+      tabTarget.length > 0 && (input()?.value ?? "").includes("[[" + tabTarget + "]]"),
+    );
+
+    await typeText("# Alpha\\n\\nSee [[Ga");
+    const escCandidates = await waitFor(() => suggestions().length >= 1);
+    press("Escape");
+    const closed = await waitFor(
+      () => !document.querySelector("[data-wiki-link-suggestions]"),
+    );
+    const afterEsc = input()?.value ?? "";
+
+    await typeText("# Alpha\\n\\nSee [[Beta]] and [[Gamma]]");
+    document.querySelector('[data-thought-body-save="wl-alpha"]')?.click();
+    const saved = await waitFor(
+      () =>
+        (document.querySelector('[data-thought-body-result="wl-alpha"]')?.textContent ?? "").includes(
+          "Saved",
+        ),
+    );
+    return {
+      ok:
+        clickCandidates &&
+        enterCandidates &&
+        tabCandidates &&
+        escCandidates &&
+        clickInserted &&
+        enterInserted &&
+        tabInserted &&
+        closed &&
+        saved &&
+        afterArrow === 1,
+      clickCandidates,
+      enterCandidates,
+      tabCandidates,
+      escCandidates,
+      beforeArrow,
+      afterArrow,
+      clickInserted,
+      enterInserted,
+      tabInserted,
+      tabTarget,
+      closed,
+      afterEsc,
+      saved,
+    };
+  })()`);
+  if (!wikiLinkAutocomplete.ok) {
+    throw new Error(
+      `Wiki link autocomplete assertion failed: ${JSON.stringify(wikiLinkAutocomplete)}`,
+    );
+  }
+  results.wikiLinkAutocomplete = wikiLinkAutocomplete;
+  laneLog('wikiLinkAutocomplete ok');
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const wikiLinkPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let clicked = false;
+    let ragIds = [];
+    for (let i = 0; i < 40; i += 1) {
+      const alpha = document.querySelector('[data-rag-result="wl-alpha"]');
+      ragIds = [...document.querySelectorAll("[data-rag-result]")].map((el) =>
+        el.getAttribute("data-rag-result"),
+      );
+      if (alpha) {
+        alpha.click();
+        clicked = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let current = "";
+    let currentAttrs = [];
+    for (let i = 0; i < 60; i += 1) {
+      currentAttrs = [...document.querySelectorAll("[data-thought-body-current]")].map((el) =>
+        el.getAttribute("data-thought-body-current"),
+      );
+      current =
+        document.querySelector('[data-thought-body-edit="wl-alpha"]')?.getAttribute(
+          "data-thought-body-current",
+        ) ?? "";
+      if (current.includes("[[Beta]]") && current.includes("[[Gamma]]")) {
+        return { ok: true, current };
+      }
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedAlpha = stored.thoughts?.find((t) => t.id === "wl-alpha");
+    return {
+      ok: false,
+      current,
+      currentAttrs,
+      clicked,
+      ragIds,
+      storedContent: storedAlpha?.content ?? "",
+    };
+  })()`);
+  if (!wikiLinkPersisted.ok) {
+    throw new Error(`Wiki link persistence assertion failed: ${JSON.stringify(wikiLinkPersisted)}`);
+  }
+  results.wikiLinkPersisted = wikiLinkPersisted;
+  laneLog('wikiLinkPersisted ok');
+
+  const concurrencyAuto = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = document.querySelector("[data-index-concurrency-auto]");
+    const input = document.querySelector('input[aria-label="Index concurrency"]');
+    if (!autoBtn || !input) {
+      return { ok: false, reason: "no auto concurrency control" };
+    }
+    autoBtn.click();
+    await sleep(180);
+    const autoOn = autoBtn.getAttribute("data-index-concurrency-auto") === "on";
+    const value = Number(input.value || 0);
+    const inRange = value >= 1 && value <= 16;
+    const disabled = input.disabled;
+    autoBtn.click();
+    await sleep(180);
+    const autoOff = autoBtn.getAttribute("data-index-concurrency-auto") === "off";
+    const manualEnabled = !input.disabled;
+    return {
+      ok: autoOn && inRange && disabled && autoOff && manualEnabled,
+      autoOn,
+      value,
+      inRange,
+      disabled,
+      autoOff,
+      manualEnabled,
+    };
+  })()`);
+  if (!concurrencyAuto.ok) {
+    throw new Error(`Concurrency auto assertion failed: ${JSON.stringify(concurrencyAuto)}`);
+  }
+  results.concurrencyAuto = concurrencyAuto;
+
+  const autoScaleIndex = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = document.querySelector("[data-index-concurrency-auto]");
+    if (!autoBtn) return { ok: false, reason: "no auto concurrency control" };
+    if (autoBtn.getAttribute("data-index-concurrency-auto") !== "on") {
+      autoBtn.click();
+      await sleep(150);
+    }
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let workers = 0;
+    for (let i = 0; i < 30; i++) {
+      await sleep(100);
+      workers = Number(
+        document.querySelector("[data-index-result-workers]")?.getAttribute("data-index-result-workers") ?? 0,
+      );
+      if (workers > 0) break;
+    }
+    const ok = workers >= 1 && workers <= 16;
+    return { ok, workers, autoOn: autoBtn.getAttribute("data-index-concurrency-auto") === "on" };
+  })()`);
+  if (!autoScaleIndex.ok) {
+    throw new Error(`Auto scale index assertion failed: ${JSON.stringify(autoScaleIndex)}`);
+  }
+  results.autoScaleIndex = autoScaleIndex;
+
+  const cancelIndex = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let cancelBtn = null;
+    for (let i = 0; i < 30; i++) {
+      cancelBtn = document.querySelector("[data-index-cancel]");
+      if (cancelBtn) break;
+      await sleep(10);
+    }
+    if (!cancelBtn) return { ok: false, reason: "no cancel button" };
+    cancelBtn.click();
+    let status = "";
+    for (let i = 0; i < 40; i++) {
+      status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      if (status.includes("Cancelled") || status.includes("Indexed")) break;
+      await sleep(25);
+    }
+    return { ok: status.includes("Cancelled"), status };
+  })()`);
+  if (!cancelIndex.ok) {
+    throw new Error(`Index cancel assertion failed: ${JSON.stringify(cancelIndex)}`);
+  }
+  results.cancelIndex = cancelIndex;
+
+  const indexQueue = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (!input) return { ok: false, reason: "no vault input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "C:/vault");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const clickIndex = () => {
+      const btn = [...document.querySelectorAll("main button")].find(
+        (b) => b.textContent.trim() === "Index vault",
+      );
+      if (btn) btn.click();
+    };
+    clickIndex();
+    await sleep(60);
+    clickIndex();
+    let sawQueue = false;
+    let drained = false;
+    for (let i = 0; i < 80; i++) {
+      await sleep(100);
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const active = document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      if (count > 0) sawQueue = true;
+      if (sawQueue && count === 0 && !active) {
+        drained = true;
+        break;
+      }
+    }
+    return { ok: sawQueue && drained, sawQueue, drained };
+  })()`);
+  if (!indexQueue.ok) {
+    throw new Error(`Index queue assertion failed: ${JSON.stringify(indexQueue)}`);
+  }
+  results.indexQueue = indexQueue;
+
+  await evaluate(`(() => {
+    const records = Array.from({ length: 6 }, (_, i) => ({
+      runId: "persist-run-" + (i + 1),
+      path: "C:/persist-" + (i + 1),
+      ignorePatterns: [],
+      concurrency: 4,
+      status: "queued",
+    }));
+    localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
+    return { ok: true, seeded: records.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const indexQueuePersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let sawQueue = false;
+    let activeSeen = "";
+    let drained = false;
+    for (let i = 0; i < 120; i++) {
+      await sleep(100);
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      if (count > 0) sawQueue = true;
+      if (active) activeSeen = active;
+      let records = [];
+      try {
+        records = JSON.parse(
+          localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+        );
+      } catch {}
+      if ((sawQueue || activeSeen) && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok: (sawQueue || activeSeen) && drained,
+      sawQueue,
+      activeSeen,
+      drained,
+      seedFiles: 6,
+    };
+  })()`);
+  if (!indexQueuePersist.ok) {
+    throw new Error(`Index queue persist assertion failed: ${JSON.stringify(indexQueuePersist)}`);
+  }
+  results.indexQueuePersist = indexQueuePersist;
+
+  await evaluate(`(() => {
+    const records = [
+      {
+        runId: "prio-low",
+        path: "C:/priority-low",
+        ignorePatterns: [],
+        concurrency: 4,
+        priority: 0,
+        attempts: 0,
+        lastError: "",
+        status: "queued",
+      },
+      {
+        runId: "prio-high",
+        path: "C:/priority-high",
+        ignorePatterns: [],
+        concurrency: 4,
+        priority: 1,
+        attempts: 0,
+        lastError: "",
+        status: "queued",
+      },
+    ];
+    localStorage.setItem("ai-workbench:vault-index-queue:v1", JSON.stringify(records));
+    return { ok: true, seeded: records.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const indexQueuePriority = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let firstActive = "";
+    let sawHigh = false;
+    let queuedPaths = [];
+    for (let i = 0; i < 120; i++) {
+      await sleep(50);
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const activePriority =
+        document.querySelector("[data-vault-index-queue-active-priority]")?.getAttribute("data-vault-index-queue-active-priority") ?? "";
+      if (active) {
+        if (!firstActive) firstActive = active;
+        if (activePriority === "1") sawHigh = true;
+      }
+      queuedPaths = [...document.querySelectorAll("[data-vault-index-queued-path]")].map(
+        (el) => el.getAttribute("data-vault-index-queued-path") ?? "",
+      );
+      if (firstActive && queuedPaths.length > 0) break;
+    }
+    let drained = false;
+    for (let i = 0; i < 120; i++) {
+      await sleep(100);
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok: firstActive.includes("priority-high") && sawHigh && drained,
+      firstActive,
+      sawHigh,
+      queuedPaths,
+      drained,
+    };
+  })()`);
+  if (!indexQueuePriority.ok) {
+    throw new Error(`Index queue priority assertion failed: ${JSON.stringify(indexQueuePriority)}`);
+  }
+  results.indexQueuePriority = indexQueuePriority;
+
+  await evaluate(`(() => {
+    localStorage.setItem(
+      "ai-workbench:vault-index-queue:v1",
+      JSON.stringify([
+        {
+          runId: "retry-run",
+          path: "C:/retry-vault",
+          ignorePatterns: [],
+          concurrency: 4,
+          priority: 1,
+          attempts: 0,
+          lastError: "",
+          status: "queued",
+        },
+      ]),
+    );
+    return { ok: true };
+  })()`);
+  await reloadAndWait();
+  await clickDockFast('Knowledge');
+  const indexQueueRetry = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const attemptsSeen = new Set();
+    const delaysSeen = new Set();
+    let errorSeen = false;
+    let drained = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(20);
+      for (const el of document.querySelectorAll("[data-vault-index-queued-path]")) {
+        const attempts = Number(el.getAttribute("data-vault-index-queue-attempts") ?? 0);
+        if (attempts > 0) attemptsSeen.add(attempts);
+        const delay = Number(el.getAttribute("data-vault-index-queue-retry-delay") ?? 0);
+        if (attempts > 0 && delay > 0) delaysSeen.add(delay);
+      }
+      const activeAttempts = Number(
+        document.querySelector("[data-vault-index-queue-active-attempts]")?.getAttribute("data-vault-index-queue-active-attempts") ?? 0,
+      );
+      if (activeAttempts > 0) attemptsSeen.add(activeAttempts);
+      const activeDelay = Number(
+        document.querySelector("[data-vault-index-queue-active-retry-delay]")?.getAttribute("data-vault-index-queue-active-retry-delay") ?? 0,
+      );
+      if (activeAttempts > 0 && activeDelay > 0) delaysSeen.add(activeDelay);
+      const status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      if (status.includes("simulated failure")) errorSeen = true;
+      const active =
+        document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0 && errorSeen) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok:
+        attemptsSeen.has(1) &&
+        attemptsSeen.has(2) &&
+        delaysSeen.has(500) &&
+        delaysSeen.has(1000) &&
+        errorSeen &&
+        drained,
+      attemptsSeen: [...attemptsSeen],
+      retryDelays: [...delaysSeen],
+      errorSeen,
+      drained,
+    };
+  })()`);
+  if (!indexQueueRetry.ok) {
+    throw new Error(`Index queue retry assertion failed: ${JSON.stringify(indexQueueRetry)}`);
+  }
+  results.indexQueueRetry = indexQueueRetry;
+
+  await evaluate(`(() => {
+    localStorage.setItem(
+      "ai-workbench:vault-index-queue:v1",
+      JSON.stringify([
+        {
+          runId: "backoff-run",
+          path: "C:/backoff-retry-vault",
+          ignorePatterns: [],
+          concurrency: 4,
+          priority: 1,
+          attempts: 0,
+          lastError: "",
+          status: "queued",
+        },
+      ]),
+    );
+    return { ok: true };
+  })()`);
+  await reloadAndWait();
+  await clickDockFast('Knowledge');
+  results.indexQueueBackoff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const attemptsSeen = new Set();
+    const delaysSeen = new Set();
+    let drained = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(20);
+      for (const el of document.querySelectorAll("[data-vault-index-queued-path]")) {
+        const attempts = Number(el.getAttribute("data-vault-index-queue-attempts") ?? 0);
+        if (attempts > 0) attemptsSeen.add(attempts);
+        const delay = Number(el.getAttribute("data-vault-index-queue-retry-delay") ?? 0);
+        if (attempts > 0 && delay > 0) delaysSeen.add(delay);
+      }
+      const activeAttempts = Number(
+        document.querySelector("[data-vault-index-queue-active-attempts]")?.getAttribute("data-vault-index-queue-active-attempts") ?? 0,
+      );
+      if (activeAttempts > 0) attemptsSeen.add(activeAttempts);
+      const activeDelay = Number(
+        document.querySelector("[data-vault-index-queue-active-retry-delay]")?.getAttribute("data-vault-index-queue-active-retry-delay") ?? 0,
+      );
+      if (activeAttempts > 0 && activeDelay > 0) delaysSeen.add(activeDelay);
+      const active = document.querySelector("[data-vault-index-queue-active]")?.getAttribute("data-vault-index-queue-active") ?? "";
+      const count = Number(
+        document.querySelector("[data-vault-index-queue-count]")?.getAttribute("data-vault-index-queue-count") ?? 0,
+      );
+      const records = JSON.parse(
+        localStorage.getItem("ai-workbench:vault-index-queue:v1") ?? "[]",
+      );
+      if (!active && count === 0 && records.length === 0) {
+        drained = true;
+        break;
+      }
+    }
+    return {
+      ok:
+        attemptsSeen.has(1) &&
+        attemptsSeen.has(2) &&
+        delaysSeen.has(500) &&
+        delaysSeen.has(1000) &&
+        drained,
+      attemptsSeen: [...attemptsSeen],
+      retryDelays: [...delaysSeen],
+      drained,
+    };
+  })()`);
+  if (!results.indexQueueBackoff.ok) {
+    throw new Error(
+      `Index queue backoff assertion failed: ${JSON.stringify(results.indexQueueBackoff)}`,
+    );
+  }
+
+  await evaluate(`(() => {
+    const input = document.querySelector('input[placeholder="Vault path..."]');
+    if (input) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(input, "C:/vault");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return true;
+  })()`);
+
+  const indexProgressCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const indexBtn = [...document.querySelectorAll("main button")].find(
+      (b) => b.textContent.trim() === "Index vault",
+    );
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let status = "";
+    let bar = 0;
+    for (let i = 0; i < 30; i++) {
+      status = document.querySelector("[data-index-progress-status]")?.textContent ?? "";
+      bar = Number(document.querySelector("[data-index-progress]")?.getAttribute("data-index-progress") ?? 0);
+      if (status.includes("Indexed") && bar === 100) break;
+      await sleep(100);
+    }
+    return { ok: status.includes("Indexed") && bar === 100, status, bar };
+  })()`);
+  if (!indexProgressCheck.ok) {
+    throw new Error(`Index progress assertion failed: ${JSON.stringify(indexProgressCheck)}`);
+  }
+  results.indexProgress = indexProgressCheck;
+
+  const vaultIgnore = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const ignoreInput = document.querySelector('input[placeholder="Ignore patterns (comma separated)"]');
+    if (!ignoreInput) return { ok: false, reason: "no ignore input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(ignoreInput, "Daily Notes");
+    ignoreInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const indexBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Index vault");
+    if (!indexBtn) return { ok: false, reason: "no index button" };
+    indexBtn.click();
+    let ignored = false;
+    for (let i = 0; i < 20; i++) {
+      const skipped = Number(document.querySelector('[data-vault-ignored]')?.getAttribute("data-vault-ignored") ?? 0);
+      const files = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+      ignored = skipped === 1 && files === 1;
+      if (ignored) break;
+      await sleep(100);
+    }
+    return { ok: ignored };
+  })()`);
+  if (!vaultIgnore.ok) {
+    throw new Error(`Vault ignore assertion failed: ${JSON.stringify(vaultIgnore)}`);
+  }
+  results.vaultIgnore = vaultIgnore;
+  const vaultWatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const filesBefore = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+    const watchBtn = document.querySelector('[data-vault-watch]');
+    if (!watchBtn) return { ok: false, reason: "no vault watch button" };
+    watchBtn.click();
+    await sleep(350);
+    const statusOn =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "on";
+    const watchingText = document.body.innerText.includes("watching");
+    const stopText = document.querySelector('[data-vault-watch]')?.textContent.includes("Stop watch") ?? false;
+    const skippedVisible =
+      document.querySelector('[data-vault-ignored]')?.textContent.includes("Skipped 1") ?? false;
+    const filesAfter = Number(document.querySelector('[data-vault-files]')?.getAttribute("data-vault-files") ?? 0);
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(250);
+    const statusOff =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "off";
+    return {
+      ok: statusOn && watchingText && stopText && statusOff && filesAfter > filesBefore && skippedVisible,
+      statusOn,
+      watchingText,
+      stopText,
+      statusOff,
+      skippedVisible,
+      filesBefore,
+      filesAfter,
+    };
+  })()`);
+  if (!vaultWatch.ok) {
+    throw new Error(`Vault watch assertion failed: ${JSON.stringify(vaultWatch)}`);
+  }
+  results.vaultWatch = vaultWatch;
+  const vaultWatchReady = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const watchBtn = document.querySelector('[data-vault-watch]');
+    if (!watchBtn) return { ok: false, reason: "no vault watch button" };
+    if (watchBtn.getAttribute("data-vault-watch") !== "on") {
+      watchBtn.click();
+      await sleep(350);
+    }
+    const path = document.querySelector('input[placeholder="Vault path..."]')?.value ?? "";
+    const ignore =
+      document.querySelector('input[placeholder="Ignore patterns (comma separated)"]')?.value ?? "";
+    return {
+      ok: path === "C:/vault" && ignore.includes("Daily Notes"),
+      path,
+      ignore,
+    };
+  })()`);
+  if (!vaultWatchReady.ok) {
+    throw new Error(`Vault watch persistence setup failed: ${JSON.stringify(vaultWatchReady)}`);
+  }
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const vaultWatchPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let restored = false;
+    for (let i = 0; i < 30; i++) {
+      const path = document.querySelector('input[placeholder="Vault path..."]')?.value ?? "";
+      const ignore =
+        document.querySelector('input[placeholder="Ignore patterns (comma separated)"]')?.value ?? "";
+      const watch =
+        document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") ?? "";
+      restored = path === "C:/vault" && ignore.includes("Daily Notes") && watch === "on";
+      if (restored) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(250);
+    const stopped =
+      document.querySelector('[data-vault-watch-status]')?.getAttribute("data-vault-watch-status") === "off";
+    return { ok: restored && stopped, restored, stopped };
+  })()`);
+  if (!vaultWatchPersisted.ok) {
+    throw new Error(
+      `Vault watch persistence assertion failed: ${JSON.stringify(vaultWatchPersisted)}`,
+    );
+  }
+  results.vaultWatchPersisted = vaultWatchPersisted;
+
+  const multiVaultWatch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const pathInput = document.querySelector('input[placeholder="Vault path..."]');
+    if (!pathInput) return { ok: false, reason: "no vault path input" };
+    setter.call(pathInput, "D:/vault");
+    pathInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-vault-watch]')?.click();
+    await sleep(400);
+    let rows = [...document.querySelectorAll("[data-vault-target]")];
+    const secondOn = rows.some(
+      (row) =>
+        row.getAttribute("data-vault-target-path") === "D:/vault" &&
+        row.getAttribute("data-vault-target-watch") === "on",
+    );
+    if (!secondOn) {
+      return {
+        ok: false,
+        reason: "second target not watching",
+        paths: rows.map((row) => row.getAttribute("data-vault-target-path")),
+      };
+    }
+    const firstRow = rows.find(
+      (row) => row.getAttribute("data-vault-target-path") === "C:/vault",
+    );
+    firstRow?.querySelector("[data-vault-target-toggle]")?.click();
+    await sleep(400);
+    rows = [...document.querySelectorAll("[data-vault-target]")];
+    const bothOn = rows.every((row) => row.getAttribute("data-vault-target-watch") === "on");
+    const count =
+      document.querySelector("[data-vault-watch-count]")?.getAttribute("data-vault-watch-count") ?? "";
+    for (const row of [...document.querySelectorAll("[data-vault-target-watch='on']")]) {
+      row.querySelector("[data-vault-target-toggle]")?.click();
+      await sleep(150);
+    }
+    await sleep(300);
+    const allOff = [...document.querySelectorAll("[data-vault-target]")].every(
+      (row) => row.getAttribute("data-vault-target-watch") === "off",
+    );
+    return { ok: bothOn && count === "2" && allOff, bothOn, count, allOff };
+  })()`);
+  if (!multiVaultWatch.ok) {
+    throw new Error(`Multi vault watch assertion failed: ${JSON.stringify(multiVaultWatch)}`);
+  }
+  results.multiVaultWatch = multiVaultWatch;
+
+  const vaultTargetStats = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const targets = ["C:/vault", "D:/vault"];
+    let counts = {};
+    let events = {};
+    let created = {};
+    let modified = {};
+    let removed = {};
+    for (let i = 0; i < 30; i++) {
+      counts = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-target-files]")?.getAttribute("data-vault-target-files") ?? 0,
+          ),
+        ]),
+      );
+      events = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-target-events]")?.getAttribute("data-vault-target-events") ?? 0,
+          ),
+        ]),
+      );
+      created = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-created]")?.getAttribute("data-vault-created") ?? 0,
+          ),
+        ]),
+      );
+      modified = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-modified]")?.getAttribute("data-vault-modified") ?? 0,
+          ),
+        ]),
+      );
+      removed = Object.fromEntries(
+        [...document.querySelectorAll("[data-vault-target]")].map((row) => [
+          row.getAttribute("data-vault-target-path"),
+          Number(
+            row.querySelector("[data-vault-removed]")?.getAttribute("data-vault-removed") ?? 0,
+          ),
+        ]),
+      );
+      if (targets.every((path) => (counts[path] ?? 0) > 0) && targets.some((path) => (events[path] ?? 0) > 0)) {
+        break;
+      }
+      await sleep(200);
+    }
+    return {
+      ok:
+        targets.every((path) => (counts[path] ?? 0) > 0) &&
+        targets.some((path) => (events[path] ?? 0) > 0) &&
+        targets.some((path) => (created[path] ?? 0) > 0),
+      counts,
+      events,
+      created,
+      modified,
+      removed,
+    };
+  })()`);
+  if (!vaultTargetStats.ok) {
+    throw new Error(`Vault target stats assertion failed: ${JSON.stringify(vaultTargetStats)}`);
+  }
+  results.vaultTargetStats = vaultTargetStats;
+
+  const vaultWatchTimeline = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const target = [...document.querySelectorAll("[data-vault-target]")]
+      .find((row) => row.getAttribute("data-vault-target-path") === "C:/vault");
+    if (!target) return { ok: false, reason: "no C:/vault target" };
+    const timelineBtn = target.querySelector("[data-vault-target-timeline]");
+    if (!timelineBtn) return { ok: false, reason: "no timeline button" };
+    timelineBtn.click();
+    let events = [];
+    for (let i = 0; i < 30; i++) {
+      events = [...document.querySelectorAll("[data-vault-watch-event]")];
+      if (events.length > 0) break;
+      await sleep(100);
+    }
+    const kinds = [...new Set(events.map((el) => el.getAttribute("data-vault-watch-event-kind")))];
+    const paths = events.map((el) => el.getAttribute("data-vault-watch-event-path") ?? "");
+    const countText =
+      document.querySelector("[data-vault-watch-events-count]")?.textContent ?? "";
+    const countOk =
+      Number(countText.replace(/[^0-9]/g, "") || 0) === events.length;
+    const clearBtn = document.querySelector("[data-vault-watch-events-clear]");
+    if (!clearBtn) {
+      return { ok: false, reason: "no clear button", events: events.length, kinds, countOk };
+    }
+    clearBtn.click();
+    let cleared = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      cleared = document.querySelectorAll("[data-vault-watch-event]").length === 0;
+      if (cleared) break;
+    }
+    return {
+      ok:
+        events.length > 0 &&
+        kinds.includes("created") &&
+        paths.some((path) => path.includes("Watch Sync Note")) &&
+        countOk &&
+        cleared,
+      events: events.length,
+      kinds,
+      paths,
+      countOk,
+      cleared,
+    };
+  })()`);
+  if (!vaultWatchTimeline.ok) {
+    throw new Error(`Vault watch timeline assertion failed: ${JSON.stringify(vaultWatchTimeline)}`);
+  }
+  results.vaultWatchTimeline = vaultWatchTimeline;
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Obsidian Roadmap.md",
+          title: "Obsidian Roadmap",
+          tags: "#work",
+          content: "roadmap",
+          indexedAt: startOfToday - dayMs,
+        },
+        {
+          path: "C:/vault\\\\Daily Notes\\\\2026-08-05.md",
+          title: "Daily Note",
+          tags: "#life",
+          content: "daily",
+          indexedAt: startOfToday - 3_600_000,
+        },
+        {
+          path: "D:/vault\\\\Notes.md",
+          title: "Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 7_200_000,
+        },
+      ]),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const knowledgeDocStatus = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const panel = () => document.querySelector("[data-knowledge-docs]");
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (
+        docs.length >= 3 &&
+        docs.every(
+          (doc) => doc.querySelector("[data-knowledge-doc-status]") !== null,
+        )
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (docs.length < 3) {
+      return {
+        ok: false,
+        reason: "not enough knowledge docs",
+        count: docs.length,
+        panel: panel()?.textContent ?? "",
+      };
+    }
+    const countText = document.querySelector("[data-knowledge-docs-count]")?.textContent ?? "";
+    const count = Number(countText.replace(/[^0-9]/g, "") || 0);
+    const vaults = [
+      ...new Set(docs.map((doc) => doc.getAttribute("data-knowledge-doc-vault"))),
+    ];
+    const hasC = docs.some((doc) =>
+      (doc.getAttribute("data-knowledge-doc-path") ?? "").includes("C:/vault"),
+    );
+    const hasD = docs.some((doc) =>
+      (doc.getAttribute("data-knowledge-doc-path") ?? "").includes("D:/vault"),
+    );
+    const statuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    const missingCount = Number(
+      document
+        .querySelector("[data-knowledge-docs-missing]")
+        ?.getAttribute("data-knowledge-docs-missing") ?? 0,
+    );
+    const staleCount = Number(
+      document
+        .querySelector("[data-knowledge-docs-stale]")
+        ?.getAttribute("data-knowledge-docs-stale") ?? 0,
+    );
+    const statusOk =
+      statuses.every((status) => status === "ok") &&
+      missingCount === 0 &&
+      staleCount === 0;
+    const select = document.querySelector("[data-knowledge-doc-filter]");
+    let filterOk = false;
+    let filteredCount = 0;
+    let targetsRaw = "";
+    let targetPaths = [];
+    try {
+      targetsRaw =
+        localStorage.getItem("ai-workbench:vault-watch-targets:v1") ?? "missing";
+      targetPaths = JSON.parse(targetsRaw).map((t) => t.path);
+    } catch {}
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(select, "C:/vault");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      for (let i = 0; i < 20; i++) {
+        await sleep(100);
+        docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+        filteredCount = docs.length;
+        filterOk =
+          filteredCount === 2 &&
+          docs.every(
+            (doc) => doc.getAttribute("data-knowledge-doc-vault") === "C:/vault",
+          );
+        if (filterOk) break;
+      }
+      setter.call(select, "all");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(200);
+    }
+    return {
+      ok:
+        count === 3 &&
+        vaults.includes("C:/vault") &&
+        vaults.includes("D:/vault") &&
+        hasC &&
+        hasD &&
+        statusOk &&
+        filterOk,
+      count,
+      vaults,
+      statuses,
+      missingCount,
+      staleCount,
+      statusOk,
+      filterOk,
+      filteredCount,
+      targetsRaw,
+      targetPaths,
+      seedFiles: true,
+    };
+  })()`);
+  if (!knowledgeDocStatus.ok) {
+    throw new Error(
+      `Knowledge document status assertion failed: ${JSON.stringify(knowledgeDocStatus)}`,
+    );
+  }
+  results.knowledgeDocStatus = knowledgeDocStatus;
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Stale.md",
+          title: "Stale",
+          tags: "#work",
+          content: "old",
+          indexedAt: startOfToday - 7_200_000,
+          stale: true,
+        },
+        {
+          path: "C:/vault\\\\Missing.md",
+          title: "Missing",
+          tags: "#life",
+          content: "gone",
+          indexedAt: startOfToday - 86_400_000,
+          exists: false,
+        },
+        {
+          path: "D:/vault\\\\Notes.md",
+          title: "Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 3_600_000,
+        },
+      ]),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const knowledgeDocClean = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (
+        docs.length >= 3 &&
+        docs.every(
+          (doc) => doc.querySelector("[data-knowledge-doc-status]") !== null,
+        )
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const beforeStatuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    const missingBefore = Number(
+      document
+        .querySelector("[data-knowledge-docs-missing]")
+        ?.getAttribute("data-knowledge-docs-missing") ?? 0,
+    );
+    const staleBefore = Number(
+      document
+        .querySelector("[data-knowledge-docs-stale]")
+        ?.getAttribute("data-knowledge-docs-stale") ?? 0,
+    );
+    const cleanBtn = document.querySelector("[data-knowledge-docs-clean]");
+    if (!cleanBtn) {
+      return {
+        ok: false,
+        reason: "no clean button",
+        beforeStatuses,
+        missingBefore,
+        staleBefore,
+      };
+    }
+    cleanBtn.click();
+    let cleanResult = null;
+    for (let i = 0; i < 40; i++) {
+      const text =
+        document.querySelector("[data-knowledge-clean-result]")?.textContent ?? "";
+      const match = text.match(/removed ([0-9]+) reindexed ([0-9]+)/);
+      if (match) {
+        cleanResult = {
+          removed: Number(match[1]),
+          reindexed: Number(match[2]),
+        };
+        break;
+      }
+      await sleep(100);
+    }
+    for (let i = 0; i < 20; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (docs.length === 2) break;
+      await sleep(100);
+    }
+    const resultText =
+      document.querySelector("[data-knowledge-clean-result]")?.textContent ?? "";
+    const spanExists = !!document.querySelector("[data-knowledge-clean-result]");
+    const afterStatuses = docs.map((doc) =>
+      doc
+        .querySelector("[data-knowledge-doc-status]")
+        ?.getAttribute("data-knowledge-doc-status"),
+    );
+    return {
+      ok:
+        beforeStatuses.includes("missing") &&
+        beforeStatuses.includes("stale") &&
+        missingBefore === 1 &&
+        staleBefore === 1 &&
+        cleanResult?.removed === 1 &&
+        cleanResult?.reindexed === 1 &&
+        docs.length === 2 &&
+        afterStatuses.every((status) => status === "ok"),
+      beforeStatuses,
+      missingBefore,
+      staleBefore,
+      cleanResult,
+      resultText,
+      spanExists,
+      afterStatuses,
+      docs: docs.length,
+      seedFiles: 3,
+    };
+  })()`);
+  if (!knowledgeDocClean.ok) {
+    throw new Error(
+      `Knowledge document clean assertion failed: ${JSON.stringify(knowledgeDocClean)}`,
+    );
+  }
+  results.knowledgeDocClean = knowledgeDocClean;
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const startOfToday = Math.floor(Date.now() / dayMs) * dayMs;
+    localStorage.setItem(
+      "ai-workbench:vault:v1",
+      JSON.stringify([
+        {
+          path: "C:/vault\\\\Auto Stale.md",
+          title: "Auto Stale",
+          tags: "#work",
+          content: "old",
+          indexedAt: startOfToday - 7_200_000,
+          stale: true,
+        },
+        {
+          path: "C:/vault\\\\Auto Missing.md",
+          title: "Auto Missing",
+          tags: "#life",
+          content: "gone",
+          indexedAt: startOfToday - 86_400_000,
+          exists: false,
+        },
+        {
+          path: "D:/vault\\\\Auto Notes.md",
+          title: "Auto Notes",
+          tags: "#work,#life",
+          content: "notes",
+          indexedAt: startOfToday - 3_600_000,
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "ai-workbench:doc-health-auto:v1",
+      JSON.stringify({ enabled: false, intervalMs: 60000, lastRunAt: 0, lastResult: null }),
+    );
+    return { ok: true, files: 3 };
+  })()`);
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const docHealthAuto = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let docs = [];
+    for (let i = 0; i < 30; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      if (docs.length >= 3) break;
+      await sleep(100);
+    }
+    const autoBtn = () => document.querySelector("[data-doc-health-auto]");
+    for (let i = 0; i < 20 && !autoBtn(); i++) {
+      await sleep(100);
+    }
+    const initialAuto = autoBtn()?.getAttribute("data-doc-health-auto") ?? "missing";
+    autoBtn()?.click();
+    let enabled = false;
+    let resultText = "";
+    let lastRun = 0;
+    let docsAfter = 0;
+    for (let i = 0; i < 40; i++) {
+      docs = [...document.querySelectorAll("[data-knowledge-doc]")];
+      enabled = autoBtn()?.getAttribute("data-doc-health-auto") === "on";
+      resultText = document.querySelector("[data-doc-health-result]")?.textContent ?? "";
+      lastRun = Number(
+        document.querySelector("[data-doc-health-last-run]")?.getAttribute("data-doc-health-last-run") ?? 0,
+      );
+      docsAfter = docs.length;
+      if (enabled && resultText.includes("removed 1 reindexed 1") && docsAfter === 2 && lastRun > 0) {
+        break;
+      }
+      await sleep(100);
+    }
+    let stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem("ai-workbench:doc-health-auto:v1") ?? "null");
+    } catch {}
+    const ok =
+      initialAuto === "off" &&
+      enabled &&
+      resultText.includes("removed 1 reindexed 1") &&
+      docsAfter === 2 &&
+      lastRun > 0 &&
+      stored?.enabled === true &&
+      stored?.lastResult?.removed === 1 &&
+      stored?.lastResult?.reindexed === 1;
+    return {
+      ok,
+      initialAuto,
+      enabled,
+      resultText,
+      docsAfter,
+      lastRun,
+      stored,
+    };
+  })()`);
+  if (!docHealthAuto.ok) {
+    throw new Error(`Doc health auto inspect assertion failed: ${JSON.stringify(docHealthAuto)}`);
+  }
+  results.docHealthAuto = docHealthAuto;
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const docHealthAutoPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let auto = "";
+    let docs = 0;
+    for (let i = 0; i < 30; i++) {
+      auto = document.querySelector("[data-doc-health-auto]")?.getAttribute("data-doc-health-auto") ?? "";
+      docs = document.querySelectorAll("[data-knowledge-doc]").length;
+      if (auto === "on" && docs === 2) break;
+      await sleep(100);
+    }
+    const resultText = document.querySelector("[data-doc-health-result]")?.textContent ?? "";
+    return {
+      ok: auto === "on" && docs === 2 && resultText.includes("removed 1 reindexed 1"),
+      auto,
+      docs,
+      resultText,
+    };
+  })()`);
+  if (!docHealthAutoPersist.ok) {
+    throw new Error(
+      `Doc health auto persist assertion failed: ${JSON.stringify(docHealthAutoPersist)}`,
+    );
+  }
+  results.docHealthAutoPersist = docHealthAutoPersist;
+
+  const docHealthHistory = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let alert = null;
+    let runs = [];
+    for (let i = 0; i < 30; i++) {
+      alert = document.querySelector("[data-doc-health-alert]");
+      runs = [...document.querySelectorAll("[data-doc-health-run]")];
+      if (alert && runs.length > 0) break;
+      await sleep(100);
+    }
+    const alertText = alert?.textContent ?? "";
+    const latest = runs[0];
+    const latestRemoved = Number(latest?.getAttribute("data-doc-health-removed") ?? -1);
+    const latestReindexed = Number(latest?.getAttribute("data-doc-health-reindexed") ?? -1);
+    const latestTriggered = latest?.getAttribute("data-doc-health-triggered") ?? "";
+    const latestTime = Number(latest?.getAttribute("data-doc-health-run-time") ?? 0);
+    const okBeforeDismiss =
+      !!alert &&
+      alertText.includes("removed 1") &&
+      alertText.includes("reindexed 1") &&
+      latestRemoved === 1 &&
+      latestReindexed === 1 &&
+      latestTriggered === "auto";
+    const dismissBtn = document.querySelector("[data-doc-health-dismiss]");
+    if (!okBeforeDismiss || !dismissBtn) {
+      return {
+        ok: okBeforeDismiss,
+        alertText,
+        latestRemoved,
+        latestReindexed,
+        latestTriggered,
+        runs: runs.length,
+      };
+    }
+    dismissBtn.click();
+    let dismissed = false;
+    for (let i = 0; i < 20; i++) {
+      if (!document.querySelector("[data-doc-health-alert]")) {
+        dismissed = true;
+        break;
+      }
+      await sleep(50);
+    }
+    const storedDismissed = Number(
+      localStorage.getItem("ai-workbench:doc-health-alert-dismissed:v1") ?? 0,
+    );
+    return {
+      ok: okBeforeDismiss && dismissed && storedDismissed === latestTime,
+      alertText,
+      latestRemoved,
+      latestReindexed,
+      latestTriggered,
+      runs: runs.length,
+      dismissed,
+      storedDismissed,
+      latestTime,
+    };
+  })()`);
+  if (!docHealthHistory.ok) {
+    throw new Error(`Doc health run history assertion failed: ${JSON.stringify(docHealthHistory)}`);
+  }
+  results.docHealthHistory = docHealthHistory;
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const docHealthDismissPersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let alertGone = false;
+    for (let i = 0; i < 20; i++) {
+      if (!document.querySelector("[data-doc-health-alert]")) {
+        alertGone = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return { ok: alertGone, alertGone };
+  })()`);
+  if (!docHealthDismissPersist.ok) {
+    throw new Error(
+      `Doc health dismiss persistence assertion failed: ${JSON.stringify(docHealthDismissPersist)}`,
+    );
+  }
+  results.docHealthDismissPersist = docHealthDismissPersist;
+
+  if (!selectedMarkdownThought) {
+    throw new Error('markdown thought button missing');
+  }
+  if (
+    !results.knowledge.hasMarkdown ||
+    results.knowledge.heading === '' ||
+    results.knowledge.code === ''
+  ) {
+    throw new Error('Knowledge markdown preview assertion failed');
+  }
+  const habitStreakResult = results.actions.habitToggle;
+  const weekBeforeCount = Number(String(habitStreakResult.weekBefore || '').split('/')[0] || 0);
+  const weekAfterCount = Number(String(habitStreakResult.weekAfter || '').split('/')[0] || 0);
+  const habitStreakOk =
+    habitStreakResult.ok &&
+    habitStreakResult.doneClass &&
+    habitStreakResult.streaks.join(',') === '3,2,5' &&
+    habitStreakResult.recentRows === 3 &&
+    habitStreakResult.streakBefore === 3 &&
+    habitStreakResult.streakAfter === 4 &&
+    weekAfterCount === weekBeforeCount + 1 &&
+    habitStreakResult.weekAfter.includes('/5') &&
+    habitStreakResult.todayBefore === 'false' &&
+    habitStreakResult.todayAfter === 'true' &&
+    habitStreakResult.recentCountBefore === 14;
+  if (!habitStreakOk) {
+    throw new Error(`habit streak assertion failed: ${JSON.stringify(habitStreakResult)}`);
+  }
+  const habitStreakPersisted = results.persistence.habitPersisted;
+  if (
+    !habitStreakPersisted ||
+    !habitStreakPersisted.ok ||
+    habitStreakPersisted.streak !== 4 ||
+    !habitStreakPersisted.todayChecked
+  ) {
+    throw new Error(
+      `habit streak persistence assertion failed: ${JSON.stringify(habitStreakPersisted)}`,
+    );
+  }
+  if (results.actions.sections.overlap > 0) {
+    throw new Error(`actions sections overlap: ${results.actions.sections.overlap}`);
+  }
+  if (!results.focusWeekArchive.ok) {
+    throw new Error(
+      `focus week archive assertion failed: ${JSON.stringify(results.focusWeekArchive)}`,
+    );
+  }
+  if (!results.focusWeekPersisted.ok) {
+    throw new Error(
+      `focus week archive persistence assertion failed: ${JSON.stringify(results.focusWeekPersisted)}`,
+    );
+  }
+  if (!results.focusWeekRestored.ok) {
+    throw new Error(
+      `focus week archive restore assertion failed: ${JSON.stringify(results.focusWeekRestored)}`,
+    );
+  }
+
+  results.overlay = await evaluate(`(() => ({
+    viteOverlay: !!document.querySelector("vite-error-overlay, .vite-error-overlay, [class*='error-overlay']"),
+    devIssuesText: document.body.innerText.includes("Dev Issues") || document.body.innerText.includes("Internal server error"),
+  }))()`);
+
+  await clickDock('System');
+  for (let i = 0; i < 20; i++) {
+    const ready = await evaluate(
+      `[...document.querySelectorAll("main section h2")].some((h) => h.textContent.trim() === "Clipboard history")`,
+    );
+    if (ready) break;
+    await delay(150);
+  }
+  results.system = await evaluate(`(() => {
+    const cards = [...document.querySelectorAll("main section h2")].map((h) => h.textContent.trim());
+    const text = document.body.innerText;
+    const clipItems = [...document.querySelectorAll("main section")].find((s) => s.querySelector("h2")?.textContent === "Clipboard history");
+    const logItems = [...document.querySelectorAll("main section")].find((s) => s.querySelector("h2")?.textContent === "Error logs");
+    return {
+      cards,
+      listening: text.includes("listening"),
+      clipEntries: clipItems?.querySelectorAll(".message-in").length ?? 0,
+      logEntries: logItems?.querySelectorAll(".message-in").length ?? 0,
+      hasSampleClip: text.includes("pnpm run dev"),
+    };
+  })()`);
+  if (
+    !results.system.cards.includes('Clipboard history') ||
+    !results.system.cards.includes('Error logs')
+  ) {
+    throw new Error('system view cards missing');
+  }
+  if (
+    !results.system.listening ||
+    results.system.clipEntries < 1 ||
+    results.system.logEntries < 1
+  ) {
+    throw new Error('system capture assertions failed');
+  }
+  results.agentDirectory = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const section = [...document.querySelectorAll("main section")]
+      .find((s) => s.querySelector("h2")?.textContent === "Agent directory");
+    if (!section) return { ok: false, reason: "agent directory missing" };
+    const text = section.innerText;
+    const designVisible =
+      text.includes("设计部") && text.includes("UI Designer") && text.includes("Frontend Developer");
+    const select = section.querySelector('select[aria-label="Agent department"]');
+    const addBtn = section.querySelector('button[aria-label="Add agent"]');
+    const input = section.querySelector('input[placeholder="Agent name"]');
+    const roleInput = section.querySelector('input[placeholder="Role"]');
+    if (!select || !addBtn || !input || !roleInput) {
+      return { ok: false, reason: "agent form missing", designVisible };
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "QA Agent");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(roleInput, "Verify");
+    roleInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    addBtn.click();
+    await sleep(300);
+    const created = section.innerText.includes("QA Agent");
+    const editBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+    let promptSaved = false;
+    let persistedPrompt = false;
+    if (editBtn) {
+      editBtn.click();
+      await sleep(120);
+      const textarea = section.querySelector('textarea[aria-label="Agent system prompt"]');
+      if (textarea) {
+        const textSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+        textSetter.call(textarea, "You are a QA agent that verifies work with evidence.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        await sleep(80);
+        const saveBtn = section.querySelector('button[aria-label="Save agent prompt"]');
+        saveBtn?.click();
+        await sleep(250);
+        const currentEditBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        const qaContainer = currentEditBtn?.closest("div")?.parentElement;
+        promptSaved =
+          !!qaContainer && qaContainer.textContent.includes("You are a QA agent that verifies work with evidence.");
+        const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") || "{}");
+        const storedAgent = (stored.agents ?? []).find((a) => a.name === "QA Agent");
+        persistedPrompt =
+          storedAgent?.systemPrompt ===
+          "You are a QA agent that verifies work with evidence.";
+
+        const editBtn2 = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        if (editBtn2) {
+          editBtn2.click();
+          await sleep(120);
+          const textarea2 = section.querySelector('textarea[aria-label="Agent system prompt"]');
+          if (textarea2) {
+            const textSetter2 = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+            textSetter2.call(textarea2, "v2 QA prompt");
+            textarea2.dispatchEvent(new Event("input", { bubbles: true }));
+            await sleep(80);
+            section.querySelector('button[aria-label="Save agent prompt"]')?.click();
+            await sleep(250);
+          }
+        }
+        const editBtn3 = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        if (editBtn3) {
+          editBtn3.click();
+          await sleep(120);
+          section.querySelector('button[aria-label="Show prompt versions"]')?.click();
+          await sleep(200);
+        }
+        const versionRows = section.querySelectorAll(".prompt-version-list > div").length;
+        section.querySelector('button[aria-label="Restore prompt version 2"]')?.click();
+        await sleep(250);
+        section.querySelector('button[aria-label="Cancel agent prompt"]')?.click();
+        await sleep(150);
+        const restoredEditBtn = section.querySelector('button[aria-label="Edit agent prompt: QA Agent"]');
+        const restoredContainer = restoredEditBtn?.closest("div")?.parentElement;
+        const restoredToV1 =
+          !!restoredContainer &&
+          restoredContainer.textContent.includes("You are a QA agent that verifies work with evidence.") &&
+          !restoredContainer.textContent.includes("v2 QA prompt");
+        const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") || "{}");
+        const storedQa = (storedAfter.agents ?? []).find((a) => a.name === "QA Agent");
+        const versionsPersisted =
+          (storedAfter.promptVersions ?? []).filter((v) => v.agentId === storedQa?.id).length >= 3;
+        return {
+          ok:
+            designVisible &&
+            created &&
+            promptSaved &&
+            persistedPrompt &&
+            versionRows >= 2 &&
+            restoredToV1 &&
+            versionsPersisted,
+          designVisible,
+          created,
+          promptSaved,
+          persistedPrompt,
+          versionRows,
+          restoredToV1,
+          versionsPersisted,
+        };
+      }
+    }
+    return {
+      ok: designVisible && created && promptSaved && persistedPrompt,
+      designVisible,
+      created,
+      promptSaved,
+      persistedPrompt,
+      versionRows: 0,
+      restoredToV1: false,
+      versionsPersisted: false,
+    };
+  })()`);
+  if (!results.agentDirectory.ok) {
+    throw new Error(
+      `System agent directory assertion failed: ${JSON.stringify(results.agentDirectory)}`,
+    );
+  }
+  const healthCheck = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Check");
+    if (!btn) return { ok: false, reason: "no health check button" };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const card = document.querySelector(".provider-card")?.innerText ?? "";
+    return { ok: true, cardText: card };
+  })()`);
+  if (
+    !healthCheck.ok ||
+    !healthCheck.cardText.includes('ok') ||
+    !healthCheck.cardText.includes('ms')
+  ) {
+    throw new Error(`Provider health assertion failed: ${JSON.stringify(healthCheck)}`);
+  }
+  results.health = healthCheck;
+
+  const heartbeatCheck = await evaluate(`(async () => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Heartbeat");
+    if (!btn) return { ok: false, reason: "no heartbeat button" };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 350));
+    const alertText = document.querySelector(".heartbeat-alert")?.textContent ?? "";
+    const cards = [...document.querySelectorAll(".provider-card")].map((c) => c.textContent).join(" | ");
+    return {
+      ok: true,
+      alertVisible: alertText.includes("Ollama") && alertText.includes("Connection failed"),
+      degradedVisible: cards.includes("degraded"),
+      okVisible: cards.includes("ok"),
+    };
+  })()`);
+  if (
+    !heartbeatCheck.ok ||
+    !heartbeatCheck.alertVisible ||
+    !heartbeatCheck.degradedVisible ||
+    !heartbeatCheck.okVisible
+  ) {
+    throw new Error(`Provider heartbeat assertion failed: ${JSON.stringify(heartbeatCheck)}`);
+  }
+  results.heartbeat = heartbeatCheck;
+
+  const streamSmokeCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-stream-test]');
+    if (!btn) return { ok: false, reason: "no stream test button" };
+    btn.click();
+    for (let i = 0; i < 20; i++) {
+      if (document.querySelector('[data-stream-smoke-result]')) break;
+      await sleep(100);
+    }
+    const text = document.querySelector('[data-stream-smoke-result]')?.textContent ?? "";
+    return { ok: text.includes("2 chunk"), text };
+  })()`);
+  if (!streamSmokeCheck.ok) {
+    throw new Error(`Provider stream smoke assertion failed: ${JSON.stringify(streamSmokeCheck)}`);
+  }
+  results.streamSmoke = streamSmokeCheck;
+
+  const providerE2EStream = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-provider-e2e-test]');
+    if (!btn) return { ok: false, reason: "no e2e test button" };
+    btn.click();
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      text = document.querySelector('[data-provider-e2e-result]')?.textContent ?? "";
+      if (text) break;
+      await sleep(100);
+    }
+    return {
+      ok: text.includes("chunks") && text.includes("chars") && text.includes("ms"),
+      text,
+    };
+  })()`);
+  if (!providerE2EStream.ok) {
+    throw new Error(`Provider E2E stream assertion failed: ${JSON.stringify(providerE2EStream)}`);
+  }
+  results.providerE2EStream = providerE2EStream;
+
+  const providerBatchE2E = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-provider-batch-test]');
+    if (!btn) return { ok: false, reason: "no provider batch e2e button" };
+    btn.click();
+    let text = "";
+    for (let i = 0; i < 30; i++) {
+      text = document.querySelector('[data-provider-batch-result]')?.textContent ?? "";
+      if (text) break;
+      await sleep(100);
+    }
+    const cardResults = document.querySelectorAll('[data-provider-e2e-result]').length;
+    return {
+      ok: text.includes("2/2 ok") && cardResults >= 2,
+      text,
+      cardResults,
+    };
+  })()`);
+  if (!providerBatchE2E.ok) {
+    throw new Error(`Provider batch E2E assertion failed: ${JSON.stringify(providerBatchE2E)}`);
+  }
+  results.providerBatchE2E = providerBatchE2E;
+
+  const webhookDelivery = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector('textarea[placeholder="Payload (JSON)"]');
+    const deliverBtn = document.querySelector('[data-webhook-deliver]');
+    if (!urlInput || !payloadInput || !deliverBtn) {
+      return { ok: false, reason: "webhook controls missing" };
+    }
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setValue(urlInput, "https://hooks.example.test/ai-workbench");
+    setValue(payloadInput, '{"event":"daily.summary","ok":true}');
+    await sleep(80);
+    deliverBtn.click();
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      const el = document.querySelector("[data-webhook-result]");
+      if (el) {
+        text = el.textContent ?? "";
+        if (text.includes("HTTP 200")) break;
+      }
+      await sleep(100);
+    }
+    return { ok: text.includes("HTTP 200"), text };
+  })()`);
+  if (!webhookDelivery.ok) {
+    throw new Error(`Webhook delivery assertion failed: ${JSON.stringify(webhookDelivery)}`);
+  }
+  results.webhookDelivery = webhookDelivery;
+
+  const webhookSignRetry = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector('textarea[placeholder="Payload (JSON)"]');
+    const secretInput = document.querySelector("[data-webhook-secret]");
+    const retriesSelect = document.querySelector("[data-webhook-retries]");
+    const deliverBtn = document.querySelector("[data-webhook-deliver]");
+    if (!urlInput || !payloadInput || !secretInput || !retriesSelect || !deliverBtn) {
+      return { ok: false, reason: "webhook sign/retry controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/signed");
+    setValue(payloadInput, '{"event":"signed.delivery"}');
+    setValue(secretInput, "test-secret");
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(
+      retriesSelect,
+      "2",
+    );
+    retriesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    retriesSelect.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(200);
+    deliverBtn.click();
+    let attempts = "";
+    let signed = "";
+    for (let i = 0; i < 20; i++) {
+      attempts = document.querySelector("[data-webhook-attempts]")?.textContent ?? "";
+      signed = document.querySelector("[data-webhook-signed]")?.textContent ?? "";
+      if (attempts === "3" && signed === "signed") break;
+      await sleep(100);
+    }
+    const delivered = attempts === "3" && signed === "signed";
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const intervalInput = document.querySelector("[data-webhook-rule-interval]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!nameInput || !intervalInput || !saveBtn) {
+      return { ok: false, reason: "webhook rule controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/signed-rule");
+    setValue(nameInput, "Signed scheduled webhook");
+    setValue(intervalInput, "60");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Signed scheduled webhook")) break;
+      await sleep(100);
+    }
+    const ruleRetries = item?.querySelector("[data-webhook-rule-retries]")?.textContent ?? "";
+    const ruleSigned = !!item?.querySelector("[data-webhook-rule-secret]");
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const persisted = stored.some(
+      (r) => r.name === "Signed scheduled webhook" && r.secret === "test-secret" && r.retries === 2,
+    );
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    return {
+      ok: delivered && ruleRetries.includes("2") && ruleSigned && persisted,
+      delivered,
+      ruleRetries,
+      ruleSigned,
+      persisted,
+      attempts,
+      signed,
+    };
+  })()`);
+  if (!webhookSignRetry.ok) {
+    throw new Error(`Webhook sign/retry assertion failed: ${JSON.stringify(webhookSignRetry)}`);
+  }
+  results.webhookSignRetry = webhookSignRetry;
+
+  const webhookRules = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const intervalInput = document.querySelector("[data-webhook-rule-interval]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !intervalInput || !saveBtn) {
+      return { ok: false, reason: "webhook rule controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/scheduled");
+    setValue(nameInput, "Daily sync webhook");
+    setValue(intervalInput, "60");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Daily sync webhook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "scheduled rule not created" };
+    const createdText = item.textContent;
+    const created =
+      createdText.includes("Daily sync webhook") && createdText.includes("every 60s");
+    const storedBefore = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const persisted = storedBefore.some((r) => r.name === "Daily sync webhook");
+    const enabledBefore = storedBefore.find((r) => r.name === "Daily sync webhook")?.enabled;
+    item.querySelector("[data-webhook-rule-toggle]")?.click();
+    await sleep(200);
+    const storedAfter = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const enabledAfter = storedAfter.find((r) => r.name === "Daily sync webhook")?.enabled;
+    const toggled =
+      enabledBefore !== undefined && enabledAfter !== undefined && enabledBefore !== enabledAfter;
+    item = document.querySelector("[data-webhook-rule-item]");
+    item?.querySelector("[data-webhook-rule-run]")?.click();
+    let ran = false;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("HTTP 200")) {
+        ran = true;
+        break;
+      }
+      await sleep(100);
+    }
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    let deleted = false;
+    for (let i = 0; i < 20; i++) {
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+      if (stored.length === 0 && !document.querySelector("[data-webhook-rule-item]")) {
+        deleted = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return {
+      ok: created && persisted && toggled && ran && deleted,
+      created,
+      persisted,
+      toggled,
+      ran,
+      deleted,
+      createdText,
+    };
+  })()`);
+  if (!webhookRules.ok) {
+    throw new Error(`Webhook scheduled rules assertion failed: ${JSON.stringify(webhookRules)}`);
+  }
+  results.webhookRules = webhookRules;
+
+  const webhookQueueEvent = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "trigger controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/event");
+    setValue(nameInput, "Event sync hook");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (
+        item &&
+        item.textContent.includes("Event sync hook") &&
+        item.textContent.includes("event: sync.completed")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "trigger rule not created" };
+    const ruleBadge = item.querySelector("[data-webhook-rule-trigger]")?.textContent ?? "";
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let delivery = null;
+    for (let i = 0; i < 20; i++) {
+      delivery = document.querySelector("[data-webhook-delivery-item]");
+      if (
+        delivery &&
+        delivery.textContent.includes("sync.completed") &&
+        delivery.textContent.includes("success")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (!delivery) return { ok: false, reason: "delivery not queued" };
+    const statusAfterTrigger =
+      delivery.querySelector("[data-webhook-delivery-status]")?.textContent ?? "";
+    delivery.querySelector("[data-webhook-delivery-retry]")?.click();
+    await sleep(150);
+    delivery = document.querySelector("[data-webhook-delivery-item]");
+    const statusAfterRetry =
+      delivery?.querySelector("[data-webhook-delivery-status]")?.textContent ?? "";
+    const attemptsAfterRetry =
+      delivery?.querySelector("[data-webhook-delivery-attempts]")?.textContent ?? "";
+    delivery?.querySelector("[data-webhook-delivery-delete]")?.click();
+    await sleep(150);
+    const deleted = !document.querySelector("[data-webhook-delivery-item]");
+    return {
+      ok:
+        ruleBadge.includes("sync.completed") &&
+        statusAfterTrigger === "success" &&
+        statusAfterRetry === "queued" &&
+        attemptsAfterRetry.startsWith("0/") &&
+        deleted,
+      ruleBadge,
+      statusAfterTrigger,
+      statusAfterRetry,
+      attemptsAfterRetry,
+      deleted,
+    };
+  })()`);
+  if (!webhookQueueEvent.ok) {
+    throw new Error(`Webhook queue/event assertion failed: ${JSON.stringify(webhookQueueEvent)}`);
+  }
+  results.webhookQueueEvent = webhookQueueEvent;
+
+  const webhookPayloadTemplate = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const payloadInput = document.querySelector("[data-webhook-payload]");
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !payloadInput || !nameInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "template controls missing" };
+    }
+    setValue(
+      urlInput,
+      "https://hooks.example.test/template",
+    );
+    setValue(
+      payloadInput,
+      '{"event":{{event}},"ts":{{ts}},"note":{{context.note}},"count":{{context.count}},"kept":"plain"}',
+    );
+    setValue(nameInput, "Template hook");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Template hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "template rule not created" };
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (!contextInput) return { ok: false, reason: "context input missing" };
+    setValue(contextInput, '{"note":"from verify","count":7}');
+    await sleep(80);
+    document.querySelector("[data-webhook-payload-preview]")?.click();
+    let previewText = "";
+    for (let i = 0; i < 20; i++) {
+      previewText =
+        document.querySelector("[data-webhook-payload-preview-text]")?.textContent?.trim() ?? "";
+      if (previewText.includes('"event":"sync.completed"') && previewText.includes("7")) break;
+      await sleep(100);
+    }
+    const previewOk =
+      previewText.includes('"event":"sync.completed"') &&
+      previewText.includes('"note":"from verify"') &&
+      previewText.includes('"count":7') &&
+      previewText.includes('"kept":"plain"') &&
+      !previewText.includes("{{");
+    document.querySelector('[data-webhook-event-trigger="sync.completed"]')?.click();
+    let delivery = null;
+    let payloadText = "";
+    for (let i = 0; i < 20; i++) {
+      delivery = document.querySelector("[data-webhook-delivery-item]");
+      payloadText =
+        delivery?.querySelector("[data-webhook-delivery-payload]")?.textContent?.trim() ?? "";
+      if (payloadText.includes('"event":"sync.completed"') && payloadText.includes("7")) break;
+      await sleep(100);
+    }
+    const deliveryOk =
+      payloadText.includes('"event":"sync.completed"') &&
+      payloadText.includes('"note":"from verify"') &&
+      payloadText.includes('"count":7') &&
+      payloadText.includes('"kept":"plain"') &&
+      !payloadText.includes("{{");
+    return {
+      ok: previewOk && deliveryOk,
+      previewText,
+      payloadText,
+      previewOk,
+      deliveryOk,
+    };
+  })()`);
+  if (!webhookPayloadTemplate.ok) {
+    throw new Error(
+      `Webhook payload template assertion failed: ${JSON.stringify(webhookPayloadTemplate)}`,
+    );
+  }
+  results.webhookPayloadTemplate = webhookPayloadTemplate;
+
+  const webhookRuleCooldown = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const cooldownInput = document.querySelector("[data-webhook-rule-cooldown]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !cooldownInput || !triggerInput || !saveBtn) {
+      return { ok: false, reason: "cooldown controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/cooldown");
+    setValue(nameInput, "Cooldown sync hook");
+    setValue(cooldownInput, "60");
+    setValue(triggerInput, "sync.completed");
+    await sleep(80);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Cooldown sync hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "cooldown rule not created" };
+    const cooldownBadge =
+      item.querySelector("[data-webhook-rule-cooldown-badge]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Cooldown sync hook");
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let firstCount = 0;
+    for (let i = 0; i < 20; i++) {
+      firstCount = document.querySelectorAll("[data-webhook-delivery-item]").length;
+      if (firstCount >= 1) break;
+      await sleep(100);
+    }
+    await sleep(250);
+    triggerBtn.click();
+    await sleep(600);
+    const secondCount = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedFired = storedAfter.find((r) => r.name === "Cooldown sync hook");
+    const deliveries = JSON.parse(localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]");
+    const ok =
+      cooldownBadge.includes("60") &&
+      storedRule?.cooldownSeconds === 60 &&
+      firstCount === 1 &&
+      secondCount === 1 &&
+      (storedFired?.lastRunAt ?? 0) > 0 &&
+      deliveries.length === 1;
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    await sleep(200);
+    return {
+      ok,
+      cooldownBadge,
+      storedCooldown: storedRule?.cooldownSeconds,
+      firstCount,
+      secondCount,
+      lastRunAt: storedFired?.lastRunAt ?? 0,
+      deliveries: deliveries.length,
+    };
+  })()`);
+  if (!webhookRuleCooldown.ok) {
+    throw new Error(
+      `Webhook rule cooldown assertion failed: ${JSON.stringify(webhookRuleCooldown)}`,
+    );
+  }
+  results.webhookRuleCooldown = webhookRuleCooldown;
+
+  const webhookTriggerCondition = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const conditionInput = document.querySelector("[data-webhook-rule-condition-input]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (
+      !urlInput ||
+      !nameInput ||
+      !triggerInput ||
+      !conditionInput ||
+      !saveBtn ||
+      !triggerBtn ||
+      !contextInput
+    ) {
+      return { ok: false, reason: "condition controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/conditional");
+    setValue(nameInput, "Conditional sync hook");
+    setValue(triggerInput, "sync.completed");
+    setValue(conditionInput, 'context.status == "ok" and event == "sync.completed"');
+    await sleep(120);
+    saveBtn.click();
+    let item = null;
+    let badge = "";
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      badge =
+        item?.querySelector("[data-webhook-rule-condition]")?.textContent?.trim() ?? "";
+      if (item && item.textContent.includes("Conditional sync hook") && badge.includes("if:")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Conditional sync hook");
+    const created =
+      !!item &&
+      badge.includes('context.status == "ok"') &&
+      storedRule?.triggerCondition === 'context.status == "ok" and event == "sync.completed"';
+
+    setValue(contextInput, '{"status":"error"}');
+    await sleep(150);
+    const beforeError = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    triggerBtn.click();
+    await sleep(400);
+    const afterError = document.querySelectorAll("[data-webhook-delivery-item]").length;
+    const suppressed = afterError === beforeError;
+
+    setValue(contextInput, '{"status":"ok"}');
+    await sleep(150);
+    triggerBtn.click();
+    let delivered = false;
+    for (let i = 0; i < 20; i++) {
+      const deliveries = document.querySelectorAll("[data-webhook-delivery-item]").length;
+      if (deliveries > afterError) {
+        delivered = true;
+        break;
+      }
+      await sleep(100);
+    }
+
+    setValue(nameInput, "Bad condition hook");
+    setValue(conditionInput, "event ==");
+    await sleep(120);
+    saveBtn.click();
+    let conditionError = "";
+    for (let i = 0; i < 20; i++) {
+      conditionError =
+        document.querySelector("[data-webhook-condition-error]")?.textContent ?? "";
+      if (conditionError.includes("Invalid trigger condition")) break;
+      await sleep(100);
+    }
+    const storedAfterBad = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]",
+    );
+    const badRejected = !storedAfterBad.some((r) => r.name === "Bad condition hook");
+    return {
+      ok: created && suppressed && delivered && badRejected,
+      badge,
+      created,
+      suppressed,
+      delivered,
+      badRejected,
+      conditionError,
+      beforeError,
+      afterError,
+    };
+  })()`);
+  if (!webhookTriggerCondition.ok) {
+    throw new Error(
+      `Webhook trigger condition assertion failed: ${JSON.stringify(webhookTriggerCondition)}`,
+    );
+  }
+  results.webhookTriggerCondition = webhookTriggerCondition;
+  laneLog('webhookTriggerCondition ok');
+
+  const webhookSignatureVerify = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const secretInput = document.querySelector("[data-webhook-sig-secret]");
+    const signatureInput = document.querySelector("[data-webhook-sig-signature]");
+    const payloadInput = document.querySelector("[data-webhook-sig-payload]");
+    const verifyBtn = document.querySelector("[data-webhook-sig-verify]");
+    if (!secretInput || !signatureInput || !payloadInput || !verifyBtn) {
+      return { ok: false, reason: "signature verify controls missing" };
+    }
+    const payload = '{"event":"signed.delivery"}';
+    const secret = "verify-secret";
+    setValue(payloadInput, payload);
+    setValue(secretInput, secret);
+    setValue(signatureInput, "deadbeef");
+    await sleep(150);
+    verifyBtn.click();
+    let resultText = "";
+    for (let i = 0; i < 20; i++) {
+      resultText = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      if (resultText.includes("INVALID")) break;
+      await sleep(100);
+    }
+    const wrongRejected = resultText.includes("INVALID");
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const bytes = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+    const expected = Array.from(new Uint8Array(bytes))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    setValue(signatureInput, "sha256=" + expected);
+    await sleep(150);
+    verifyBtn.click();
+    let validText = "";
+    let expectedText = "";
+    for (let i = 0; i < 20; i++) {
+      validText = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      expectedText =
+        document.querySelector("[data-webhook-sig-expected]")?.textContent ?? "";
+      if (validText.includes("VALID")) break;
+      await sleep(100);
+    }
+    const prefixedValid = validText.includes("VALID") && expectedText.includes(expected);
+    setValue(signatureInput, expected.toUpperCase());
+    await sleep(150);
+    verifyBtn.click();
+    let bareValid = false;
+    for (let i = 0; i < 20; i++) {
+      const text = document.querySelector("[data-webhook-sig-result]")?.textContent ?? "";
+      if (text.includes("VALID")) {
+        bareValid = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return {
+      ok: wrongRejected && prefixedValid && bareValid,
+      wrongRejected,
+      prefixedValid,
+      bareValid,
+      expected: expected.slice(0, 16),
+      resultText,
+      validText,
+    };
+  })()`);
+  if (!webhookSignatureVerify.ok) {
+    throw new Error(
+      `Webhook signature verify assertion failed: ${JSON.stringify(webhookSignatureVerify)}`,
+    );
+  }
+  results.webhookSignatureVerify = webhookSignatureVerify;
+  laneLog('webhookSignatureVerify ok');
+
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookMultiChannel = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const triggerInput = document.querySelector("[data-webhook-rule-trigger-input]");
+    const backoffInput = document.querySelector("[data-webhook-rule-backoff]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !triggerInput || !backoffInput || !saveBtn) {
+      return { ok: false, reason: "multi channel controls missing" };
+    }
+    const emailCheck = document.querySelector('[data-webhook-rule-channel="email"]');
+    const notifCheck = document.querySelector('[data-webhook-rule-channel="notification"]');
+    if (!emailCheck || !notifCheck) {
+      return { ok: false, reason: "channel checkboxes missing" };
+    }
+    emailCheck.click();
+    notifCheck.click();
+    await sleep(100);
+    setValue(urlInput, "https://hooks.example.test/multi");
+    setValue(nameInput, "Multi channel hook");
+    setValue(triggerInput, "sync.completed");
+    setValue(backoffInput, "600");
+    await sleep(100);
+    saveBtn.click();
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-webhook-rule-item]");
+      if (item && item.textContent.includes("Multi channel hook")) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "multi channel rule not created" };
+    const channelsBadge = item.querySelector("[data-webhook-rule-channels]")?.textContent ?? "";
+    const backoffBadge = item.querySelector("[data-webhook-rule-backoff]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const storedRule = stored.find((r) => r.name === "Multi channel hook");
+    const created =
+      channelsBadge.includes("http+email+notification") &&
+      backoffBadge.includes("600") &&
+      storedRule?.channels?.length === 3 &&
+      storedRule?.recoveryBackoffSeconds === 600;
+    const triggerBtn = document.querySelector('[data-webhook-event-trigger="sync.completed"]');
+    if (!triggerBtn) return { ok: false, reason: "event trigger button missing" };
+    triggerBtn.click();
+    let deliveryItems = [];
+    let channels = [];
+    for (let i = 0; i < 20; i++) {
+      deliveryItems = Array.from(document.querySelectorAll("[data-webhook-delivery-item]"));
+      channels = deliveryItems.map(
+        (d) => d.querySelector("[data-webhook-delivery-channel]")?.textContent ?? "",
+      );
+      if (channels.includes("http") && channels.includes("email") && channels.includes("notification")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const storedDeliveries = JSON.parse(
+      localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]",
+    );
+    const delivered =
+      channels.includes("http") &&
+      channels.includes("email") &&
+      channels.includes("notification") &&
+      storedDeliveries.length === 3 &&
+      storedDeliveries.every((d) => ["http", "email", "notification"].includes(d.channel));
+    item?.querySelector("[data-webhook-rule-delete]")?.click();
+    return {
+      ok: created && delivered,
+      created,
+      delivered,
+      channelsBadge,
+      backoffBadge,
+      channels,
+      storedChannels: storedRule?.channels,
+      storedBackoff: storedRule?.recoveryBackoffSeconds,
+      deliveries: storedDeliveries.length,
+    };
+  })()`);
+  if (!webhookMultiChannel.ok) {
+    throw new Error(
+      `Webhook multi channel assertion failed: ${JSON.stringify(webhookMultiChannel)}`,
+    );
+  }
+  results.webhookMultiChannel = webhookMultiChannel;
+  laneLog('webhookMultiChannel ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const base = {
+      name: "Recovery",
+      url: "https://hooks.example.test/ok",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      triggerCondition: "",
+      enabled: false,
+      lastRunAt: 0,
+      lastStatus: 500,
+      lastMessage: "Auto-disabled after 3 consecutive failures",
+      createdAt: now - 1000,
+      updatedAt: now - 1000,
+      consecutiveFailures: 3,
+      autoDisableAfter: 3,
+      channels: ["http"],
+      recoveryBackoffSeconds: 5,
+      circuitOpenedAt: now - 60000,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        { ...base, id: "recover-ok", name: "Recover ok", url: "https://hooks.example.test/ok" },
+        { ...base, id: "recover-fail", name: "Recover fail", url: "https://hooks.example.test/fail" },
+        {
+          ...base,
+          id: "recover-skip",
+          name: "Recover skip",
+          recoveryBackoffSeconds: 3600,
+          circuitOpenedAt: now - 1000,
+        },
+      ]),
+    );
+    localStorage.removeItem("ai-workbench:webhook-rule-runs:v1");
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookRecoveryBackoff = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    const probeBtn = document.querySelector("[data-webhook-recovery-probe]");
+    if (!probeBtn) return { ok: false, reason: "recovery probe button missing" };
+    probeBtn.click();
+    let resultText = "";
+    for (let i = 0; i < 20; i++) {
+      resultText = document.querySelector("[data-webhook-recovery-result]")?.textContent ?? "";
+      if (resultText.includes("probed 2")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-rules:v1") || "[]");
+    const okRule = stored.find((r) => r.id === "recover-ok");
+    const failRule = stored.find((r) => r.id === "recover-fail");
+    const skipRule = stored.find((r) => r.id === "recover-skip");
+    const probedOk =
+      resultText.includes("probed 2") &&
+      resultText.includes("recovered 1") &&
+      resultText.includes("failed 1");
+    const stateOk =
+      okRule?.enabled === true &&
+      okRule?.circuitOpenedAt === 0 &&
+      okRule?.consecutiveFailures === 0 &&
+      failRule?.enabled === false &&
+      failRule?.circuitOpenedAt > now - 60000 &&
+      failRule?.consecutiveFailures === 4 &&
+      skipRule?.enabled === false &&
+      skipRule?.circuitOpenedAt === skipRule?.updatedAt;
+    localStorage.setItem("ai-workbench:webhook-rules:v1", "[]");
+    return {
+      ok: probedOk && stateOk,
+      resultText,
+      probedOk,
+      stateOk,
+      okEnabled: okRule?.enabled,
+      failFailures: failRule?.consecutiveFailures,
+      skipCircuit: skipRule?.circuitOpenedAt,
+    };
+  })()`);
+  if (!webhookRecoveryBackoff.ok) {
+    throw new Error(
+      `Webhook recovery backoff assertion failed: ${JSON.stringify(webhookRecoveryBackoff)}`,
+    );
+  }
+  results.webhookRecoveryBackoff = webhookRecoveryBackoff;
+  laneLog('webhookRecoveryBackoff ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const base = {
+      ruleId: "rt-rule",
+      event: "sync.completed",
+      payload: "{}",
+      method: "POST",
+      url: "https://hooks.example.test/retention",
+      token: "",
+      secret: "",
+      retries: 1,
+      attempts: 1,
+      lastStatus: 0,
+      lastMessage: "",
+      nextAttemptAt: now,
+      updatedAt: now,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-deliveries:v1",
+      JSON.stringify([
+        { ...base, id: "rt-old-success", status: "success", lastStatus: 200, lastMessage: "ok", createdAt: now - 3 * day },
+        { ...base, id: "rt-old-dead", status: "dead", lastStatus: 500, lastMessage: "fail", createdAt: now - 3 * day },
+        { ...base, id: "rt-recent-dead", status: "dead", lastStatus: 500, lastMessage: "fail", createdAt: now - 3_600_000 },
+        { ...base, id: "rt-recent-success", status: "success", lastStatus: 200, lastMessage: "ok", createdAt: now + 1 },
+        { ...base, id: "rt-old-queued", status: "queued", attempts: 0, createdAt: now - 3 * day },
+        { ...base, id: "rt-recent-queued", status: "queued", attempts: 0, createdAt: now },
+      ]),
+    );
+    localStorage.removeItem("ai-workbench:webhook-retention:v1");
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRetention = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const days = () => document.querySelector("[data-webhook-retention-days]");
+    const limit = () => document.querySelector("[data-webhook-retention-limit]");
+    const auto = () => document.querySelector("[data-webhook-retention-auto]");
+    const saveBtn = () => document.querySelector("[data-webhook-retention-save]");
+    const pruneBtn = () => document.querySelector("[data-webhook-retention-prune]");
+    const result = () => document.querySelector("[data-webhook-retention-result]")?.textContent ?? "";
+    const stats = () => document.querySelector("[data-webhook-retention-stats]")?.textContent ?? "";
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      if (days() && limit() && auto() && saveBtn() && pruneBtn() && stats().includes("6 total")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) {
+      return { ok: false, reason: "retention controls not ready", stats: stats() };
+    }
+    setValue(days(), "1");
+    setValue(limit(), "1");
+    saveBtn().click();
+    let savedResult = "";
+    for (let i = 0; i < 20; i++) {
+      savedResult = result();
+      if (savedResult.includes("Retention saved")) break;
+      await sleep(100);
+    }
+    const saved = JSON.parse(localStorage.getItem("ai-workbench:webhook-retention:v1") || "null");
+    pruneBtn().click();
+    await sleep(200);
+    const pruneArmed = !!document.querySelector("[data-webhook-retention-prune-cancel]");
+    pruneBtn().click();
+    let pruneResult = "";
+    for (let i = 0; i < 20; i++) {
+      pruneResult = result();
+      if (pruneResult.includes("Cleaned")) break;
+      await sleep(100);
+    }
+    let statsAfter = "";
+    for (let i = 0; i < 20; i++) {
+      statsAfter = stats();
+      if (statsAfter.includes("3 total")) break;
+      await sleep(100);
+    }
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:webhook-deliveries:v1") || "[]");
+    const ids = stored.map((d) => d.id);
+    const ok =
+      saved?.retentionDays === 1 &&
+      saved?.maxRecords === 1 &&
+      saved?.autoCleanup === true &&
+      savedResult.includes("Retention saved") &&
+      pruneResult.includes("Cleaned 3") &&
+      pruneResult.includes("age 2") &&
+      pruneResult.includes("count 1") &&
+      ids.length === 3 &&
+      ids.includes("rt-recent-success") &&
+      ids.includes("rt-old-queued") &&
+      ids.includes("rt-recent-queued") &&
+      statsAfter.includes("3 total") &&
+      statsAfter.includes("2 queued") &&
+      statsAfter.includes("1 ok");
+    return { ok, savedResult, pruneResult, statsAfter, ids, saved, pruneArmed };
+  })()`);
+  if (!webhookRetention.ok) {
+    throw new Error(`Webhook retention assertion failed: ${JSON.stringify(webhookRetention)}`);
+  }
+  results.webhookRetention = webhookRetention;
+  laneLog('webhookRetention ok');
+
+  const syncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');
+    if (!exportBtn) return { ok: false, reason: "export button missing" };
+    exportBtn.click();
+    await sleep(250);
+    const remote = {
+      deviceId: "device-b-verify",
+      exportedAt: Date.now() + 1000,
+      clipboard: [
+        {
+          id: "sync-clip-remote",
+          content: "sprint 19 remote clipboard",
+          source: "remote",
+          timestamp: Date.now() + 1000,
+          updatedAt: Date.now() + 1000,
+        },
+      ],
+      logs: [
+        {
+          id: "sync-log-remote",
+          source: "remote",
+          message: "sprint 19 remote error",
+          stack: null,
+          severity: "error",
+          timestamp: Date.now() + 1000,
+          updatedAt: Date.now() + 1000,
+          deviceId: "device-remote",
+        },
+      ],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(remote));
+    document.querySelector('button[aria-label="Import sync snapshot"]')?.click();
+    let merged = false;
+    for (let i = 0; i < 20; i++) {
+      const body = document.body.innerText;
+      merged =
+        body.includes("sprint 19 remote clipboard") && body.includes("sprint 19 remote error");
+      if (merged) break;
+      await sleep(100);
+    }
+    return { ok: merged, merged };
+  })()`);
+  if (!syncCheck.ok) {
+    throw new Error(`sync snapshot assertion failed: ${JSON.stringify(syncCheck)}`);
+  }
+  results.sync = syncCheck;
+
+  const remoteSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    const pushBtn = document.querySelector('button[aria-label="Push sync snapshot"]');
+    const pullBtn = document.querySelector('button[aria-label="Pull sync snapshot"]');
+    if (!urlInput || !pushBtn || !pullBtn) {
+      return { ok: false, reason: "remote sync controls missing" };
+    }
+    setter.call(urlInput, "https://sync.example.test/workbench");
+    urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+    pushBtn.click();
+    let pushed = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      pushed = msg.includes("Pushed snapshot to remote");
+      if (pushed) break;
+      await sleep(100);
+    }
+    pullBtn.click();
+    let pulled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const body = document.body.innerText;
+      const conflictVisible =
+        document.querySelector("[data-sync-conflicts]")?.textContent.includes("1 conflict") ?? false;
+      pulled =
+        msg.includes("Merged +1 clips") &&
+        body.includes("sprint 33 remote clipboard") &&
+        conflictVisible;
+      if (pulled) break;
+      await sleep(100);
+    }
+    return { ok: pushed && pulled, pushed, pulled };
+  })()`);
+  if (!remoteSyncCheck.ok) {
+    throw new Error(`remote sync assertion failed: ${JSON.stringify(remoteSyncCheck)}`);
+  }
+  results.remoteSync = remoteSyncCheck;
+
+  const syncE2eCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    localStorage.removeItem("ai-workbench:sync-encrypted:v1");
+    const toggle = document.querySelector("[data-sync-e2e-toggle]");
+    const exportBtn = document.querySelector('button[aria-label="Export sync snapshot"]');
+    const importBtn = document.querySelector('button[aria-label="Import sync snapshot"]');
+    if (!toggle || !exportBtn || !importBtn) {
+      return { ok: false, reason: "e2e controls missing" };
+    }
+    if (!toggle.checked) toggle.click();
+    await sleep(120);
+    const passInput = document.querySelector("[data-sync-passphrase]");
+    if (!passInput) return { ok: false, reason: "passphrase input missing" };
+    setValue(passInput, "test-passphrase");
+    await sleep(120);
+    const confirmBtn = document.querySelector("[data-sync-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "passphrase confirm button missing" };
+    confirmBtn.click();
+    let confirmed = false;
+    for (let i = 0; i < 30; i++) {
+      const statusText = document.querySelector("[data-sync-e2e-status]")?.textContent ?? "";
+      confirmed = statusText.includes("encrypted");
+      if (confirmed) break;
+      await sleep(100);
+    }
+    if (!confirmed) return { ok: false, reason: "passphrase not confirmed" };
+    exportBtn.click();
+    let exported = false;
+    let envelopeRaw = "";
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      envelopeRaw = localStorage.getItem("ai-workbench:sync-encrypted:v1") ?? "";
+      if (msg.includes("Exported encrypted snapshot") && envelopeRaw) {
+        exported = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let envelope = null;
+    try {
+      envelope = JSON.parse(envelopeRaw);
+    } catch {
+      envelope = null;
+    }
+    const envelopeOk =
+      !!envelope &&
+      envelope.v === 1 &&
+      envelope.alg === "AES-256-GCM" &&
+      !!envelope.salt &&
+      !!envelope.iv &&
+      !!envelope.ciphertext &&
+      !envelopeRaw.includes("device-local");
+    importBtn.click();
+    let imported = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      if (msg.includes("Merged encrypted +")) {
+        imported = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let wrongFailed = false;
+    for (let attempt = 0; attempt < 3 && !wrongFailed; attempt++) {
+      setValue(passInput, "wrong-passphrase");
+      await sleep(150);
+      importBtn.click();
+      for (let i = 0; i < 20; i++) {
+        const msgEl = document.querySelector("[data-sync-message]");
+        if (msgEl && msgEl.className.includes("text-rose-400") && msgEl.textContent) {
+          wrongFailed = true;
+          break;
+        }
+        await sleep(100);
+      }
+    }
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    const pushBtn = document.querySelector('button[aria-label="Push sync snapshot"]');
+    setValue(passInput, "test-passphrase");
+    await sleep(150);
+    document.querySelector("[data-sync-confirm]")?.click();
+    let reconfirmed = false;
+    for (let i = 0; i < 30; i++) {
+      const statusText = document.querySelector("[data-sync-e2e-status]")?.textContent ?? "";
+      reconfirmed = statusText.includes("encrypted");
+      if (reconfirmed) break;
+      await sleep(100);
+    }
+    if (!reconfirmed) return { ok: false, reason: "passphrase not reconfirmed before push" };
+    setValue(urlInput, "https://sync.example.test/e2e");
+    await sleep(80);
+    pushBtn.click();
+    let pushedEncrypted = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      if (msg.includes("Pushed encrypted snapshot to remote")) {
+        pushedEncrypted = true;
+        break;
+      }
+      await sleep(100);
+    }
+    setValue(passInput, "");
+    await sleep(120);
+    if (toggle.checked) toggle.click();
+    await sleep(120);
+    localStorage.removeItem("ai-workbench:sync-encrypted:v1");
+    return {
+      ok: exported && envelopeOk && imported && wrongFailed && pushedEncrypted,
+      exported,
+      envelopeOk,
+      imported,
+      wrongFailed,
+      pushedEncrypted,
+      alg: envelope?.alg,
+    };
+  })()`);
+  if (!syncE2eCheck.ok) {
+    throw new Error(`sync E2E encryption assertion failed: ${JSON.stringify(syncE2eCheck)}`);
+  }
+  results.syncE2e = syncE2eCheck;
+
+  const syncResolveCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let item = null;
+    for (let i = 0; i < 20; i++) {
+      item = document.querySelector("[data-sync-conflict-item]");
+      if (item) break;
+      await sleep(100);
+    }
+    if (!item) return { ok: false, reason: "no conflict item" };
+    const remoteBtn = item.querySelector('[data-resolve-choice="remote"]');
+    if (!remoteBtn) return { ok: false, reason: "no keep remote button" };
+    remoteBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const body = document.body.innerText;
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      resolved =
+        msg.includes("Resolved clipboard conflict") &&
+        body.includes("sprint 38 conflict override") &&
+        badgeGone;
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: resolved, resolved };
+  })()`);
+  if (!syncResolveCheck.ok) {
+    throw new Error(`sync resolve assertion failed: ${JSON.stringify(syncResolveCheck)}`);
+  }
+  results.syncResolve = syncResolveCheck;
+
+  const batchResolveCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let conflictSeen = false;
+    for (let i = 0; i < 20; i++) {
+      conflictSeen = !!document.querySelector("[data-sync-conflict-item]");
+      if (conflictSeen) break;
+      await sleep(100);
+    }
+    if (!conflictSeen) return { ok: false, reason: "no conflict after second pull" };
+    const unionBtn = document.querySelector('[data-batch-resolve="union"]');
+    if (!unionBtn) return { ok: false, reason: "no batch union button" };
+    unionBtn.click();
+    let merged = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      merged = msg.includes("Merged") && badgeGone;
+      if (merged) break;
+      await sleep(100);
+    }
+    if (!merged) return { ok: false, reason: "batch union not merged", merged };
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let secondConflictSeen = false;
+    let secondMsg = "";
+    let secondBody = "";
+    for (let i = 0; i < 20; i++) {
+      secondConflictSeen = !!document.querySelector("[data-sync-conflict-item]");
+      secondMsg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      secondBody = document.body.innerText;
+      if (secondConflictSeen) break;
+      await sleep(100);
+    }
+    const batchBtn = document.querySelector('[data-batch-resolve="remote"]');
+    if (!secondConflictSeen || !batchBtn) {
+      return {
+        ok: false,
+        reason: "no second conflict for batch remote",
+        secondConflictSeen,
+        secondMsg,
+        secondBody: secondBody.slice(0, 600),
+      };
+    }
+    batchBtn.click();
+    let resolved = false;
+    for (let i = 0; i < 30; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      const badgeGone = !document.querySelector("[data-sync-conflicts]");
+      resolved = msg.includes("Resolved") && badgeGone;
+      if (resolved) break;
+      await sleep(100);
+    }
+    return { ok: merged && resolved, merged, resolved };
+  })()`);
+  if (!batchResolveCheck.ok) {
+    throw new Error(`batch sync resolve assertion failed: ${JSON.stringify(batchResolveCheck)}`);
+  }
+  results.batchResolve = batchResolveCheck;
+
+  const syncHistoryCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const toggle = document.querySelector("[data-sync-history-toggle]");
+    if (!toggle) return { ok: false, reason: "no history toggle" };
+    toggle.click();
+    let historySeen = false;
+    let unionSeen = false;
+    for (let i = 0; i < 20; i++) {
+      const item = [...document.querySelectorAll("[data-sync-resolved-item]")].find((el) =>
+        (el.textContent ?? "").includes("sprint 38 conflict override"),
+      );
+      historySeen =
+        !!item && item.querySelector('[data-resolved-choice="remote"]') !== null;
+      unionSeen = !!document.querySelector('[data-resolved-choice="union"]');
+      if (historySeen && unionSeen) break;
+      await sleep(100);
+    }
+    return { ok: historySeen && unionSeen, historySeen, unionSeen };
+  })()`);
+  if (!syncHistoryCheck.ok) {
+    throw new Error(`sync history assertion failed: ${JSON.stringify(syncHistoryCheck)}`);
+  }
+  results.syncHistory = syncHistoryCheck;
+
+  const structuredSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const historyToggle = document.querySelector("[data-sync-history-toggle]");
+    if (historyToggle && document.querySelector("[data-sync-resolved-list]")) {
+      historyToggle.click();
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const base = (shape.clipboard ?? []).find((c) => c.id === "sync-clip-remote-fallback")
+      ?? (shape.clipboard ?? [])[0];
+    if (!base) return { ok: false, reason: "no base clipboard item" };
+    const localContent = JSON.stringify({
+      title: "Workbench",
+      tags: ["work"],
+      meta: { count: 1 },
+      notes: [{ id: 1, label: "a" }],
+    });
+    const remoteContent = JSON.stringify({
+      title: "Workbench",
+      tags: ["work", "life"],
+      meta: { count: 2, done: true },
+      notes: [{ label: "a", id: 1 }, { id: 2, label: "b" }],
+    });
+    base.content = localContent;
+    base.updatedAt = Date.now();
+    base.timestamp = Date.now();
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    const snapshot = {
+      deviceId: "device-structured",
+      exportedAt: Date.now(),
+      clipboard: [
+        {
+          id: base.id,
+          content: remoteContent,
+          source: "remote",
+          timestamp: Date.now(),
+          updatedAt: Date.now() + 1,
+        },
+      ],
+      logs: [],
+    };
+    localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(snapshot));
+    const importBtn = document.querySelector('button[aria-label="Import sync snapshot"]');
+    if (!importBtn) return { ok: false, reason: "no import button" };
+    importBtn.click();
+    let conflict = null;
+    for (let i = 0; i < 30; i++) {
+      conflict = document.querySelector("[data-sync-conflict-item]");
+      if (conflict) break;
+      await sleep(100);
+    }
+    if (!conflict) return { ok: false, reason: "no structured conflict" };
+    const mergeBtn = conflict.querySelector("[data-resolve-structured]");
+    if (!mergeBtn) return { ok: false, reason: "no structured merge button" };
+    mergeBtn.click();
+    let merged = false;
+    let stored = "";
+    let notesLength = 0;
+    for (let i = 0; i < 30; i++) {
+      const current = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const item = (current.clipboard ?? []).find((c) => c.id === base.id);
+      stored = item?.content ?? "";
+      try {
+        notesLength = JSON.parse(stored).notes?.length ?? 0;
+      } catch {}
+      merged =
+        stored.includes('"life"') &&
+        stored.includes('"done": true') &&
+        stored.includes('"count": 2') &&
+        notesLength === 2 &&
+        !document.querySelector("[data-sync-conflicts]");
+      if (merged) break;
+      await sleep(100);
+    }
+    return { ok: merged, stored, notesLength };
+  })()`);
+  if (!structuredSyncCheck.ok) {
+    throw new Error(
+      `structured sync merge assertion failed: ${JSON.stringify(structuredSyncCheck)}`,
+    );
+  }
+  results.structuredSync = structuredSyncCheck;
+
+  await reloadAndWait();
+  await clickDock('System');
+  const syncHistoryPersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let toggle = null;
+    for (let i = 0; i < 20; i++) {
+      toggle = document.querySelector("[data-sync-history-toggle]");
+      if (toggle) break;
+      await sleep(100);
+    }
+    if (!toggle) return { ok: false, reason: "no history toggle after reload" };
+    toggle.click();
+    let seen = false;
+    for (let i = 0; i < 20; i++) {
+      const item = [...document.querySelectorAll("[data-sync-resolved-item]")].find((el) =>
+        (el.textContent ?? "").includes("sprint 38 conflict override"),
+      );
+      seen =
+        !!item && item.querySelector('[data-resolved-choice="remote"]') !== null;
+      if (seen) break;
+      await sleep(100);
+    }
+    return { ok: seen, seen };
+  })()`);
+  if (!syncHistoryPersisted.ok) {
+    throw new Error(
+      `sync history persistence assertion failed: ${JSON.stringify(syncHistoryPersisted)}`,
+    );
+  }
+  results.syncHistoryPersisted = syncHistoryPersisted;
+
+  const syncAuditChart = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-sync-audit-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-sync-audit-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      let storedAudit = 0;
+      let sample = null;
+      let recomputedBuckets = 0;
+      try {
+        const entries = JSON.parse(localStorage.getItem("ai-workbench:sync-audit:v1") ?? "[]");
+        storedAudit = entries.length;
+        sample = entries[0] ?? null;
+        const dayMs = 86_400_000;
+        const groups = new Map();
+        for (const entry of entries) {
+          const startAt = Math.floor(entry.createdAt / dayMs) * dayMs;
+          groups.set(startAt, (groups.get(startAt) ?? 0) + 1);
+        }
+        recomputedBuckets = groups.size;
+      } catch {}
+      return {
+        ok: false,
+        reason: "no audit chart bars",
+        storedAudit,
+        sample,
+        recomputedBuckets,
+        chartText: chart()?.textContent ?? "",
+        summaryShown: chart()?.textContent?.includes("No activity") ?? false,
+      };
+    }
+    const totalText = document.querySelector("[data-sync-audit-total]")?.textContent ?? "";
+    const total = Number(totalText.replace(/[^0-9]/g, "") || 0);
+    const barTotal = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const countsMatch = total > 0 && barTotal === total;
+    const segments = [...document.querySelectorAll("[data-sync-audit-segment]")];
+    const segmentTotal = segments.reduce(
+      (sum, segment) => sum + Number(segment.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const legendItems = [...document.querySelectorAll("[data-sync-audit-legend-item]")];
+    const legendTotal = legendItems.reduce((sum, item) => {
+      const number = Number((item.textContent ?? "").replace(/[^0-9]/g, "") || 0);
+      return sum + number;
+    }, 0);
+    const trendLineExpected = bars.length > 1;
+    const trendLine = !!document.querySelector("[data-sync-audit-trend-line]");
+    const stackedOk =
+      total > 0 &&
+      segmentTotal === total &&
+      legendTotal === total &&
+      trendLine === trendLineExpected;
+    const dayAttr = chart()?.getAttribute("data-audit-granularity");
+    document.querySelector("[data-audit-granularity-week]")?.click();
+    let weekOk = false;
+    let weekBars = 0;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      weekBars = document.querySelectorAll("[data-sync-audit-bar]").length;
+      weekOk =
+        chart()?.getAttribute("data-audit-granularity") === "week" && weekBars > 0;
+      if (weekOk) break;
+    }
+    const weekTotalText = document.querySelector("[data-sync-audit-total]")?.textContent ?? "";
+    const weekTotal = Number(weekTotalText.replace(/[^0-9]/g, "") || 0);
+    const weekSegmentTotal = [...document.querySelectorAll("[data-sync-audit-segment]")].reduce(
+      (sum, segment) => sum + Number(segment.getAttribute("data-audit-count") || 0),
+      0,
+    );
+    const weekStackedOk = weekSegmentTotal === weekTotal;
+    document.querySelector("[data-audit-granularity-day]")?.click();
+    await sleep(250);
+    const dayRestored = chart()?.getAttribute("data-audit-granularity") === "day";
+    return {
+      ok:
+        countsMatch &&
+        stackedOk &&
+        weekOk &&
+        weekTotal === total &&
+        weekStackedOk &&
+        dayRestored,
+      total,
+      barTotal,
+      segmentTotal,
+      legendTotal,
+      trendLine,
+      stackedOk,
+      dayAttr,
+      weekBars,
+      weekTotal,
+      weekSegmentTotal,
+      weekStackedOk,
+      dayRestored,
+    };
+  })()`);
+  if (!syncAuditChart.ok) {
+    throw new Error(`Sync audit chart assertion failed: ${JSON.stringify(syncAuditChart)}`);
+  }
+  results.syncAuditChart = syncAuditChart;
+  laneLog('syncAuditChart ok, seeding error logs');
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.logs = [
+      {
+        id: "err-today",
+        source: "frontend",
+        message: "chart error today",
+        stack: null,
+        severity: "error",
+        timestamp: now - 60 * 60 * 1000,
+        updatedAt: now - 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "warn-yesterday",
+        source: "tauri",
+        message: "chart warning yesterday",
+        stack: null,
+        severity: "warning",
+        timestamp: now - 23 * 60 * 60 * 1000,
+        updatedAt: now - 23 * 60 * 60 * 1000,
+        deviceId: "device-remote",
+      },
+      {
+        id: "info-yesterday",
+        source: "frontend",
+        message: "chart info yesterday",
+        stack: null,
+        severity: "info",
+        timestamp: now - 22 * 60 * 60 * 1000,
+        updatedAt: now - 22 * 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "err-six-days",
+        source: "tauri",
+        message: "chart error six days ago",
+        stack: null,
+        severity: "error",
+        timestamp: now - dayMs * 6,
+        updatedAt: now - dayMs * 6,
+        deviceId: "device-remote",
+      },
+      {
+        id: "err-old-month",
+        source: "frontend",
+        message: "chart error old month",
+        stack: null,
+        severity: "error",
+        timestamp: now - dayMs * 20,
+        updatedAt: now - dayMs * 20,
+        deviceId: "device-local",
+      },
+    ];
+    shape.syncDeviceId = "device-local";
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const errorLogTrend = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-error-log-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-error-log-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      return {
+        ok: false,
+        reason: "no error log chart bars",
+        chartText: chart()?.textContent ?? "",
+      };
+    }
+    const totalText = document.querySelector("[data-error-log-total]")?.textContent ?? "";
+    const total = Number(totalText.replace(/[^0-9]/g, "") || 0);
+    const barTotal = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-count") || 0),
+      0,
+    );
+    const errorCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-error") || 0),
+      0,
+    );
+    const warningCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-warning") || 0),
+      0,
+    );
+    const infoCount = bars.reduce(
+      (sum, bar) => sum + Number(bar.getAttribute("data-error-severity-info") || 0),
+      0,
+    );
+    const countsMatch =
+      total === 4 && barTotal === 4 && errorCount === 2 && warningCount === 1 && infoCount === 1;
+    const defaultRangeOk = chart()?.getAttribute("data-error-granularity") === "day";
+    const defaultBars = bars.length;
+    const defaultOk = defaultRangeOk && (defaultBars === 6 || defaultBars === 7);
+    document.querySelector("[data-error-range-24h]")?.click();
+    let hourOk = false;
+    let hourBars = 0;
+    let hourTotal = 0;
+    let hourBarMeta = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      hourBarMeta = [...document.querySelectorAll("[data-error-log-bar]")].map((bar) => ({
+        bucket: bar.getAttribute("data-error-bucket"),
+        count: Number(bar.getAttribute("data-error-count") || 0),
+      }));
+      hourBars = hourBarMeta.length;
+      hourTotal = Number(
+        document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+      );
+      hourOk =
+        chart()?.getAttribute("data-error-granularity") === "hour" &&
+        hourBars === 23 &&
+        hourTotal === 3;
+      if (hourOk) break;
+    }
+    document.querySelector("[data-error-range-30d]")?.click();
+    let monthOk = false;
+    let monthBars = 0;
+    let monthTotal = 0;
+    let monthBarMeta = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      monthBarMeta = [...document.querySelectorAll("[data-error-log-bar]")].map((bar) => ({
+        bucket: bar.getAttribute("data-error-bucket"),
+        count: Number(bar.getAttribute("data-error-count") || 0),
+      }));
+      monthBars = monthBarMeta.length;
+      monthTotal = Number(
+        document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+      );
+      monthOk =
+        chart()?.getAttribute("data-error-granularity") === "day" &&
+        monthBars >= 20 &&
+        monthBars <= 22 &&
+        monthTotal === 5;
+      if (monthOk) break;
+    }
+    document.querySelector("[data-error-range-7d]")?.click();
+    let dayRestored = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      dayRestored =
+        chart()?.getAttribute("data-error-granularity") === "day" &&
+        Number(
+          document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") ||
+            0,
+        ) === 4;
+      if (dayRestored) break;
+    }
+    const select = document.querySelector("[data-error-severity-filter]");
+    let filterOk = false;
+    let filteredTotal = 0;
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(select, "error");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      for (let i = 0; i < 20; i++) {
+        filteredTotal = Number(
+          document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0,
+        );
+        filterOk =
+          filteredTotal === 2 &&
+          [...document.querySelectorAll("[data-error-log-bar]")].every(
+            (bar) =>
+              Number(bar.getAttribute("data-error-severity-warning") || 0) === 0 &&
+              Number(bar.getAttribute("data-error-severity-info") || 0) === 0,
+          );
+        if (filterOk) break;
+        await sleep(100);
+      }
+      setter.call(select, "all");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(200);
+    }
+    return {
+      ok: countsMatch && defaultOk && hourOk && monthOk && dayRestored && filterOk,
+      total,
+      barTotal,
+      errorCount,
+      warningCount,
+      infoCount,
+      defaultRangeOk,
+      defaultBars,
+      defaultOk,
+      hourOk,
+      hourBars,
+      hourTotal,
+      hourBarMeta,
+      monthOk,
+      monthBars,
+      monthTotal,
+      monthBarMeta,
+      filterOk,
+      filteredTotal,
+      dayRestored,
+      seedOk: true,
+    };
+  })()`);
+  if (!errorLogTrend.ok) {
+    throw new Error(`Error log trend assertion failed: ${JSON.stringify(errorLogTrend)}`);
+  }
+  results.errorLogTrend = errorLogTrend;
+  laneLog('errorLogTrend ok');
+
+  const errorLogSourceDevice = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setSelect = (selector, value) => {
+      const el = document.querySelector(selector);
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const readTotal = () =>
+      Number(document.querySelector("[data-error-log-total]")?.textContent.replace(/[^0-9]/g, "") || 0);
+    const readRows = () => [...document.querySelectorAll("[data-error-log-device]")].length;
+    const waitFor = async (total) => {
+      for (let i = 0; i < 20; i++) {
+        if (readTotal() === total) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const sourceSelect = document.querySelector("[data-error-source-filter]");
+    const deviceSelect = document.querySelector("[data-error-device-filter]");
+    if (!sourceSelect || !deviceSelect) {
+      return { ok: false, reason: "missing error source/device filters" };
+    }
+    const initialTotal = readTotal();
+    const initialRows = readRows();
+
+    setSelect("[data-error-source-filter]", "frontend");
+    const frontendOk = (await waitFor(2)) && readRows() === 2;
+    const frontendRowsOk = [...document.querySelectorAll("[data-error-log-source]")].every(
+      (row) => row.getAttribute("data-error-log-source") === "frontend",
+    );
+
+    setSelect("[data-error-source-filter]", "all");
+    await waitFor(4);
+    setSelect("[data-error-device-filter]", "current");
+    const currentOk = (await waitFor(2)) && readRows() === 2;
+    const currentRowsOk = [...document.querySelectorAll("[data-error-log-device]")].every(
+      (row) => row.getAttribute("data-error-log-device") === "device-local",
+    );
+
+    setSelect("[data-error-source-filter]", "frontend");
+    const comboLocalOk = (await waitFor(2)) && readRows() === 2;
+    setSelect("[data-error-source-filter]", "tauri");
+    const comboLocalEmptyOk = (await waitFor(0)) && readRows() === 0;
+    setSelect("[data-error-device-filter]", "device-remote");
+    const comboRemoteOk = (await waitFor(2)) && readRows() === 2;
+    const comboRemoteRowsOk =
+      [...document.querySelectorAll("[data-error-log-source]")].length === 2 &&
+      [...document.querySelectorAll("[data-error-log-source]")].every(
+        (row) => row.getAttribute("data-error-log-source") === "tauri",
+      ) &&
+      [...document.querySelectorAll("[data-error-log-device]")].every(
+        (row) => row.getAttribute("data-error-log-device") === "device-remote",
+      );
+
+    setSelect("[data-error-source-filter]", "all");
+    setSelect("[data-error-device-filter]", "all");
+    const restored = await waitFor(4);
+    const ok =
+      initialTotal === 4 &&
+      initialRows === 4 &&
+      frontendOk &&
+      frontendRowsOk &&
+      currentOk &&
+      currentRowsOk &&
+      comboLocalOk &&
+      comboLocalEmptyOk &&
+      comboRemoteOk &&
+      comboRemoteRowsOk &&
+      restored;
+    return {
+      ok,
+      initialTotal,
+      initialRows,
+      frontendOk,
+      currentOk,
+      comboLocalOk,
+      comboLocalEmptyOk,
+      comboRemoteOk,
+      restored,
+    };
+  })()`);
+  if (!errorLogSourceDevice.ok) {
+    throw new Error(
+      `Error log source/device filter assertion failed: ${JSON.stringify(errorLogSourceDevice)}`,
+    );
+  }
+  results.errorLogSourceDevice = errorLogSourceDevice;
+  laneLog('errorLogSourceDevice ok, seeding peak');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const hourMs = 60 * 60 * 1000;
+    const burst = Array.from({ length: 5 }, (_, index) => ({
+      id: "peak-" + index,
+      source: "frontend",
+      message: "peak burst " + index,
+      stack: null,
+      severity: "error",
+      timestamp: now - 30 * 60 * 1000,
+      updatedAt: now - 30 * 60 * 1000,
+      deviceId: "device-local",
+    }));
+    const baseline = [
+      {
+        id: "peak-base-1",
+        source: "tauri",
+        message: "peak baseline warning",
+        stack: null,
+        severity: "warning",
+        timestamp: now - 5 * hourMs,
+        updatedAt: now - 5 * hourMs,
+        deviceId: "device-remote",
+      },
+      {
+        id: "peak-base-2",
+        source: "frontend",
+        message: "peak baseline info",
+        stack: null,
+        severity: "info",
+        timestamp: now - 11 * hourMs,
+        updatedAt: now - 11 * hourMs,
+        deviceId: "device-local",
+      },
+      {
+        id: "peak-base-3",
+        source: "tauri",
+        message: "peak baseline error",
+        stack: null,
+        severity: "error",
+        timestamp: now - 17 * hourMs,
+        updatedAt: now - 17 * hourMs,
+        deviceId: "device-remote",
+      },
+    ];
+    shape.logs = [...burst, ...baseline];
+    shape.syncDeviceId = "device-local";
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const errorLogPeakAlert = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chart = () => document.querySelector("[data-error-log-chart]");
+    let bars = [];
+    for (let i = 0; i < 30; i++) {
+      bars = [...document.querySelectorAll("[data-error-log-bar]")];
+      if (bars.length > 0) break;
+      await sleep(100);
+    }
+    if (bars.length === 0) {
+      return { ok: false, reason: "no error bars after peak seed" };
+    }
+    document.querySelector("[data-error-range-24h]")?.click();
+    let peakSeen = false;
+    let peakCount = 0;
+    let peakRatio = 0;
+    let hourGranularity = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const peak = document.querySelector("[data-error-peak]");
+      peakCount = Number(peak?.getAttribute("data-error-peak-count") || 0);
+      peakRatio = Number(peak?.getAttribute("data-error-peak-ratio") || 0);
+      hourGranularity = chart()?.getAttribute("data-error-granularity") === "hour";
+      peakSeen = Boolean(peak) && peakCount === 5 && peakRatio >= 3 && hourGranularity;
+      if (peakSeen) break;
+    }
+    document.querySelector("[data-error-range-7d]")?.click();
+    let peakCleared = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      peakCleared = !document.querySelector("[data-error-peak]");
+      if (peakCleared) break;
+    }
+    return { ok: peakSeen && peakCleared, peakSeen, peakCount, peakRatio, hourGranularity, peakCleared };
+  })()`);
+  if (!errorLogPeakAlert.ok) {
+    throw new Error(`Error log peak alert assertion failed: ${JSON.stringify(errorLogPeakAlert)}`);
+  }
+  results.errorLogPeakAlert = errorLogPeakAlert;
+  laneLog('errorLogPeakAlert ok, restoring logs');
+
+  await evaluate(`(() => {
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.logs = [
+      {
+        id: "err-today",
+        source: "frontend",
+        message: "chart error today",
+        stack: null,
+        severity: "error",
+        timestamp: now - 60 * 60 * 1000,
+        updatedAt: now - 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "warn-yesterday",
+        source: "tauri",
+        message: "chart warning yesterday",
+        stack: null,
+        severity: "warning",
+        timestamp: now - 23 * 60 * 60 * 1000,
+        updatedAt: now - 23 * 60 * 60 * 1000,
+        deviceId: "device-remote",
+      },
+      {
+        id: "info-yesterday",
+        source: "frontend",
+        message: "chart info yesterday",
+        stack: null,
+        severity: "info",
+        timestamp: now - 22 * 60 * 60 * 1000,
+        updatedAt: now - 22 * 60 * 60 * 1000,
+        deviceId: "device-local",
+      },
+      {
+        id: "err-six-days",
+        source: "tauri",
+        message: "chart error six days ago",
+        stack: null,
+        severity: "error",
+        timestamp: now - dayMs * 6,
+        updatedAt: now - dayMs * 6,
+        deviceId: "device-remote",
+      },
+    ];
+    shape.syncDeviceId = "device-local";
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return { ok: true, seeded: shape.logs.length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+
+  const syncAuditCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let items = [...document.querySelectorAll("[data-sync-audit-item]")];
+    for (let i = 0; i < 30 && items.length < 3; i++) {
+      await sleep(100);
+      items = [...document.querySelectorAll("[data-sync-audit-item]")];
+    }
+    const text = items.map((el) => el.textContent ?? "").join(" | ");
+    const mergeSeen = text.includes("sync.merge");
+    const resolveSeen = text.includes("sync.resolve");
+    const filter = document.querySelector("[data-sync-audit-filter]");
+    const jsonBtn = document.querySelector("[data-sync-audit-export-json]");
+    if (!filter || !jsonBtn) {
+      return {
+        ok: false,
+        reason: "no sync audit filter or export",
+        mergeSeen,
+        resolveSeen,
+        count: items.length,
+      };
+    }
+    filter.value = "sync.resolve";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    let filteredItems = [];
+    for (let i = 0; i < 30; i++) {
+      await sleep(100);
+      filteredItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+      const allResolve =
+        filteredItems.length > 0 &&
+        filteredItems.every(
+          (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+        );
+      if (allResolve) break;
+    }
+    const filterOk =
+      filteredItems.length > 0 &&
+      filteredItems.every(
+        (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+      );
+    const sinceSelect = document.querySelector("[data-sync-audit-since]");
+    const deviceSelect = document.querySelector("[data-sync-audit-device]");
+    if (!sinceSelect || !deviceSelect) {
+      return {
+        ok: false,
+        reason: "no sync audit range controls",
+        mergeSeen,
+        resolveSeen,
+        filterOk,
+      };
+    }
+    sinceSelect.value = "today";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    let rangeItems = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      rangeItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+      const allResolve =
+        rangeItems.length > 0 &&
+        rangeItems.every(
+          (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+        );
+      if (allResolve) break;
+    }
+    const rangeOk =
+      rangeItems.length > 0 &&
+      rangeItems.every(
+        (el) => el.querySelector("[data-sync-audit-event]")?.textContent === "sync.resolve",
+      );
+    sinceSelect.value = "custom";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(150);
+    const fromInput = document.querySelector("[data-sync-audit-from]");
+    const toInput = document.querySelector("[data-sync-audit-to]");
+    let customOk = false;
+    if (fromInput && toInput) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const day = (offset) => {
+        const d = new Date(Date.now() + offset * 86400000);
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+      };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(fromInput, day(-1));
+      fromInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fromInput.dispatchEvent(new Event("change", { bubbles: true }));
+      setter.call(toInput, day(0));
+      toInput.dispatchEvent(new Event("input", { bubbles: true }));
+      toInput.dispatchEvent(new Event("change", { bubbles: true }));
+      let customItems = [];
+      for (let i = 0; i < 20; i++) {
+        await sleep(100);
+        customItems = [...document.querySelectorAll("[data-sync-audit-item]")];
+        if (customItems.length > 0) break;
+      }
+      const inRange = customItems.length > 0;
+      setter.call(fromInput, day(1));
+      fromInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fromInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(300);
+      customOk = inRange && document.querySelectorAll("[data-sync-audit-item]").length === 0;
+    }
+    sinceSelect.value = "all";
+    sinceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(250);
+    deviceSelect.value = "all";
+    deviceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(200);
+    jsonBtn.click();
+    let exportedText = "";
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      exportedText = document.querySelector("[data-sync-audit-exported]")?.textContent ?? "";
+      if (exportedText) break;
+    }
+    const exportOk = /Exported [1-9]\\d* sync audit event\\(s\\)/.test(exportedText);
+    filter.value = "all";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(250);
+    const clearBtn = document.querySelector("[data-sync-audit-clear]");
+    if (!clearBtn) {
+      return {
+        ok: false,
+        reason: "no sync audit clear button",
+        mergeSeen,
+        resolveSeen,
+        filterOk,
+        exportOk,
+        count: items.length,
+      };
+    }
+    clearBtn.click();
+    await sleep(200);
+    const clearBtn2 = document.querySelector("[data-sync-audit-clear]");
+    const clearArmed = !!document.querySelector("[data-sync-audit-clear-cancel]");
+    clearBtn2?.click();
+    await sleep(300);
+    const cleared = document.querySelectorAll("[data-sync-audit-item]").length === 0;
+    return {
+      ok: mergeSeen && resolveSeen && filterOk && rangeOk && customOk && exportOk && cleared && clearArmed,
+      mergeSeen,
+      resolveSeen,
+      filterOk,
+      rangeOk,
+      customOk,
+      exportOk,
+      cleared,
+      clearArmed,
+      count: items.length,
+      filteredCount: filteredItems.length,
+      exportedText,
+    };
+  })()`);
+  if (!syncAuditCheck.ok) {
+    throw new Error(`Sync audit assertion failed: ${JSON.stringify(syncAuditCheck)}`);
+  }
+  results.syncAudit = syncAuditCheck;
+  laneLog('syncAudit ok');
+
+  const autoSyncCheck = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 20; i++) {
+      const url = document.querySelector('input[placeholder="Remote URL"]')?.value ?? "";
+      if (url.trim()) break;
+      await sleep(100);
+    }
+    const urlInput = document.querySelector('input[placeholder="Remote URL"]');
+    if (urlInput && !(urlInput.value ?? "").trim()) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(urlInput, "https://sync.example.test/workbench");
+      urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(200);
+    }
+    const toggle = document.querySelector('[data-auto-sync]');
+    if (!toggle) return { ok: false, reason: "no auto sync toggle" };
+    const initialState = toggle.getAttribute("data-auto-sync");
+    if (initialState === "on") {
+      toggle.click();
+      await sleep(200);
+    }
+    document.querySelector('[data-auto-sync]')?.click();
+    let enabled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      enabled =
+        document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") === "on" &&
+        msg.includes("Auto sync enabled");
+      if (enabled) break;
+      await sleep(100);
+    }
+    document.querySelector('[data-auto-sync]')?.click();
+    let disabled = false;
+    for (let i = 0; i < 20; i++) {
+      const msg = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      disabled =
+        document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") === "off" &&
+        msg.includes("Auto sync disabled");
+      if (disabled) break;
+      await sleep(100);
+    }
+    return {
+      ok: enabled && disabled,
+      enabled,
+      disabled,
+      initialState,
+      remoteUrl: document.querySelector('input[placeholder="Remote URL"]')?.value ?? "",
+      autoConfigRaw: localStorage.getItem("ai-workbench:sync-auto:v1") ?? "",
+      finalState: document.querySelector('[data-auto-sync]')?.getAttribute("data-auto-sync") ?? "",
+      finalMsg: document.querySelector("[data-sync-message]")?.textContent ?? "",
+    };
+  })()`);
+  if (!autoSyncCheck.ok) {
+    throw new Error(`auto sync assertion failed: ${JSON.stringify(autoSyncCheck)}`);
+  }
+  results.autoSync = autoSyncCheck;
+
+  await evaluate(`localStorage.removeItem("ai-workbench:sync-keys:v1"); "cleared"`);
+  await reloadAndWait();
+  await clickDock('System');
+  const syncPassphraseSecurity = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const toggle = document.querySelector("[data-sync-e2e-toggle]");
+    if (!toggle) return { ok: false, reason: "e2e toggle missing" };
+    if (!toggle.checked) toggle.click();
+    await sleep(120);
+    const passInput = document.querySelector("[data-sync-passphrase]");
+    if (!passInput) return { ok: false, reason: "passphrase input missing" };
+    setValue(passInput, "Sprint152!Sync#2026");
+    let score = 0;
+    let label = "";
+    for (let i = 0; i < 30; i++) {
+      const scoreEl = document.querySelector("[data-sync-strength-score]");
+      const labelEl = document.querySelector("[data-sync-strength-label]");
+      score = Number(scoreEl?.textContent ?? 0);
+      label = labelEl?.textContent ?? "";
+      if (score >= 70 && label) break;
+      await sleep(100);
+    }
+    if (score < 70) {
+      return { ok: false, reason: "strength meter below strong", score, label };
+    }
+    const confirmBtn = document.querySelector("[data-sync-confirm]");
+    if (!confirmBtn) return { ok: false, reason: "confirm button missing" };
+    confirmBtn.click();
+    let pairingCode = "";
+    let versionBefore = 0;
+    let confirmMessage = "";
+    let confirmMsgClass = "";
+    for (let i = 0; i < 50; i++) {
+      pairingCode = document.querySelector("[data-sync-pairing-code]")?.textContent ?? "";
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionBefore = Number(match[1]);
+      confirmMessage = document.querySelector("[data-sync-message]")?.textContent ?? "";
+      confirmMsgClass = document.querySelector("[data-sync-message]")?.className ?? "";
+      if (pairingCode.startsWith("WB-") && versionBefore >= 1) break;
+      await sleep(100);
+    }
+    if (!pairingCode.startsWith("WB-") || versionBefore < 1) {
+      return {
+        ok: false,
+        reason: "pairing code or key status missing",
+        pairingCode,
+        versionBefore,
+        confirmMessage,
+        confirmMsgClass,
+        stored: localStorage.getItem("ai-workbench:sync-keys:v1"),
+      };
+    }
+    const rotateBtn = document.querySelector("[data-sync-rotate]");
+    if (!rotateBtn) return { ok: false, reason: "rotate button missing" };
+    rotateBtn.click();
+    let versionAfter = versionBefore;
+    let rotated = false;
+    for (let i = 0; i < 50; i++) {
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionAfter = Number(match[1]);
+      if (versionAfter > versionBefore) {
+        rotated = true;
+        break;
+      }
+      await sleep(100);
+    }
+    document.querySelector("[data-sync-confirm]")?.click();
+    let versionAfterReconfirm = versionAfter;
+    let reconfirmStable = false;
+    for (let i = 0; i < 30; i++) {
+      const status = document.querySelector("[data-sync-key-status]")?.textContent ?? "";
+      const match = status.match(/key v(\\d+)/);
+      if (match) versionAfterReconfirm = Number(match[1]);
+      const confirmText = document.querySelector("[data-sync-confirm]")?.textContent ?? "";
+      if (versionAfterReconfirm === versionAfter && confirmText.includes("Confirmed")) {
+        reconfirmStable = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const rotateMessage = document.querySelector("[data-sync-message]")?.textContent ?? "";
+    const pairInput = document.querySelector("[data-sync-pair-input]");
+    const verifyBtn = document.querySelector("[data-sync-pair-verify]");
+    setValue(passInput, "");
+    await sleep(120);
+    if (toggle.checked) toggle.click();
+    await sleep(120);
+    localStorage.removeItem("ai-workbench:sync-keys:v1");
+    return {
+      ok:
+        rotated &&
+        reconfirmStable &&
+        rotateMessage.includes("Rotated sync key") &&
+        !!pairInput &&
+        !!verifyBtn,
+      rotated,
+      versionBefore,
+      versionAfter,
+      versionAfterReconfirm,
+      rotateMessage,
+    };
+  })()`);
+  if (!syncPassphraseSecurity.ok) {
+    throw new Error(
+      `sync passphrase security assertion failed: ${JSON.stringify(syncPassphraseSecurity)}`,
+    );
+  }
+  results.syncPassphraseSecurity = syncPassphraseSecurity;
+
+  laneLog('autoSync ok');
+
+  await setViewport(390, 844);
+  await clickDock('AI Studio');
+  results.mobileShot = await capture(`${SHOT_PREFIX}-mobile-ai-studio.png`);
+  laneLog('mobileShot ok');
+  results.motion.mobileOverflowX = await evaluate(
+    `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
+  );
+  if (results.motion.mobileOverflowX > 1) {
+    throw new Error(`mobile horizontal overflow: ${results.motion.mobileOverflowX}px`);
+  }
+
+  await setViewport(1440, 900);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionPersistence = await evaluate(`(async () => {
+    let pill = 0;
+    for (let i = 0; i < 30; i++) {
+      pill = document.querySelectorAll('main button[aria-label="Open session"]').length;
+      const text = document.body.innerText;
+      if (pill > 0 && text.includes("sprint RAG check") && text.includes("Streaming fallback")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const finalText = document.body.innerText;
+    return {
+      hasSessionPill: pill > 0,
+      hasUserMessage: finalText.includes("sprint RAG check"),
+      hasAssistantReply: finalText.includes("Streaming fallback"),
+      hasStoppedMessage: finalText.includes("[stopped]"),
+    };
+  })()`);
+  if (
+    !sessionPersistence.hasSessionPill ||
+    !sessionPersistence.hasUserMessage ||
+    !sessionPersistence.hasAssistantReply ||
+    !sessionPersistence.hasStoppedMessage
+  ) {
+    throw new Error(
+      `AI Studio session persistence assertion failed: ${JSON.stringify(sessionPersistence)}`,
+    );
+  }
+  results.sessionPersistence = sessionPersistence;
+  laneLog('sessionPersistence ok');
+
+  const sessionSearchEnhanced = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no enhanced session search input" };
+    const range = document.querySelector("[data-session-range]");
+    const fulltext = document.querySelector("[data-session-fulltext]");
+    if (!range || !fulltext) return { ok: false, reason: "no session search controls" };
+
+    const targetMatchType = () => {
+      const row = [
+        ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+      ]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("sprint RAG check"));
+      return (
+        row
+          ?.querySelector("[data-session-match-type]")
+          ?.getAttribute("data-session-match-type") ?? ""
+      );
+    };
+
+    setValue(searchInput, "sprnt rg");
+    const fuzzyTitle = await waitFor(() => targetMatchType() === "title");
+
+    setValue(searchInput, "Streaming fallback");
+    const messageHit = await waitFor(() => targetMatchType() === "message");
+    const targetRow = [
+      ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+    ]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("sprint RAG check"));
+    const messageSnippet =
+      targetRow?.querySelector("[data-session-snippet]")?.textContent ?? "";
+    const messageHitType =
+      targetRow
+        ?.querySelector("[data-session-match-type]")
+        ?.getAttribute("data-session-match-type") ?? "";
+    const jumpButton = targetRow?.querySelector("button[aria-label='Open session']");
+    const jumpMessageId = jumpButton?.getAttribute("data-session-message-id") ?? "";
+    jumpButton?.click();
+    const jumpSeen = await waitFor(() =>
+      !!document.querySelector("[data-message-id].message-jump-highlight"),
+    );
+    const highlightedMessageId =
+      document
+        .querySelector("[data-message-id].message-jump-highlight")
+        ?.getAttribute("data-message-id") ?? "";
+    const fulltextAfterJump = document.querySelector("[data-session-fulltext]");
+
+    fulltextAfterJump?.click();
+    await sleep(120);
+    setValue(searchInput, "Streaming fallback");
+    const noMessageHit = await waitFor(() => document.body.innerText.includes("No matching sessions"));
+    const noMessageButtons = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+
+    fulltextAfterJump?.click();
+    await sleep(120);
+    setValue(searchInput, "");
+    await sleep(300);
+    const restoredButtons = [
+      ...document.querySelectorAll("main aside button[aria-label='Open session']"),
+    ].filter((btn) => btn.textContent?.includes("sprint RAG check")).length;
+    return {
+      ok: true,
+      fuzzyTitle,
+      messageHit,
+      messageSnippet,
+      messageHitType,
+      jumpMessageId,
+      jumpSeen,
+      highlightedMessageId,
+      noMessageHit,
+      noMessageButtons,
+      restoredButtons,
+    };
+  })()`);
+  if (
+    !sessionSearchEnhanced.ok ||
+    !sessionSearchEnhanced.fuzzyTitle ||
+    !sessionSearchEnhanced.messageHit ||
+    !sessionSearchEnhanced.messageSnippet.includes('Streaming fallback') ||
+    sessionSearchEnhanced.messageHitType !== 'message' ||
+    !sessionSearchEnhanced.jumpSeen ||
+    sessionSearchEnhanced.jumpMessageId.length === 0 ||
+    sessionSearchEnhanced.highlightedMessageId !== sessionSearchEnhanced.jumpMessageId ||
+    !sessionSearchEnhanced.noMessageHit ||
+    sessionSearchEnhanced.noMessageButtons !== 0 ||
+    sessionSearchEnhanced.restoredButtons < 1
+  ) {
+    throw new Error(
+      `AI Studio enhanced session search assertion failed: ${JSON.stringify(
+        sessionSearchEnhanced,
+      )}`,
+    );
+  }
+  results.sessionSearchEnhanced = sessionSearchEnhanced;
+  laneLog('sessionSearchEnhanced ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      ...(shape.sessions ?? []),
+      {
+        id: "pinyin-plan",
+        projectId: null,
+        title: "每日计划",
+        model: "openai",
+        pinned: false,
+        messageCount: 1,
+        createdAt: now,
+      },
+    ];
+    shape.chatMessages = [
+      ...(shape.chatMessages ?? []),
+      {
+        id: "pinyin-msg",
+        sessionId: "pinyin-plan",
+        role: "user",
+        content: "买牛奶和鸡蛋",
+        createdAt: now,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionPinyinSearch = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const targetRow = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("每日计划"));
+    const matchType = () =>
+      targetRow()
+        ?.querySelector("[data-session-match-type]")
+        ?.getAttribute("data-session-match-type") ?? "";
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput || !targetRow()) return { ok: false, reason: "pinyin seed not rendered" };
+
+    setValue(searchInput, "mrjh");
+    const initialsTitle = await waitFor(() => matchType() === "pinyin-title");
+
+    setValue(searchInput, "meirijihua");
+    const fullTitle = await waitFor(() => matchType() === "pinyin-title");
+
+    setValue(searchInput, "mnhjd");
+    const messageHit = await waitFor(() => matchType() === "pinyin-message");
+    const jumpMessageId = targetRow()
+      ?.querySelector("button[aria-label='Open session']")
+      ?.getAttribute("data-session-message-id") ?? "";
+    targetRow()?.querySelector("button[aria-label='Open session']")?.click();
+    const jumpSeen = await waitFor(() =>
+      !!document.querySelector("[data-message-id='pinyin-msg'].message-jump-highlight"),
+    );
+
+    setValue(searchInput, "");
+    await sleep(300);
+    const restored = !!targetRow();
+    return {
+      ok: initialsTitle && fullTitle && messageHit && jumpSeen && restored,
+      initialsTitle,
+      fullTitle,
+      messageHit,
+      jumpMessageId,
+      jumpSeen,
+      restored,
+    };
+  })()`);
+  if (!sessionPinyinSearch.ok || sessionPinyinSearch.jumpMessageId !== 'pinyin-msg') {
+    throw new Error(
+      `AI Studio pinyin session search assertion failed: ${JSON.stringify(sessionPinyinSearch)}`,
+    );
+  }
+  results.sessionPinyinSearch = sessionPinyinSearch;
+  laneLog('sessionPinyinSearch ok');
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = (shape.sessions ?? []).filter((s) => s.id !== "pinyin-plan");
+    shape.chatMessages = (shape.chatMessages ?? []).filter((m) => m.sessionId !== "pinyin-plan");
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
+  const sessionManagement = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector('input[placeholder="Search sessions..."]');
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    setValue(searchInput, "sprint RAG");
+    await sleep(450);
+    const searchPills = document.querySelectorAll('main button[aria-label="Open session"]').length;
+    const searchMatched = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .some((btn) => btn.textContent?.includes("sprint RAG check"));
+    setValue(searchInput, "zzz-no-match");
+    const emptyState = await waitFor(() =>
+      document.body.innerText.includes("No matching sessions"),
+    );
+    setValue(searchInput, "");
+    await sleep(250);
+
+    const row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("sprint RAG check"));
+    if (!row) return { ok: false, reason: "target session row missing", searchPills, searchMatched, emptyState };
+    const renameBtn = row.querySelector('button[aria-label="Rename session"]');
+    if (!renameBtn) return { ok: false, reason: "rename button missing" };
+    renameBtn.click();
+    await sleep(200);
+    const renameInput = document.querySelector('input[aria-label="Rename session input"]');
+    if (!renameInput) return { ok: false, reason: "rename input missing" };
+    setValue(renameInput, "Sprint 12 renamed");
+    renameInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(300);
+    const renamedVisible = document.body.innerText.includes("Sprint 12 renamed");
+    const oldTitleGone = ![...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .some((btn) => btn.textContent?.includes("sprint RAG check"));
+
+    const renamedRow = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find((el) => el?.textContent?.includes("Sprint 12 renamed"));
+    if (!renamedRow) return { ok: false, reason: "renamed row missing", renamedVisible, oldTitleGone };
+    renamedRow.querySelector('button[aria-label="Delete session"]')?.click();
+    await sleep(200);
+    const confirmBtn = renamedRow.querySelector('button[aria-label="Confirm delete session"]');
+    if (!confirmBtn) return { ok: false, reason: "delete confirm missing" };
+    confirmBtn.click();
+    await sleep(350);
+    const deletedGone = !document.body.innerText.includes("Sprint 12 renamed");
+    const persistedMessages = (() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1"));
+      const remainingSessionIds = new Set((shape.sessions ?? []).map((s) => s.id));
+      return shape.chatMessages.filter((m) => !remainingSessionIds.has(m.sessionId)).length;
+    })();
+    return {
+      ok: true,
+      searchPills,
+      searchMatched,
+      emptyState,
+      renamedVisible,
+      oldTitleGone,
+      deletedGone,
+      persistedMessages,
+    };
+  })()`);
+  if (
+    !sessionManagement.ok ||
+    sessionManagement.searchPills < 1 ||
+    !sessionManagement.searchMatched ||
+    !sessionManagement.emptyState ||
+    !sessionManagement.renamedVisible ||
+    !sessionManagement.oldTitleGone ||
+    !sessionManagement.deletedGone ||
+    sessionManagement.persistedMessages !== 0
+  ) {
+    throw new Error(
+      `AI Studio session management assertion failed: ${JSON.stringify(sessionManagement)}`,
+    );
+  }
+  results.sessionManagement = sessionManagement;
+  laneLog('sessionManagement ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "ws-alpha",
+        projectId: null,
+        title: "Workspace Alpha",
+        model: "openai",
+        pinned: false,
+        messageCount: 2,
+        createdAt: now - 2000,
+      },
+      {
+        id: "ws-beta",
+        projectId: null,
+        title: "Workspace Beta",
+        model: "ollama",
+        pinned: true,
+        messageCount: 1,
+        createdAt: now - 1000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "ws-alpha-user", sessionId: "ws-alpha", role: "user", content: "alpha question", createdAt: now - 1500 },
+      { id: "ws-alpha-assistant", sessionId: "ws-alpha", role: "assistant", content: "alpha answer", createdAt: now - 1000 },
+      { id: "ws-beta-user", sessionId: "ws-beta", role: "user", content: "beta question", createdAt: now - 500 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionWorkspace = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }))
+        .filter(({ row }) => row?.textContent?.includes("Workspace"));
+    let found = false;
+    for (let i = 0; i < 30; i++) {
+      found = rows().length >= 2;
+      if (found) break;
+      await sleep(100);
+    }
+    if (!found) {
+      return { ok: false, reason: "workspace sessions not rendered", rendered: rows().length };
+    }
+    const titles = rows().map(({ btn }) => btn.textContent?.trim() ?? "");
+    const pinnedFirst = titles[0]?.includes("Workspace Beta") ?? false;
+    const alpha = rows().find(({ row }) => row.textContent?.includes("Workspace Alpha"));
+    const beta = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    const alphaCount = alpha?.btn.getAttribute("data-session-count");
+    const betaCount = beta?.btn.getAttribute("data-session-count");
+    beta?.row.querySelector('button[aria-label="Unpin session"]')?.click();
+    let betaUnpinned = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const after = rows();
+      betaUnpinned =
+        after.find(({ row }) => row.textContent?.includes("Workspace Beta"))
+          ?.row.querySelector('button[aria-label="Pin session"]') != null;
+      if (betaUnpinned) break;
+    }
+    const alphaAfter = rows().find(({ row }) => row.textContent?.includes("Workspace Alpha"));
+    alphaAfter?.row.querySelector('button[aria-label="Pin session"]')?.click();
+    let alphaPinned = false;
+    let pinnedAlphaFirst = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const after = rows();
+      alphaPinned =
+        after.find(({ row }) => row.textContent?.includes("Workspace Alpha"))
+          ?.row.querySelector('button[aria-label="Unpin session"]') != null;
+      pinnedAlphaFirst = after[0]?.row.textContent?.includes("Workspace Alpha") ?? false;
+      if (alphaPinned && pinnedAlphaFirst) break;
+    }
+    const storedSessions = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").sessions;
+    const alphaStored = storedSessions.find((s) => s.id === "ws-alpha");
+    const betaAfter = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    betaAfter?.row.querySelector('button[aria-label="Duplicate session"]')?.click();
+    let copyStored = null;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      copyStored = shape.sessions.find((s) => s.title === "Workspace Beta (copy)") ?? null;
+      if (copyStored) break;
+      await sleep(100);
+    }
+    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const copyMessageCount = copyStored
+      ? storedAfter.chatMessages.filter((m) => m.sessionId === copyStored.id).length
+      : -1;
+    const betaExport = rows().find(({ row }) => row.textContent?.includes("Workspace Beta"));
+    betaExport?.row.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("Workspace Beta")) break;
+      await sleep(100);
+    }
+    const exportOk =
+      preview.includes("# Workspace Beta") &&
+      preview.includes("## User") &&
+      preview.includes("beta question");
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    const panelGone = !document.querySelector("[data-session-export-panel]");
+    return {
+      ok:
+        pinnedFirst &&
+        alphaCount === "2" &&
+        betaCount === "1" &&
+        betaUnpinned &&
+        alphaPinned &&
+        pinnedAlphaFirst &&
+        alphaStored?.pinned === true &&
+        !!copyStored &&
+        copyMessageCount === 1 &&
+        exportOk &&
+        panelGone,
+      pinnedFirst,
+      alphaCount,
+      betaCount,
+      betaUnpinned,
+      alphaPinned,
+      pinnedAlphaFirst,
+      alphaStoredPinned: alphaStored?.pinned,
+      copyStored: !!copyStored,
+      copyMessageCount,
+      exportOk,
+      panelGone,
+    };
+  })()`);
+  if (!sessionWorkspace.ok) {
+    throw new Error(
+      `AI Studio session workspace assertion failed: ${JSON.stringify(sessionWorkspace)}`,
+    );
+  }
+  results.sessionWorkspace = sessionWorkspace;
+  laneLog('sessionWorkspace ok');
+
+  // Sprint 155: duplicate keeps message versions + aux, export embeds RAG / Inspector trace.
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = shape.sessions ?? [];
+    if (!shape.sessions.some((s) => s.id === "aux-session")) {
+      shape.sessions.push({
+        id: "aux-session",
+        projectId: null,
+        title: "Aux Session",
+        model: "openai",
+        pinned: false,
+        messageCount: 2,
+        createdAt: now - 5000,
+      });
+    }
+    shape.chatMessages = shape.chatMessages ?? [];
+    shape.chatMessages = shape.chatMessages.filter((m) => m.sessionId !== "aux-session");
+    shape.chatMessages.push(
+      {
+        id: "aux-user",
+        sessionId: "aux-session",
+        role: "user",
+        content: "aux question",
+        createdAt: now - 4000,
+      },
+      {
+        id: "aux-assistant",
+        sessionId: "aux-session",
+        role: "assistant",
+        content: "aux answer",
+        createdAt: now - 3000,
+      },
+    );
+    shape.messageVersions = shape.messageVersions ?? [];
+    shape.messageVersions = shape.messageVersions.filter((v) => v.messageId !== "aux-user");
+    shape.messageVersions.push(
+      {
+        id: "aux-ver-1",
+        messageId: "aux-user",
+        content: "aux original",
+        createdAt: now - 3500,
+        parentVersionId: null,
+      },
+      {
+        id: "aux-ver-2",
+        messageId: "aux-user",
+        content: "aux edited",
+        createdAt: now - 3400,
+        parentVersionId: "aux-ver-1",
+      },
+    );
+    shape.messageAux = shape.messageAux ?? [];
+    shape.messageAux = shape.messageAux.filter((a) => a.messageId !== "aux-user");
+    shape.messageAux.push({
+      messageId: "aux-user",
+      payload: JSON.stringify({
+        rag: [
+          {
+            id: "hit-1",
+            content: "local thought hit",
+            tags: "",
+            type: "note",
+            sourceKind: "file",
+            sourceFile: "C:/vault/Aux Note.md",
+            score: 1,
+          },
+        ],
+        trace: {
+          title: "Agent Trace + RAG",
+          sections: [
+            { label: "Agent", value: "UI Designer" },
+            { label: "RAG context", value: "1 local thought(s) injected" },
+          ],
+        },
+      }),
+      updatedAt: now,
+    });
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionAuxContext = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .filter((el) => el?.textContent?.includes("Aux Session"));
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      row = rows().find((el) => !el?.textContent?.includes("(copy)")) ?? null;
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "aux session row missing", rendered: rows().length };
+    row.querySelector('button[aria-label="Duplicate session"]')?.click();
+    let copyStored = null;
+    for (let i = 0; i < 30; i++) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      copyStored = shape.sessions.find((s) => s.title === "Aux Session (copy)") ?? null;
+      if (copyStored) break;
+      await sleep(100);
+    }
+    const shapeAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const copyMessages = shapeAfter.chatMessages.filter((m) => m.sessionId === copyStored?.id);
+    const copyVersions = (shapeAfter.messageVersions ?? []).filter((v) =>
+      copyMessages.some((m) => m.id === v.messageId),
+    );
+    const copyAux = (shapeAfter.messageAux ?? []).filter((a) =>
+      copyMessages.some((m) => m.id === a.messageId),
+    );
+    const versionsOk =
+      copyVersions.length === 2 &&
+      copyVersions.some((v) => v.content === "aux original") &&
+      copyVersions.some((v) => v.content === "aux edited") &&
+      copyVersions.some((v) => v.parentVersionId);
+    const auxOk =
+      copyAux.length === 1 &&
+      copyAux[0].payload.includes("local thought hit") &&
+      copyAux[0].payload.includes("UI Designer");
+    const originalRow = rows().find((el) => !el?.textContent?.includes("(copy)"));
+    originalRow?.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("Aux Session")) break;
+      await sleep(100);
+    }
+    const exportOk =
+      preview.includes("aux question") &&
+      preview.includes("### RAG context") &&
+      preview.includes("local thought hit") &&
+      preview.includes("### Inspector Trace") &&
+      preview.includes("UI Designer");
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    return {
+      ok: !!copyStored && versionsOk && auxOk && exportOk,
+      copyMessageCount: copyMessages.length,
+      copyVersionCount: copyVersions.length,
+      copyAuxCount: copyAux.length,
+      versionsOk,
+      auxOk,
+      exportOk,
+    };
+  })()`);
+  if (!sessionAuxContext.ok) {
+    throw new Error(
+      `AI Studio session aux context assertion failed: ${JSON.stringify(sessionAuxContext)}`,
+    );
+  }
+  results.sessionAuxContext = sessionAuxContext;
+  laneLog('sessionAuxContext ok');
+
+  // Depends on sessionWorkspace leaving Workspace Beta + messages in localStorage.
+  const sessionSaveKnowledge = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+      .map((btn) => btn.parentElement)
+      .find(
+        (el) =>
+          el?.textContent?.includes("Workspace Beta") && !el?.textContent?.includes("(copy)"),
+      );
+    if (!row) return { ok: false, reason: "beta session row missing" };
+    row.querySelector('button[aria-label="Export session"]')?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (preview.includes("# Workspace Beta")) break;
+      await sleep(100);
+    }
+    const saveBtn = document.querySelector("[data-session-export-knowledge]");
+    if (!saveBtn) return { ok: false, reason: "save knowledge button missing" };
+    saveBtn.click();
+    let result = "";
+    for (let i = 0; i < 30; i++) {
+      result =
+        document.querySelector("[data-session-export-knowledge-result]")?.textContent ?? "";
+      if (result.includes("Saved")) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const thought = (shape.thoughts ?? []).find((t) => t.content.startsWith("# Workspace Beta"));
+    const ok =
+      preview.includes("## User") &&
+      preview.includes("beta question") &&
+      result.includes("Saved") &&
+      thought?.tags === "#chat,#session" &&
+      thought?.type === "note";
+    document.querySelector("[data-session-export-close]")?.click();
+    await sleep(150);
+    return {
+      ok,
+      previewHasTitle: preview.includes("# Workspace Beta"),
+      previewHasUser: preview.includes("## User"),
+      result,
+      thoughtTags: thought?.tags,
+      thoughtType: thought?.type,
+    };
+  })()`);
+  if (!sessionSaveKnowledge.ok) {
+    throw new Error(
+      `AI Studio session save knowledge assertion failed: ${JSON.stringify(sessionSaveKnowledge)}`,
+    );
+  }
+  results.sessionSaveKnowledge = sessionSaveKnowledge;
+  laneLog('sessionSaveKnowledge ok');
+
+  await reloadAndWait();
+  await clickDock('Knowledge');
+  const sessionSaveKnowledgePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let found = false;
+    for (let i = 0; i < 30; i++) {
+      found = [...document.querySelectorAll("main button")]
+        .some((b) => (b.textContent || "").startsWith("# Workspace Beta"));
+      if (found) break;
+      await sleep(100);
+    }
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const stored = (shape.thoughts ?? []).some(
+      (t) => t.content.startsWith("# Workspace Beta") && t.tags === "#chat,#session",
+    );
+    return { ok: found && stored, found, stored };
+  })()`);
+  if (!sessionSaveKnowledgePersisted?.ok) {
+    throw new Error(
+      `AI Studio session save knowledge persistence assertion failed: ${JSON.stringify(
+        sessionSaveKnowledgePersisted,
+      )}`,
+    );
+  }
+  results.sessionSaveKnowledgePersisted = sessionSaveKnowledgePersisted;
+  laneLog('sessionSaveKnowledgePersisted ok');
+
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "sum-session",
+        projectId: null,
+        title: "Weekly Sync",
+        model: "openai",
+        pinned: false,
+        archived: false,
+        messageCount: 2,
+        createdAt: now - 5000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "sum-u1", sessionId: "sum-session", role: "user", content: "帮我总结本周项目收益与风险", createdAt: now - 4000 },
+      { id: "sum-a1", sessionId: "sum-session", role: "assistant", content: "本周项目收益为 1200 元，主要风险是外部依赖未交付。", createdAt: now - 3000 },
+      { id: "sum-u2", sessionId: "sum-session", role: "user", content: "下一步安排是什么", createdAt: now - 2000 },
+      { id: "sum-a2", sessionId: "sum-session", role: "assistant", content: "下一步聚焦测试与发布，并同步风险清单。", createdAt: now - 1000 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
+  const sessionSummary = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      row = [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => btn.parentElement)
+        .find((el) => el?.textContent?.includes("Weekly Sync"));
+      if (row) break;
+      await sleep(100);
+    }
+    if (!row) return { ok: false, reason: "weekly sync session row missing" };
+    row.querySelector('button[aria-label="Export session"]')?.click();
+    let stats = "";
+    let keywords = [];
+    let points = [];
+    let preview = "";
+    for (let i = 0; i < 30; i++) {
+      stats = document.querySelector("[data-session-summary-stats]")?.textContent ?? "";
+      keywords = [...document.querySelectorAll("[data-session-summary-keyword]")].map(
+        (el) => el.textContent ?? "",
+      );
+      points = [...document.querySelectorAll("[data-session-summary-point]")].map(
+        (el) => el.textContent ?? "",
+      );
+      preview = document.querySelector("[data-session-export-preview]")?.textContent ?? "";
+      if (stats.includes("2 questions") && points.length === 2 && preview.includes("## Summary")) {
+        break;
+      }
+      await sleep(100);
+    }
+    const ok =
+      stats.includes("2 questions") &&
+      keywords.length >= 3 &&
+      keywords.includes("收益") &&
+      keywords.includes("风险") &&
+      points.length === 2 &&
+      points[0].includes("本周项目收益与风险") &&
+      points[1].includes("下一步安排是什么") &&
+      preview.includes("## Summary") &&
+      preview.includes("Keywords:") &&
+      preview.includes("- Questions: 2");
+    document.querySelector("[data-session-export-close]")?.click();
+    return {
+      ok,
+      stats,
+      keywords,
+      points,
+      previewHasSummary: preview.includes("## Summary"),
+    };
+  })()`);
+  if (!sessionSummary.ok) {
+    throw new Error(
+      `AI Studio session summary assertion failed: ${JSON.stringify(sessionSummary)}`,
+    );
+  }
+  results.sessionSummary = sessionSummary;
+  laneLog('sessionSummary ok');
+
+  await clickDock('AI Studio');
+  await evaluate(`(() => {
+    const now = Date.now();
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.sessions = [
+      {
+        id: "arch-a",
+        projectId: null,
+        title: "Archive Alpha",
+        model: "openai",
+        pinned: false,
+        archived: false,
+        createdAt: now - 5000,
+      },
+      {
+        id: "arch-b",
+        projectId: null,
+        title: "Archive Beta",
+        model: "ollama",
+        pinned: true,
+        archived: false,
+        createdAt: now - 4000,
+      },
+      {
+        id: "arch-c",
+        projectId: null,
+        title: "Archive Charlie",
+        model: "openai",
+        pinned: false,
+        archived: true,
+        createdAt: now - 3000,
+      },
+    ];
+    shape.chatMessages = [
+      { id: "arch-a-msg", sessionId: "arch-a", role: "user", content: "archive alpha question", createdAt: now - 4500 },
+      { id: "arch-b-msg", sessionId: "arch-b", role: "user", content: "beta archive question", createdAt: now - 3500 },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  await clickDock('AI Studio');
+
+  const sessionArchive = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    const activeTab = () => document.querySelector('button[data-session-archive-tab="active"]');
+    const archivedTab = () => document.querySelector('button[data-session-archive-tab="archived"]');
+    let rendered = false;
+    for (let i = 0; i < 30; i++) {
+      rendered = rows().filter(({ row }) => row?.textContent?.includes("Archive")).length >= 2;
+      if (rendered) break;
+      await sleep(100);
+    }
+    if (!rendered) {
+      return { ok: false, reason: "archive seed not rendered", rendered: rows().length };
+    }
+    const alpha = rows().find(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    const archiveBtn = alpha?.row.querySelector('button[data-session-archive="arch-a"]');
+    if (!archiveBtn) {
+      return { ok: false, reason: "archive button missing", rendered, alphaFound: !!alpha };
+    }
+    archiveBtn.click();
+    const activeGone = await waitFor(
+      () => !rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    archivedTab()?.click();
+    const archivedHasAlpha = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const archivedHasCharlie = rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Charlie"),
+    );
+    return {
+      ok: rendered && activeGone && archivedHasAlpha && archivedHasCharlie,
+      rendered,
+      activeGone,
+      archivedHasAlpha,
+      archivedHasCharlie,
+      activeCountText: activeTab()?.textContent?.trim() ?? "",
+      archivedCountText: archivedTab()?.textContent?.trim() ?? "",
+    };
+  })()`);
+  if (!sessionArchive.ok) {
+    throw new Error(
+      `AI Studio session archive assertion failed: ${JSON.stringify(sessionArchive)}`,
+    );
+  }
+  results.sessionArchive = sessionArchive;
+  laneLog('sessionArchive ok');
+
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const sessionArchivePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    const activeMissingAlpha = !rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Alpha"),
+    );
+    document.querySelector('button[data-session-archive-tab="archived"]')?.click();
+    const archivedHasAlpha = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedArchived =
+      shape.sessions.find((s) => s.id === "arch-a")?.archived === true;
+    return {
+      ok: activeMissingAlpha && archivedHasAlpha && storedArchived,
+      activeMissingAlpha,
+      archivedHasAlpha,
+      storedArchived,
+    };
+  })()`);
+  if (!sessionArchivePersisted.ok) {
+    throw new Error(
+      `AI Studio session archive persistence assertion failed: ${JSON.stringify(
+        sessionArchivePersisted,
+      )}`,
+    );
+  }
+  results.sessionArchivePersisted = sessionArchivePersisted;
+  laneLog('sessionArchivePersisted ok');
+
+  const sessionArchiveRestored = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 4000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const rows = () =>
+      [...document.querySelectorAll("main aside button[aria-label='Open session']")]
+        .map((btn) => ({ btn, row: btn.parentElement }));
+    document.querySelector('button[data-session-archive-tab="archived"]')?.click();
+    const archivedReady = await waitFor(() =>
+      rows().some(({ row }) => row?.textContent?.includes("Archive Alpha")),
+    );
+    const alpha = rows().find(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    const restoreBtn = alpha?.row.querySelector('button[data-session-restore="arch-a"]');
+    if (!restoreBtn) {
+      return { ok: false, reason: "restore button missing", archivedReady, alphaFound: !!alpha };
+    }
+    restoreBtn.click();
+    const activeHasAlpha = await waitFor(() => {
+      document.querySelector('button[data-session-archive-tab="active"]')?.click();
+      return rows().some(({ row }) => row?.textContent?.includes("Archive Alpha"));
+    });
+    const archivedGone = !rows().some(({ row }) =>
+      row?.textContent?.includes("Archive Alpha"),
+    );
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    const storedRestored =
+      shape.sessions.find((s) => s.id === "arch-a")?.archived === false;
+    return {
+      ok: archivedReady && activeHasAlpha && archivedGone && storedRestored,
+      archivedReady,
+      activeHasAlpha,
+      archivedGone,
+      storedRestored,
+    };
+  })()`);
+  if (!sessionArchiveRestored.ok) {
+    throw new Error(
+      `AI Studio session archive restore assertion failed: ${JSON.stringify(
+        sessionArchiveRestored,
+      )}`,
+    );
+  }
+  results.sessionArchiveRestored = sessionArchiveRestored;
+  laneLog('sessionArchiveRestored ok');
+
+  const sessionSearchHistoryStats = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+
+    setValue(searchInput, "question");
+    const statsText = await waitFor(() => {
+      const el = document.querySelector("[data-session-search-stats]");
+      return !!el && el.textContent?.includes("hits") && el.textContent?.includes("sessions");
+    });
+    await sleep(300);
+    const historySeen = await waitFor(() =>
+      !!document.querySelector('[data-session-history-query="question"]'),
+    );
+    const stats =
+      document.querySelector("[data-session-search-stats]")?.textContent ?? "";
+    const sessionsOk = stats.includes("sessions");
+    const messageOk = stats.includes("message");
+    const hitsOk = stats.includes("hits");
+
+    setValue(searchInput, "");
+    await sleep(300);
+    document.querySelector('[data-session-history-query="question"]')?.click();
+    const recallStats = await waitFor(() =>
+      document.querySelector("[data-session-search-stats]")?.textContent?.includes("hits"),
+    );
+
+    document.querySelector("[data-session-history-clear]")?.click();
+    await sleep(200);
+    const historyGone = !document.querySelector("[data-session-history-query]");
+    const storedGone = !(localStorage.getItem("ai-workbench:session-search-history:v1") ?? "")
+      .includes("question");
+    return {
+      ok:
+        statsText &&
+        hitsOk &&
+        sessionsOk &&
+        messageOk &&
+        historySeen &&
+        recallStats &&
+        historyGone &&
+        storedGone,
+      stats,
+      hitsOk,
+      sessionsOk,
+      messageOk,
+      historySeen,
+      recallStats,
+      historyGone,
+      storedGone,
+    };
+  })()`);
+  if (!sessionSearchHistoryStats.ok) {
+    throw new Error(
+      `AI Studio session search history/stats assertion failed: ${JSON.stringify(
+        sessionSearchHistoryStats,
+      )}`,
+    );
+  }
+  results.sessionSearchHistoryStats = sessionSearchHistoryStats;
+  laneLog('sessionSearchHistoryStats ok');
+
+  const sessionGrouping = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    if (searchInput.value) {
+      setter.call(searchInput, "");
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const groupsReady = await waitFor(
+      () => document.querySelectorAll("[data-session-group]").length >= 2,
+    );
+    if (!groupsReady) {
+      return {
+        ok: false,
+        reason: "session groups missing",
+        groups: [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+          el.getAttribute("data-session-group-label"),
+        ),
+      };
+    }
+    const groupLabels = [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+      el.getAttribute("data-session-group-label"),
+    );
+    const firstLabel = groupLabels[0] ?? "";
+    const pinned = document.querySelector('[data-session-group="pinned"]');
+    const pinnedCount = Number(
+      pinned?.querySelector("[data-session-group-count]")?.getAttribute("data-session-group-count") || 0,
+    );
+    const pinnedRows = pinned?.querySelectorAll("[data-session-pin]").length ?? 0;
+    const today = document.querySelector('[data-session-group="today"]');
+    const todayCount = Number(
+      today?.querySelector("[data-session-group-count]")?.getAttribute("data-session-group-count") || 0,
+    );
+    const visibleRows = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+    const sumCounts = [...document.querySelectorAll("[data-session-group-count]")].reduce(
+      (sum, el) => sum + Number(el.getAttribute("data-session-group-count") || 0),
+      0,
+    );
+    const ok =
+      groupLabels.includes("pinned") &&
+      groupLabels.includes("today") &&
+      firstLabel === "pinned" &&
+      pinnedCount >= 1 &&
+      pinnedRows === pinnedCount &&
+      todayCount >= 1 &&
+      sumCounts === visibleRows;
+    return {
+      ok,
+      groupLabels,
+      pinnedCount,
+      pinnedRows,
+      todayCount,
+      visibleRows,
+      sumCounts,
+    };
+  })()`);
+  results.sessionGrouping = sessionGrouping;
+  if (!sessionGrouping.ok) {
+    throw new Error(
+      `AI Studio session grouping assertion failed: ${JSON.stringify(sessionGrouping)}`,
+    );
+  }
+  laneLog('sessionGrouping ok');
+
+  const sessionGroupingToggle = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const readPinned = () => {
+      const header = document.querySelector('[data-session-group="pinned"]');
+      const toggle = header?.querySelector('[data-session-group-toggle="pinned"]');
+      return {
+        collapsed: toggle?.getAttribute("data-session-group-collapsed") === "true",
+        rows: header?.querySelectorAll("[data-session-pin]").length ?? 0,
+      };
+    };
+    const firstToggle = document.querySelector('[data-session-group-toggle="pinned"]');
+    if (!firstToggle) return { ok: false, reason: "pinned group toggle missing" };
+    firstToggle.click();
+    const collapsedOk = await waitFor(() => {
+      const state = readPinned();
+      return state.collapsed && state.rows === 0;
+    });
+    const secondToggle = document.querySelector('[data-session-group-toggle="pinned"]');
+    if (!secondToggle) return { ok: false, reason: "pinned group toggle missing on expand" };
+    secondToggle.click();
+    const expandedOk = await waitFor(() => {
+      const state = readPinned();
+      return !state.collapsed && state.rows >= 1;
+    });
+    const finalState = readPinned();
+    return {
+      ok: collapsedOk && expandedOk,
+      collapsedOk,
+      expandedOk,
+      finalState,
+    };
+  })()`);
+  results.sessionGroupingToggle = sessionGroupingToggle;
+  if (!sessionGroupingToggle.ok) {
+    throw new Error(
+      `AI Studio session grouping toggle assertion failed: ${JSON.stringify(
+        sessionGroupingToggle,
+      )}`,
+    );
+  }
+  laneLog('sessionGroupingToggle ok');
+
+  const sessionGroupingSearchFlat = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, timeout = 5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        if (fn()) return true;
+        await sleep(80);
+      }
+      return false;
+    };
+    const searchInput = document.querySelector("[data-session-search-input]");
+    if (!searchInput) return { ok: false, reason: "no session search input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(searchInput, "alpha");
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const flatReady = await waitFor(
+      () =>
+        document.querySelectorAll("[data-session-group]").length === 0 &&
+        document.querySelectorAll("main aside button[aria-label='Open session']").length >= 1,
+    );
+    const flatRows = document.querySelectorAll(
+      "main aside button[aria-label='Open session']",
+    ).length;
+    setter.call(searchInput, "");
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const groupsRestored = await waitFor(
+      () => document.querySelectorAll("[data-session-group]").length >= 2,
+    );
+    const groupLabels = [...document.querySelectorAll("[data-session-group-label]")].map((el) =>
+      el.getAttribute("data-session-group-label"),
+    );
+    return {
+      ok: flatReady && flatRows >= 1 && groupsRestored && groupLabels.includes("pinned"),
+      flatReady,
+      flatRows,
+      groupsRestored,
+      groupLabels,
+    };
+  })()`);
+  results.sessionGroupingSearchFlat = sessionGroupingSearchFlat;
+  if (!sessionGroupingSearchFlat.ok) {
+    throw new Error(
+      `AI Studio session grouping search flat assertion failed: ${JSON.stringify(
+        sessionGroupingSearchFlat,
+      )}`,
+    );
+  }
+  laneLog('sessionGroupingSearchFlat ok');
+
+  laneLog('providerToggled: clicking System');
+  await clickDock('System');
+  const providerToggled = await evaluate(`(async () => {
+    const card = [...document.querySelectorAll(".provider-card")].find((c) => c.textContent?.includes("OpenAI"));
+    if (!card) return { ok: false, reason: "openai card missing" };
+    const disable = [...card.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Disable");
+    if (!disable) return { ok: false, reason: "disable button missing" };
+    disable.click();
+    await new Promise((r) => setTimeout(r, 350));
+    return { ok: true, text: card.textContent };
+  })()`);
+  if (!providerToggled.ok || !providerToggled.text.includes('Enable')) {
+    throw new Error(`provider toggle assertion failed: ${JSON.stringify(providerToggled)}`);
+  }
+  await clickDock('AI Studio');
+  const autoRoute = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const autoBtn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Auto");
+    if (!autoBtn) return { ok: false, reason: "auto button missing" };
+    autoBtn.click();
+    await sleep(150);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "auto route check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let routed = "";
+    let reply = false;
+    for (let i = 0; i < 40; i++) {
+      routed = document.querySelector(".model-badge, [class*='rounded-full']")?.textContent ?? document.body.innerText;
+      reply = document.body.innerText.includes("Streaming fallback") || document.body.innerText.includes("Browser fallback");
+      if (routed.includes("auto →") && reply) break;
+      await sleep(100);
+    }
+    const bodyText = document.body.innerText;
+    let inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+    for (let i = 0; i < 20 && !inspectorText.includes("auto → Ollama"); i++) {
+      await sleep(100);
+      inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+    }
+    return {
+      ok: true,
+      routed,
+      reply,
+      autoBadgeVisible: bodyText.includes("auto → Ollama"),
+      inspectorShowsRouter: inspectorText.includes("ROUTER") && inspectorText.includes("auto → Ollama"),
+      inspectorText: inspectorText.slice(0, 200),
+    };
+  })()`);
+  if (
+    !autoRoute.ok ||
+    !autoRoute.autoBadgeVisible ||
+    !autoRoute.reply ||
+    !autoRoute.inspectorShowsRouter
+  ) {
+    throw new Error(`AI Studio auto route assertion failed: ${JSON.stringify(autoRoute)}`);
+  }
+  results.autoRoute = autoRoute;
+  laneLog('autoRoute ok');
+
+  const singleBtn = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "Single");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`);
+  if (!singleBtn) throw new Error('Single mode button missing before edit test');
+  const messageEdit = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    setValue(input, "sprint 14 edit check");
+    await sleep(80);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let userSeen = false;
+    for (let i = 0; i < 40; i++) {
+      if (document.body.innerText.includes("sprint 14 edit check")) {
+        userSeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let replySeen = false;
+    for (let i = 0; i < 40; i++) {
+      if (
+        [...document.querySelectorAll(".message-in")].some(
+          (el) => el.classList.contains("message-in") && el.textContent?.includes("Streaming fallback") && !el.parentElement?.textContent?.includes("auto route check"),
+        )
+      ) {
+        replySeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    let streamIdle = false;
+    for (let i = 0; i < 40; i++) {
+      const noBusy = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+      const noPlaceholder = ![...document.querySelectorAll(".message-in")].some((el) => el.textContent?.startsWith("__stream__"));
+      if (noBusy && noPlaceholder) {
+        streamIdle = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const group = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edit check"));
+    if (!group || !userSeen) {
+      const dump = [...document.querySelectorAll(".message-in")].map((el) => el.textContent.slice(0, 80));
+      return { ok: false, reason: "user message group missing", userSeen, replySeen, streamIdle, dump };
+    }
+    const editBtn = group.querySelector('button[aria-label="Edit message"]');
+    if (!editBtn) {
+      return {
+        ok: false,
+        reason: "edit button missing",
+        replySeen,
+        groupText: group.textContent,
+        groupButtons: [...group.querySelectorAll("button[aria-label]")].map((b) => b.getAttribute("aria-label")),
+      };
+    }
+    editBtn.click();
+    await sleep(300);
+    const editInput = document.querySelector('textarea[aria-label="Edit message input"]');
+    if (!editInput) {
+      const editButtons = [...document.querySelectorAll('button[aria-label="Edit message"]')].length;
+      const groups = [...document.querySelectorAll(".message-in")].map((el) => ({
+        text: el.textContent.slice(0, 50),
+        buttons: [...(el.parentElement?.querySelectorAll("button[aria-label]") ?? [])].map((b) => b.getAttribute("aria-label")),
+      }));
+      return { ok: false, reason: "edit input missing", replySeen, editButtons, groups };
+    }
+    setValue(editInput, "sprint 14 edited text");
+    await sleep(120);
+    document.querySelector('button[aria-label="Save message edit"]')?.click();
+    await sleep(300);
+    const editedVisible = document.body.innerText.includes("sprint 14 edited text");
+    const oldTextGone = !document.body.innerText.includes("sprint 14 edit check");
+
+    const historyGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edited text"));
+    if (!historyGroup) {
+      return { ok: false, reason: "edited group missing before history", replySeen, editedVisible, oldTextGone };
+    }
+    historyGroup.querySelector('button[aria-label="Open message history"]')?.click();
+    let historySeen = false;
+    for (let i = 0; i < 20; i++) {
+      const panel = document.querySelector(".version-panel");
+      if (panel?.textContent?.includes("sprint 14 edit check")) {
+        historySeen = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const restoreBtn = document.querySelector('button[aria-label="Restore version 1"]');
+    if (!historySeen || !restoreBtn) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      return {
+        ok: false,
+        reason: "version history missing",
+        historySeen,
+        editedVisible,
+        oldTextGone,
+        panel: document.querySelector(".version-panel")?.textContent ?? "",
+        messages: (shape.chatMessages ?? []).map((m) => ({ id: m.id, content: m.content })),
+        versions: (shape.messageVersions ?? []).map((v) => ({ id: v.id, messageId: v.messageId, content: v.content })),
+      };
+    }
+    const graph = document.querySelector(".version-graph");
+    const graphOk =
+      !!graph &&
+      graph.textContent?.includes("Version graph") &&
+      graph.querySelectorAll(".version-node").length >= 2 &&
+      graph.textContent.includes("current") &&
+      graph.textContent.includes("root");
+    document.querySelector('button[aria-label="Compare version 1 with current"]')?.click();
+    let diffSeen = false;
+    let diffCounts = "";
+    for (let i = 0; i < 20; i++) {
+      const diff = document.querySelector(".version-diff");
+      const text = diff?.textContent ?? "";
+      if (text.includes("sprint 14 edit check") && text.includes("sprint 14 edited text")) {
+        diffSeen = true;
+        diffCounts = text.includes("+1") && text.includes("-1") ? "+1 -1" : "";
+        break;
+      }
+      await sleep(100);
+    }
+    if (!diffSeen) {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      return {
+        ok: false,
+        reason: "version diff missing",
+        historySeen,
+        panel: document.querySelector(".version-panel")?.textContent ?? "",
+        messages: (shape.chatMessages ?? []).map((m) => ({ id: m.id, content: m.content })),
+        versions: (shape.messageVersions ?? []).map((v) => ({ id: v.id, messageId: v.messageId, content: v.content })),
+      };
+    }
+    document.querySelector('button[aria-label="Compare version 1 with current"]')?.click();
+    await sleep(150);
+    restoreBtn.click();
+    let restoredVisible = false;
+    for (let i = 0; i < 20; i++) {
+      if (
+        [...document.querySelectorAll(".message-in")].some((el) =>
+          el.textContent?.includes("sprint 14 edit check"),
+        )
+      ) {
+        restoredVisible = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const editedGoneAfterRestore = ![...document.querySelectorAll(".message-in")].some((el) =>
+      el.textContent?.includes("sprint 14 edited text"),
+    );
+
+    const restoredGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edit check"));
+    if (!restoredGroup) {
+      return { ok: false, reason: "restored group missing", restoredVisible, editedGoneAfterRestore };
+    }
+    restoredGroup.querySelector('button[aria-label="Edit message"]')?.click();
+    await sleep(200);
+    const reeditInput = document.querySelector('textarea[aria-label="Edit message input"]');
+    if (!reeditInput) {
+      return { ok: false, reason: "re-edit input missing", restoredVisible, editedGoneAfterRestore };
+    }
+    setValue(reeditInput, "sprint 14 edited text");
+    await sleep(120);
+    document.querySelector('button[aria-label="Save message edit"]')?.click();
+    await sleep(300);
+    const finalEditedVisible = document.body.innerText.includes("sprint 14 edited text");
+    const finalOldTextGone = ![...document.querySelectorAll(".message-in")].some((el) =>
+      el.textContent?.includes("sprint 14 edit check"),
+    );
+
+    const editedGroup = [...document.querySelectorAll(".message-in")]
+      .map((el) => el.parentElement)
+      .find((el) => el?.textContent?.includes("sprint 14 edited text"));
+    if (!editedGroup) return { ok: false, reason: "edited group missing", replySeen, editedVisible, oldTextGone };
+    editedGroup.querySelector('button[aria-label="Regenerate message"]')?.click();
+    let regenerated = false;
+    for (let i = 0; i < 40; i++) {
+      const lastAssistant = [...document.querySelectorAll(".message-in")]
+        .filter((el) => el.parentElement?.className.includes("self-start"))
+        .pop();
+      if (
+        lastAssistant?.textContent?.includes("Streaming fallback") &&
+        !lastAssistant.textContent.startsWith("__stream__") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector(".stream-caret")
+      ) {
+        regenerated = true;
+        break;
+      }
+      await sleep(100);
+    }
+    await sleep(500);
+    const messagesAfter = [...document.querySelectorAll(".message-in")].map((el) => el.textContent);
+    return {
+      ok: true,
+      replySeen,
+      editedVisible,
+      oldTextGone,
+      historySeen,
+      graphOk,
+      diffSeen,
+      diffCounts,
+      restoredVisible,
+      editedGoneAfterRestore,
+      finalEditedVisible,
+      finalOldTextGone,
+      regenerated,
+      messagesAfter,
+    };
+  })()`);
+  if (
+    !messageEdit.ok ||
+    !messageEdit.replySeen ||
+    !messageEdit.editedVisible ||
+    !messageEdit.oldTextGone ||
+    !messageEdit.historySeen ||
+    !messageEdit.graphOk ||
+    !messageEdit.diffSeen ||
+    messageEdit.diffCounts !== '+1 -1' ||
+    !messageEdit.restoredVisible ||
+    !messageEdit.editedGoneAfterRestore ||
+    !messageEdit.finalEditedVisible ||
+    !messageEdit.finalOldTextGone ||
+    !messageEdit.regenerated
+  ) {
+    throw new Error(
+      `AI Studio message edit/regenerate assertion failed: ${JSON.stringify(messageEdit)}`,
+    );
+  }
+  results.messageEdit = messageEdit;
+  laneLog('messageEdit ok');
+
+  const streamError = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    setValue(input, "sprint 15 timeout check");
+    await sleep(80);
+    let sendBtn = document.querySelector('main button[aria-label="Send"]');
+    for (let i = 0; i < 30 && !sendBtn; i++) {
+      await sleep(100);
+      sendBtn = document.querySelector('main button[aria-label="Send"]');
+    }
+    if (!sendBtn) {
+      document.querySelector('main button[aria-label="Stop streaming"]')?.click();
+      await sleep(300);
+      sendBtn = document.querySelector('main button[aria-label="Send"]');
+    }
+    if (!sendBtn) {
+      return {
+        ok: false,
+        reason: "no send button",
+        busy: !!document.querySelector('main button[aria-label="Stop streaming"]'),
+      };
+    }
+    sendBtn.click();
+    let statusSeen = false;
+    for (let i = 0; i < 30; i++) {
+      const status = document.querySelector(".stream-status");
+      const caret = document.querySelector(".stream-caret") || document.querySelector(".thinking-dot");
+      if (status || caret) statusSeen = true;
+      if (document.querySelector('button[aria-label="Retry failed message"]')) break;
+      await sleep(100);
+    }
+    const errorText = [...document.querySelectorAll(".message-in")].map((el) => el.textContent).join(" | ");
+    const retryBtn = document.querySelector('button[aria-label="Retry failed message"]');
+    return {
+      ok: true,
+      statusSeen,
+      errorMapped: document.body.innerText.includes("Request timeout: provider did not respond in time"),
+      errorMessageVisible: errorText.includes("Request timeout"),
+      placeholderGone: ![...document.querySelectorAll(".message-in")].some((el) => el.textContent?.startsWith("__stream__")),
+      hasRetry: !!retryBtn,
+    };
+  })()`);
+  if (
+    !streamError.ok ||
+    !streamError.statusSeen ||
+    !streamError.errorMapped ||
+    !streamError.errorMessageVisible ||
+    !streamError.placeholderGone ||
+    !streamError.hasRetry
+  ) {
+    throw new Error(
+      `AI Studio stream error mapping assertion failed: ${JSON.stringify(streamError)}`,
+    );
+  }
+  results.streamError = streamError;
+  laneLog('streamError ok');
+
+  let liveServer = null;
+  try {
+    liveServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === '/v1/chat/completions') {
+        let raw = '';
+        req.on('data', (chunk) => (raw += chunk));
+        req.on('end', () => {
+          const parsed = JSON.parse(raw || '{}');
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Live provider "}}]}\n\n`);
+          res.write(`data: {"choices":[{"delta":{"content":"stream ok "}}]}\n\n`);
+          res.write(`data: {"choices":[{"delta":{"content":"model=${parsed.model}"}}]}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => liveServer.listen(0, '127.0.0.1', resolve));
+    const livePort = liveServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "live-provider",
+        name: "Live Mock",
+        baseUrl: "http://127.0.0.1:${livePort}/v1",
+        apiKey: "test-key",
+        model: "mock-gpt",
+        isActive: true,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerLiveStream = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      let dock = null;
+      for (let i = 0; i < 30; i++) {
+        dock = [...document.querySelectorAll('nav button[aria-label]')]
+          .find((b) => b.getAttribute("aria-label") === "AI Studio");
+        if (dock) break;
+        await sleep(100);
+      }
+      if (!dock) return { ok: false, reason: "dock missing after reload" };
+      dock.click();
+      await sleep(350);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input after reload" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "live stream check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(100);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let liveSeen = false;
+      let modelSeen = false;
+      for (let i = 0; i < 30; i++) {
+        const body = document.body.innerText;
+        liveSeen = body.includes("Live provider stream ok");
+        modelSeen = body.includes("model=mock-gpt");
+        if (liveSeen && modelSeen) break;
+        await sleep(100);
+      }
+      await sleep(250);
+      return {
+        ok: liveSeen && modelSeen,
+        liveSeen,
+        modelSeen,
+        busyGone: !document.querySelector(".thinking-dot") && !document.querySelector(".stream-caret"),
+      };
+    })()`);
+    if (!providerLiveStream.ok || !providerLiveStream.busyGone) {
+      throw new Error(
+        `Provider live stream assertion failed: ${JSON.stringify(providerLiveStream)}`,
+      );
+    }
+    results.providerLiveStream = providerLiveStream;
+  } finally {
+    if (liveServer) liveServer.close();
+  }
+
+  let modelsServer = null;
+  try {
+    modelsServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            object: 'list',
+            data: [
+              { id: 'mock-gpt-4o', owned_by: 'mockai' },
+              { id: 'mock-gpt-mini', owned_by: 'mockai' },
+              { id: 'mock-reasoner', owned_by: 'mockai' },
+            ],
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => modelsServer.listen(0, '127.0.0.1', resolve));
+    const modelsPort = modelsServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "models-provider",
+          name: "Models Mock",
+          baseUrl: "http://127.0.0.1:${modelsPort}/v1",
+          apiKey: "test-key",
+          model: "",
+          isActive: true,
+        },
+        {
+          id: "bad-models-provider",
+          name: "Bad Models Mock",
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "test-key",
+          model: "",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerModels = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "dock missing after reload" };
+      dock.click();
+      await sleep(350);
+      const detect = document.querySelector(
+        '[data-provider-id="models-provider"] [data-provider-models-detect]',
+      );
+      if (!detect) return { ok: false, reason: "no detect button" };
+      detect.click();
+      let options = [];
+      for (let i = 0; i < 20; i++) {
+        options = [...document.querySelectorAll("[data-provider-model-option]")]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (options.length >= 3) break;
+        await sleep(100);
+      }
+      const countBadge = document
+        .querySelector('[data-provider-id="models-provider"] [data-provider-models]')
+        ?.getAttribute("data-provider-models");
+      if (options.length < 3) {
+        return { ok: false, options, countBadge, reason: "options not loaded" };
+      }
+      const target = [...document.querySelectorAll("[data-provider-model-option]")]
+        .find((b) => b.getAttribute("data-provider-model-option") === "mock-gpt-4o");
+      target?.click();
+      await sleep(350);
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").providers
+        .find((p) => p.id === "models-provider");
+      const badge = document
+        .querySelector('[data-provider-id="models-provider"] [data-provider-model]')
+        ?.textContent?.trim();
+      const input = document.querySelector(
+        '[data-provider-id="models-provider"] [data-provider-model-input]',
+      );
+      const badDetect = document.querySelector(
+        '[data-provider-id="bad-models-provider"] [data-provider-models-detect]',
+      );
+      badDetect?.click();
+      let errorText = "";
+      for (let i = 0; i < 20; i++) {
+        errorText = document
+          .querySelector('[data-provider-id="bad-models-provider"] [data-provider-model-error]')
+          ?.textContent?.trim() ?? "";
+        if (errorText) break;
+        await sleep(100);
+      }
+      return {
+        ok:
+          stored?.model === "mock-gpt-4o" &&
+          badge === "live" &&
+          input?.value === "mock-gpt-4o" &&
+          errorText.length > 0,
+        options,
+        countBadge,
+        model: stored?.model ?? "",
+        badge,
+        inputValue: input?.value ?? "",
+        errorText,
+      };
+    })()`);
+    if (!providerModels.ok) {
+      throw new Error(`Provider models assertion failed: ${JSON.stringify(providerModels)}`);
+    }
+    results.providerModels = providerModels;
+  } finally {
+    if (modelsServer) modelsServer.close();
+  }
+
+  let modelCatalogServer = null;
+  try {
+    let catalogHits = 0;
+    modelCatalogServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === '/v1/models') {
+        catalogHits += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            object: 'list',
+            data: [
+              { id: 'catalog-a', owned_by: 'mockai' },
+              { id: 'catalog-b', owned_by: 'mockai' },
+              { id: 'catalog-c', owned_by: 'mockai' },
+              { id: 'catalog-meta', owned_by: 'mockai' },
+            ],
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => modelCatalogServer.listen(0, '127.0.0.1', resolve));
+    const catalogPort = modelCatalogServer.address().port;
+    const staleAt = Date.now() - 25 * 60 * 60 * 1000;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "catalog-provider",
+        name: "Catalog Mock",
+        baseUrl: "http://127.0.0.1:${catalogPort}/v1",
+        apiKey: "test-key",
+        model: "",
+        isActive: true,
+      }];
+      shape.modelCache = {
+        "catalog-provider": [
+          {
+            id: "catalog-b",
+            ownedBy: "mockai",
+            contextWindow: 8000,
+            inputPricePerMtok: 2,
+            outputPricePerMtok: 6,
+            rateTpm: 200000,
+            rateRpm: 500,
+            isFavorite: false,
+            lastUsedAt: Date.now() - 10000,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+          {
+            id: "catalog-c",
+            ownedBy: "mockai",
+            isFavorite: true,
+            lastUsedAt: 1000,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+          {
+            id: "catalog-meta",
+            ownedBy: "mockai",
+            contextWindow: 128000,
+            inputPricePerMtok: 1,
+            outputPricePerMtok: 3,
+            rateTpm: 1000000,
+            rateRpm: 2000,
+            isFavorite: false,
+            lastUsedAt: 0,
+            fetchedAt: ${staleAt},
+            updatedAt: ${staleAt},
+          },
+        ],
+      };
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerModelCatalog = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "dock missing for catalog" };
+      dock.click();
+      await sleep(400);
+      let detect = null;
+      for (let i = 0; i < 30; i += 1) {
+        detect = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-provider-models-detect]',
+        );
+        if (detect) break;
+        await sleep(100);
+      }
+      if (!detect) return { ok: false, reason: "no detect button for catalog" };
+      detect.click();
+      let options = [];
+      for (let i = 0; i < 40; i++) {
+        options = [
+          ...document.querySelectorAll(
+            '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+          ),
+        ]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (options.length >= 4) break;
+        await sleep(100);
+      }
+      if (options.length < 4) {
+        return { ok: false, reason: "catalog options not loaded", options };
+      }
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-model-favorite="catalog-b"]')
+        ?.click();
+      await sleep(300);
+      const orderAfterFavorite = [
+        ...document.querySelectorAll(
+          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+        ),
+      ]
+        .map((b) => b.getAttribute("data-provider-model-option"))
+        .filter(Boolean);
+      const selectTarget = [
+        ...document.querySelectorAll(
+          '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+        ),
+      ].find((b) => b.getAttribute("data-provider-model-option") === "catalog-b");
+      selectTarget?.click();
+      await sleep(300);
+      const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const storedProvider = stored.providers.find((p) => p.id === "catalog-provider");
+      const cachedB = stored.modelCache?.["catalog-provider"]?.find((m) => m.id === "catalog-b");
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-provider-models-detect]')
+        ?.click();
+      let orderAfterPick = [];
+      for (let i = 0; i < 30; i++) {
+        orderAfterPick = [
+          ...document.querySelectorAll(
+            '[data-provider-id="catalog-provider"] [data-provider-model-option]',
+          ),
+        ]
+          .map((b) => b.getAttribute("data-provider-model-option"))
+          .filter(Boolean);
+        if (orderAfterPick.length >= 4) break;
+        await sleep(100);
+      }
+      const metaEditBtn = document.querySelector(
+        '[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]',
+      );
+      metaEditBtn?.click();
+      let metaReady = false;
+      for (let i = 0; i < 30; i++) {
+        const input = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-input="contextWindow"]',
+        );
+        if (input) {
+          metaReady = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!metaReady) {
+        const metaEditBtn2 = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-edit="catalog-meta"]',
+        );
+        metaEditBtn2?.click();
+        for (let i = 0; i < 30; i++) {
+          const input = document.querySelector(
+            '[data-provider-id="catalog-provider"] [data-model-meta-input="contextWindow"]',
+          );
+          if (input) {
+            metaReady = true;
+            break;
+          }
+          await sleep(100);
+        }
+      }
+      if (!metaReady) return { ok: false, reason: "meta input missing contextWindow" };
+      await sleep(100);
+      const metaValues = {
+        contextWindow: "256000",
+        inputPricePerMtok: "5",
+        outputPricePerMtok: "15",
+        rateTpm: "2000000",
+        rateRpm: "4000",
+      };
+      for (const [field, value] of Object.entries(metaValues)) {
+        const input = document.querySelector(
+          '[data-provider-id="catalog-provider"] [data-model-meta-input="' + field + '"]',
+        );
+        if (!input) return { ok: false, reason: "meta input missing " + field };
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await sleep(120);
+      document
+        .querySelector('[data-provider-id="catalog-provider"] [data-model-meta-save="catalog-meta"]')
+        ?.click();
+      await sleep(350);
+      const storedFinal = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      const storedMeta = storedFinal.modelCache?.["catalog-provider"]?.find(
+        (m) => m.id === "catalog-meta",
+      );
+      const favStored = storedFinal.modelCache?.["catalog-provider"]?.find(
+        (m) => m.id === "catalog-b",
+      )?.isFavorite;
+      const cacheStatus =
+        document
+          .querySelector('[data-provider-id="catalog-provider"] [data-provider-model-cache-status]')
+          ?.textContent?.trim() ?? "";
+      return {
+        ok: true,
+        options,
+        orderAfterFavorite,
+        orderAfterPick,
+        storedModel: storedProvider?.model ?? "",
+        touched: (cachedB?.lastUsedAt ?? 0) > 0,
+        favStored,
+        metaStored: storedMeta
+          ? {
+              contextWindow: storedMeta.contextWindow,
+              inputPricePerMtok: storedMeta.inputPricePerMtok,
+              outputPricePerMtok: storedMeta.outputPricePerMtok,
+              rateTpm: storedMeta.rateTpm,
+              rateRpm: storedMeta.rateRpm,
+            }
+          : null,
+        cacheStatus,
+      };
+    })()`);
+    providerModelCatalog.catalogHits = catalogHits;
+    const initialOrder = providerModelCatalog.options?.join(',') ?? '';
+    const favoriteOrder = providerModelCatalog.orderAfterFavorite?.join(',') ?? '';
+    const pickOrder = providerModelCatalog.orderAfterPick?.join(',') ?? '';
+    if (
+      !providerModelCatalog.ok ||
+      initialOrder !== 'catalog-c,catalog-b,catalog-a,catalog-meta' ||
+      favoriteOrder !== 'catalog-b,catalog-c,catalog-a,catalog-meta' ||
+      pickOrder !== 'catalog-b,catalog-c,catalog-a,catalog-meta' ||
+      !providerModelCatalog.touched ||
+      providerModelCatalog.favStored !== true ||
+      providerModelCatalog.storedModel !== 'catalog-b' ||
+      providerModelCatalog.metaStored?.contextWindow !== 256000 ||
+      providerModelCatalog.metaStored?.inputPricePerMtok !== 5 ||
+      providerModelCatalog.metaStored?.outputPricePerMtok !== 15 ||
+      providerModelCatalog.metaStored?.rateTpm !== 2000000 ||
+      providerModelCatalog.metaStored?.rateRpm !== 4000 ||
+      !providerModelCatalog.cacheStatus.includes('fresh') ||
+      providerModelCatalog.catalogHits < 1
+    ) {
+      throw new Error(
+        `Provider model catalog assertion failed: ${JSON.stringify(providerModelCatalog)}`,
+      );
+    }
+    results.providerModelCatalog = providerModelCatalog;
+    laneLog('providerModelCatalog ok');
+  } finally {
+    if (modelCatalogServer) modelCatalogServer.close();
+  }
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.providers = [
+      {
+        id: "prio-a",
+        name: "Alpha",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "alpha-model",
+        priority: 1,
+        isActive: true,
+      },
+      {
+        id: "prio-b",
+        name: "Beta",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "beta-model",
+        priority: 3,
+        isActive: true,
+      },
+      {
+        id: "prio-c",
+        name: "Gamma",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "test-key",
+        model: "gamma-model",
+        priority: 2,
+        isActive: true,
+      },
+    ];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  const providerPriority = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll("nav button[aria-label]")]
+      .find((b) => b.getAttribute("aria-label") === "System");
+    if (!dock) return { ok: false, reason: "system dock missing" };
+    dock.click();
+    await sleep(300);
+    const cards = [...document.querySelectorAll("[data-provider-id]")]
+      .map((el) => el.getAttribute("data-provider-id"));
+    const priorities = cards.map(
+      (id) =>
+        document.querySelector('[data-provider-priority="' + id + '"]')?.textContent?.trim() ?? "",
+    );
+    document.querySelector('[data-provider-priority-up="prio-a"]')?.click();
+    await sleep(250);
+    const afterUp = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+      .providers.find((p) => p.id === "prio-a")?.priority;
+    document.querySelector('[data-provider-priority-down="prio-b"]')?.click();
+    await sleep(250);
+    const afterDown = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+      .providers.find((p) => p.id === "prio-b")?.priority;
+    return {
+      ok: true,
+      cards,
+      priorities,
+      afterUp,
+      afterDown,
+    };
+  })()`);
+  if (
+    !providerPriority.ok ||
+    providerPriority.cards.join(',') !== 'prio-b,prio-c,prio-a' ||
+    providerPriority.priorities.join(',') !== '3,2,1' ||
+    providerPriority.afterUp !== 2 ||
+    providerPriority.afterDown !== 2
+  ) {
+    throw new Error(`Provider priority assertion failed: ${JSON.stringify(providerPriority)}`);
+  }
+  results.providerPriority = providerPriority;
+  laneLog('providerPriority ok');
+
+  let providerIoServer = null;
+  try {
+    let retryAttempts = 0;
+    const retryFailures = new Map();
+    let slowRequests = 0;
+    providerIoServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const url = req.url ?? '';
+      if (url.endsWith('/retry/chat/completions')) {
+        retryAttempts += 1;
+        const failKey = req.headers.authorization ?? '';
+        const failureCount = retryFailures.get(failKey) ?? 0;
+        retryFailures.set(failKey, failureCount + 1);
+        if (failureCount === 0) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end('{"error":"transient failure"}');
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"retry recovery ok"}}]}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+      if (url.endsWith('/slow/chat/completions')) {
+        slowRequests += 1;
+        const timer = setTimeout(() => {
+          try {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } catch {
+            /* client already aborted */
+          }
+        }, 60_000);
+        req.on('close', () => clearTimeout(timer));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => providerIoServer.listen(0, '127.0.0.1', resolve));
+    const ioPort = providerIoServer.address().port;
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "slow-provider",
+        name: "Slow Mock",
+        baseUrl: "http://127.0.0.1:${ioPort}/v1/slow",
+        apiKey: "sk-slow-secret",
+        model: "slow-model",
+        priority: 5,
+        isActive: true,
+        timeoutSecs: 1,
+        retryCount: 0,
+        retryDelaySecs: 0,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerTimeout = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for timeout" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for timeout" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider timeout check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let timeoutSeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        const text = document.body.innerText;
+        timeoutSeen = text.includes("Request timeout") || text.includes("provider did not respond in time");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (timeoutSeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: timeoutSeen && idle, timeoutSeen, idle };
+    })()`);
+    if (!providerTimeout.ok || slowRequests !== 1) {
+      throw new Error(
+        `Provider timeout assertion failed: ${JSON.stringify({
+          providerTimeout,
+          slowRequests,
+        })}`,
+      );
+    }
+    results.providerTimeout = providerTimeout;
+    laneLog('providerTimeout ok');
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [{
+        id: "retry-provider",
+        name: "Retry Mock",
+        baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+        apiKey: "sk-retry-secret",
+        model: "retry-model",
+        priority: 5,
+        isActive: true,
+        timeoutSecs: 5,
+        retryCount: 2,
+        retryDelaySecs: 0,
+      }];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerRetry = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for retry" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for retry" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let replySeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        replySeen = document.body.innerText.includes("retry recovery ok");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (replySeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: replySeen && idle, replySeen, idle };
+    })()`);
+    if (!providerRetry.ok || retryAttempts !== 2) {
+      throw new Error(
+        `Provider retry assertion failed: ${JSON.stringify({
+          providerRetry,
+          retryAttempts,
+        })}`,
+      );
+    }
+    results.providerRetry = providerRetry;
+    laneLog('providerRetry ok');
+
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "retry-provider",
+          name: "Retry Mock",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+          apiKey: "sk-retry-secret",
+          model: "retry-model",
+          priority: 5,
+          isActive: true,
+          timeoutSecs: 30,
+          retryCount: 1,
+          retryDelaySecs: 1,
+        },
+        {
+          id: "slow-provider",
+          name: "Slow Mock",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/slow",
+          apiKey: "sk-slow-secret",
+          model: "slow-model",
+          priority: 1,
+          isActive: true,
+          timeoutSecs: 30,
+          retryCount: 1,
+          retryDelaySecs: 1,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const providerConfigEdit = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const waitFor = async (fn, timeout = 5000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          if (fn()) return true;
+          await sleep(80);
+        }
+        return false;
+      };
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "System");
+      if (!dock) return { ok: false, reason: "system dock missing for config edit" };
+      dock.click();
+      await sleep(300);
+      const readInputs = () => ({
+        timeout: document.querySelector('[data-provider-timeout="retry-provider"]'),
+        retry: document.querySelector('[data-provider-retry="retry-provider"]'),
+        delay: document.querySelector('[data-provider-delay="retry-provider"]'),
+      });
+      let inputs = readInputs();
+      const timeoutInput = inputs.timeout;
+      const retryInput = inputs.retry;
+      const delayInput = inputs.delay;
+      if (!timeoutInput || !retryInput || !delayInput) {
+        return { ok: false, reason: "stream config inputs missing" };
+      }
+      const setInput = async (el, value) => {
+        const attr = el.hasAttribute("data-provider-timeout")
+          ? "data-provider-timeout"
+          : el.hasAttribute("data-provider-retry")
+            ? "data-provider-retry"
+            : "data-provider-delay";
+        const id = el.getAttribute(attr);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const target = document.querySelector("[" + attr + '="' + id + '"]');
+          if (!target) return false;
+          target.focus();
+          target.select();
+          const inserted = document.execCommand("insertText", false, String(value));
+          if (!inserted) {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(
+              target,
+              value,
+            );
+            target.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          for (let i = 0; i < 20; i += 1) {
+            await sleep(50);
+            const fresh = document.querySelector("[" + attr + '="' + id + '"]');
+            if (fresh?.value === String(value)) return true;
+          }
+        }
+        return false;
+      };
+      const timeoutSet = await setInput(timeoutInput, "8");
+      inputs = readInputs();
+      const retrySet = await setInput(inputs.retry, "3");
+      inputs = readInputs();
+      const delaySet = await setInput(inputs.delay, "2");
+      inputs.delay.blur();
+      await sleep(80);
+      const persisted = await waitFor(() => {
+        const provider = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+          .providers.find((p) => p.id === "retry-provider");
+        return (
+          provider?.timeoutSecs === 8 &&
+          provider?.retryCount === 3 &&
+          provider?.retryDelaySecs === 2
+        );
+      });
+      const provider = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}")
+        .providers.find((p) => p.id === "retry-provider");
+      const finalInputs = readInputs();
+      return {
+        ok: persisted,
+        timeoutSet,
+        retrySet,
+        delaySet,
+        timeoutValue: finalInputs.timeout?.value ?? "",
+        retryValue: finalInputs.retry?.value ?? "",
+        delayValue: finalInputs.delay?.value ?? "",
+        persisted: provider
+          ? [provider.timeoutSecs, provider.retryCount, provider.retryDelaySecs]
+          : [],
+      };
+    })()`);
+    if (!providerConfigEdit.ok) {
+      throw new Error(
+        `Provider config edit assertion failed: ${JSON.stringify(providerConfigEdit)}`,
+      );
+    }
+    results.providerConfigEdit = providerConfigEdit;
+    laneLog('providerConfigEdit ok');
+
+    const providerExport = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      window.__exportText = "";
+      try {
+        Object.defineProperty(navigator, "clipboard", {
+          value: { writeText: async (text) => { window.__exportText = text; } },
+          configurable: true,
+        });
+      } catch {
+        /* clipboard may be read-only in headless mode */
+      }
+      const exportBtn = document.querySelector("[data-provider-export]");
+      if (!exportBtn) return { ok: false, reason: "export button missing" };
+      exportBtn.click();
+      for (let i = 0; i < 30; i++) {
+        if (document.querySelector("[data-provider-export-result]")) break;
+        await sleep(100);
+      }
+      const result = document.querySelector("[data-provider-export-result]")?.textContent?.trim() ?? "";
+      const exported = window.__exportText ? JSON.parse(window.__exportText) : null;
+      const providers = exported?.providers ?? [];
+      const retry = providers.find((p) => p.name === "Retry Mock");
+      const slow = providers.find((p) => p.name === "Slow Mock");
+      return {
+        ok:
+          result.includes("Exported 2 provider(s)") &&
+          !!exported &&
+          retry?.apiKey === "sk-retry-secret" &&
+          retry?.timeoutSecs === 8 &&
+          retry?.retryCount === 3 &&
+          retry?.retryDelaySecs === 2 &&
+          slow?.apiKey === "sk-slow-secret",
+        result,
+        hasClipboard: !!exported,
+        keys: providers.map((p) => p.name),
+      };
+    })()`);
+    if (!providerExport.ok) {
+      throw new Error(`Provider export assertion failed: ${JSON.stringify(providerExport)}`);
+    }
+    results.providerExport = providerExport;
+    laneLog('providerExport ok');
+
+    const providerImport = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const importToggle = document.querySelector("[data-provider-import]");
+      if (!importToggle) return { ok: false, reason: "import toggle missing" };
+      importToggle.click();
+      await sleep(120);
+      const textarea = document.querySelector("[data-provider-import-text]");
+      if (!textarea) return { ok: false, reason: "import textarea missing" };
+      const payload = JSON.stringify({
+        version: 1,
+        providers: [{
+          name: "Imported A",
+          baseUrl: "http://127.0.0.1:${ioPort}/v1/retry",
+          apiKey: "sk-imported-secret",
+          model: "retry-model",
+          isActive: true,
+          priority: 5,
+          timeoutSecs: 12,
+          retryCount: 2,
+          retryDelaySecs: 0,
+        }],
+      });
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(
+        textarea,
+        payload,
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector("[data-provider-import-apply]")?.click();
+      let result = "";
+      let persisted = null;
+      for (let i = 0; i < 30; i++) {
+        result = document.querySelector("[data-provider-import-result]")?.textContent?.trim() ?? "";
+        persisted = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}").providers;
+        if (result.includes("Imported 1 provider(s)") && persisted?.length === 1) break;
+        await sleep(100);
+      }
+      const imported = persisted?.[0];
+      const cardVisible = [...document.querySelectorAll("[data-provider-id]")].some(
+        (el) => el.textContent?.includes("Imported A"),
+      );
+      return {
+        ok:
+          result.includes("Imported 1 provider(s)") &&
+          imported?.name === "Imported A" &&
+          imported?.apiKey === "sk-imported-secret" &&
+          imported?.timeoutSecs === 12 &&
+          imported?.retryCount === 2 &&
+          imported?.retryDelaySecs === 0 &&
+          cardVisible,
+        result,
+        count: persisted?.length ?? 0,
+        imported: imported
+          ? {
+              name: imported.name,
+              apiKey: imported.apiKey,
+              timeoutSecs: imported.timeoutSecs,
+              retryCount: imported.retryCount,
+              retryDelaySecs: imported.retryDelaySecs,
+            }
+          : null,
+        cardVisible,
+      };
+    })()`);
+    if (!providerImport.ok) {
+      throw new Error(`Provider import assertion failed: ${JSON.stringify(providerImport)}`);
+    }
+    results.providerImport = providerImport;
+    laneLog('providerImport ok');
+
+    const importedRetry = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing for imported retry" };
+      dock.click();
+      await sleep(300);
+      const newChat = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "New chat");
+      newChat?.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input for imported retry" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "provider import retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let replySeen = false;
+      let idle = false;
+      for (let i = 0; i < 50; i++) {
+        replySeen = document.body.innerText.includes("retry recovery ok");
+        idle = !document.querySelector(".stream-caret") && !document.querySelector(".thinking-dot");
+        if (replySeen && idle) break;
+        await sleep(100);
+      }
+      return { ok: replySeen && idle, replySeen, idle };
+    })()`);
+    if (!importedRetry.ok || retryAttempts !== 4) {
+      throw new Error(
+        `Imported provider retry assertion failed: ${JSON.stringify({
+          importedRetry,
+          retryAttempts,
+        })}`,
+      );
+    }
+    results.importedRetry = importedRetry;
+    laneLog('importedRetry ok');
+  } finally {
+    if (providerIoServer) {
+      providerIoServer.close();
+      providerIoServer.closeAllConnections?.();
+    }
+  }
+
+  let moaServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    moaServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      active += 1;
+      if (active > maxActive) maxActive = active;
+      const route = req.url ?? '';
+      const tag = route.includes('provider-a')
+        ? 'Alpha'
+        : route.includes('provider-b')
+          ? 'Beta'
+          : 'Gamma';
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+      setTimeout(() => {
+        res.write(`data: {"choices":[{"delta":{"content":"part2"}}]}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        active -= 1;
+      }, 400);
+    });
+    await new Promise((resolve) => moaServer.listen(0, '127.0.0.1', resolve));
+    const moaPort = moaServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "moa-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          isActive: true,
+        },
+        {
+          id: "moa-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          isActive: true,
+        },
+        {
+          id: "moa-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${moaPort}/v1/provider-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const moaUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "parallel moa check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      const sendTag = sendBtn.outerHTML.slice(0, 160);
+      const inputValue = input.value;
+      const storedProviders = JSON.parse(
+        localStorage.getItem("ai-workbench:db:v1") ?? "{}",
+      ).providers.map((p) => p.id).join(",");
+      sendBtn.click();
+      let allSeen = false;
+      let busySeen = false;
+      let userSeen = false;
+      let consensusSeen = false;
+      let summaryText = false;
+      let text = "";
+      for (let i = 0; i < 60; i++) {
+        text = document.body.innerText;
+        userSeen = userSeen || text.includes("parallel moa check");
+        busySeen =
+          busySeen ||
+          !!document.querySelector(".stream-caret") ||
+          !!document.querySelector(".thinking-dot");
+        allSeen =
+          text.includes("## Alpha AI") &&
+          text.includes("Alpha answer") &&
+          text.includes("## Beta AI") &&
+          text.includes("Beta answer") &&
+          text.includes("## Gamma AI") &&
+          text.includes("Gamma answer");
+        consensusSeen = consensusSeen || text.includes("## MOA Consensus");
+        summaryText = consensusSeen && (text.includes("共识点") || text.includes("结论"));
+        if (
+          allSeen &&
+          consensusSeen &&
+          summaryText &&
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot")
+        ) {
+          break;
+        }
+        await sleep(100);
+      }
+      return {
+        ok: allSeen,
+        allSeen,
+        busy:
+          !!document.querySelector(".stream-caret") ||
+          !!document.querySelector(".thinking-dot"),
+        busySeen,
+        userSeen,
+        consensusSeen,
+        summaryText,
+        sendTag,
+        inputValue,
+        storedProviders,
+        snippet: text.slice(0, 400),
+      };
+    })()`);
+    await clickDock('System');
+    const moaParallel = {
+      ...moaUi,
+      maxActive,
+    };
+    if (
+      !moaParallel.ok ||
+      moaParallel.maxActive < 3 ||
+      !moaParallel.consensusSeen ||
+      !moaParallel.summaryText
+    ) {
+      throw new Error(`MOA parallel assertion failed: ${JSON.stringify(moaParallel)}`);
+    }
+    results.moaParallel = moaParallel;
+  } finally {
+    if (moaServer) moaServer.close();
+  }
+
+  let chainServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const requestOrder = [];
+    const requestBodies = [];
+    chainServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const tag = route.includes('provider-a')
+          ? 'Alpha'
+          : route.includes('provider-b')
+            ? 'Beta'
+            : 'Gamma';
+        const key = route.includes('provider-a')
+          ? 'chain-a'
+          : route.includes('provider-b')
+            ? 'chain-b'
+            : 'chain-c';
+        requestOrder.push(key);
+        try {
+          requestBodies.push(JSON.parse(body));
+        } catch {
+          requestBodies.push(null);
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+        setTimeout(() => {
+          res.write(`data: {"choices":[{"delta":{"content":"chain"}}]}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 300);
+      });
+    });
+    await new Promise((resolve) => chainServer.listen(0, '127.0.0.1', resolve));
+    const chainPort = chainServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "chain-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          isActive: true,
+        },
+        {
+          id: "chain-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          isActive: true,
+        },
+        {
+          id: "chain-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${chainPort}/v1/provider-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const chainUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
+      const chainBtn = document.querySelector('[data-moa-chain-mode="chain"]');
+      if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
+      chainBtn.click();
+      await sleep(120);
+      const pressed = document
+        .querySelector('[data-moa-chain-mode="chain"]')
+        ?.getAttribute("aria-pressed");
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "chain moa check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let allSeen = false;
+      let chainBadgeSeen = false;
+      let consensusAbsent = true;
+      let busyEnded = false;
+      let text = "";
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const allMessages = [...document.querySelectorAll('[data-message-id]')];
+        const startIdx = allMessages.findIndex((el) =>
+          el.textContent?.includes("chain moa check"),
+        );
+        const laneTexts = allMessages
+          .slice(startIdx >= 0 ? startIdx + 1 : 0)
+          .map((el) => el.textContent ?? '')
+          .join(String.fromCharCode(10));
+        text =
+          [...document.querySelectorAll('[data-message-id]')].at(-1)?.textContent ?? '';
+        allSeen =
+          laneTexts.includes("## Alpha AI") &&
+          laneTexts.includes("Alpha answer chain") &&
+          laneTexts.includes("## Beta AI") &&
+          laneTexts.includes("Beta answer chain") &&
+          laneTexts.includes("## Gamma AI") &&
+          laneTexts.includes("Gamma answer chain");
+        chainBadgeSeen = bodyText.includes("Alpha AI → Beta AI → Gamma AI");
+        consensusAbsent = !laneTexts.includes("## MOA Consensus");
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot");
+        if (allSeen && chainBadgeSeen && consensusAbsent && busyEnded) break;
+        await sleep(100);
+      }
+      return {
+        ok: allSeen && chainBadgeSeen && consensusAbsent,
+        allSeen,
+        chainBadgeSeen,
+        consensusAbsent,
+        busyEnded,
+        pressed,
+        snippet: text.slice(0, 400),
+      };
+    })()`);
+    await clickDock('System');
+    const bodyByRoute = Object.fromEntries(
+      requestOrder.map((key, index) => [key, requestBodies[index]]),
+    );
+    const hasContext = (route, name, output) =>
+      !!bodyByRoute[route]?.messages?.some(
+        (message) =>
+          message.content?.includes(`[Previous agent output from ${name}]`) &&
+          message.content?.includes(output),
+      );
+    const chain = {
+      ...chainUi,
+      maxActive,
+      requestOrder,
+      firstNoContext: !bodyByRoute['chain-a']?.messages?.some((message) =>
+        message.content?.includes('[Previous agent output from'),
+      ),
+      betaContext: hasContext('chain-b', 'Alpha AI', 'Alpha answer chain'),
+      gammaContext: hasContext('chain-c', 'Beta AI', 'Beta answer chain'),
+    };
+    if (
+      !chain.ok ||
+      chain.pressed !== 'true' ||
+      chain.maxActive > 1 ||
+      chain.requestOrder.join(',') !== 'chain-a,chain-b,chain-c' ||
+      !chain.firstNoContext ||
+      !chain.betaContext ||
+      !chain.gammaContext
+    ) {
+      throw new Error(`MOA chain assertion failed: ${JSON.stringify(chain)}`);
+    }
+    results.moaChain = chain;
+    laneLog('moaChain ok');
+  } finally {
+    if (chainServer) chainServer.close();
+  }
+
+  let laneServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const laneRequests = new Map();
+    laneServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      req.on('data', () => {});
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const key = route.includes('lane-a')
+          ? 'lane-a'
+          : route.includes('lane-b')
+            ? 'lane-b'
+            : 'lane-c';
+        const tag = key === 'lane-a' ? 'Alpha' : key === 'lane-b' ? 'Beta' : 'Gamma';
+        const count = (laneRequests.get(key) ?? 0) + 1;
+        laneRequests.set(key, count);
+        if (key === 'lane-b' && count === 1) {
+          res.writeHead(500);
+          res.end('boom');
+          active -= 1;
+          return;
+        }
+        if (key === 'lane-c') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Gamma slow "}}]}\n\n`);
+          const timer = setInterval(() => {
+            res.write(': keepalive\n\n');
+          }, 100);
+          req.on('close', () => {
+            clearInterval(timer);
+            active -= 1;
+          });
+          return;
+        }
+        const answer = `${tag} answer${key === 'lane-b' && count > 1 ? ' retry' : ''}`;
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${answer} "}}]}\n\n`);
+        setTimeout(() => {
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 120);
+      });
+    });
+    await new Promise((resolve) => laneServer.listen(0, '127.0.0.1', resolve));
+    const lanePort = laneServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "lane-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          priority: 3,
+          isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
+        },
+        {
+          id: "lane-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          priority: 2,
+          isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
+        },
+        {
+          id: "lane-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${lanePort}/v1/lane-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          priority: 1,
+          isActive: true,
+          retryCount: 0,
+          retryDelaySecs: 0,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const laneUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "lane cancel retry check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let alphaSeen = false;
+      let betaFailed = false;
+      let gammaStopSeen = false;
+      let gammaLaneKey = "";
+      for (let i = 0; i < 120; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const gammaMsg = messages.find((el) => el.textContent?.includes("## Gamma AI"));
+        const stopBtn = gammaMsg?.querySelector('[data-moa-lane-stop]');
+        alphaSeen = bodyText.includes("Alpha answer");
+        betaFailed = !!document.querySelector('[data-moa-lane-retry]');
+        gammaStopSeen = !!stopBtn;
+        gammaLaneKey = stopBtn?.getAttribute("data-moa-lane-stop") ?? "";
+        if (alphaSeen && betaFailed && gammaStopSeen) break;
+        await sleep(100);
+      }
+      if (!alphaSeen || !betaFailed || !gammaStopSeen) {
+        return {
+          ok: false,
+          reason: "lane setup incomplete",
+          alphaSeen,
+          betaFailed,
+          gammaStopSeen,
+          gammaLaneKey,
+        };
+      }
+      const gammaMessage = [...document.querySelectorAll('[data-message-id]')].find((el) =>
+        el.textContent?.includes("## Gamma AI"),
+      );
+      const gammaStop = gammaMessage?.querySelector('[data-moa-lane-stop]');
+      if (!gammaStop) return { ok: false, reason: "gamma stop button missing" };
+      gammaStop.click();
+      let stoppedSeen = false;
+      let consensusSeen = false;
+      let busyEnded = false;
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const currentGamma = messages.find((el) => el.textContent?.includes("## Gamma AI"));
+        const gammaText = currentGamma?.textContent ?? "";
+        stoppedSeen = gammaText.includes("[stopped]");
+        consensusSeen = bodyText.includes("## MOA Consensus");
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot") &&
+          !currentGamma?.querySelector('[data-moa-lane-stop]');
+        if (stoppedSeen && consensusSeen && busyEnded) break;
+        await sleep(100);
+      }
+      if (!stoppedSeen || !consensusSeen || !busyEnded) {
+        return {
+          ok: false,
+          reason: "lane cancel incomplete",
+          stoppedSeen,
+          consensusSeen,
+          busyEnded,
+          gammaLaneKey,
+          stopCount: document.querySelectorAll('[data-moa-lane-stop]').length,
+          retryCount: document.querySelectorAll('[data-moa-lane-retry]').length,
+          laneTexts: [...document.querySelectorAll('[data-message-id]')]
+            .map((el) => el.textContent ?? "")
+            .slice(-6),
+        };
+      }
+      const retryBtn = document.querySelector('[data-moa-lane-retry]');
+      if (!retryBtn) return { ok: false, reason: "retry button missing after failure" };
+      retryBtn.click();
+      let betaRetried = false;
+      let consensusRetried = false;
+      let alphaIntact = false;
+      let gammaStillStopped = false;
+      for (let i = 0; i < 80; i++) {
+        const bodyText = document.body.innerText;
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const betaText = messages.find((el) => el.textContent?.includes("Beta answer retry"))?.textContent ?? "";
+        const consensusText = messages.find((el) => el.textContent?.includes("## MOA Consensus"))?.textContent ?? "";
+        betaRetried = betaText.includes("Beta answer retry");
+        consensusRetried = consensusText.includes("Beta answer retry");
+        alphaIntact = bodyText.includes("Alpha answer");
+        gammaStillStopped = !!messages.find((el) => el.textContent?.includes("## Gamma AI") && el.textContent?.includes("[stopped]"));
+        if (
+          betaRetried &&
+          consensusRetried &&
+          alphaIntact &&
+          gammaStillStopped &&
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot")
+        ) {
+          break;
+        }
+        await sleep(100);
+      }
+      return {
+        ok: betaRetried && consensusRetried && alphaIntact && gammaStillStopped,
+        alphaSeen,
+        betaFailed,
+        gammaStopSeen,
+        stoppedSeen,
+        consensusSeen,
+        betaRetried,
+        consensusRetried,
+        alphaIntact,
+        gammaStillStopped,
+      };
+    })()`);
+    await clickDock('System');
+    const laneCancelRetry = {
+      ...laneUi,
+      maxActive,
+      laneRequests: Object.fromEntries(laneRequests),
+    };
+    if (
+      !laneCancelRetry.ok ||
+      laneCancelRetry.maxActive < 2 ||
+      laneCancelRetry.laneRequests['lane-a'] !== 1 ||
+      laneCancelRetry.laneRequests['lane-c'] !== 1 ||
+      laneCancelRetry.laneRequests['lane-b'] !== 2 ||
+      !laneCancelRetry.betaRetried ||
+      !laneCancelRetry.consensusRetried ||
+      !laneCancelRetry.alphaIntact ||
+      !laneCancelRetry.gammaStillStopped
+    ) {
+      throw new Error(
+        `Stream lane cancel/retry assertion failed: ${JSON.stringify(laneCancelRetry)}`,
+      );
+    }
+    results.streamLaneCancelRetry = laneCancelRetry;
+    laneLog('streamLaneCancelRetry ok');
+  } finally {
+    if (laneServer) laneServer.close();
+  }
+
+  let chainCancelServer = null;
+  try {
+    let active = 0;
+    let maxActive = 0;
+    const chainCancelRequests = new Map();
+    chainCancelServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      req.on('data', () => {});
+      req.on('end', () => {
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const route = req.url ?? '';
+        const key = route.includes('chaincancel-a')
+          ? 'chaincancel-a'
+          : route.includes('chaincancel-b')
+            ? 'chaincancel-b'
+            : 'chaincancel-c';
+        const tag = key === 'chaincancel-a' ? 'Alpha' : key === 'chaincancel-b' ? 'Beta' : 'Gamma';
+        const count = (chainCancelRequests.get(key) ?? 0) + 1;
+        chainCancelRequests.set(key, count);
+        if (key === 'chaincancel-a') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Alpha slow "}}]}\n\n`);
+          const timer = setInterval(() => {
+            res.write(': keepalive\n\n');
+          }, 100);
+          req.on('close', () => {
+            clearInterval(timer);
+            active -= 1;
+          });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(`data: {"choices":[{"delta":{"content":"${tag} answer "}}]}\n\n`);
+        setTimeout(() => {
+          res.write('data: [DONE]\n\n');
+          res.end();
+          active -= 1;
+        }, 120);
+      });
+    });
+    await new Promise((resolve) => chainCancelServer.listen(0, '127.0.0.1', resolve));
+    const chainCancelPort = chainCancelServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "chaincancel-a",
+          name: "Alpha AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-a",
+          apiKey: "test-key",
+          model: "alpha-model",
+          priority: 3,
+          isActive: true,
+        },
+        {
+          id: "chaincancel-b",
+          name: "Beta AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-b",
+          apiKey: "test-key",
+          model: "beta-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "chaincancel-c",
+          name: "Gamma AI",
+          baseUrl: "http://127.0.0.1:${chainCancelPort}/v1/chaincancel-c",
+          apiKey: "test-key",
+          model: "gamma-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const chainCancelUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const moaBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "MOA");
+      if (!moaBtn) return { ok: false, reason: "moa button missing" };
+      moaBtn.click();
+      await sleep(200);
+      const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("New chat"),
+      );
+      if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+      newChatBtn.click();
+      await sleep(200);
+      const chainBtn = document.querySelector('[data-moa-chain-mode="chain"]');
+      if (!chainBtn) return { ok: false, reason: "chain toggle missing" };
+      chainBtn.click();
+      await sleep(120);
+      let providersReady = false;
+      for (let i = 0; i < 40; i++) {
+        const providerSelects = [...document.querySelectorAll("main select")];
+        const select = providerSelects.find(
+          (s) => s.querySelector('option[value="chaincancel-a"]'),
+        );
+        if (select && select.options.length >= 4) {
+          providersReady = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!providersReady) return { ok: false, reason: "chain cancel providers not loaded" };
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "chain cancel check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      const sendBtn = document.querySelector('main button[aria-label="Send"]');
+      if (!sendBtn) return { ok: false, reason: "no send button" };
+      sendBtn.click();
+      let alphaStop = null;
+      for (let i = 0; i < 80; i++) {
+        const alphaMessage = [...document.querySelectorAll('[data-message-id]')].find((el) =>
+          el.textContent?.includes("## Alpha AI"),
+        );
+        alphaStop = alphaMessage?.querySelector('[data-moa-lane-stop]') ?? null;
+        if (alphaStop) break;
+        await sleep(100);
+      }
+      if (!alphaStop) return { ok: false, reason: "alpha lane stop missing" };
+      alphaStop.click();
+      let allStopped = false;
+      let busyEnded = false;
+      for (let i = 0; i < 80; i++) {
+        const messages = [...document.querySelectorAll('[data-message-id]')];
+        const userIdx = messages.findIndex((el) => el.textContent?.includes("chain cancel check"));
+        const lanes = messages.slice(userIdx >= 0 ? userIdx + 1 : 0);
+        allStopped = lanes.length >= 3 && lanes.every((el) => el.textContent?.includes("[stopped]"));
+        busyEnded =
+          !document.querySelector(".stream-caret") &&
+          !document.querySelector(".thinking-dot") &&
+          !document.querySelector('[data-moa-lane-stop]');
+        if (allStopped && busyEnded) break;
+        await sleep(100);
+      }
+      const laneTexts = [...document.querySelectorAll('[data-message-id]')]
+        .map((el) => el.textContent ?? '')
+        .slice(-4);
+      return {
+        ok: allStopped && busyEnded,
+        allStopped,
+        busyEnded,
+        consensusAbsent: !document.body.innerText.includes("## MOA Consensus"),
+        laneTexts,
+      };
+    })()`);
+    await clickDock('System');
+    const streamLaneChainCancel = {
+      ...chainCancelUi,
+      maxActive,
+      chainCancelRequests: Object.fromEntries(chainCancelRequests),
+    };
+    if (
+      !streamLaneChainCancel.ok ||
+      !streamLaneChainCancel.consensusAbsent ||
+      streamLaneChainCancel.maxActive > 1 ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-a'] !== 1 ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-b'] !== undefined ||
+      streamLaneChainCancel.chainCancelRequests['chaincancel-c'] !== undefined
+    ) {
+      throw new Error(
+        `MOA chain cancel assertion failed: ${JSON.stringify(streamLaneChainCancel)}`,
+      );
+    }
+    results.streamLaneChainCancel = streamLaneChainCancel;
+    laneLog('streamLaneChainCancel ok');
+  } finally {
+    if (chainCancelServer) chainCancelServer.close();
+  }
+
+  await evaluate(`(() => {
+    const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+    shape.providers = [];
+    localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+    return true;
+  })()`);
+  await reloadAndWait();
+  const moaNoProvider = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dock = [...document.querySelectorAll('nav button[aria-label]')]
+      .find((b) => b.getAttribute("aria-label") === "AI Studio");
+    if (!dock) return { ok: false, reason: "dock missing" };
+    dock.click();
+    await sleep(300);
+    const moaBtn = [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "MOA");
+    if (!moaBtn) return { ok: false, reason: "moa button missing" };
+    moaBtn.click();
+    await sleep(200);
+    const newChatBtn = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("New chat"),
+    );
+    if (!newChatBtn) return { ok: false, reason: "no new chat button" };
+    newChatBtn.click();
+    await sleep(200);
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!input) return { ok: false, reason: "no chat input" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "moa no provider check");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(80);
+    const sendBtn = document.querySelector('main button[aria-label="Send"]');
+    if (!sendBtn) return { ok: false, reason: "no send button" };
+    sendBtn.click();
+    let lanesSeen = 0;
+    let busyEnded = false;
+    let consensusSeen = false;
+    let userMessageSaved = false;
+    for (let i = 0; i < 80; i++) {
+      const allMessages = [...document.querySelectorAll('[data-message-id]')];
+      const startIdx = allMessages.findIndex((el) =>
+        el.textContent?.includes("moa no provider check"),
+      );
+      const laneTexts = allMessages
+        .slice(startIdx >= 0 ? startIdx + 1 : 0)
+        .map((el) => el.textContent ?? "")
+        .join(String.fromCharCode(10));
+      lanesSeen = (laneTexts.match(/## Alpha AI/g) || []).length;
+      consensusSeen = laneTexts.includes("## MOA Consensus");
+      userMessageSaved = allMessages.some((el) =>
+        el.textContent?.includes("moa no provider check"),
+      );
+      busyEnded =
+        !document.querySelector(".stream-caret") &&
+        !document.querySelector(".thinking-dot") &&
+        !document.querySelector('[data-moa-lane-stop]');
+      if (busyEnded) break;
+      await sleep(100);
+    }
+    const canSendAgain = (() => {
+      const btn = document.querySelector('main button[aria-label="Send"]');
+      return !!btn && !btn.disabled;
+    })();
+    await sleep(300);
+    const userMsgAfterWait = [...document.querySelectorAll('[data-message-id]')].some((el) =>
+      el.textContent?.includes("moa no provider check"),
+    );
+    return {
+      ok: busyEnded && canSendAgain && userMsgAfterWait,
+      lanesSeen,
+      busyEnded,
+      consensusSeen,
+      canSendAgain,
+      userMessageSaved: userMsgAfterWait,
+    };
+  })()`);
+  results.moaNoProvider = moaNoProvider;
+  if (!results.moaNoProvider?.ok) {
+    throw new Error(
+      `MOA no-provider deadlock assertion failed: ${JSON.stringify(results.moaNoProvider)}`,
+    );
+  }
+  laneLog('moaNoProvider ok');
+
+  let fallbackServer = null;
+  try {
+    fallbackServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const route = req.url ?? '';
+      if (route.includes('fallback-a')) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"primary down"}');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      res.write(`data: {"choices":[{"delta":{"content":"fallback answer ok"}}]}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    await new Promise((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const fallbackPort = fallbackServer.address().port;
+    await evaluate(`(() => {
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "fb-a",
+          name: "Failing",
+          baseUrl: "http://127.0.0.1:${fallbackPort}/v1/fallback-a",
+          apiKey: "test-key",
+          model: "failing-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "fb-b",
+          name: "Healthy",
+          baseUrl: "http://127.0.0.1:${fallbackPort}/v1/fallback-b",
+          apiKey: "test-key",
+          model: "healthy-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+    const autoFallback = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const singleBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "Single");
+      if (!singleBtn) return { ok: false, reason: "single button missing" };
+      singleBtn.click();
+      await sleep(150);
+      const agentSelect = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (agentSelect) {
+        const agentSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        agentSetter.call(agentSelect, "");
+        agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await sleep(150);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "auto fallback check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let marker = false;
+      let reply = false;
+      let chain = "";
+      for (let i = 0; i < 50; i += 1) {
+        const body = document.body.innerText;
+        marker = marker || body.includes("auto fallback: Failing → Healthy");
+        reply = reply || body.includes("fallback answer ok");
+        chain = document.querySelector("[data-ai-fallback-chain]")?.textContent ?? "";
+        if (marker && reply && chain.includes("Failing → Healthy")) break;
+        await sleep(100);
+      }
+      const inspectorText = document.querySelector("aside.drawer-panel")?.innerText ?? "";
+      return {
+        ok:
+          marker &&
+          reply &&
+          chain.includes("Failing → Healthy") &&
+          inspectorText.includes("FALLBACK CHAIN") &&
+          inspectorText.includes("Failing → Healthy"),
+        marker,
+        reply,
+        chain,
+        inspectorShowsChain:
+          inspectorText.includes("FALLBACK CHAIN") &&
+          inspectorText.includes("Failing → Healthy"),
+        inspectorText: inspectorText.slice(0, 200),
+      };
+    })()`);
+    if (!autoFallback.ok) {
+      throw new Error(`AI Studio auto fallback assertion failed: ${JSON.stringify(autoFallback)}`);
+    }
+    results.autoFallback = autoFallback;
+    laneLog('autoFallback ok');
+  } finally {
+    if (fallbackServer) fallbackServer.close();
+  }
+
+  await clickDock('System');
+  const webhookSystemEvents = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = Date.now();
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        {
+          id: "sys-sync-rule",
+          name: "System sync hook",
+          url: "https://hooks.example.test/system",
+          payload:
+            '{"event":{{event}},"action":{{context.action}},"device":{{context.deviceId}}}',
+          method: "POST",
+          token: "",
+          secret: "",
+          retries: 1,
+          intervalSeconds: 60,
+          triggerEvent: "sync.completed",
+          enabled: true,
+          lastRunAt: 0,
+          lastStatus: 0,
+          lastMessage: "",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "sys-error-rule",
+          name: "System error hook",
+          url: "https://hooks.example.test/system",
+          payload:
+            '{"event":{{event}},"source":{{context.source}},"severity":{{context.severity}},"message":{{context.message}}}',
+          method: "POST",
+          token: "",
+          secret: "",
+          retries: 1,
+          intervalSeconds: 60,
+          triggerEvent: "error.reported",
+          enabled: true,
+          lastRunAt: 0,
+          lastStatus: 0,
+          lastMessage: "",
+          createdAt: now + 1,
+          updatedAt: now + 1,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    document.querySelector('button[aria-label="Pull sync snapshot"]')?.click();
+    let syncPayload = "";
+    for (let i = 0; i < 60; i++) {
+      syncPayload =
+        [...document.querySelectorAll("[data-webhook-delivery-item]")]
+          .map((el) => el.querySelector("[data-webhook-delivery-payload]")?.textContent ?? "")
+          .find(
+            (t) =>
+              t.includes('"event":"sync.completed"') && t.includes('"action":"pull"'),
+          ) ?? "";
+      if (syncPayload) break;
+      await sleep(100);
+    }
+    const syncOk =
+      syncPayload.includes('"action":"pull"') &&
+      syncPayload.includes('"device":"device-remote-fallback"');
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        message: "sprint 99 system event",
+        error: new Error("boom"),
+      }),
+    );
+    let errorPayload = "";
+    for (let i = 0; i < 60; i++) {
+      errorPayload =
+        [...document.querySelectorAll("[data-webhook-delivery-item]")]
+          .map((el) => el.querySelector("[data-webhook-delivery-payload]")?.textContent ?? "")
+          .find(
+            (t) =>
+              t.includes('"event":"error.reported"') &&
+              t.includes('"severity":"error"'),
+          ) ?? "";
+      if (errorPayload) break;
+      await sleep(100);
+    }
+    const errorOk =
+      errorPayload.includes('"source":"frontend"') &&
+      errorPayload.includes('"severity":"error"') &&
+      errorPayload.includes("sprint 99 system event");
+    return {
+      ok: syncOk && errorOk,
+      syncPayload,
+      errorPayload,
+      syncOk,
+      errorOk,
+    };
+  })()`);
+  if (!webhookSystemEvents.ok) {
+    throw new Error(
+      `Webhook system events assertion failed: ${JSON.stringify(webhookSystemEvents)}`,
+    );
+  }
+  results.webhookSystemEvents = webhookSystemEvents;
+  laneLog('webhookSystemEvents ok');
+
+  const eventBusSeed = await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    localStorage.removeItem("ai-workbench:event-schemas:v1");
+    localStorage.setItem(
+      "ai-workbench:event-bus-config:v1",
+      JSON.stringify({
+        forwardEnabled: false,
+        forwardUrl: "",
+        forwardToken: "",
+        retentionDays: 30,
+        maxLogs: 500,
+        schemaStrict: true,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  if (!eventBusSeed) {
+    throw new Error('Event bus seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const eventBusLogging = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const statsMap = () => {
+      const spans = [...document.querySelectorAll("[data-event-bus-stats] span")];
+      const map = {};
+      for (let i = 0; i + 1 < spans.length; i += 2) {
+        map[spans[i + 1].textContent ?? ""] = Number(spans[i].textContent ?? 0);
+      }
+      return map;
+    };
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (!eventInput || !contextInput || !emitBtn) {
+      return { ok: false, reason: "event bus controls missing" };
+    }
+    setValue(eventInput, "verify.logged");
+    setValue(contextInput, '{"note":"logging lane"}');
+    emitBtn.click();
+    let item = null;
+    let stats = {};
+    for (let i = 0; i < 50; i += 1) {
+      item = [...document.querySelectorAll("[data-event-log-item]")].find((el) =>
+        el.textContent.includes("verify.logged"),
+      );
+      stats = statsMap();
+      if (item && stats.total >= 1 && stats.accepted >= 1) break;
+      await sleep(100);
+    }
+    const status = item?.querySelector("[data-event-log-status]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedOk = stored.some(
+      (log) => log.event === "verify.logged" && log.status === "accepted",
+    );
+    return {
+      ok: !!item && status.includes("accepted") && stats.accepted >= 1 && storedOk,
+      itemRendered: !!item,
+      status,
+      stats,
+      storedOk,
+      stored: stored.slice(0, 3),
+    };
+  })()`);
+  if (!eventBusLogging.ok) {
+    throw new Error(`Event bus logging assertion failed: ${JSON.stringify(eventBusLogging)}`);
+  }
+  results.eventBusLogging = eventBusLogging;
+  laneLog('eventBusLogging ok');
+
+  const eventBusSchema = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const schemaEvent = document.querySelector("[data-event-schema-event]");
+    const schemaJson = document.querySelector("[data-event-schema-json]");
+    const schemaEnabled = document.querySelector("[data-event-schema-enabled]");
+    const schemaSave = document.querySelector("[data-event-schema-save]");
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (
+      !schemaEvent ||
+      !schemaJson ||
+      !schemaEnabled ||
+      !schemaSave ||
+      !eventInput ||
+      !contextInput ||
+      !emitBtn
+    ) {
+      return { ok: false, reason: "event bus schema controls missing" };
+    }
+    setValue(schemaEvent, "verify.schema");
+    setValue(schemaJson, '{"required":["note"],"properties":{"note":{"type":"string"}}}');
+    if (!schemaEnabled.checked) schemaEnabled.click();
+    schemaSave.click();
+    let schemaItem = null;
+    for (let i = 0; i < 40; i += 1) {
+      schemaItem = [...document.querySelectorAll("[data-event-schema-item]")].find((el) =>
+        el.textContent.includes("verify.schema"),
+      );
+      if (schemaItem) break;
+      await sleep(100);
+    }
+    if (!schemaItem) return { ok: false, reason: "schema item not rendered" };
+
+    setValue(eventInput, "verify.schema");
+    setValue(contextInput, '{"note":"from verify","count":7}');
+    emitBtn.click();
+    let acceptedItem = null;
+    let rejectedItem = null;
+    for (let i = 0; i < 60; i += 1) {
+      const items = [...document.querySelectorAll("[data-event-log-item]")];
+      acceptedItem =
+        items.find(
+          (el) =>
+            el.textContent.includes("verify.schema") &&
+            (el.querySelector("[data-event-log-status]")?.textContent ?? "").includes(
+              "accepted",
+            ),
+        ) ?? acceptedItem;
+      rejectedItem =
+        items.find(
+          (el) =>
+            el.textContent.includes("verify.schema") &&
+            (el.querySelector("[data-event-log-status]")?.textContent ?? "").includes(
+              "rejected",
+            ),
+        ) ?? rejectedItem;
+      if (acceptedItem && rejectedItem) break;
+      if (i === 20) {
+        setValue(contextInput, '{"count":7}');
+        emitBtn.click();
+      }
+      await sleep(100);
+    }
+    const reason = rejectedItem?.querySelector("[data-event-log-reason]")?.textContent ?? "";
+    const stored = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedValid = stored.find(
+      (log) => log.event === "verify.schema" && log.status === "accepted",
+    );
+    const storedInvalid = stored.find(
+      (log) => log.event === "verify.schema" && log.status === "rejected",
+    );
+    const ok =
+      !!acceptedItem &&
+      !!rejectedItem &&
+      reason.includes("note") &&
+      !!storedValid &&
+      !!storedInvalid &&
+      (storedInvalid.rejectedReason ?? "").includes("note");
+    return {
+      ok,
+      acceptedRendered: !!acceptedItem,
+      rejectedRendered: !!rejectedItem,
+      reason,
+      storedValid: !!storedValid,
+      storedInvalid: !!storedInvalid,
+      rejectedReason: storedInvalid?.rejectedReason ?? "",
+    };
+  })()`);
+  if (!eventBusSchema.ok) {
+    throw new Error(`Event bus schema assertion failed: ${JSON.stringify(eventBusSchema)}`);
+  }
+  results.eventBusSchema = eventBusSchema;
+  laneLog('eventBusSchema ok');
+
+  const eventBusForwardSeed = await evaluate(`(() => {
+    const now = Date.now();
+    localStorage.setItem("ai-workbench:event-logs:v1", "[]");
+    localStorage.setItem("ai-workbench:event-forwards:v1", "[]");
+    localStorage.removeItem("ai-workbench:event-schemas:v1");
+    localStorage.setItem(
+      "ai-workbench:event-bus-config:v1",
+      JSON.stringify({
+        forwardEnabled: false,
+        forwardUrl: "",
+        forwardToken: "",
+        retentionDays: 30,
+        maxLogs: 500,
+        schemaStrict: true,
+        updatedAt: now,
+      }),
+    );
+    return true;
+  })()`);
+  if (!eventBusForwardSeed) {
+    throw new Error('Event bus forward seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const eventBusForward = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const enabled = document.querySelector("[data-event-bus-forward-enabled]");
+    const url = document.querySelector("[data-event-bus-forward-url]");
+    const token = document.querySelector("[data-event-bus-forward-token]");
+    const retention = document.querySelector("[data-event-bus-forward-retention]");
+    const max = document.querySelector("[data-event-bus-forward-max]");
+    const strict = document.querySelector("[data-event-bus-forward-strict]");
+    const save = document.querySelector("[data-event-bus-forward-save]");
+    const eventInput = document.querySelector("[data-event-bus-event]");
+    const contextInput = document.querySelector("[data-event-bus-context]");
+    const emitBtn = document.querySelector("[data-event-bus-emit]");
+    if (
+      !enabled ||
+      !url ||
+      !token ||
+      !retention ||
+      !max ||
+      !strict ||
+      !save ||
+      !eventInput ||
+      !contextInput ||
+      !emitBtn
+    ) {
+      return { ok: false, reason: "event bus forward controls missing" };
+    }
+    if (!enabled.checked) enabled.click();
+    setValue(url, "https://forward.example.test/hook");
+    setValue(token, "verify-token");
+    setValue(retention, "30");
+    setValue(max, "500");
+    if (!strict.checked) strict.click();
+    save.click();
+    await sleep(200);
+    setValue(eventInput, "verify.forward");
+    setValue(contextInput, '{"note":"forward lane"}');
+    emitBtn.click();
+    let forwardItem = null;
+    let logItem = null;
+    for (let i = 0; i < 50; i += 1) {
+      forwardItem = [...document.querySelectorAll("[data-event-forward-item]")].find((el) =>
+        el.textContent.includes("forward.example.test"),
+      );
+      logItem = [...document.querySelectorAll("[data-event-log-item]")].find((el) =>
+        el.textContent.includes("verify.forward"),
+      );
+      if (forwardItem && logItem) break;
+      await sleep(100);
+    }
+    const forwardStatus =
+      forwardItem?.querySelector("[data-event-forward-status]")?.textContent ?? "";
+    const storedForwards = JSON.parse(
+      localStorage.getItem("ai-workbench:event-forwards:v1") ?? "[]",
+    );
+    const storedLogs = JSON.parse(localStorage.getItem("ai-workbench:event-logs:v1") ?? "[]");
+    const storedForward = storedForwards.find((item) =>
+      item.targetUrl.includes("forward.example.test"),
+    );
+    const storedLog = storedLogs.find((log) => log.event === "verify.forward");
+    const ok =
+      !!forwardItem &&
+      forwardStatus.includes("success") &&
+      !!logItem &&
+      !!storedForward &&
+      storedForward.status === "success" &&
+      storedForward.targetToken === "verify-token" &&
+      !!storedLog &&
+      storedLog.status === "accepted";
+    return {
+      ok,
+      forwardRendered: !!forwardItem,
+      forwardStatus,
+      logRendered: !!logItem,
+      storedForward: storedForward ?? null,
+      storedLog: storedLog ?? null,
+    };
+  })()`);
+  if (!eventBusForward.ok) {
+    throw new Error(`Event bus forward assertion failed: ${JSON.stringify(eventBusForward)}`);
+  }
+  results.eventBusForward = eventBusForward;
+  laneLog('eventBusForward ok');
+
+  const circuitSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const base = {
+      url: "https://hooks.example.test/fail",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      enabled: true,
+      lastRunAt: 0,
+      lastStatus: 500,
+      lastMessage: "HTTP 500 simulated failure",
+      createdAt: now,
+      updatedAt: now,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        {
+          ...base,
+          id: "cb-fail",
+          name: "Circuit fail hook",
+          consecutiveFailures: 2,
+          autoDisableAfter: 3,
+        },
+        {
+          ...base,
+          id: "cb-reset",
+          name: "Circuit reset hook",
+          url: "https://hooks.example.test/ok",
+          consecutiveFailures: 2,
+          autoDisableAfter: 3,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    return true;
+  })()`);
+  if (!circuitSeed) {
+    throw new Error('Webhook circuit breaker seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRuleCircuitBreaker = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const RULES_KEY = "ai-workbench:webhook-rules:v1";
+    const DELIVERY_KEY = "ai-workbench:webhook-deliveries:v1";
+    const priorRules = localStorage.getItem(RULES_KEY);
+    const priorDeliveries = localStorage.getItem(DELIVERY_KEY);
+    const setValue = (el, value) => {
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const stored = () => JSON.parse(localStorage.getItem(RULES_KEY) || "[]");
+    const findStored = (id) => stored().find((r) => r.id === id);
+    const findItem = (name) =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes(name),
+      );
+    const waitForItem = async (name, tries = 40) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = findItem(name);
+        if (item && item.querySelector("[data-webhook-rule-run]")) return item;
+        await sleep(100);
+      }
+      return null;
+    };
+    const waitForDomText = async (name, check, tries = 50) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = findItem(name);
+        if (item && check(item.textContent ?? "")) return item;
+        await sleep(100);
+      }
+      return null;
+    };
+    const clickRun = async (name) => {
+      const item = await waitForItem(name, 20);
+      if (!item) return false;
+      item.querySelector("[data-webhook-rule-run]")?.click();
+      await sleep(150);
+      return true;
+    };
+    const clickRunUntil = async (name, predicate, tries = 40) => {
+      for (let i = 0; i < tries; i += 1) {
+        const item = await waitForItem(name, 5);
+        if (!item) return false;
+        item.querySelector("[data-webhook-rule-run]")?.click();
+        for (let j = 0; j < 6; j += 1) {
+          if (predicate()) return true;
+          await sleep(100);
+        }
+      }
+      return false;
+    };
+    const findStoredByName = (name) => stored().find((r) => r.name === name);
+    const createdStoredBefore = () => {
+      const rule = findStoredByName("Circuit created hook");
+      return rule && rule.autoDisableAfter === 2;
+    };
+    const failPredicate = () => {
+      const rule = findStored("cb-fail");
+      return rule && rule.enabled === false && rule.consecutiveFailures === 3;
+    };
+    const resetPredicate = () => {
+      const rule = findStored("cb-reset");
+      return rule && rule.consecutiveFailures === 0 && rule.lastMessage.includes("HTTP 200");
+    };
+    const createdFailPredicate = () => {
+      const rule = createdId ? findStored(createdId) : null;
+      return rule && rule.consecutiveFailures === 1 && rule.enabled === true;
+    };
+    const createdTripPredicate = () => {
+      const rule = createdId ? findStored(createdId) : null;
+      return (
+        rule &&
+        rule.consecutiveFailures === 2 &&
+        rule.enabled === false &&
+        rule.lastMessage.includes("Auto-disabled after 2")
+      );
+    };
+    let createdId = "";
+    const setCreatedId = () => {
+      createdId = stored().find((r) => r.name === "Circuit created hook")?.id ?? "";
+    };
+    let ready = false;
+    for (let i = 0; i < 40; i += 1) {
+      if (findItem("Circuit fail hook") && findItem("Circuit reset hook")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) return { ok: false, reason: "circuit rules not rendered" };
+
+    const tripped = await clickRunUntil("Circuit fail hook", failPredicate);
+    const failItemFresh = await waitForDomText(
+      "Circuit fail hook",
+      (text) =>
+        text.includes("Auto-disabled after 3") &&
+        text.includes("off - HTTP 500") &&
+        text.includes("3 failure(s)"),
+    );
+    const failText = failItemFresh?.textContent ?? "";
+    const failBadge =
+      failItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "";
+    const trippedOk =
+      tripped &&
+      !!failItemFresh &&
+      failText.includes("Auto-disabled after 3") &&
+      failBadge.includes("3 failure(s)") &&
+      failText.includes("off - HTTP 500");
+
+    const reset = await clickRunUntil("Circuit reset hook", resetPredicate);
+    const resetItemFresh = await waitForDomText(
+      "Circuit reset hook",
+      (text) => text.includes("HTTP 200 delivered") && text.includes("0 failure(s)"),
+    );
+    const resetOk =
+      reset &&
+      !!resetItemFresh &&
+      (resetItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "").includes(
+        "0 failure(s)",
+      );
+
+    const failItemEnabled = await waitForDomText("Circuit fail hook", (text) =>
+      text.includes("Enable"),
+    );
+    failItemEnabled?.querySelector("[data-webhook-rule-toggle]")?.click();
+    let reEnabled = false;
+    for (let i = 0; i < 40; i += 1) {
+      const rule = findStored("cb-fail");
+      if (rule && rule.enabled === true && rule.consecutiveFailures === 0) {
+        reEnabled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const failDomEnabled = await waitForDomText(
+      "Circuit fail hook",
+      (text) => text.includes("on - HTTP 500") && text.includes("0 failure(s)"),
+    );
+    const reEnabledOk = reEnabled && !!failDomEnabled;
+
+    const urlInput = document.querySelector('input[placeholder="Webhook URL"]');
+    const nameInput = document.querySelector("[data-webhook-rule-name]");
+    const autoDisableInput = document.querySelector("input[data-webhook-rule-auto-disable]");
+    const saveBtn = document.querySelector("[data-webhook-rule-save]");
+    if (!urlInput || !nameInput || !autoDisableInput || !saveBtn) {
+      return { ok: false, reason: "circuit form controls missing" };
+    }
+    setValue(urlInput, "https://hooks.example.test/fail");
+    setValue(nameInput, "Circuit created hook");
+    setValue(autoDisableInput, "2");
+    await sleep(80);
+    saveBtn.click();
+    let created = false;
+    for (let i = 0; i < 40; i += 1) {
+      if (createdStoredBefore()) {
+        setCreatedId();
+        created = true;
+        break;
+      }
+      await sleep(100);
+    }
+    const createdStored = created && !!createdId;
+    const firstFailure = await clickRunUntil("Circuit created hook", createdFailPredicate);
+    const firstDom = await waitForDomText("Circuit created hook", (text) =>
+      text.includes("1 failure(s)"),
+    );
+    const firstFailureOk = firstFailure && !!firstDom;
+    const createdTripped = await clickRunUntil("Circuit created hook", createdTripPredicate);
+    const createdItemFresh = await waitForDomText(
+      "Circuit created hook",
+      (text) =>
+        text.includes("Auto-disabled after 2") &&
+        text.includes("off - HTTP 500") &&
+        text.includes("2 failure(s)"),
+    );
+    const createdText = createdItemFresh?.textContent ?? "";
+    const createdBadges =
+      !!createdItemFresh &&
+      (createdItemFresh?.querySelector("[data-webhook-rule-failures]")?.textContent ?? "").includes(
+        "2 failure(s)",
+      ) &&
+      (createdItemFresh?.querySelector("[data-webhook-rule-auto-disable]")?.textContent ?? "").includes(
+        "auto-off after 2",
+      );
+
+    localStorage.setItem(RULES_KEY, priorRules ?? "[]");
+    localStorage.setItem(DELIVERY_KEY, priorDeliveries ?? "[]");
+    return {
+      ok:
+        trippedOk &&
+        resetOk &&
+        reEnabledOk &&
+        createdStored &&
+        firstFailureOk &&
+        createdTripped &&
+        createdBadges,
+      trippedOk,
+      resetOk,
+      reEnabledOk,
+      createdStored,
+      firstFailureOk,
+      createdTripped,
+      createdBadges,
+      failBadge,
+      createdText: createdText.slice(0, 240),
+    };
+  })()`);
+  if (!webhookRuleCircuitBreaker.ok) {
+    throw new Error(
+      `Webhook circuit breaker assertion failed: ${JSON.stringify(webhookRuleCircuitBreaker)}`,
+    );
+  }
+  results.webhookRuleCircuitBreaker = webhookRuleCircuitBreaker;
+  laneLog('webhookRuleCircuitBreaker ok');
+
+  const runLogSeed = await evaluate(`(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const ruleBase = {
+      url: "https://hooks.example.test/ok",
+      payload: "{}",
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "",
+      enabled: true,
+      lastRunAt: now,
+      lastStatus: 200,
+      lastMessage: "HTTP 200 delivered",
+      createdAt: now,
+      updatedAt: now,
+      consecutiveFailures: 0,
+      autoDisableAfter: 3,
+    };
+    localStorage.setItem(
+      "ai-workbench:webhook-rules:v1",
+      JSON.stringify([
+        { ...ruleBase, id: "rl-ok", name: "Log success hook" },
+        {
+          ...ruleBase,
+          id: "rl-fail",
+          name: "Log fail hook",
+          url: "https://hooks.example.test/fail",
+          lastStatus: 500,
+          lastMessage: "HTTP 500 simulated failure",
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "ai-workbench:webhook-rule-runs:v1",
+      JSON.stringify([
+        {
+          id: "run-1",
+          ruleId: "rl-ok",
+          kind: "scheduled",
+          status: "success",
+          httpStatus: 200,
+          attempts: 1,
+          message: "HTTP 200 delivered",
+          createdAt: now - day,
+        },
+        {
+          id: "run-2",
+          ruleId: "rl-ok",
+          kind: "manual",
+          status: "success",
+          httpStatus: 200,
+          attempts: 1,
+          message: "HTTP 200 delivered",
+          createdAt: now - 3_600_000,
+        },
+        {
+          id: "run-3",
+          ruleId: "rl-fail",
+          kind: "event",
+          status: "failed",
+          httpStatus: 500,
+          attempts: 2,
+          message: "HTTP 500 simulated failure",
+          createdAt: now - 600_000,
+        },
+      ]),
+    );
+    localStorage.setItem("ai-workbench:webhook-deliveries:v1", "[]");
+    return true;
+  })()`);
+  if (!runLogSeed) {
+    throw new Error('Webhook run log seed failed');
+  }
+  await reloadAndWait();
+  await clickDock('System');
+
+  const webhookRuleRunLog = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const RULES_KEY = "ai-workbench:webhook-rules:v1";
+    const RUNS_KEY = "ai-workbench:webhook-rule-runs:v1";
+    const DELIVERY_KEY = "ai-workbench:webhook-deliveries:v1";
+    const priorRules = localStorage.getItem(RULES_KEY);
+    const priorRuns = localStorage.getItem(RUNS_KEY);
+    const priorDeliveries = localStorage.getItem(DELIVERY_KEY);
+    const storedRuns = () => JSON.parse(localStorage.getItem(RUNS_KEY) || "[]");
+    const findItem = (name) =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes(name),
+      );
+    const runItems = () =>
+      [...document.querySelectorAll("[data-webhook-rule-run-item]")].map((el) => ({
+        text: el.textContent ?? "",
+        status: el.querySelector("[data-webhook-rule-run-status]")?.textContent ?? "",
+        http: el.querySelector("[data-webhook-rule-run-http]")?.textContent ?? "",
+        message: el.querySelector("[data-webhook-rule-run-message]")?.textContent ?? "",
+      }));
+    const waitForRuns = async (count, tries = 50) => {
+      for (let i = 0; i < tries; i += 1) {
+        if (runItems().length >= count) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    const clickRun = async (name) => {
+      for (let i = 0; i < 30; i += 1) {
+        const item = findItem(name);
+        if (item && item.querySelector("[data-webhook-rule-run]")) {
+          item.querySelector("[data-webhook-rule-run]")?.click();
+          return true;
+        }
+        await sleep(100);
+      }
+      return false;
+    };
+
+    let ready = false;
+    for (let i = 0; i < 50; i += 1) {
+      if (runItems().length >= 3 && document.querySelector("[data-webhook-rule-fail-alert]")) {
+        ready = true;
+        break;
+      }
+      await sleep(100);
+    }
+    if (!ready) return { ok: false, reason: "run log not rendered" };
+    const initialItems = runItems();
+    const initialOk =
+      initialItems.length === 3 &&
+      initialItems.some((item) => item.status.includes("failed")) &&
+      initialItems.some((item) => item.status.includes("success")) &&
+      (document.querySelector("[data-webhook-rule-fail-alert]")?.textContent ?? "").includes(
+        "1 failed run(s) in 24h",
+      );
+
+    const okClicked = await clickRun("Log success hook");
+    const okAppended = await waitForRuns(4);
+    await sleep(250);
+    const afterOk = runItems();
+    const okFresh = afterOk.some(
+      (item) => item.status.includes("manual") && item.status.includes("success"),
+    );
+
+    const failClicked = await clickRun("Log fail hook");
+    const failAppended = await waitForRuns(5);
+    await sleep(250);
+    const afterFail = runItems();
+    const failAlert =
+      document.querySelector("[data-webhook-rule-fail-alert]")?.textContent ?? "";
+    const failFresh = afterFail.some(
+      (item) => item.status.includes("manual") && item.status.includes("failed"),
+    );
+    const storedAfter = storedRuns();
+    const persisted = storedAfter.length === 5 && storedAfter[0].kind === "manual";
+    const ok =
+      initialOk &&
+      okClicked &&
+      okAppended &&
+      okFresh &&
+      failClicked &&
+      failAppended &&
+      failFresh &&
+      failAlert.includes("2 failed run(s) in 24h") &&
+      persisted;
+
+    localStorage.setItem(RULES_KEY, priorRules ?? "[]");
+    if (priorRuns === null) localStorage.removeItem(RUNS_KEY);
+    else localStorage.setItem(RUNS_KEY, priorRuns);
+    localStorage.setItem(DELIVERY_KEY, priorDeliveries ?? "[]");
+    return {
+      ok,
+      initialOk,
+      okClicked,
+      okAppended,
+      okFresh,
+      failClicked,
+      failAppended,
+      failFresh,
+      failAlert,
+      persisted,
+      counts: {
+        initial: initialItems.length,
+        afterOk: afterOk.length,
+        afterFail: afterFail.length,
+        stored: storedAfter.length,
+      },
+      latest: storedAfter[0] ?? null,
+    };
+  })()`);
+  if (!webhookRuleRunLog.ok) {
+    throw new Error(`Webhook run log assertion failed: ${JSON.stringify(webhookRuleRunLog)}`);
+  }
+  results.webhookRuleRunLog = webhookRuleRunLog;
+  laneLog('webhookRuleRunLog ok');
+
+  await evaluate(`(async () => {
+    const rulesKey = "ai-workbench:webhook-rules:v1";
+    const versionsKey = "ai-workbench:webhook-template-versions:v1";
+    const existing = JSON.parse(localStorage.getItem(rulesKey) ?? "[]");
+    const ruleId = "sprint154-template-rule";
+    const rule = {
+      id: ruleId,
+      name: "Sprint 154 Template",
+      url: "https://hooks.example.test/template",
+      payload: '{"v":1}',
+      method: "POST",
+      token: "",
+      secret: "",
+      retries: 1,
+      cooldownSeconds: 0,
+      intervalSeconds: 60,
+      triggerEvent: "sync.completed",
+      triggerCondition: "",
+      channels: ["http"],
+      recoveryBackoffSeconds: 300,
+      circuitOpenedAt: 0,
+      enabled: true,
+      lastRunAt: 0,
+      lastStatus: 0,
+      lastMessage: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      consecutiveFailures: 0,
+      autoDisableAfter: 3,
+      templateVersion: 1,
+    };
+    const versionsByRule = JSON.parse(localStorage.getItem(versionsKey) ?? "{}");
+    versionsByRule[ruleId] = [
+      {
+        id: "sprint154-v1",
+        ruleId,
+        version: 1,
+        payload: '{"v":1}',
+        note: "",
+        createdAt: Date.now(),
+      },
+    ];
+    localStorage.setItem(rulesKey, JSON.stringify([...existing, rule]));
+    localStorage.setItem(versionsKey, JSON.stringify(versionsByRule));
+    return { ok: true, rules: [...existing, rule].length };
+  })()`);
+  await reloadAndWait();
+  await clickDock('System');
+  const webhookTemplateVersioning = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const versionsKey = "ai-workbench:webhook-template-versions:v1";
+    const ruleId = "sprint154-template-rule";
+    const item = () =>
+      [...document.querySelectorAll("[data-webhook-rule-item]")].find((el) =>
+        el.textContent.includes("Sprint 154 Template"),
+      );
+    let ruleItem = item();
+    for (let i = 0; i < 30 && !ruleItem; i++) {
+      await sleep(100);
+      ruleItem = item();
+    }
+    if (!ruleItem) return { ok: false, reason: "rule item missing" };
+    const payloadInput = ruleItem.querySelector("[data-webhook-rule-payload-input]");
+    const count = ruleItem.querySelector("[data-webhook-rule-version-count]");
+    if (!payloadInput || !count) {
+      return { ok: false, reason: "template controls missing" };
+    }
+    const initialCount = count.textContent.trim();
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    const v2 = '{"v":2,"ready":{{#if context.status == "ready"}}true{{#else}}false{{/if}}}';
+    setter.call(payloadInput, v2);
+    payloadInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(150);
+    ruleItem.querySelector("[data-webhook-rule-version-save]")?.click();
+    let countAfter = "";
+    let storedVersions = [];
+    for (let i = 0; i < 30; i++) {
+      ruleItem = item();
+      countAfter =
+        ruleItem?.querySelector("[data-webhook-rule-version-count]")?.textContent?.trim() ?? "";
+      storedVersions = JSON.parse(localStorage.getItem(versionsKey) ?? "{}")[ruleId] ?? [];
+      if (countAfter === "v2" && storedVersions.length === 2) break;
+      await sleep(100);
+    }
+    const savedOk =
+      countAfter === "v2" &&
+      storedVersions.length === 2 &&
+      storedVersions.some((version) => version.version === 2 && version.payload.includes("ready"));
+    const select = ruleItem?.querySelector("[data-webhook-rule-version-select]");
+    if (!select) {
+      return { ok: false, reason: "version select missing", savedOk, countAfter };
+    }
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+    selectSetter.call(select, "1");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(120);
+    ruleItem = item();
+    ruleItem?.querySelector("[data-webhook-rule-version-restore]")?.click();
+    let restoredValue = "";
+    for (let i = 0; i < 30; i++) {
+      ruleItem = item();
+      restoredValue =
+        ruleItem?.querySelector("[data-webhook-rule-payload-input]")?.value ?? "";
+      if (restoredValue === '{"v":1}') break;
+      await sleep(100);
+    }
+    const restoreOk = restoredValue === '{"v":1}';
+    return {
+      ok: savedOk && restoreOk,
+      savedOk,
+      restoreOk,
+      initialCount,
+      countAfter,
+      versions: storedVersions.map((version) => version.version),
+      restoredValue,
+    };
+  })()`);
+  if (!webhookTemplateVersioning.ok) {
+    throw new Error(
+      `Webhook template versioning assertion failed: ${JSON.stringify(webhookTemplateVersioning)}`,
+    );
+  }
+  results.webhookTemplateVersioning = webhookTemplateVersioning;
+  laneLog('webhookTemplateVersioning ok');
+
+  const webhookTemplateValidationUi = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const payload = document.querySelector("[data-webhook-payload]");
+    const contextInput = document.querySelector("[data-webhook-event-context]");
+    if (!payload || !contextInput) return { ok: false, reason: "delivery controls missing" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(payload, '{"items":[]}');
+    payload.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('[data-webhook-template-snippet="each"]')?.click();
+    await sleep(120);
+    const snippetInserted = (document.querySelector("[data-webhook-payload]")?.value ?? "").includes(
+      "#each",
+    );
+    const template =
+      '{"status":{{#if context.status == "ready"}}"ready"{{#else}}"busy"{{/if}},"items":[{{#each context.items}}{"name":{{this.name}}}{{#if @last}}{{#else}},{{/if}}{{/each}}]}';
+    setter.call(payload, template);
+    payload.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    const contextSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    contextSetter.call(
+      contextInput,
+      '{"status":"ready","items":[{"name":"alpha"},{"name":"beta"}]}',
+    );
+    contextInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector("[data-webhook-template-validate]")?.click();
+    let validation = "";
+    for (let i = 0; i < 30; i++) {
+      validation = document.querySelector("[data-webhook-template-validation]")?.textContent ?? "";
+      if (validation.includes("valid") && validation.includes("JSON ok")) break;
+      await sleep(100);
+    }
+    const validationOk =
+      validation.includes("valid") &&
+      validation.includes("variable(s)") &&
+      validation.includes("JSON ok");
+    document.querySelector("[data-webhook-payload-preview]")?.click();
+    let preview = "";
+    for (let i = 0; i < 20; i++) {
+      preview =
+        document.querySelector("[data-webhook-payload-preview-text]")?.textContent ?? "";
+      if (preview.includes("alpha") && preview.includes("beta") && preview.includes("ready")) break;
+      await sleep(100);
+    }
+    const previewOk =
+      preview.includes("alpha") && preview.includes("beta") && preview.includes("ready");
+    return {
+      ok: snippetInserted && validationOk && previewOk,
+      snippetInserted,
+      validationOk,
+      previewOk,
+      validation,
+      preview,
+    };
+  })()`);
+  if (!webhookTemplateValidationUi.ok) {
+    throw new Error(
+      `Webhook template validation assertion failed: ${JSON.stringify(webhookTemplateValidationUi)}`,
+    );
+  }
+  results.webhookTemplateValidationUi = webhookTemplateValidationUi;
+  laneLog('webhookTemplateValidationUi ok');
+
+  let budgetServer = null;
+  try {
+    budgetServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const route = req.url ?? '';
+      const reply = route.includes('local') ? 'local budget answer' : 'cloud budget answer';
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      if (route.includes('local')) {
+        res.write(`{"message":{"content":"${reply} "},"done":false}\n\n`);
+        res.write('{"message":{"content":""},"done":true}\n\n');
+      } else {
+        res.write(`data: {"choices":[{"delta":{"content":"${reply} "}}]}\n\n`);
+        res.write('data: [DONE]\n\n');
+      }
+      res.end();
+    });
+    await new Promise((resolve) => budgetServer.listen(0, '127.0.0.1', resolve));
+    const budgetPort = budgetServer.address().port;
+    await evaluate(`(() => {
+      const now = new Date();
+      const monthKey = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      localStorage.setItem(
+        "ai-workbench:token-budget:v1",
+        JSON.stringify({ monthlyLimit: 1000, monthKey, usedTokens: 1000, autoDegrade: true }),
+      );
+      const shape = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
+      shape.providers = [
+        {
+          id: "budget-cloud",
+          name: "Cloud API",
+          baseUrl: "http://127.0.0.1:${budgetPort}/v1/cloud",
+          apiKey: "test-key",
+          model: "cloud-model",
+          priority: 2,
+          isActive: true,
+        },
+        {
+          id: "budget-local",
+          name: "Local Ollama",
+          baseUrl: "http://127.0.0.1:${budgetPort}/v1/local",
+          apiKey: "test-key",
+          model: "local-model",
+          priority: 1,
+          isActive: true,
+        },
+      ];
+      localStorage.setItem("ai-workbench:db:v1", JSON.stringify(shape));
+      return true;
+    })()`);
+    await reloadAndWait();
+
+    const budgetDegrade = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dock = [...document.querySelectorAll('nav button[aria-label]')]
+        .find((b) => b.getAttribute("aria-label") === "AI Studio");
+      if (!dock) return { ok: false, reason: "dock missing" };
+      dock.click();
+      await sleep(300);
+      const singleBtn = [...document.querySelectorAll("main button")]
+        .find((b) => b.textContent?.trim() === "Single");
+      singleBtn?.click();
+      await sleep(150);
+      const agentSelect = document.querySelector('select[aria-label="Dispatch agent"]');
+      if (agentSelect) {
+        const agentSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        agentSetter.call(agentSelect, "");
+        agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await sleep(150);
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget degrade check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let localReply = false;
+      let degradedBadge = false;
+      for (let i = 0; i < 50; i += 1) {
+        const body = document.body.innerText;
+        const badge = document.querySelector("[data-token-budget-badge]")?.textContent ?? "";
+        localReply = localReply || body.includes("local budget answer");
+        degradedBadge =
+          degradedBadge || (badge.includes("degraded") && badge.includes("tokens"));
+        if (localReply && degradedBadge) break;
+        await sleep(100);
+      }
+      const used = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      ).usedTokens;
+      return {
+        ok: localReply && degradedBadge && used > 1000,
+        localReply,
+        degradedBadge,
+        used,
+        badge: document.querySelector("[data-token-budget-badge]")?.textContent ?? "",
+      };
+    })()`);
+    if (!budgetDegrade.ok) {
+      throw new Error(`Token budget degrade assertion failed: ${JSON.stringify(budgetDegrade)}`);
+    }
+
+    await clickDock('System');
+    const budgetConfigUi = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector("[data-token-budget-card]");
+      if (!card) return { ok: false, reason: "budget card missing" };
+      const toggle = document.querySelector("[data-token-budget-auto-degrade]");
+      if (!toggle) return { ok: false, reason: "budget toggle missing" };
+      toggle.click();
+      await sleep(200);
+      const stored = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      );
+      return {
+        ok: stored.autoDegrade === false,
+        cardSeen: true,
+        usedText: document.querySelector("[data-token-budget-used]")?.textContent ?? "",
+        autoDegrade: stored.autoDegrade,
+      };
+    })()`);
+    if (!budgetConfigUi.ok) {
+      throw new Error(`Token budget config assertion failed: ${JSON.stringify(budgetConfigUi)}`);
+    }
+
+    await clickDock('AI Studio');
+    const budgetBlocked = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget block check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let blocked = false;
+      for (let i = 0; i < 40; i += 1) {
+        blocked = document.body.innerText.includes("token budget exceeded");
+        if (blocked) break;
+        await sleep(100);
+      }
+      const used = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      ).usedTokens;
+      return { ok: blocked, blocked, used };
+    })()`);
+    if (!budgetBlocked.ok) {
+      throw new Error(`Token budget block assertion failed: ${JSON.stringify(budgetBlocked)}`);
+    }
+
+    await clickDock('System');
+    const budgetReset = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const reset = document.querySelector("[data-token-budget-reset]");
+      if (!reset) return { ok: false, reason: "budget reset missing" };
+      reset.click();
+      await sleep(250);
+      const stored = JSON.parse(
+        localStorage.getItem("ai-workbench:token-budget:v1") ?? "{}",
+      );
+      return { ok: stored.usedTokens === 0, usedTokens: stored.usedTokens };
+    })()`);
+    if (!budgetReset.ok) {
+      throw new Error(`Token budget reset assertion failed: ${JSON.stringify(budgetReset)}`);
+    }
+
+    await clickDock('AI Studio');
+    const budgetRecover = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+      if (!input) return { ok: false, reason: "no chat input" };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(input, "budget reset check");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(80);
+      document.querySelector('main button[aria-label="Send"]')?.click();
+      let cloudReply = false;
+      for (let i = 0; i < 50; i += 1) {
+        cloudReply = document.body.innerText.includes("cloud budget answer");
+        if (cloudReply) break;
+        await sleep(100);
+      }
+      const badge = document.querySelector("[data-token-budget-badge]")?.textContent ?? "";
+      return {
+        ok: cloudReply && !badge.includes("degraded"),
+        cloudReply,
+        badge,
+      };
+    })()`);
+    if (!budgetRecover.ok) {
+      throw new Error(`Token budget recovery assertion failed: ${JSON.stringify(budgetRecover)}`);
+    }
+
+    results.tokenBudget = {
+      degrade: budgetDegrade,
+      config: budgetConfigUi,
+      blocked: budgetBlocked,
+      reset: budgetReset,
+      recover: budgetRecover,
+    };
+  } finally {
+    if (budgetServer) budgetServer.close();
+  }
+
+  const ragSourceSelector = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const vaultKey = "ai-workbench:vault:v1";
+    const prefKey = "ai-workbench:rag-source-preference:v1";
+    localStorage.setItem(
+      vaultKey,
+      JSON.stringify([
+        {
+          path: "C:/vault/Source Alpha.md",
+          title: "Source Alpha",
+          tags: "#work",
+          content: "Alpha sprint plan with rag source selector",
+          indexedAt: Date.now(),
+        },
+        {
+          path: "C:/vault/Source Beta.md",
+          title: "Source Beta",
+          tags: "#work",
+          content: "Beta release notes with rag source selector",
+          indexedAt: Date.now(),
+        },
+      ]),
+    );
+    localStorage.removeItem(prefKey);
+    [...document.querySelectorAll("main button")]
+      .find((b) => b.textContent?.trim() === "New chat")
+      ?.click();
+    await sleep(200);
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) return { ok: false, reason: "controls missing" };
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "rag source selector");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let panel = null;
+    let options = [];
+    for (let i = 0; i < 25; i++) {
+      panel = document.querySelector("[data-rag-source-panel]");
+      options = panel ? [...panel.querySelectorAll("[data-rag-source-option]")] : [];
+      if (options.length >= 2) break;
+      await sleep(100);
+    }
+    if (!panel || options.length < 2) {
+      return { ok: false, reason: "source panel not shown", count: options.length };
+    }
+    const alpha = options.find((el) =>
+      (el.getAttribute("data-rag-source-option") ?? "").includes("Source Alpha"),
+    );
+    if (!alpha) return { ok: false, reason: "alpha source missing" };
+    alpha.click();
+    await sleep(100);
+    panel = document.querySelector("[data-rag-source-panel]");
+    const remember = panel?.querySelector("[data-rag-source-remember]");
+    if (!remember) return { ok: false, reason: "remember checkbox missing" };
+    remember.click();
+    await sleep(100);
+    document.querySelector("[data-rag-confirm-send]")?.click();
+    let summary = "";
+    let stored = null;
+    for (let i = 0; i < 25; i++) {
+      summary = document.querySelector("[data-rag-source-summary]")?.textContent ?? "";
+      stored = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+      if (summary.includes("1 source(s) remembered") && stored?.enabled && stored.filePaths?.length === 1) {
+        break;
+      }
+      await sleep(100);
+    }
+    const storedPath = stored?.filePaths?.[0] ?? "";
+    const storedOk =
+      !!stored?.enabled && stored.mode === "selected" && storedPath.includes("Source Beta");
+    const summaryOk = summary.includes("1 source(s) remembered");
+    if (!storedOk || !summaryOk) {
+      return { ok: false, reason: "preference not remembered", summary, stored, storedOk, summaryOk };
+    }
+    return { ok: true, summary, storedPath, options: options.length };
+  })()`);
+  if (!ragSourceSelector.ok) {
+    throw new Error(`RAG source selector assertion failed: ${JSON.stringify(ragSourceSelector)}`);
+  }
+  results.ragSourceSelector = ragSourceSelector;
+  laneLog('ragSourceSelector ok');
+
+  await reloadAndWait();
+  await clickDock('AI Studio');
+  const ragSourcePersisted = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const prefKey = "ai-workbench:rag-source-preference:v1";
+    let summary = "";
+    let stored = null;
+    for (let i = 0; i < 30; i++) {
+      stored = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+      if (stored?.enabled) break;
+      await sleep(100);
+    }
+    const modeToggle = document.querySelector("[data-rag-confirm-mode]");
+    const input = document.querySelector('textarea[placeholder="Ask anything..."]');
+    if (!modeToggle || !input) {
+      return { ok: false, reason: "controls missing", stored };
+    }
+    if (modeToggle.getAttribute("aria-checked") !== "true") modeToggle.click();
+    await sleep(120);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(input, "rag source selector");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(120);
+    document.querySelector('main button[aria-label="Send"]')?.click();
+    let options = [];
+    for (let i = 0; i < 25; i++) {
+      options = [...document.querySelectorAll("[data-rag-source-option]")];
+      if (
+        options.length === 1 &&
+        (options[0].getAttribute("data-rag-source-option") ?? "").includes("Source Beta")
+      ) {
+        break;
+      }
+      await sleep(100);
+    }
+    const filteredOk =
+      options.length === 1 &&
+      (options[0].getAttribute("data-rag-source-option") ?? "").includes("Source Beta");
+    document.querySelector("[data-rag-confirm-send]")?.click();
+    for (let i = 0; i < 25; i++) {
+      summary = document.querySelector("[data-rag-source-summary]")?.textContent ?? "";
+      if (summary.includes("1 source(s) remembered")) break;
+      await sleep(100);
+    }
+    const resetBtn = document.querySelector("[data-rag-source-reset]");
+    if (!resetBtn) {
+      return {
+        ok: false,
+        reason: "reset missing",
+        summary,
+        stored,
+        filteredOk,
+        options: options.length,
+      };
+    }
+    resetBtn.click();
+    await sleep(200);
+    const afterReset = JSON.parse(localStorage.getItem(prefKey) ?? "null");
+    const resetOk =
+      !!afterReset &&
+      afterReset.enabled === false &&
+      !document.querySelector("[data-rag-source-summary]");
+    return {
+      ok: summary.includes("1 source(s) remembered") && !!stored?.enabled && filteredOk && resetOk,
+      summary,
+      stored,
+      filteredOk,
+      options: options.length,
+      resetOk,
+    };
+  })()`);
+  if (!ragSourcePersisted.ok) {
+    throw new Error(
+      `RAG source persistence assertion failed: ${JSON.stringify(ragSourcePersisted)}`,
+    );
+  }
+  results.ragSourcePersisted = ragSourcePersisted;
+  laneLog('ragSourcePersisted ok');
+
+  console.log(JSON.stringify(results, null, 2));
+} finally {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) await send('Browser.close');
+  } catch {
+    /* ignore close errors */
+  }
+  await delay(500);
+  if (edge && !edge.killed) edge.kill();
+  const resolved = path.resolve(profile);
+  const tempRoot = path.resolve(os.tmpdir());
+  if (resolved.startsWith(tempRoot) && fs.existsSync(resolved)) {
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true });
+    } catch {
+      await delay(1000);
+      try {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
+  }
+}

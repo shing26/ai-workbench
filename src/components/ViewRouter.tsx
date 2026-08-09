@@ -1,45 +1,54 @@
-﻿import { AnimatePresence, motion } from "framer-motion";
-import { useAppStore } from "../stores/appStore";
-import ChatView from "../views/ChatView";
-import VibeCodingView from "../views/VibeCodingView";
-import KnowledgeView from "../views/KnowledgeView";
-import AutomationView from "../views/AutomationView";
-import MonetizationView from "../views/MonetizationView";
-import ConnectionsView from "../views/ConnectionsView";
+import { useEffect, useRef, useState } from 'react';
+import { useWorkbenchStore } from '../stores/workbenchStore';
+import AIStudioView from '../views/AIStudioView';
+import ProjectsView from '../views/ProjectsView';
+import KnowledgeView from '../views/KnowledgeView';
+import ActionsView from '../views/ActionsView';
+import SystemView from '../views/SystemView';
 
-const views: Record<string, React.ComponentType> = {
-  chat: ChatView,
-  "vibe-coding": VibeCodingView,
+const views = {
+  'ai-studio': AIStudioView,
+  projects: ProjectsView,
   knowledge: KnowledgeView,
-  automation: AutomationView,
-  monetization: MonetizationView,
-  connections: ConnectionsView,
-};
+  actions: ActionsView,
+  system: SystemView,
+} as const;
 
-const pageTransition = {
-  initial: { opacity: 0, x: 12 },
-  animate: { opacity: 1, x: 0 },
-  exit: { opacity: 0, x: -12 },
-};
+type ViewId = keyof typeof views;
 
 export default function ViewRouter() {
-  const activeView = useAppStore((s) => s.activeView);
-  const View = views[activeView];
+  const activeView = useWorkbenchStore((s) => s.activeView);
+  const [mountedViews, setMountedViews] = useState<Set<ViewId>>(() => new Set([activeView]));
+  const activeRef = useRef(activeView);
+  activeRef.current = activeView;
+
+  useEffect(() => {
+    setMountedViews((prev) => {
+      if (prev.has(activeView)) return prev;
+      const next = new Set(prev);
+      next.add(activeView);
+      return next;
+    });
+  }, [activeView]);
 
   return (
-    <main className="flex-1 overflow-hidden bg-[var(--color-bg-primary)]">
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeView}
-          initial={pageTransition.initial}
-          animate={pageTransition.animate}
-          exit={pageTransition.exit}
-          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          className="h-full w-full"
-        >
-          <View />
-        </motion.div>
-      </AnimatePresence>
+    <main data-view={activeView} className="canvas-ambient min-w-0 flex-1 overflow-hidden">
+      {(Object.keys(views) as ViewId[]).map((view) => {
+        if (!mountedViews.has(view)) return null;
+        const View = views[view];
+        const hidden = view !== activeView;
+        return (
+          <div
+            key={view}
+            data-view-pane={view}
+            className="view-enter h-full w-full"
+            style={hidden ? { display: 'none' } : undefined}
+            aria-hidden={hidden}
+          >
+            <View />
+          </div>
+        );
+      })}
     </main>
   );
 }

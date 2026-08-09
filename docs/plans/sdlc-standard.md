@@ -12,6 +12,17 @@
 
 原则：严禁开发中途临时加项。任何新想法先写入 Backlog，排期到下一个 Sprint。
 
+### 阶段 1.5：UI 设计与动效规范
+
+开发任何 UI 改造前，必须先完成设计评审并产出可验收的设计契约：
+
+- `docs/meetings/*-ui-dynamics-design-review.md`：参考模板、视觉语言映射、设计部决议与风险清单。
+- `docs/plans/sprint-*-ui-dynamics.md`：动效任务、验收标准与 DoD。
+- 动效硬约束：主切换 <=150ms，只用 `transform`/`opacity`/`filter`，遵守 `prefers-reduced-motion`，不改动冻结 Design Token。
+- 自动化验收：UI 改造必须扩展 `verify:ui` / `verify:preview`，覆盖动效时长、固定尺寸、reduced-motion 与布局稳定。
+
+原则：任何“临时加动画”必须先写 Backlog，排入 Sprint 后再开发，禁止绕过设计评审直接堆效果。
+
 ## 阶段二：敏捷 Sprint 迭代与任务拆解
 
 以 1 到 2 周为周期运行 Sprint，看板固定 4 列：
@@ -50,7 +61,7 @@ AC 3：样式严格使用 Design Token（bg-[#18181C] border-white/10）。
 
 ### Lint 与 Format Hooks
 
-- 前端：ESLint + Prettier，`husky` + `lint-staged` 在 commit 时自动格式化。
+- 前端：ESLint + Prettier，`husky` + `lint-staged` 在 commit 时自动格式化。Sprint 102 已落地：`npm run lint` 0 errors / 0 warnings，`npx prettier --check .` 全绿。
 - Rust 后台：`cargo fmt` + `cargo clippy`。
 
 ## 阶段四：质量审查与 DoD 验收
@@ -84,3 +95,12 @@ DoD 检查单：
 2. What went wrong？
 3. Action Items？
 
+## UI 改造生命周期闭环（Sprint 22+）
+
+任何 UI 动态效果改造必须走完整闭环，禁止绕过设计评审直接堆效果：
+
+1. 设计部契约：先产出 `docs/meetings/*-ui-dynamics-*.md`，锁定动效范围、Motion Token 与验收标准。
+2. Token 冻结：交互动画 <=150ms，只用 `transform/opacity/filter`，尊重 `prefers-reduced-motion`。
+3. 主题与材质：主题/强调色/材质预设纳入验收，刷新持久化，浅色主题保证文字对比度。
+4. 自动化验收：`verify:ui` / `verify:preview` 覆盖动效时长、固定尺寸、reduced-motion 与布局稳定。
+5. 复盘与 Backlog：Sprint 结束后更新 RETRO；未纳入范围的动效进入 Backlog，禁止临时加项。
