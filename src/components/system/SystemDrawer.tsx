@@ -127,6 +127,7 @@ const TABS = [
   { id: 'agent', label: 'Agent' },
   { id: 'clipboard', label: 'Clipboard' },
   { id: 'errorlogs', label: 'Error logs' },
+  { id: 'storage', label: 'Storage' },
 ] as const;
 
 type DrawerTab = (typeof TABS)[number]['id'];
@@ -192,6 +193,10 @@ export default function SystemDrawer({
     Record<string, { timeoutSecs: number; retryCount: number; retryDelaySecs: number }>
   >({});
   const [providerImportOpen, setProviderImportOpen] = useState(false);
+  const [snapshotPath, setSnapshotPath] = useState('');
+  const [snapshots, setSnapshots] = useState<db.FileBackupEntry[]>([]);
+  const [snapshotKeep, setSnapshotKeep] = useState('5');
+  const [snapshotResult, setSnapshotResult] = useState('');
   const [providerImportText, setProviderImportText] = useState('');
   const [providerImportResult, setProviderImportResult] = useState('');
   const [providerExportResult, setProviderExportResult] = useState('');
@@ -1659,6 +1664,38 @@ export default function SystemDrawer({
     setModel('');
   };
 
+  const hotSwapProvider = async (id: string) => {
+    const others = providers.filter((p) => p.isActive && p.id !== id);
+    for (const other of others) await toggleProvider(other.id, false);
+    if (!providers.find((p) => p.id === id)?.isActive) await toggleProvider(id, true);
+  };
+
+  const loadSnapshots = async (pathValue: string) => {
+    if (!pathValue.trim()) {
+      setSnapshotResult('请输入项目路径');
+      return;
+    }
+    try {
+      const list = await db.listSnapshots(pathValue.trim());
+      setSnapshots(list);
+      setSnapshotResult(`共 ${list.length} 个快照`);
+    } catch (err) {
+      setSnapshotResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const pruneSnapshots = async () => {
+    if (!snapshotPath.trim()) return;
+    try {
+      const keep = Math.max(0, Number(snapshotKeep) || 0);
+      const removed = await db.pruneSnapshots(snapshotPath.trim(), keep);
+      setSnapshotResult(`已清理 ${removed} 个快照`);
+      await loadSnapshots(snapshotPath);
+    } catch (err) {
+      setSnapshotResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const saveProviderModel = async (id: string, value: string) => {
     await setProviderModel(id, value.trim());
     setModelDrafts((prev) => {
@@ -1910,6 +1947,15 @@ export default function SystemDrawer({
                         className="text-[10px] text-slate-500 hover:text-slate-300"
                       >
                         {p.isActive ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        type="button"
+                        data-provider-set-active={p.id}
+                        onClick={() => void hotSwapProvider(p.id)}
+                        className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
+                        title="设为当前 API（热切）"
+                      >
+                        ⚡ 设为当前 API
                       </button>
                     </div>
                     <p className="mt-2 truncate text-[11px] text-slate-500">{p.baseUrl}</p>
@@ -4873,6 +4919,73 @@ export default function SystemDrawer({
               ))}
               {logs.length === 0 && (
                 <div className="py-8 text-center text-xs text-slate-600">No logs</div>
+              )}
+            </div>
+          </BentoCard>
+        </section>
+
+        <section data-system-drawer-section="storage" className="scroll-mt-2">
+          <BentoCard
+            title="Storage & backups"
+            subtitle="快照清理与本地瘦身"
+            icon={Database}
+            tier="fold"
+          >
+            <div className="space-y-2">
+              <label className="block">
+                <span className="mb-1 block text-[10px] text-slate-500">项目路径</span>
+                <input
+                  data-snapshot-path
+                  value={snapshotPath}
+                  onChange={(e) => setSnapshotPath(e.target.value)}
+                  placeholder="如 D:/projects/my-app"
+                  className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
+                />
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-snapshot-list
+                  onClick={() => void loadSnapshots(snapshotPath)}
+                  className="flex h-7 items-center rounded-md border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 hover:bg-white/[0.06]"
+                >
+                  <Database size={10} /> 查看快照
+                </button>
+                <label className="flex items-center gap-1 text-[9px] text-slate-500">
+                  保留最近
+                  <input
+                    data-snapshot-keep
+                    type="number"
+                    min={0}
+                    value={snapshotKeep}
+                    onChange={(e) => setSnapshotKeep(e.target.value)}
+                    className="h-7 w-14 rounded-md border border-white/10 bg-white/[0.03] px-1.5 text-[10px] text-slate-300"
+                  />
+                </label>
+                <button
+                  type="button"
+                  data-snapshot-prune
+                  onClick={() => void pruneSnapshots()}
+                  className="flex h-7 items-center gap-1 rounded-md bg-rose-500/15 px-2 text-[10px] text-rose-300 hover:bg-rose-500/25"
+                >
+                  🧹 清理快照
+                </button>
+              </div>
+              <span data-snapshot-result className="block text-[9px] text-slate-500">
+                {snapshotResult}
+              </span>
+              {snapshots.length > 0 && (
+                <div className="max-h-40 space-y-1 overflow-y-auto">
+                  {snapshots.slice(0, 20).map((s) => (
+                    <div
+                      key={s.backupId}
+                      className="truncate rounded-md bg-white/[0.02] px-1.5 py-1 font-mono text-[9px] text-slate-500"
+                      title={s.targetPath}
+                    >
+                      {s.backupId.slice(0, 24)} → {s.targetPath}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </BentoCard>

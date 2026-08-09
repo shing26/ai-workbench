@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] Rust `set_active_provider(id)` 命令（更新 is_active 优先 + 全局 active 句柄）
 - [ ] System Provider 卡 `[⚡ 设为当前 API]`（`data-provider-set-active`）→ 即时热切

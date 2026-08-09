@@ -5,13 +5,14 @@ import CommandPalette from '../CommandPalette';
 import ThemeSwitcher from '../ui/ThemeSwitcher';
 import MaterialDrawer from './MaterialDrawer';
 import { emitEvent, TOPICS } from '../../stores/events';
+import { LOCALES, t, useLocale } from '../../lib/i18n';
 
 const TITLES: Record<ViewId, string> = {
-  'ai-studio': 'AI Studio',
-  projects: 'Projects',
-  knowledge: 'Knowledge & Inbox',
-  actions: 'Actions & Schedule',
-  system: 'System & Automation',
+  'ai-studio': 'view.aiStudio',
+  projects: 'view.projects',
+  knowledge: 'view.knowledge',
+  actions: 'view.actions',
+  system: 'view.system',
 };
 
 export default function AppHeader() {
@@ -22,6 +23,8 @@ export default function AppHeader() {
   const refreshQualityGate = useWorkbenchStore((s) => s.refreshQualityGate);
   const vibePath = useWorkbenchStore((s) => s.vibeContext?.path ?? null);
   const [gateOpen, setGateOpen] = useState(false);
+  const [localeOpen, setLocaleOpen] = useState(false);
+  const { locale, setLocale } = useLocale();
 
   useEffect(() => {
     if (vibePath && !qualityGate) void refreshQualityGate();
@@ -30,9 +33,11 @@ export default function AppHeader() {
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#16161A]/80 px-4 backdrop-blur-2xl">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm font-semibold text-slate-200">{TITLES[activeView]}</span>
+        <span className="truncate text-sm font-semibold text-slate-200">
+          {t(TITLES[activeView])}
+        </span>
         <span className="hidden truncate text-xs text-slate-500 md:inline">
-          Local-first AI Workbench
+          {t('app.subtitle')}
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-2">
@@ -63,7 +68,7 @@ export default function AppHeader() {
               }`}
             >
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {qualityGate.status === 'GREEN' ? 'ALL GREEN' : 'CHECK FAILED'}
+              {qualityGate.status === 'GREEN' ? t('app.allGreen') : t('app.checkFailed')}
             </button>
             {gateOpen && qualityGate.status !== 'GREEN' && (
               <div
@@ -93,6 +98,42 @@ export default function AppHeader() {
             )}
           </div>
         )}
+        <div className="relative">
+          <button
+            type="button"
+            data-locale
+            aria-label="Locale"
+            onClick={() => setLocaleOpen((v) => !v)}
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
+          >
+            <span aria-hidden>🌐</span>
+            <span>{LOCALES.find((l) => l.code === locale)?.label ?? '中文'}</span>
+          </button>
+          {localeOpen && (
+            <div
+              data-locale-popover
+              className="absolute right-0 top-11 z-50 w-36 rounded-xl border border-white/10 bg-[#18181C] p-1 shadow-2xl"
+            >
+              {LOCALES.map((l) => (
+                <button
+                  key={l.code}
+                  type="button"
+                  data-locale-option={l.code}
+                  aria-pressed={locale === l.code}
+                  onClick={() => {
+                    setLocale(l.code);
+                    setLocaleOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] transition-colors hover:bg-white/[0.06] ${
+                    locale === l.code ? 'text-emerald-300' : 'text-slate-400'
+                  }`}
+                >
+                  {l.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <MaterialDrawer />
         <ThemeSwitcher />
         <button

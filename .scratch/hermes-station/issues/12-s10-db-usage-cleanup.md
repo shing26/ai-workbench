@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] Rust `get_db_usage()` 命令（文件大小 + 各表行数估算）
 - [ ] System 新增 DB usage 卡：占用大小、`.hermes/backups` 快照数量与体积
