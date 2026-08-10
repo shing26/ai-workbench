@@ -1727,6 +1727,25 @@ export async function getFileHunkPatch(
   return { path: relativePath, status: 'clean', diff: '' };
 }
 
+export type AgentSpec = {
+  id: string;
+  name: string;
+  role: string;
+  kpi: string;
+  prompt: string;
+  active: boolean;
+};
+
+export async function listAgentSpecs(projectPath: string): Promise<AgentSpec[]> {
+  if (isTauri()) return invoke<AgentSpec[]>('list_agent_specs', { projectPath });
+  return [];
+}
+
+export async function ensureAgentSpecs(projectPath: string): Promise<number> {
+  if (isTauri()) return invoke<number>('ensure_agent_specs', { projectPath });
+  return 0;
+}
+
 export type ApplySnippetResult = {
   success: boolean;
 

@@ -27,6 +27,7 @@ use tauri::{Emitter, Manager, State};
 
 mod db;
 mod file_ops;
+mod prism_agents;
 mod webhook_condition;
 mod webhook_template;
 
@@ -7621,10 +7622,22 @@ pub fn run() {
             file_ops::apply_code_snippet,
             file_ops::rollback_snapshot,
             file_ops::list_snapshots,
-            file_ops::prune_snapshots
+            file_ops::prune_snapshots,
+            list_agent_specs,
+            ensure_agent_specs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn list_agent_specs(project_path: String) -> Result<Vec<prism_agents::AgentSpec>, String> {
+    prism_agents::load_agent_specs(&project_path)
+}
+
+#[tauri::command]
+fn ensure_agent_specs(project_path: String) -> Result<usize, String> {
+    prism_agents::ensure_default_agent_specs(&project_path)
 }
 
 #[cfg(test)]

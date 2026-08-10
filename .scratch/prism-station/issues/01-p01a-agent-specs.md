@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] Rust `load_agent_specs(project_path)`：递归扫描 `.hermes/agents/*.md`，解析 YAML Frontmatter + body（system prompt）
 - [ ] `AgentSpec` 结构：id/name/role/kpi/prompt/active
