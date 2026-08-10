@@ -2682,9 +2682,9 @@ export default function AIStudioView() {
         </aside>
         <div
           data-streaming={busy ? 'true' : 'false'}
-          className="conversation-stage flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl"
+          className="conversation-stage flex min-h-[640px] flex-1 flex-col gap-3 rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl"
         >
-          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+          <div className="flex h-[520px] min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
             {messages.map((m, i) => (
               <div
                 key={m.id ?? i}
@@ -3359,14 +3359,22 @@ export default function AIStudioView() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                  e.preventDefault();
+                  void send();
+                } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
                   void send();
                 }
               }}
               rows={2}
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = 'auto';
+                el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+              }}
               placeholder="Ask anything..."
-              className="min-h-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs text-slate-200 outline-none placeholder:text-slate-600"
+              className="min-h-0 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-xs text-slate-200 outline-none placeholder:text-slate-600"
             />
             {busy ? (
               <button

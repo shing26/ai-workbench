@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 画布容器 `min-h-[640px]`，消息区 `h-[520px]` 滚动
 - [ ] 多行自适应 `<textarea>`（Shift+Enter 换行，⌘Enter 发送）
