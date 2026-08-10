@@ -64,6 +64,7 @@ import {
   saveRecapDraft,
   type RecapDraft,
 } from '../lib/recapDraft';
+import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
@@ -217,6 +218,9 @@ export default function AIStudioView() {
   const [teamDeptId, setTeamDeptId] = useState('');
   const [prismSeats, setPrismSeats] = useState<db.AgentSpec[]>([]);
   const [selectedSeats, setSelectedSeats] = useState<Set<string>>(new Set());
+  const [roundtableOutputs, setRoundtableOutputs] = useState<
+    { seat: db.AgentSpec; opinion: string }[]
+  >([]);
   const teamRunIdsRef = useRef<string[]>([]);
   const teamPendingRef = useRef(0);
   const teamResultsRef = useRef(new Map<string, string>());
@@ -1667,6 +1671,50 @@ export default function AIStudioView() {
       sections.push({ label: `${s.name} 观点`, value: opinion || '—' });
     });
     openInspector('Prism Roundtable + Summary', sections, true);
+
+    const outputsFull = seats.map((s, i) => ({ seat: s, opinion: outputs[i] ?? '' }));
+    setRoundtableOutputs(outputsFull);
+    const consensusNote = [
+      '## 🧠 Prism Roundtable 共识',
+      '',
+      `**议题**：${text}`,
+      '',
+      ...outputsFull.map(
+        (o) =>
+          `### ${o.seat.name}（${o.seat.role}）\n${o.opinion.trim().slice(0, 400) || '（无输出）'}`,
+      ),
+      '',
+      '_点击上方「📌 固化为知识」将本次论证落盘为知识卡片。_',
+    ].join('\n');
+    setMessages((prev) => [...prev, { role: 'assistant', content: consensusNote }]);
+    if (session) {
+      await db.saveChatMessage(session.id, 'assistant', consensusNote).catch(() => {});
+    }
+    setBusy(false);
+  };
+
+  const consolidateKnowledge = async () => {
+    if (roundtableOutputs.length === 0) return;
+    const topic = roundtableOutputs[0]?.opinion.slice(0, 40) || 'Prism Roundtable';
+    const frontmatter = [
+      '---',
+      `id: prism-${Date.now().toString(36)}`,
+      `tags: [prism, roundtable, consensus]`,
+      `status: consolidated`,
+      `created_at: ${new Date().toISOString()}`,
+      '---',
+    ].join('\n');
+    const body = roundtableOutputs
+      .map((o) => `### ${o.seat.name}（${o.seat.role}）\n${o.opinion.trim().slice(0, 500)}`)
+      .join('\n\n');
+    const markdown = `${frontmatter}\n\n# ${topic}\n\n${body}`;
+    try {
+      await addThought(markdown, '#prism,#consensus', 'note');
+      setRoundtableOutputs([]);
+      toast.success('已固化为知识卡片（Knowledge）');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const dispatchSend = async (text: string, hits: db.RagSearchResult[]) => {
@@ -2389,6 +2437,22 @@ export default function AIStudioView() {
                   @{s.id}
                 </button>
               ))}
+            </div>
+          )}
+          {roundtableOutputs.length > 0 && (
+            <div
+              data-prism-consolidate
+              className="flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-1.5"
+            >
+              <span className="text-[9px] text-emerald-300/80">圆桌共识已生成</span>
+              <button
+                type="button"
+                data-consolidate-knowledge
+                onClick={() => void consolidateKnowledge()}
+                className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25"
+              >
+                📌 固化为知识
+              </button>
             </div>
           )}
           {moa && (

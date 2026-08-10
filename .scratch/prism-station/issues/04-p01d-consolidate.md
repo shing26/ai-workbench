@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 (P0-1b roundtable)
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 「固化为知识」按钮（`data-consolidate-knowledge`）：共识摘要 + 观点 + Trade-off → 生成 Markdown（frontmatter: id/tags/status/created_at）
 - [ ] 写入 Knowledge 模块（复用 addThought → `#prism,#consensus`）或 `docs/knowledge/`
