@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (P0-1a agent specs)
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] Rust `run_roundtable(spec_ids, topic)`：
   - 阶段 1 独立思考：并行 `stream_ai_message`（每 Agent 用其 system prompt + topic）

@@ -1738,7 +1738,36 @@ export type AgentSpec = {
 
 export async function listAgentSpecs(projectPath: string): Promise<AgentSpec[]> {
   if (isTauri()) return invoke<AgentSpec[]>('list_agent_specs', { projectPath });
-  return [];
+  // Browser fallback: built-in mock exec seats (mirrors .hermes/agents/ defaults)
+  return [
+    {
+      id: 'cto',
+      name: 'CTO',
+      role: '技术架构师',
+      kpi: '可行性、架构一致性、性能',
+      prompt:
+        '你是 Prism Station 的 CTO。从架构可行性、系统一致性、性能与可维护性角度独立评估需求，质疑不合理的实现路径，提出技术选型建议。',
+      active: true,
+    },
+    {
+      id: 'cdo',
+      name: 'CDO',
+      role: '设计负责人',
+      kpi: '用户体验、信息架构、视觉一致性',
+      prompt:
+        '你是 Prism Station 的 CDO。从用户体验、信息架构、交互与视觉一致性角度独立评审需求，指出体验风险并给出设计方案建议。',
+      active: true,
+    },
+    {
+      id: 'ciso',
+      name: 'CISO',
+      role: '安全审计官',
+      kpi: '数据安全、权限边界、注入防护',
+      prompt:
+        '你是 Prism Station 的 CISO。从安全角度独立审计需求，识别数据泄露、越权访问、注入与密钥泄露风险，要求安全边界与最小权限原则。',
+      active: true,
+    },
+  ];
 }
 
 export async function ensureAgentSpecs(projectPath: string): Promise<number> {

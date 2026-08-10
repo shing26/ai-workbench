@@ -215,6 +215,8 @@ export default function AIStudioView() {
   const [routedAgent, setRoutedAgent] = useState<db.Agent | null>(null);
   const [teamMode, setTeamMode] = useState(false);
   const [teamDeptId, setTeamDeptId] = useState('');
+  const [prismSeats, setPrismSeats] = useState<db.AgentSpec[]>([]);
+  const [selectedSeats, setSelectedSeats] = useState<Set<string>>(new Set());
   const teamRunIdsRef = useRef<string[]>([]);
   const teamPendingRef = useRef(0);
   const teamResultsRef = useRef(new Map<string, string>());
@@ -746,6 +748,27 @@ export default function AIStudioView() {
       disposed = true;
     };
   }, [loaded]);
+
+  useEffect(() => {
+    const projectPath = vibeContext?.path;
+    if (!projectPath) {
+      setPrismSeats([]);
+      return;
+    }
+    let disposed = false;
+    void (async () => {
+      try {
+        await db.ensureAgentSpecs(projectPath);
+        const specs = await db.listAgentSpecs(projectPath);
+        if (!disposed) setPrismSeats(specs);
+      } catch {
+        /* spec loading optional */
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [vibeContext?.path]);
 
   const stopStreaming = async () => {
     const targetRuns = new Set<string>();
@@ -1574,8 +1597,85 @@ export default function AIStudioView() {
     }
   };
 
+  const sendRoundtable = async (text: string, hits: db.RagSearchResult[]) => {
+    const seats = prismSeats.filter((s) => selectedSeats.has(s.id) && s.active).slice(0, 5);
+    if (seats.length < 2) {
+      setBusy(false);
+      setStreamError('请至少勾选 2 位高管席位');
+      return;
+    }
+    const runId = `prism-${++runIdRef.current}`;
+    const messageId =
+      crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const userMessage: Message = { id: messageId, role: 'user', content: text };
+    const placeholders: Message[] = seats.map(() => ({ role: 'assistant', content: '__stream__' }));
+    const next: Message[] = [...messages, userMessage, ...placeholders];
+    setMessages(next);
+    retryTargetRef.current = userMessage;
+    setStreamStatus('connecting');
+    setStreamError(null);
+    setInput('');
+    const session = await ensureSession(text);
+    await db.saveChatMessage(session.id, 'user', text, messageId);
+    const history: Message[] = next.slice(0, next.length - seats.length);
+    const providerBase = activeProvider?.id ?? '';
+    teamPendingRef.current = seats.length;
+    teamRunIdsRef.current = [];
+    const seatRuns = seats.map((seat, index) => {
+      const subRunId = `${runId}-s${index}`;
+      teamRunIdsRef.current.push(subRunId);
+      const providerIds = providerBase ? [providerBase] : [];
+      const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
+      if (vibeContext) {
+        apiMessages.unshift({
+          role: 'system',
+          content:
+            `[Vibe Coding 上下文] 当前挂载项目：${vibeContext.projectName}\n` +
+            `Path: ${vibeContext.path}\nBranch: ${vibeContext.branch}\n` +
+            `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无'}`,
+        });
+      }
+      apiMessages.unshift({ role: 'system', content: seat.prompt.trim() });
+      if (hits.length > 0) {
+        apiMessages.unshift({
+          role: 'system',
+          content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join('\n')}`,
+        });
+      }
+      runsRef.current.set(subRunId, {
+        content: '',
+        index: history.length + index,
+        label: `${seat.name} · ${seat.role}`,
+      });
+      return db.sendAiMessageStream({
+        providerIds,
+        messages: apiMessages,
+        moa: false,
+        runId: subRunId,
+      });
+    });
+    openInspector('Prism Roundtable', []);
+    await Promise.all(seatRuns.map((p) => p.catch(() => {})));
+    const outputs = teamRunIdsRef.current.map((id) => teamResultsRef.current.get(id) ?? '');
+    const sections: InspectorSection[] = [
+      { label: 'Seats', value: seats.map((s) => s.name).join(', ') },
+      { label: 'KPI', value: seats.map((s) => s.kpi).join(' / ') },
+      { label: 'Status', value: 'parallel deliberation' },
+    ];
+    seats.forEach((s, i) => {
+      const opinion = (outputs[i] ?? '').replace(/\s+/g, ' ').slice(0, 90);
+      sections.push({ label: `${s.name} 观点`, value: opinion || '—' });
+    });
+    openInspector('Prism Roundtable + Summary', sections, true);
+  };
+
   const dispatchSend = async (text: string, hits: db.RagSearchResult[]) => {
     setBusy(true);
+    const seatCount = prismSeats.filter((s) => selectedSeats.has(s.id) && s.active).length;
+    if (seatCount >= 2) {
+      await sendRoundtable(text, hits);
+      return;
+    }
     if (teamMode) {
       await sendTeam(text, hits);
       return;
@@ -2257,6 +2357,40 @@ export default function AIStudioView() {
               Auto
             </button>
           </div>
+          {prismSeats.length > 0 && (
+            <div
+              data-prism-seats
+              className="flex flex-wrap items-center gap-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-1"
+            >
+              <span className="px-1 text-[9px] uppercase tracking-wide text-emerald-400/80">
+                高管席位
+              </span>
+              {prismSeats.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  data-prism-seat={s.id}
+                  aria-pressed={selectedSeats.has(s.id)}
+                  onClick={() =>
+                    setSelectedSeats((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(s.id)) next.delete(s.id);
+                      else next.add(s.id);
+                      return next;
+                    })
+                  }
+                  className={`rounded-md px-2 py-0.5 text-[10px] transition-colors ${
+                    selectedSeats.has(s.id)
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'text-slate-500 hover:bg-white/[0.06] hover:text-slate-300'
+                  }`}
+                  title={`${s.role} · ${s.kpi}`}
+                >
+                  @{s.id}
+                </button>
+              ))}
+            </div>
+          )}
           {moa && (
             <div
               data-moa-chain-toggle
