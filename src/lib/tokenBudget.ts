@@ -11,7 +11,54 @@ export type TokenBudgetStatus = TokenBudgetConfig & {
   near: boolean;
 };
 
+export type TokenDayUsage = {
+  day: string;
+  tokens: number;
+};
+
 const LS_KEY = 'ai-workbench:token-budget:v1';
+const HISTORY_LS_KEY = 'ai-workbench:token-history:v1';
+
+export function dayKey(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+export function loadTokenHistory(): TokenDayUsage[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as TokenDayUsage[];
+      if (Array.isArray(parsed)) return parsed.slice(-60);
+    }
+  } catch {
+    /* corrupt history falls back to empty */
+  }
+  return [];
+}
+
+export function recordTokenDayUsage(tokens: number): void {
+  const day = dayKey();
+  const history = loadTokenHistory();
+  const existing = history.find((h) => h.day === day);
+  if (existing) {
+    existing.tokens += Math.max(0, Math.floor(tokens));
+  } else {
+    history.push({ day, tokens: Math.max(0, Math.floor(tokens)) });
+  }
+  localStorage.setItem(HISTORY_LS_KEY, JSON.stringify(history.slice(-60)));
+}
+
+export function lastNDaysUsage(days: number, now = new Date()): TokenDayUsage[] {
+  const history = loadTokenHistory();
+  const points: TokenDayUsage[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = dayKey(d);
+    const hit = history.find((h) => h.day === key);
+    points.push({ day: key, tokens: hit?.tokens ?? 0 });
+  }
+  return points;
+}
 
 export function monthKey(date = new Date()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -69,6 +116,7 @@ export function recordTokenUsage(tokens: number): TokenBudgetConfig {
   const next = loadTokenBudget();
   next.usedTokens += Math.max(0, Math.floor(tokens));
   saveTokenBudget(next);
+  recordTokenDayUsage(tokens);
   return next;
 }
 

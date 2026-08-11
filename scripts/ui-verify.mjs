@@ -629,6 +629,10 @@ try {
   await clickDockFast('AI Studio');
   results.quickPromptPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i++) {
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      await sleep(150);
+    }
     const persisted = [...document.querySelectorAll("[data-quick-prompt]")].some(
       (el) => el.getAttribute("data-quick-prompt-label") === "Review day",
     );
@@ -660,6 +664,10 @@ try {
   await clickDockFast('AI Studio');
   results.quickPromptUsage = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i++) {
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      await sleep(150);
+    }
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
     const firstLabel = () => chips()[0]?.getAttribute("data-quick-prompt-label") ?? "";
     const first = firstLabel();
@@ -707,6 +715,11 @@ try {
   await reloadAndWait();
   await clickDockFast('AI Studio');
   results.quickPromptUsagePersist = await evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 30; i++) {
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      await sleep(150);
+    }
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
     const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
     const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");

@@ -4,7 +4,7 @@
 
 **Blocked by:** None — backlog（P0 优先项完成后）
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 新增 `DashboardView` + AppDock/ViewRouter 注册
 - [ ] 7 天 Token 消耗历史（从 tokenBudget 或新表 `token_history` 派生）→ Sparkline

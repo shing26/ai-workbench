@@ -2,6 +2,7 @@ import {
   BookOpen,
   CheckSquare,
   FolderKanban,
+  LayoutDashboard,
   MessageSquare,
   Settings,
   Sparkles,
@@ -9,6 +10,7 @@ import {
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 
 const NAV: { id: ViewId; label: string; icon: typeof MessageSquare }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'ai-studio', label: 'AI Studio', icon: MessageSquare },
   { id: 'projects', label: 'Projects', icon: FolderKanban },
   { id: 'knowledge', label: 'Knowledge', icon: BookOpen },

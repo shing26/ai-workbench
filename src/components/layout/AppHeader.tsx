@@ -8,6 +8,7 @@ import { emitEvent, TOPICS } from '../../stores/events';
 import { LOCALES, t, useLocale } from '../../lib/i18n';
 
 const TITLES: Record<ViewId, string> = {
+  dashboard: 'view.dashboard',
   'ai-studio': 'view.aiStudio',
   projects: 'view.projects',
   knowledge: 'view.knowledge',

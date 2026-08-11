@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import AIStudioView from '../views/AIStudioView';
+import DashboardView from '../views/DashboardView';
 import ProjectsView from '../views/ProjectsView';
 import KnowledgeView from '../views/KnowledgeView';
 import ActionsView from '../views/ActionsView';
 import SystemView from '../views/SystemView';
 
 const views = {
+  dashboard: DashboardView,
   'ai-studio': AIStudioView,
   projects: ProjectsView,
   knowledge: KnowledgeView,

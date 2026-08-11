@@ -3,7 +3,7 @@ import * as db from '../lib/db';
 import type { WeekPlanTemplate } from '../lib/weekPlanTemplates';
 import type { InspectorMetrics } from '../types/llm';
 
-export type ViewId = 'ai-studio' | 'projects' | 'knowledge' | 'actions' | 'system';
+export type ViewId = 'ai-studio' | 'dashboard' | 'projects' | 'knowledge' | 'actions' | 'system';
 export type InspectorSection = { label: string; value: string };
 export type InspectorState = {
   title: string;
@@ -131,7 +131,7 @@ type WorkbenchState = {
 };
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
-  activeView: 'ai-studio',
+  activeView: 'dashboard',
   setActiveView: (activeView) => set({ activeView }),
   loaded: false,
   tasks: [],

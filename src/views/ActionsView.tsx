@@ -200,6 +200,12 @@ export default function ActionsView() {
         if (evt.runId !== runId) return;
         setCliExitCode(evt.exitCode);
         setCliRunning(false);
+        db.recordCliRun({
+          runId,
+          command: command,
+          exitCode: evt.exitCode,
+          startedAt: Date.now(),
+        });
       });
       cliUnsubRef.current = () => {
         unLog();

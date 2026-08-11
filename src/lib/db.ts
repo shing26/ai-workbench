@@ -1795,6 +1795,55 @@ const localCliHandlers = {
   exited: new Set<(evt: CliExited) => void>(),
 };
 
+const CLI_RUNS_LS_KEY = 'ai-workbench:cli-runs:v1';
+
+export type CliRunRecord = {
+  runId: string;
+  command: string;
+  exitCode: number;
+  startedAt: number;
+};
+
+export function recordCliRun(run: CliRunRecord): void {
+  try {
+    const runs = listCliRuns();
+    runs.push(run);
+    localStorage.setItem(CLI_RUNS_LS_KEY, JSON.stringify(runs.slice(-200)));
+  } catch {
+    /* storage failures are non-fatal */
+  }
+}
+
+export function listCliRuns(): CliRunRecord[] {
+  try {
+    const raw = localStorage.getItem(CLI_RUNS_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as CliRunRecord[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    /* corrupt storage falls back to empty */
+  }
+  return [];
+}
+
+export function getCliRunStats(): {
+  total: number;
+  success: number;
+  successRate: number;
+  lastRunAt: number | null;
+} {
+  const runs = listCliRuns();
+  const success = runs.filter((r) => r.exitCode === 0).length;
+  const last = runs.length > 0 ? runs[runs.length - 1]!.startedAt : null;
+  return {
+    total: runs.length,
+    success,
+    successRate: runs.length > 0 ? Math.round((success / runs.length) * 100) : 0,
+    lastRunAt: last,
+  };
+}
+
 export async function spawnCliProcess(
   projectPath: string,
   command: string,
