@@ -70,6 +70,7 @@ export type Thought = {
   tags: string;
   type: ThoughtType;
   createdAt: number;
+  lastReferencedAt?: number | null;
 };
 
 export type WikiLinkRef = {
@@ -2151,6 +2152,26 @@ export async function createThought(
   shape.thoughts.unshift(thought);
   writeLocal(shape);
   return thought;
+}
+
+export async function recordThoughtReference(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('record_thought_reference', { id });
+    return;
+  }
+  const shape = readLocal();
+  const thought = shape.thoughts.find((t) => t.id === id);
+  if (thought) {
+    thought.lastReferencedAt = Date.now();
+    writeLocal(shape);
+  }
+}
+
+export async function openObsidian(projectPath: string, file: string): Promise<string> {
+  if (isTauri()) return invoke<string>('open_obsidian', { projectPath, file });
+  const uri = `obsidian://open?path=${encodeURIComponent(projectPath)}/${file}`;
+  window.open(uri, '_blank');
+  return uri;
 }
 
 export async function updateThoughtTags(id: string, tags: string): Promise<Thought> {

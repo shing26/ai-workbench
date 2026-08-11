@@ -1,18 +1,24 @@
 import {
+  AlertTriangle,
   BookOpen,
   Clock,
   Database,
+  ExternalLink,
   FolderOpen,
   Layers,
   Link2,
+  MessageCircle,
+  Network,
   Pencil,
   Plus,
+  Puzzle,
   RefreshCw,
   Save,
   Search,
   Sparkles,
   Tags,
   Trash2,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -32,6 +38,20 @@ export default function KnowledgeView() {
   const deleteThought = useWorkbenchStore((s) => s.deleteThought);
   const setNoteContext = useWorkbenchStore((s) => s.setNoteContext);
   const setActiveView = useWorkbenchStore((s) => s.setActiveView);
+  const projects = useWorkbenchStore((s) => s.projects);
+  const vibeContext = useWorkbenchStore((s) => s.vibeContext);
+  const [prismViewMode, setPrismViewMode] = useViewState<'grid' | 'graph'>(
+    'knowledge',
+    'prismViewMode',
+    'grid',
+  );
+  const [prismHoverId, setPrismHoverId] = useState<string | null>(null);
+  const [coverage, setCoverage] = useState<{
+    documented: number;
+    total: number;
+    pct: number;
+  } | null>(null);
+  const [obsidianResults, setObsidianResults] = useState<Record<string, string>>({});
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('#work');
   const [filter, setFilter] = useViewState('knowledge', 'filter', 'all');
@@ -815,8 +835,232 @@ export default function KnowledgeView() {
       ? latestAutoRun
       : null;
 
+  useEffect(() => {
+    const total = projects.length;
+    const documented = projects.filter(
+      (p) =>
+        (p.material && p.material.trim().length > 0) ||
+        thoughts.some((t) => t.tags.includes(p.id) || (t.content || '').includes(p.name)),
+    ).length;
+    setCoverage({
+      documented,
+      total,
+      pct: total > 0 ? Math.round((documented / total) * 100) : 100,
+    });
+  }, [projects, thoughts]);
+
+  const injectNoteContext = (thought: db.Thought) => {
+    void db.recordThoughtReference(thought.id);
+    setNoteContext({
+      thoughtId: thought.id,
+      title: (thought.content || '').split('\n').find((l) => l.trim()) || thought.id,
+      content: thought.content,
+      tags: thought.tags,
+      type: thought.type,
+      mountedAt: Date.now(),
+    });
+    setActiveView('ai-studio');
+  };
+
+  const openObsidianFor = async (thought: db.Thought) => {
+    void db.recordThoughtReference(thought.id);
+    const file = `${thought.id}.md`;
+    setObsidianResults((prev) => ({ ...prev, [thought.id]: '打开中…' }));
+    try {
+      const uri = await db.openObsidian(vibeContext?.path ?? '', file);
+      setObsidianResults((prev) => ({ ...prev, [thought.id]: uri.slice(0, 48) }));
+    } catch (err) {
+      setObsidianResults((prev) => ({
+        ...prev,
+        [thought.id]: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  };
+
+  const thoughtActivity = (thought: db.Thought): 'hot' | 'cold' | 'warn' => {
+    const last = thought.lastReferencedAt ?? thought.createdAt;
+    const days = (Date.now() - last) / 86_400_000;
+    if (days < 3) return 'hot';
+    if (days < 21) return 'warn';
+    return 'cold';
+  };
+
   return (
     <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
+      <BentoCard
+        title="Prism 知识塔"
+        subtitle="覆盖率 · 活性 · Graph/Grid 秒切 · Obsidian 联动"
+        icon={Layers}
+        colSpan={12}
+      >
+        <div data-prism-knowledge-tower className="space-y-3">
+          {coverage && coverage.total > 0 && coverage.pct < 50 && (
+            <div
+              data-knowledge-coverage-warning
+              className="flex items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-300"
+            >
+              <AlertTriangle size={13} />
+              知识覆盖率 {coverage.pct}%（{coverage.documented}/{coverage.total} 已文档化）低于
+              50%，建议为项目固化 Spec。
+              <button
+                type="button"
+                data-knowledge-coverage-go
+                onClick={() => {
+                  setSelectedTag('all');
+                  setFilter('all');
+                  setPrismViewMode('grid');
+                }}
+                className="ml-auto rounded-md bg-amber-500/15 px-2 py-1 text-[9px] text-amber-300 hover:bg-amber-500/25"
+              >
+                查看知识
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                data-prism-view-grid
+                data-active={prismViewMode === 'grid' ? 'true' : 'false'}
+                onClick={() => setPrismViewMode('grid')}
+                className={`flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[10px] ${
+                  prismViewMode === 'grid'
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : 'border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]'
+                }`}
+              >
+                <Layers size={11} /> 田字格
+              </button>
+              <button
+                type="button"
+                data-prism-view-graph
+                data-active={prismViewMode === 'graph' ? 'true' : 'false'}
+                onClick={() => setPrismViewMode('graph')}
+                className={`flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[10px] ${
+                  prismViewMode === 'graph'
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : 'border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]'
+                }`}
+              >
+                <Network size={11} /> 图谱
+              </button>
+            </div>
+            <span className="text-[10px] text-slate-500">
+              {thoughts.length} 卡片 · 活性 🔥&lt;3d / ⚠️&lt;21d / ❄️&gt;21d
+            </span>
+          </div>
+
+          {prismViewMode === 'graph' ? (
+            <div
+              data-prism-graph
+              className="grid gap-2 rounded-xl border border-white/10 bg-black/20 p-3"
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}
+            >
+              {thoughts.slice(0, 24).map((t) => {
+                const act = thoughtActivity(t);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    data-prism-graph-node={t.id}
+                    data-prism-activity={act}
+                    onClick={() => injectNoteContext(t)}
+                    className={`truncate rounded-lg border px-2 py-1.5 text-[10px] text-left transition-colors ${
+                      act === 'hot'
+                        ? 'border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-300'
+                        : act === 'warn'
+                          ? 'border-amber-500/20 bg-amber-500/[0.04] text-amber-200/80'
+                          : 'border-white/10 bg-white/[0.02] text-slate-500'
+                    }`}
+                  >
+                    {(t.content || '').split('\n').find((l) => l.trim()) || t.id}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div data-prism-grid className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+              {thoughts.slice(0, 12).map((t) => {
+                const act = thoughtActivity(t);
+                const actLabel = act === 'hot' ? '🔥' : act === 'warn' ? '⚠️' : '❄️';
+                return (
+                  <div
+                    key={t.id}
+                    data-prism-card={t.id}
+                    data-prism-activity={act}
+                    className="group relative rounded-xl border border-white/10 bg-white/[0.03] p-3 transition-colors hover:border-emerald-500/25"
+                    onMouseEnter={() => setPrismHoverId(t.id)}
+                    onMouseLeave={() => setPrismHoverId(null)}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] text-slate-200">
+                          {(t.content || '').split('\n').find((l) => l.trim()) || t.id}
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5 text-[9px] text-slate-500">
+                          <span data-prism-activity-badge>{actLabel}</span>
+                          <span className="truncate">{t.tags || '无标签'}</span>
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[8px] text-slate-500">
+                        {t.type}
+                      </span>
+                    </div>
+                    {prismHoverId === t.id && (
+                      <div
+                        data-prism-actions
+                        className="absolute -bottom-3 left-2 right-2 z-10 flex items-center justify-between gap-1 rounded-lg border border-white/10 bg-[#222226] p-1 shadow-xl"
+                      >
+                        <button
+                          type="button"
+                          data-prism-inject-context={t.id}
+                          title="⚡ 注入 Context"
+                          onClick={() => injectNoteContext(t)}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-emerald-400 hover:bg-emerald-500/15"
+                        >
+                          <Zap size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          data-prism-split-dod={t.id}
+                          title="🧩 拆解 DoD"
+                          onClick={() => injectNoteContext(t)}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-violet-400 hover:bg-violet-500/15"
+                        >
+                          <Puzzle size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          data-prism-debate={t.id}
+                          title="💬 论证"
+                          onClick={() => injectNoteContext(t)}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-amber-400 hover:bg-amber-500/15"
+                        >
+                          <MessageCircle size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          data-prism-obsidian={t.id}
+                          title="🔮 Obsidian"
+                          onClick={() => void openObsidianFor(t)}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-white/[0.08]"
+                        >
+                          <ExternalLink size={11} />
+                        </button>
+                        <span className="ml-auto pr-1 font-mono text-[8px] text-slate-600">
+                          {obsidianResults[t.id] ?? ''}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </BentoCard>
+
       <BentoCard title="Thought Inbox" subtitle="Command+N 闪念速记" icon={BookOpen} colSpan={8}>
         <div className="flex items-end gap-2">
           <textarea

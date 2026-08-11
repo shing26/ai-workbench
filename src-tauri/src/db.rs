@@ -580,6 +580,7 @@ pub struct Thought {
     #[serde(rename = "type")]
     pub kind: String,
     pub created_at: i64,
+    pub last_referenced_at: Option<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2939,6 +2940,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_task_completed_at(&conn)?;
     migrate_task_project(&conn)?;
     migrate_schedule_event_date(&conn)?;
+    migrate_thought_last_referenced(&conn)?;
     migrate_fsm_nodes(&conn)?;
     seed_if_empty(&conn)?;
     Ok(conn)
@@ -3286,6 +3288,13 @@ fn migrate_updated_at(conn: &Connection) -> Result<()> {
             "ALTER TABLE error_logs ADD COLUMN updated_at INTEGER DEFAULT 0;
              UPDATE error_logs SET updated_at = timestamp WHERE updated_at = 0;",
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_thought_last_referenced(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "thoughts", "last_referenced_at")? {
+        conn.execute_batch("ALTER TABLE thoughts ADD COLUMN last_referenced_at INTEGER DEFAULT 0")?;
     }
     Ok(())
 }
@@ -3873,7 +3882,7 @@ pub fn list_project_revenue_history(
 
 pub fn list_thoughts(conn: &Connection) -> Result<Vec<Thought>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content, tags, type, created_at FROM thoughts ORDER BY created_at DESC",
+        "SELECT id, content, tags, type, created_at, last_referenced_at FROM thoughts ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Thought {
@@ -3882,6 +3891,7 @@ pub fn list_thoughts(conn: &Connection) -> Result<Vec<Thought>> {
             tags: row.get(2)?,
             kind: row.get(3)?,
             created_at: row.get(4)?,
+            last_referenced_at: row.get(5)?,
         })
     })?;
     rows.collect()
@@ -3900,7 +3910,16 @@ pub fn create_thought(conn: &Connection, content: &str, tags: &str, kind: &str) 
         tags: tags.to_string(),
         kind: kind.to_string(),
         created_at: now,
+        last_referenced_at: None,
     })
+}
+
+pub fn record_thought_reference(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE thoughts SET last_referenced_at = ?1 WHERE id = ?2",
+        params![now_millis(), id],
+    )?;
+    Ok(())
 }
 
 pub fn update_thought_tags(conn: &Connection, id: &str, tags: &str) -> Result<Thought> {
@@ -14139,6 +14158,7 @@ mod tests {
     fn workspace_summary_aggregates_all_core_assets() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        migrate_thought_last_referenced(&conn).unwrap();
 
         create_project(&conn, "Summary Project", "/tmp/summary").unwrap();
         create_task(&conn, "Summary Task", true, None, false).unwrap();

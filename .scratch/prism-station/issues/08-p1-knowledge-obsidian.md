@@ -4,7 +4,7 @@
 
 **Blocked by:** None — backlog（P0 优先项完成后）
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 知识覆盖率：`已文档化模块 / 总模块` <50% 黄警告，点击直达 Knowledge 过滤
 - [ ] Knowledge F 型布局 + 分类 Filter Tabs

@@ -1597,6 +1597,44 @@ fn update_thought_content(
 }
 
 #[tauri::command]
+fn record_thought_reference(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::record_thought_reference(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_obsidian(project_path: String, file: String) -> Result<String, String> {
+    let note = file.trim().trim_start_matches('/').trim_start_matches('\\');
+    let vault = Path::new(&project_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| project_path.clone());
+    let full = format!("{}/{}", vault.trim_end_matches('/'), note);
+    let encoded = encode_uri_component(&full);
+    let uri = format!("obsidian://open?path={}", encoded);
+    let _ = Command::new("cmd")
+        .args(["/C", "start", "", &uri])
+        .spawn();
+    Ok(uri)
+}
+
+fn encode_uri_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
 fn update_thought_type(
     state: State<'_, db::Db>,
     id: String,
@@ -7425,6 +7463,8 @@ pub fn run() {
             create_thought,
             update_thought_tags,
             update_thought_content,
+            record_thought_reference,
+            open_obsidian,
             update_thought_type,
             delete_thought,
             list_quick_prompts,
