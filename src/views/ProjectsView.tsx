@@ -10,7 +10,6 @@ import {
   Orbit,
   Plus,
   RefreshCw,
-  TrendingUp,
   Trash2,
   Undo2,
   Wand2,
@@ -46,11 +45,6 @@ const GIT_CHANGE_GROUPS = [
   { key: 'untracked', label: 'Untracked' },
   { key: 'both', label: 'Both' },
 ] as const;
-
-function csvCell(value: string | number): string {
-  const text = String(value ?? '');
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 function diffLineClass(kind: DiffLineKind): string {
   switch (kind) {
@@ -111,9 +105,8 @@ function FileVersionPane({
 type ProjectCardBodyProps = {
   project: db.Project;
   gitCtx?: db.GitContext;
-  revenueTrend: db.ProjectRevenuePoint[];
   draft?: db.CommitPrDraft;
-  projectEdit?: { status: string; revenue: string };
+  projectEdit?: { status: string };
   projectEditResult?: string;
   commitResult?: db.GitCommitResult;
   commitError?: string;
@@ -127,7 +120,7 @@ type ProjectCardBodyProps = {
   onRequestDelete: () => void;
   onDelete: () => void;
   onCancelDelete: () => void;
-  onEditChange: (draft: { status: string; revenue: string }) => void;
+  onEditChange: (draft: { status: string }) => void;
   onGenerateDraft: () => void;
   onApplyDraft: () => void;
   onCreatePr: () => void;
@@ -146,7 +139,6 @@ type ProjectCardBodyProps = {
 function ProjectCardBody({
   project,
   gitCtx,
-  revenueTrend,
   draft,
   projectEdit,
   projectEditResult,
@@ -180,7 +172,6 @@ function ProjectCardBody({
   return (
     <div className="flex min-w-0 flex-col">
       <div className="mb-3 grid grid-cols-2 gap-2">
-        <StatPill label="Revenue" value={`$${project.revenue.toFixed(2)}`} tone="green" />
         <StatPill label="Status" value={project.status} />
       </div>
       <div
@@ -197,7 +188,6 @@ function ProjectCardBody({
             onChange={(e) =>
               onEditChange({
                 status: e.target.value,
-                revenue: projectEdit?.revenue ?? String(project.revenue),
               })
             }
             className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
@@ -205,23 +195,6 @@ function ProjectCardBody({
             <option value="active">active</option>
             <option value="paused">paused</option>
           </select>
-          <div className="flex h-7 items-center rounded-lg border border-white/10 bg-white/[0.03] px-2">
-            <span className="text-[9px] text-slate-500">$</span>
-            <input
-              data-project-revenue={project.id}
-              type="number"
-              min="0"
-              step="0.01"
-              value={projectEdit?.revenue ?? String(project.revenue)}
-              onChange={(e) =>
-                onEditChange({
-                  status: projectEdit?.status ?? project.status,
-                  revenue: e.target.value,
-                })
-              }
-              className="w-20 bg-transparent px-1 text-[10px] text-slate-200 outline-none"
-            />
-          </div>
           <button
             type="button"
             data-project-save={project.id}
@@ -270,48 +243,6 @@ function ProjectCardBody({
           )}
         </div>
       </div>
-      {revenueTrend.length > 0 && (
-        <div
-          data-project-revenue-trend={project.id}
-          className="mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5"
-        >
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="flex items-center gap-1 text-[9px] uppercase tracking-normal text-slate-500">
-              <TrendingUp size={9} /> Revenue trend
-            </span>
-            <span
-              data-project-revenue-trend-count={revenueTrend.length}
-              className="font-mono text-[8px] text-slate-600"
-            >
-              {revenueTrend.length} pts
-            </span>
-          </div>
-          <div className="flex h-14 items-end gap-1">
-            {revenueTrend.map((point) => {
-              const max = Math.max(1, ...revenueTrend.map((candidate) => candidate.revenue));
-              return (
-                <div key={point.id} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-                  <span
-                    data-project-revenue-point
-                    data-project-revenue-value={point.revenue}
-                    data-project-revenue-at={point.recordedAt}
-                    className="block w-full rounded-sm bg-emerald-500/30"
-                    style={{
-                      height: `${Math.max(3, Math.round((point.revenue / max) * 36))}px`,
-                    }}
-                  />
-                  <span className="truncate text-[7px] text-slate-600">
-                    {new Date(point.recordedAt).toLocaleDateString('en', {
-                      month: 'numeric',
-                      day: 'numeric',
-                    })}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
       <p className="mb-3 truncate text-[11px] text-slate-500">{project.path || 'No local path'}</p>
       {gitCtx && (
         <div className="project-git-graph mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5">
@@ -634,14 +565,9 @@ export default function ProjectsView() {
   const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
   const [exportOpen, setExportOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
-  const [revenueCsvOpen, setRevenueCsvOpen] = useState(false);
-  const [revenueCsvCopied, setRevenueCsvCopied] = useState(false);
-  const [projectEdits, setProjectEdits] = useState<
-    Record<string, { status: string; revenue: string }>
-  >({});
+  const [projectEdits, setProjectEdits] = useState<Record<string, { status: string }>>({});
   const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
-  const [revenueTrends, setRevenueTrends] = useState<Record<string, db.ProjectRevenuePoint[]>>({});
   const [viewMode, setViewMode] = useViewState<'grid' | 'carousel'>('projects', 'viewMode', 'grid');
   const [detailProjectId, setDetailProjectId] = useViewState<string | null>(
     'projects',
@@ -653,7 +579,6 @@ export default function ProjectsView() {
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
     : 1;
 
-  const totalRevenue = projects.reduce((sum, p) => sum + (p.revenue || 0), 0);
   const activeProjects = projects.filter((p) => p.status === 'active').length;
   const pausedProjects = projects.filter((p) => p.status === 'paused').length;
   const weekCommitPeak = gitActivity
@@ -666,70 +591,8 @@ export default function ProjectsView() {
         .reduce((sum, b) => sum + b.count, 0)
     : 0;
 
-  const revenueCsv = (() => {
-    const rows: string[] = ['Project,ProjectId,Status,RecordedAt,Revenue'];
-    for (const p of projects) {
-      const points = revenueTrends[p.id] ?? [];
-      if (points.length === 0) {
-        rows.push(
-          `${csvCell(p.name)},${csvCell(p.id)},${csvCell(p.status)},,${csvCell(p.revenue)}`,
-        );
-        continue;
-      }
-      for (const point of points) {
-        rows.push(
-          `${csvCell(p.name)},${csvCell(p.id)},${csvCell(p.status)},${new Date(
-            point.recordedAt,
-          ).toISOString()},${csvCell(point.revenue)}`,
-        );
-      }
-    }
-    return rows.join('\n');
-  })();
-  const revenueCsvRowCount = revenueCsv.split('\n').length;
-
-  const revenueAggregate = (() => {
-    const day = 86_400_000;
-    const byStatus: Record<string, { count: number; revenue: number }> = {};
-    let latestTotal = 0;
-    let trendTotal = 0;
-    let delta7d = 0;
-    let delta30d = 0;
-    for (const project of projects) {
-      const status = project.status || 'other';
-      const bucket = byStatus[status] ?? { count: 0, revenue: 0 };
-      bucket.count += 1;
-      bucket.revenue += project.revenue || 0;
-      byStatus[status] = bucket;
-
-      const points = revenueTrends[project.id] ?? [];
-      trendTotal += points.length;
-      const latestPoint =
-        points.length > 0 ? points[points.length - 1].revenue : project.revenue || 0;
-      latestTotal += latestPoint;
-      if (points.length >= 2) {
-        const latestAt = points[points.length - 1].recordedAt;
-        const valueAtCutoff = (cutoff: number) => {
-          let candidate = points[0];
-          for (const point of points) {
-            if (point.recordedAt > cutoff) break;
-            candidate = point;
-          }
-          return candidate.revenue;
-        };
-        delta7d += latestPoint - valueAtCutoff(latestAt - 7 * day);
-        delta30d += latestPoint - valueAtCutoff(latestAt - 30 * day);
-      }
-    }
-    return { latestTotal, trendTotal, delta7d, delta30d, byStatus };
-  })();
-
   const portfolioReport = (() => {
-    const rows = projects
-      .map(
-        (p) => `| ${p.name} | ${p.status} | $${(p.revenue || 0).toFixed(2)} | ${p.path || '-'} |`,
-      )
-      .join('\n');
+    const rows = projects.map((p) => `| ${p.name} | ${p.status} | ${p.path || '-'} |`).join('\n');
     const gitRows = (gitActivity?.items ?? [])
       .map(
         (item) =>
@@ -746,11 +609,6 @@ Generated: ${new Date().toLocaleString()}
 ## Overview
 
 - Projects: ${projects.length}
-- Revenue: $${totalRevenue.toFixed(2)}
-- Latest revenue: $${revenueAggregate.latestTotal.toFixed(2)}
-- Revenue points: ${revenueAggregate.trendTotal}
-- 7d delta: ${revenueAggregate.delta7d >= 0 ? '+' : ''}${revenueAggregate.delta7d.toFixed(2)}
-- 30d delta: ${revenueAggregate.delta30d >= 0 ? '+' : ''}${revenueAggregate.delta30d.toFixed(2)}
 - Active: ${activeProjects}
 - Paused: ${pausedProjects}
 - Commits: ${gitActivity?.totalCommits ?? 0}
@@ -759,8 +617,8 @@ Generated: ${new Date().toLocaleString()}
 
 ## Projects
 
-| Name | Status | Revenue | Path |
-| --- | --- | --- | --- |
+| Name | Status | Path |
+| --- | --- | --- |
 ${rows}
 
 ## Git Activity
@@ -800,43 +658,6 @@ ${trend}
     } catch {
       setCopyState('idle');
     }
-  };
-
-  const copyRevenueCsv = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(revenueCsv);
-        setRevenueCsvCopied(true);
-        setTimeout(() => setRevenueCsvCopied(false), 1600);
-        return;
-      }
-    } catch {
-      /* fall through to legacy copy */
-    }
-    try {
-      const textarea = document.createElement('textarea');
-      textarea.value = revenueCsv;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      textarea.remove();
-      setRevenueCsvCopied(true);
-      setTimeout(() => setRevenueCsvCopied(false), 1600);
-    } catch {
-      setRevenueCsvCopied(false);
-    }
-  };
-
-  const downloadRevenueCsv = () => {
-    const blob = new Blob([revenueCsv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'project-revenue-history.csv';
-    anchor.click();
-    URL.revokeObjectURL(url);
   };
 
   const toggleGitDiff = (projectId: string, projectPath: string, file: string) => {
@@ -974,18 +795,6 @@ ${trend}
     };
   }, [projectKey, projects]);
 
-  useEffect(() => {
-    let disposed = false;
-    void Promise.all(
-      projects.map(async (p) => [p.id, await db.listProjectRevenueHistory(p.id, 12)] as const),
-    ).then((entries) => {
-      if (!disposed) setRevenueTrends(Object.fromEntries(entries));
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [projectKey, projects]);
-
   const create = async () => {
     if (!name.trim()) return;
     await addProject(name.trim(), path.trim());
@@ -996,15 +805,8 @@ ${trend}
   const saveProjectEdit = async (project: db.Project) => {
     const draft = projectEdits[project.id];
     if (!draft) return;
-    const revenue = Number(draft.revenue);
-    await updateProject(
-      project.id,
-      draft.status,
-      Number.isFinite(revenue) ? Math.max(0, revenue) : 0,
-    );
+    await updateProject(project.id, draft.status, 0);
     setProjectEditResults((prev) => ({ ...prev, [project.id]: 'Saved' }));
-    const next = await db.listProjectRevenueHistory(project.id, 12);
-    setRevenueTrends((prev) => ({ ...prev, [project.id]: next }));
     setProjectEdits((prev) => {
       const next = { ...prev };
       delete next[project.id];
@@ -1314,7 +1116,6 @@ ${trend}
     <ProjectCardBody
       project={project}
       gitCtx={gitCtx[project.id]}
-      revenueTrend={revenueTrends[project.id] ?? []}
       draft={drafts[project.id]}
       projectEdit={projectEdits[project.id]}
       projectEditResult={projectEditResults[project.id]}
@@ -1428,16 +1229,10 @@ ${trend}
         </div>
       </BentoCard>
 
-      <BentoCard
-        title="Portfolio summary"
-        subtitle="收益 · 状态 · Git 进度汇总"
-        icon={Download}
-        colSpan={12}
-      >
+      <BentoCard title="项目矩阵摘要" subtitle="状态 · Git 进度汇总" icon={Download} colSpan={12}>
         <div data-portfolio-summary className="space-y-3">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
             <StatPill label="Projects" value={String(projects.length)} />
-            <StatPill label="Revenue" value={`$${totalRevenue.toFixed(2)}`} tone="green" />
             <StatPill label="Active" value={String(activeProjects)} tone="blue" />
             <StatPill label="Paused" value={String(pausedProjects)} tone="neutral" />
             <StatPill label="Commits" value={String(gitActivity?.totalCommits ?? 0)} tone="blue" />
@@ -1449,56 +1244,6 @@ ${trend}
               value={String(gitActivity?.dirtyProjects ?? 0)}
               tone={gitActivity?.dirtyProjects ? 'neutral' : 'green'}
             />
-          </div>
-          <div data-project-revenue-summary className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
-              <div className="text-[9px] text-slate-600">Latest</div>
-              <div data-project-revenue-latest className="font-mono text-[11px] text-emerald-300">
-                ${revenueAggregate.latestTotal.toFixed(2)}
-              </div>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
-              <div className="text-[9px] text-slate-600">Trend points</div>
-              <div data-project-revenue-points className="font-mono text-[11px] text-slate-200">
-                {revenueAggregate.trendTotal}
-              </div>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
-              <div className="text-[9px] text-slate-600">7d delta</div>
-              <div
-                data-project-revenue-delta7d
-                className={`font-mono text-[11px] ${
-                  revenueAggregate.delta7d >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                }`}
-              >
-                {revenueAggregate.delta7d >= 0 ? '+' : ''}
-                {revenueAggregate.delta7d.toFixed(2)}
-              </div>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
-              <div className="text-[9px] text-slate-600">30d delta</div>
-              <div
-                data-project-revenue-delta30d
-                className={`font-mono text-[11px] ${
-                  revenueAggregate.delta30d >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                }`}
-              >
-                {revenueAggregate.delta30d >= 0 ? '+' : ''}
-                {revenueAggregate.delta30d.toFixed(2)}
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {Object.entries(revenueAggregate.byStatus).map(([status, stat]) => (
-              <span
-                key={status}
-                data-project-revenue-status={status}
-                data-project-revenue-status-count={stat.count}
-                className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-2 text-[9px] text-slate-400"
-              >
-                {status} · ${stat.revenue.toFixed(2)} · {stat.count}
-              </span>
-            ))}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -1525,47 +1270,6 @@ ${trend}
                 {copyState === 'copied' ? 'Copied' : 'Copy'}
               </button>
             )}
-            <button
-              type="button"
-              data-project-revenue-export
-              onClick={() => setRevenueCsvOpen((v) => !v)}
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-blue-500/15 px-2.5 text-[11px] text-blue-300 hover:bg-blue-500/25"
-            >
-              <Download size={12} />
-              {revenueCsvOpen ? 'Hide CSV' : 'Revenue CSV'}
-            </button>
-            {revenueCsvOpen && (
-              <>
-                <button
-                  type="button"
-                  data-project-revenue-csv-copy
-                  onClick={() => void copyRevenueCsv()}
-                  className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] transition-colors ${
-                    revenueCsvCopied
-                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
-                      : 'border-white/10 text-slate-400 hover:bg-white/[0.06] hover:text-slate-300'
-                  }`}
-                >
-                  <Copy size={12} />
-                  {revenueCsvCopied ? 'Copied' : 'Copy'}
-                </button>
-                <button
-                  type="button"
-                  data-project-revenue-csv-download
-                  onClick={downloadRevenueCsv}
-                  className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 px-2.5 text-[11px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-300"
-                >
-                  <Download size={12} />
-                  Download
-                </button>
-                <span
-                  data-project-revenue-export-result
-                  className="font-mono text-[10px] text-slate-500"
-                >
-                  {revenueCsvRowCount} rows
-                </span>
-              </>
-            )}
             <span data-portfolio-week-peak className="font-mono text-[10px] text-slate-500">
               week peak {weekCommitPeak}
             </span>
@@ -1576,14 +1280,6 @@ ${trend}
               className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-[10px] leading-relaxed text-slate-300"
             >
               {portfolioReport}
-            </pre>
-          )}
-          {revenueCsvOpen && (
-            <pre
-              data-project-revenue-csv-preview
-              className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-[10px] leading-relaxed text-slate-300"
-            >
-              {revenueCsv}
             </pre>
           )}
         </div>
@@ -1786,7 +1482,6 @@ ${trend}
         <ProjectDetailView
           project={detailProject}
           gitCtx={gitCtx[detailProject.id]}
-          revenueTrend={revenueTrends[detailProject.id] ?? []}
           onBack={() => setDetailProjectId(null)}
         >
           {projectCardBody(detailProject)}

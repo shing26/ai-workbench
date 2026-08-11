@@ -1155,8 +1155,8 @@ function seedShape(): LocalShape {
       },
       {
         id: makeId(),
-        name: 'Hermes Station',
-        path: 'D:\\HermesData\\ai-workbench',
+        name: 'Prism Demo',
+        path: 'D:\\PrismData\\demo',
         revenue: 0,
         status: 'paused',
         createdAt: now - 172800000,
@@ -7877,13 +7877,13 @@ export async function createRemotePr(
 
 export async function rebaseBranch(path: string, base: string): Promise<GitRebaseResult> {
   if (isTauri()) return invoke<GitRebaseResult>('rebase_branch', { path, baseBranch: base });
-  const conflictDemo = path.includes('Hermes');
+  const conflictDemo = path.includes('Prism');
   return {
     rebased: !conflictDemo,
     conflict: conflictDemo,
     files: conflictDemo ? ['docs/conflict.md', 'src/views/ProjectsView.tsx'] : [],
     base,
-    branch: conflictDemo ? 'feature/hermes' : 'feature/sprint-31',
+    branch: conflictDemo ? 'feature/prism' : 'feature/sprint-31',
     head: conflictDemo ? 'local-conflict' : `local-rebase-${makeId().slice(0, 8)}`,
   };
 }
@@ -7905,7 +7905,7 @@ export async function resolveRebaseConflicts(
     strategy,
     files: ['docs/conflict.md', 'src/views/ProjectsView.tsx'],
     rebased: true,
-    branch: 'feature/hermes',
+    branch: 'feature/prism',
     head: `local-resolve-${makeId().slice(0, 8)}`,
     message: `Resolved 2 conflicted file(s) with ${strategy} and continued rebase`,
   };

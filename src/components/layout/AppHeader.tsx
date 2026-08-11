@@ -3,9 +3,8 @@ import { useEffect, useState } from 'react';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 import CommandPalette from '../CommandPalette';
 import ThemeSwitcher from '../ui/ThemeSwitcher';
-import MaterialDrawer from './MaterialDrawer';
 import { emitEvent, TOPICS } from '../../stores/events';
-import { LOCALES, t, useLocale } from '../../lib/i18n';
+import { t } from '../../lib/i18n';
 
 const TITLES: Record<ViewId, string> = {
   dashboard: 'view.dashboard',
@@ -18,14 +17,10 @@ const TITLES: Record<ViewId, string> = {
 
 export default function AppHeader() {
   const activeView = useWorkbenchStore((s) => s.activeView);
-  const providers = useWorkbenchStore((s) => s.providers);
-  const activeProvider = providers.find((p) => p.isActive);
   const qualityGate = useWorkbenchStore((s) => s.qualityGate);
   const refreshQualityGate = useWorkbenchStore((s) => s.refreshQualityGate);
   const vibePath = useWorkbenchStore((s) => s.vibeContext?.path ?? null);
   const [gateOpen, setGateOpen] = useState(false);
-  const [localeOpen, setLocaleOpen] = useState(false);
-  const { locale, setLocale } = useLocale();
 
   useEffect(() => {
     if (vibePath && !qualityGate) void refreshQualityGate();
@@ -42,15 +37,6 @@ export default function AppHeader() {
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-2">
-        {activeProvider && (
-          <span
-            title={activeProvider.name}
-            className="flex max-w-44 items-center gap-1.5 rounded-full border border-cyan-500/20 bg-cyan-500/[0.08] px-2.5 py-1 text-[11px] text-cyan-200"
-          >
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
-            <span className="truncate">{activeProvider.name}</span>
-          </span>
-        )}
         {qualityGate && (
           <div className="relative">
             <button
@@ -99,43 +85,6 @@ export default function AppHeader() {
             )}
           </div>
         )}
-        <div className="relative">
-          <button
-            type="button"
-            data-locale
-            aria-label="Locale"
-            onClick={() => setLocaleOpen((v) => !v)}
-            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-300 transition-colors hover:border-cyan-500/30 hover:text-cyan-200"
-          >
-            <span aria-hidden>🌐</span>
-            <span>{LOCALES.find((l) => l.code === locale)?.label ?? '中文'}</span>
-          </button>
-          {localeOpen && (
-            <div
-              data-locale-popover
-              className="prism-glass-surface absolute right-0 top-11 z-50 w-36 rounded-xl p-1 shadow-2xl"
-            >
-              {LOCALES.map((l) => (
-                <button
-                  key={l.code}
-                  type="button"
-                  data-locale-option={l.code}
-                  aria-pressed={locale === l.code}
-                  onClick={() => {
-                    setLocale(l.code);
-                    setLocaleOpen(false);
-                  }}
-                  className={`flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] transition-colors hover:bg-white/[0.06] ${
-                    locale === l.code ? 'text-cyan-300' : 'text-slate-400'
-                  }`}
-                >
-                  {l.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <MaterialDrawer />
         <ThemeSwitcher />
         <button
           type="button"

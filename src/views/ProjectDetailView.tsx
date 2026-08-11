@@ -1,13 +1,12 @@
-import { ArrowLeft, GitBranch, TrendingUp } from 'lucide-react';
+import { ArrowLeft, GitBranch } from 'lucide-react';
 import type { ReactNode } from 'react';
-import type { GitContext, Project, ProjectRevenuePoint } from '../lib/db';
+import type { GitContext, Project } from '../lib/db';
 import ModelBadge from '../components/ui/ModelBadge';
 import StatPill from '../components/ui/StatPill';
 
 type ProjectDetailViewProps = {
   project: Project;
   gitCtx?: GitContext;
-  revenueTrend: ProjectRevenuePoint[];
   onBack: () => void;
   children?: ReactNode;
 };
@@ -15,11 +14,9 @@ type ProjectDetailViewProps = {
 export default function ProjectDetailView({
   project,
   gitCtx,
-  revenueTrend,
   onBack,
   children,
 }: ProjectDetailViewProps) {
-  const trendMax = Math.max(1, ...revenueTrend.map((point) => point.revenue));
   return (
     <div data-project-detail className="flex min-w-0 flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -43,43 +40,9 @@ export default function ProjectDetailView({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <StatPill label="Revenue" value={`$${project.revenue.toFixed(2)}`} tone="green" />
             <StatPill label="Status" value={project.status} />
           </div>
         </div>
-        {revenueTrend.length > 0 && (
-          <div
-            data-project-detail-revenue-trend
-            className="rounded-xl border border-white/10 bg-black/20 p-2.5"
-          >
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="flex items-center gap-1 text-[9px] uppercase tracking-normal text-slate-500">
-                <TrendingUp size={9} /> Revenue trend
-              </span>
-              <span className="font-mono text-[8px] text-slate-600">{revenueTrend.length} pts</span>
-            </div>
-            <div className="flex h-16 items-end gap-1">
-              {revenueTrend.map((point) => (
-                <div key={point.id} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-                  <span
-                    data-project-detail-revenue-point
-                    data-project-detail-revenue-value={point.revenue}
-                    className="block w-full rounded-sm bg-emerald-500/30"
-                    style={{
-                      height: `${Math.max(3, Math.round((point.revenue / trendMax) * 40))}px`,
-                    }}
-                  />
-                  <span className="truncate text-[7px] text-slate-600">
-                    {new Date(point.recordedAt).toLocaleDateString('en', {
-                      month: 'numeric',
-                      day: 'numeric',
-                    })}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </section>
 
       <section data-project-detail-rail className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">
@@ -112,31 +75,6 @@ export default function ProjectDetailView({
             )}
           </div>
         )}
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5">
-          <div className="mb-2 text-[9px] uppercase tracking-normal text-slate-500">
-            Revenue history
-          </div>
-          {revenueTrend.length === 0 ? (
-            <div className="text-[10px] text-slate-600">No revenue history yet</div>
-          ) : (
-            <div className="flex max-h-44 flex-col gap-1 overflow-auto">
-              {[...revenueTrend].reverse().map((point) => (
-                <div
-                  key={point.id}
-                  data-project-detail-revenue-history-row
-                  className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-2 py-1"
-                >
-                  <span className="font-mono text-[10px] text-emerald-300">
-                    ${point.revenue.toFixed(2)}
-                  </span>
-                  <span className="text-[9px] text-slate-500">
-                    {new Date(point.recordedAt).toLocaleString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
       </section>
 
       <section data-project-detail-fold className="flex min-w-0 flex-col gap-3">
