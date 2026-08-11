@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Tauri build artifacts（同时避免 tailwind v4 自动内容扫描 10GB+ target 目录）
+src-tauri/target/
+
 # Local workbench runtime artifacts
 .screenshots/
 .vite-*.log

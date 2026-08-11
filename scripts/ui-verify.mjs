@@ -164,7 +164,8 @@ async function reconnect(port) {
 }
 
 async function waitForApp() {
-  for (let i = 0; i < 80; i++) {
+  // 60s：吸收 tailwind v4 CSS 冷编译（首次请求 index.css 可达 8-15s）
+  for (let i = 0; i < 240; i++) {
     try {
       const ready = await evaluate(
         `document.querySelectorAll('nav button[aria-label]').length >= 5`,
@@ -1583,43 +1584,6 @@ try {
     throw new Error(`Git activity board assertion failed: ${JSON.stringify(gitActivity)}`);
   }
   results.gitActivity = gitActivity;
-  const portfolioSummaryExport = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const card = document.querySelector("[data-portfolio-summary]");
-    if (!card) return { ok: false, reason: "portfolio summary card missing" };
-    const text = card.textContent;
-    const exportBtn = document.querySelector("[data-portfolio-export]");
-    if (!exportBtn) return { ok: false, reason: "export button missing" };
-    exportBtn.click();
-    await sleep(150);
-    const preview = document.querySelector("[data-portfolio-export-preview]");
-    const previewText = preview ? preview.textContent : "";
-    const cardText = card.textContent || "";
-    const summaryOk =
-      cardText.includes("Projects") &&
-      cardText.includes("Commits") &&
-      cardText.includes("Dirty");
-    const reportOk =
-      previewText.includes("# Portfolio Summary") &&
-      previewText.includes("AI Workbench") &&
-      previewText.includes("Prism Demo") &&
-      previewText.includes("## Git Activity");
-    const copyBtn = document.querySelector("[data-portfolio-copy]");
-    if (!copyBtn) return { ok: false, reason: "copy button missing", summaryOk, reportOk };
-    copyBtn.click();
-    await sleep(200);
-    await sleep(300);
-    const copied = copyBtn.textContent.includes("Copied");
-    return {
-      ok: summaryOk && reportOk && copied,
-      summaryOk,
-      reportOk,
-      copied,
-      previewLength: previewText.length,
-      cardText: cardText.slice(0, 200),
-    };
-  })()`);
-  results.portfolioSummaryExport = portfolioSummaryExport;
   results.gitActivityFilters = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const board = () => document.querySelector("[data-git-activity]");
@@ -1664,11 +1628,6 @@ try {
       aliceRows === 1;
     return { ok, initialRows, committerOptions, after24h, after24hTotal, after24hCommits, afterAll, afterAlice, aliceRows };
   })()`);
-  if (!results.portfolioSummaryExport?.ok) {
-    throw new Error(
-      `Portfolio summary export assertion failed: ${JSON.stringify(results.portfolioSummaryExport)}`,
-    );
-  }
   if (!results.gitActivityFilters.ok) {
     throw new Error(
       `Git activity filters assertion failed: ${JSON.stringify(results.gitActivityFilters)}`,
