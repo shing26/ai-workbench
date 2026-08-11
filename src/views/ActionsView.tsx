@@ -14,10 +14,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
 import { useWorkbenchStore } from '../stores/workbenchStore';
-import { useViewState } from '../stores/viewState';
 import BentoCard from '../components/ui/BentoCard';
-
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
 function dayKey(date: Date): string {
   const y = date.getFullYear();
@@ -51,7 +48,6 @@ export default function ActionsView() {
 
   const [title, setTitle] = useState('');
   const [todayOnly, setTodayOnly] = useState(false);
-  const [selectedDay, setSelectedDay] = useViewState('actions', 'selectedDay', dayKey(new Date()));
   const [taskRenameId, setTaskRenameId] = useState<string | null>(null);
   const [taskRenameDraft, setTaskRenameDraft] = useState('');
   const [taskDeleteId, setTaskDeleteId] = useState<string | null>(null);
@@ -235,18 +231,6 @@ export default function ActionsView() {
   useEffect(() => {
     cliLogEndRef.current?.scrollIntoView({ block: 'end' });
   }, [cliLog]);
-  const mondayOffset = (now.getDay() + 6) % 7;
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
-  const weekDays = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
-    return dayKey(d);
-  });
-  const weekTasks = tasks.filter((t) => (t.dueDate ? weekDays.includes(t.dueDate) : t.isToday));
-  const weekDone = weekTasks.filter((t) => t.status === 'done').length;
-  const weekProgress = weekTasks.length > 0 ? weekDone / weekTasks.length : 0;
-  const dayTasks = tasks.filter(
-    (t) => t.dueDate === selectedDay || (!t.dueDate && t.isToday && selectedDay === dayKey(now)),
-  );
   const archived = tasks
     .filter((t) => t.status === 'done' && t.completedAt)
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
@@ -342,59 +326,6 @@ export default function ActionsView() {
         </div>
       )}
       <BentoCard title="Today Focus" subtitle="今日 3 件事" icon={Target} colSpan={12}>
-        <div className="mb-3 grid grid-cols-7 gap-1">
-          {weekDays.map((key, i) => {
-            const dayList = tasks.filter((t) => t.dueDate === key);
-            const doneCount = dayList.filter((t) => t.status === 'done').length;
-            const allDone = dayList.length > 0 && doneCount === dayList.length;
-            const isSelected = selectedDay === key;
-            const isToday = key === dayKey(now);
-            return (
-              <button
-                key={key}
-                type="button"
-                data-focus-week-day={key}
-                data-focus-day-done={allDone ? 'true' : 'false'}
-                onClick={() => setSelectedDay(key)}
-                className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 text-[10px] transition-colors ${
-                  isSelected
-                    ? 'accent-border accent-bg-15 accent-text-strong'
-                    : 'border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]'
-                }`}
-              >
-                <span className="flex items-center gap-1">
-                  {WEEKDAY_LABELS[i]}
-                  {isToday && <span className="rounded bg-white/10 px-1">T</span>}
-                </span>
-                <span className="font-mono text-[9px] opacity-70">{formatDayLabel(key)}</span>
-                <span className="flex h-3.5 items-center gap-0.5 text-slate-400">
-                  {dayList.length > 0 ? (
-                    <>
-                      <span className="font-mono">
-                        {doneCount}/{dayList.length}
-                      </span>
-                      {allDone && <Check size={9} className="text-emerald-400" />}
-                    </>
-                  ) : (
-                    <span className="text-slate-700">-</span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="mb-3 flex items-center gap-2">
-          <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
-            <div
-              data-focus-week-bar
-              className="progress-strip-inner h-full rounded-full accent-bg"
-              style={{ transform: `scaleX(${weekProgress})` }}
-            />
-          </div>
-          <span data-focus-week-total className="font-mono text-[10px] text-slate-500">
-            week {weekDone}/{weekTasks.length}
-          </span>
-        </div>
         <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.06]">
           <div
             className="progress-strip-inner h-full rounded-full bg-emerald-400/80"
@@ -402,7 +333,7 @@ export default function ActionsView() {
           />
         </div>
         <div className="grid gap-2 md:grid-cols-3">
-          {dayTasks.map((t) => (
+          {todayTasks.map((t) => (
             <div
               key={t.id}
               data-task-row={t.id}
@@ -515,8 +446,8 @@ export default function ActionsView() {
                 data-task-next-day={t.id}
                 aria-label={`Move ${t.title} to next day`}
                 onClick={() => {
-                  const nextIndex = weekDays.indexOf(dayKey(now));
-                  const next = weekDays[(nextIndex + 1) % weekDays.length];
+                  const nextDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+                  const next = dayKey(nextDate);
                   void setTaskDueDate(t.id, next);
                   if (t.isToday) void setTaskToday(t.id, false);
                 }}
@@ -527,9 +458,9 @@ export default function ActionsView() {
               </button>
             </div>
           ))}
-          {dayTasks.length < 3 && (
+          {todayTasks.length < 3 && (
             <div className="flex items-center justify-center rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-[11px] text-slate-600">
-              {selectedDay === dayKey(now) ? 'Add up to 3 focus items' : 'No focus on this day'}
+              Add up to 3 focus items
             </div>
           )}
         </div>

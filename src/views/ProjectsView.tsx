@@ -1,7 +1,6 @@
 import {
   Check,
   Copy,
-  Download,
   ExternalLink,
   FolderKanban,
   GitBranch,
@@ -563,8 +562,6 @@ export default function ProjectsView() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, string[]>>({});
   const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
-  const [exportOpen, setExportOpen] = useState(false);
-  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [projectEdits, setProjectEdits] = useState<Record<string, { status: string }>>({});
   const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
@@ -578,87 +575,6 @@ export default function ProjectsView() {
   const commitTrendMax = gitActivity
     ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
     : 1;
-
-  const activeProjects = projects.filter((p) => p.status === 'active').length;
-  const pausedProjects = projects.filter((p) => p.status === 'paused').length;
-  const weekCommitPeak = gitActivity
-    ? Math.max(0, ...gitActivity.commitTrend.buckets.map((b) => b.count))
-    : 0;
-
-  const weekCommits = gitActivity
-    ? gitActivity.commitTrend.buckets
-        .filter((b) => Date.now() - b.dayMs <= 7 * 86_400_000)
-        .reduce((sum, b) => sum + b.count, 0)
-    : 0;
-
-  const portfolioReport = (() => {
-    const rows = projects.map((p) => `| ${p.name} | ${p.status} | ${p.path || '-'} |`).join('\n');
-    const gitRows = (gitActivity?.items ?? [])
-      .map(
-        (item) =>
-          `| ${item.projectName} | ${item.commitCount} | ${item.branch || '-'} | ${item.dirty ? 'dirty' : 'clean'} | ${item.latestCommit || '-'} |`,
-      )
-      .join('\n');
-    const trend = (gitActivity?.commitTrend.buckets ?? [])
-      .map((bucket) => `- ${new Date(bucket.dayMs).toLocaleDateString('en')}: ${bucket.count}`)
-      .join('\n');
-    return `# Portfolio Summary
-
-Generated: ${new Date().toLocaleString()}
-
-## Overview
-
-- Projects: ${projects.length}
-- Active: ${activeProjects}
-- Paused: ${pausedProjects}
-- Commits: ${gitActivity?.totalCommits ?? 0}
-- Dirty: ${gitActivity?.dirtyProjects ?? 0}
-- Week commit peak: ${weekCommitPeak}
-
-## Projects
-
-| Name | Status | Path |
-| --- | --- | --- |
-${rows}
-
-## Git Activity
-
-| Project | Commits | Branch | State | Latest |
-| --- | --- | --- | --- | --- |
-${gitRows}
-
-## Commit Trend
-
-${trend}
-`;
-  })();
-
-  const copyReport = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(portfolioReport);
-        setCopyState('copied');
-        setTimeout(() => setCopyState('idle'), 1600);
-        return;
-      }
-    } catch {
-      /* fall through to legacy copy */
-    }
-    try {
-      const textarea = document.createElement('textarea');
-      textarea.value = portfolioReport;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      textarea.remove();
-      setCopyState('copied');
-      setTimeout(() => setCopyState('idle'), 1600);
-    } catch {
-      setCopyState('idle');
-    }
-  };
 
   const toggleGitDiff = (projectId: string, projectPath: string, file: string) => {
     const key = `${projectId}:${file}`;
@@ -1226,62 +1142,6 @@ ${trend}
           >
             <Plus size={14} /> Create
           </button>
-        </div>
-      </BentoCard>
-
-      <BentoCard title="项目矩阵摘要" subtitle="状态 · Git 进度汇总" icon={Download} colSpan={12}>
-        <div data-portfolio-summary className="space-y-3">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
-            <StatPill label="Projects" value={String(projects.length)} />
-            <StatPill label="Active" value={String(activeProjects)} tone="blue" />
-            <StatPill label="Paused" value={String(pausedProjects)} tone="neutral" />
-            <StatPill label="Commits" value={String(gitActivity?.totalCommits ?? 0)} tone="blue" />
-            <div data-portfolio-week-commits className="contents">
-              <StatPill label="Week commits" value={String(weekCommits)} tone="blue" />
-            </div>
-            <StatPill
-              label="Dirty"
-              value={String(gitActivity?.dirtyProjects ?? 0)}
-              tone={gitActivity?.dirtyProjects ? 'neutral' : 'green'}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              data-portfolio-export
-              onClick={() => setExportOpen((v) => !v)}
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-500/15 px-2.5 text-[11px] text-emerald-300 hover:bg-emerald-500/25"
-            >
-              <Download size={12} />
-              {exportOpen ? 'Hide report' : 'Export summary'}
-            </button>
-            {exportOpen && (
-              <button
-                type="button"
-                data-portfolio-copy
-                onClick={() => void copyReport()}
-                className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] transition-colors ${
-                  copyState === 'copied'
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                    : 'border-white/10 text-slate-400 hover:bg-white/[0.06] hover:text-slate-300'
-                }`}
-              >
-                <Copy size={12} />
-                {copyState === 'copied' ? 'Copied' : 'Copy'}
-              </button>
-            )}
-            <span data-portfolio-week-peak className="font-mono text-[10px] text-slate-500">
-              week peak {weekCommitPeak}
-            </span>
-          </div>
-          {exportOpen && (
-            <pre
-              data-portfolio-export-preview
-              className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-[10px] leading-relaxed text-slate-300"
-            >
-              {portfolioReport}
-            </pre>
-          )}
         </div>
       </BentoCard>
 

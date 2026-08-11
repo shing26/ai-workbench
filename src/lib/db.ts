@@ -246,34 +246,6 @@ export type ProviderHeartbeatSnapshot = {
   checkedAt: number;
 };
 
-export type Habit = {
-  id: string;
-  name: string;
-  weekGoal: number;
-  currentStreak: number;
-  color: 'emerald' | 'blue' | 'amber' | 'rose';
-  doneToday: boolean;
-  createdAt: number;
-  recentLogs: string[];
-};
-
-export type HabitLog = {
-  id: string;
-  habitId: string;
-  date: string;
-  checkedAt: number;
-};
-
-export type ScheduleEvent = {
-  id: string;
-  title: string;
-  startTime: string;
-  date: string;
-  done: boolean;
-  tag: string;
-  createdAt: number;
-};
-
 export type ClipboardItem = {
   id: string;
   content: string;
@@ -1041,9 +1013,6 @@ type LocalShape = {
   chatMessages: ChatMessage[];
   messageVersions: MessageVersion[];
   messageAux: MessageAux[];
-  habits: Habit[];
-  habitLogs: HabitLog[];
-  scheduleEvents: ScheduleEvent[];
   clipboard: ClipboardItem[];
   logs: ErrorLog[];
   modelCache: Record<string, ProviderModel[]>;
@@ -1094,9 +1063,6 @@ function emptyShape(): LocalShape {
     chatMessages: [],
     messageVersions: [],
     messageAux: [],
-    habits: [],
-    habitLogs: [],
-    scheduleEvents: [],
     clipboard: [],
     logs: [],
     modelCache: {},
@@ -1430,58 +1396,6 @@ function seedShape(): LocalShape {
     chatMessages: [],
     messageVersions: [],
     messageAux: [],
-    habits: [
-      {
-        id: makeId(),
-        name: '晨间阅读',
-        weekGoal: 5,
-        currentStreak: 3,
-        color: 'emerald',
-        doneToday: false,
-        createdAt: now - 86400000,
-        recentLogs: [],
-      },
-      {
-        id: makeId(),
-        name: '深水工作',
-        weekGoal: 4,
-        currentStreak: 2,
-        color: 'blue',
-        doneToday: false,
-        createdAt: now - 172800000,
-        recentLogs: [],
-      },
-      {
-        id: makeId(),
-        name: '运动 30 分钟',
-        weekGoal: 3,
-        currentStreak: 5,
-        color: 'amber',
-        doneToday: false,
-        createdAt: now - 259200000,
-        recentLogs: [],
-      },
-    ],
-    scheduleEvents: [
-      {
-        id: makeId(),
-        title: '每日复盘',
-        startTime: '09:30',
-        date: '',
-        done: false,
-        tag: 'routine',
-        createdAt: now - 3600000,
-      },
-      {
-        id: makeId(),
-        title: 'Sprint 3 验收',
-        startTime: '14:00',
-        date: '',
-        done: false,
-        tag: 'work',
-        createdAt: now - 1800000,
-      },
-    ],
     clipboard: [
       {
         id: makeId(),
@@ -1513,9 +1427,7 @@ function seedShape(): LocalShape {
     modelCache: {},
     syncDeviceId: existing.syncDeviceId || makeId(),
     lastSyncedAt: existing.lastSyncedAt ?? 0,
-    habitLogs: [],
   };
-  shape.habitLogs = seedHabitLogs(shape.habits);
   return shape;
 }
 
@@ -1525,8 +1437,6 @@ function readLocal(): LocalShape {
     return {
       ...emptyShape(),
       ...parsed,
-      habitLogs: parsed.habitLogs ?? [],
-      habits: (parsed.habits ?? []).map((h) => ({ ...h, recentLogs: h.recentLogs ?? [] })),
     } as LocalShape;
   } catch {
     return emptyShape();
@@ -1591,62 +1501,6 @@ function writeLocal(shape: LocalShape) {
   lockedStorageWrite(() => localStorage.setItem(LS_KEY, JSON.stringify(shape)));
 }
 
-function localDateKeyOffset(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function dateKeyToDayNumber(key: string): number {
-  const [y, m, d] = key.split('-').map(Number);
-  if (!y || !m || !d) return Number.NaN;
-  return Math.floor(Date.UTC(y, m - 1, d) / 86_400_000);
-}
-
-function computeStreakFromDates(dates: string[], todayKey: string): number {
-  const checked = new Set(dates.map(dateKeyToDayNumber).filter(Number.isFinite));
-  const today = dateKeyToDayNumber(todayKey);
-  let cursor = checked.has(today) ? today : today - 1;
-  let streak = 0;
-  while (checked.has(cursor)) {
-    streak += 1;
-    cursor -= 1;
-  }
-  return streak;
-}
-
-function recentLogDates(dates: string[], todayKey: string, window: number): string[] {
-  const min = dateKeyToDayNumber(todayKey) - window + 1;
-  return Array.from(
-    new Set(
-      dates.filter((d) => Number.isFinite(dateKeyToDayNumber(d)) && dateKeyToDayNumber(d) >= min),
-    ),
-  ).sort();
-}
-
-function seedHabitLogs(habits: Habit[]): HabitLog[] {
-  const patterns: Record<string, number[]> = {
-    晨间阅读: [1, 2, 3],
-    深水工作: [1, 2],
-    '运动 30 分钟': [1, 2, 3, 4, 5],
-  };
-  const logs: HabitLog[] = [];
-  for (const habit of habits) {
-    for (const daysAgo of patterns[habit.name] ?? []) {
-      logs.push({
-        id: makeId(),
-        habitId: habit.id,
-        date: localDateKeyOffset(daysAgo),
-        checkedAt: Date.now() - daysAgo * 86_400_000,
-      });
-    }
-  }
-  return logs;
-}
-
 export async function initDb(): Promise<void> {
   if (isTauri()) {
     await invoke('init_db');
@@ -1667,12 +1521,6 @@ export type WorkspaceSummary = {
   providers: Provider[];
 };
 
-export type ActionsBundle = {
-  tasks: Task[];
-  habits: Habit[];
-  scheduleEvents: ScheduleEvent[];
-};
-
 export async function getWorkspaceSummary(): Promise<WorkspaceSummary> {
   if (isTauri()) return invoke<WorkspaceSummary>('get_workspace_summary');
   const shape = readLocal();
@@ -1682,16 +1530,6 @@ export async function getWorkspaceSummary(): Promise<WorkspaceSummary> {
     thoughts: shape.thoughts,
     sessions: await listSessions(),
     providers: await listProviders(),
-  };
-}
-
-export async function getActionsBundle(): Promise<ActionsBundle> {
-  if (isTauri()) return invoke<ActionsBundle>('get_actions_bundle');
-  const shape = readLocal();
-  return {
-    tasks: shape.tasks,
-    habits: await listHabits(),
-    scheduleEvents: await listScheduleEvents(),
   };
 }
 
@@ -3574,145 +3412,6 @@ function lineDiff(a: string, b: string): MessageDiff {
     j++;
   }
   return { added, removed };
-}
-
-export async function listHabits(): Promise<Habit[]> {
-  if (isTauri()) return invoke<Habit[]>('list_habits');
-  const shape = readLocal();
-  const today = localDateKeyOffset(0);
-  return shape.habits.map((h) => {
-    const dates = shape.habitLogs.filter((log) => log.habitId === h.id).map((log) => log.date);
-    return {
-      ...h,
-      currentStreak: computeStreakFromDates(dates, today),
-      recentLogs: recentLogDates(dates, today, 14),
-      doneToday: dates.includes(today),
-    };
-  });
-}
-
-export async function createHabit(
-  name: string,
-  weekGoal: number,
-  color: Habit['color'],
-): Promise<Habit> {
-  if (isTauri()) return invoke<Habit>('create_habit', { name, weekGoal, color });
-  const shape = readLocal();
-  const habit: Habit = {
-    id: makeId(),
-    name,
-    weekGoal,
-    currentStreak: 0,
-    color,
-    doneToday: false,
-    createdAt: Date.now(),
-    recentLogs: [],
-  };
-  shape.habits.unshift(habit);
-  writeLocal(shape);
-  return habit;
-}
-
-export async function toggleHabit(id: string): Promise<Habit> {
-  if (isTauri()) return invoke<Habit>('toggle_habit', { id });
-  const shape = readLocal();
-  const habit = shape.habits.find((h) => h.id === id);
-  if (!habit) return shape.habits[0];
-  const today = localDateKeyOffset(0);
-  const existingIndex = shape.habitLogs.findIndex(
-    (log) => log.habitId === id && log.date === today,
-  );
-  if (existingIndex >= 0) {
-    shape.habitLogs.splice(existingIndex, 1);
-  } else {
-    shape.habitLogs.push({
-      id: makeId(),
-      habitId: id,
-      date: today,
-      checkedAt: Date.now(),
-    });
-  }
-  writeLocal(shape);
-  const dates = shape.habitLogs.filter((log) => log.habitId === id).map((log) => log.date);
-  return {
-    ...habit,
-    doneToday: dates.includes(today),
-    currentStreak: computeStreakFromDates(dates, today),
-    recentLogs: recentLogDates(dates, today, 14),
-  };
-}
-
-export async function updateHabitWeekGoal(id: string, weekGoal: number): Promise<Habit> {
-  if (isTauri()) return invoke<Habit>('update_habit_week_goal', { id, weekGoal });
-  const shape = readLocal();
-  const habit = shape.habits.find((h) => h.id === id);
-  if (!habit) throw new Error('habit not found');
-  habit.weekGoal = Number.isFinite(weekGoal)
-    ? Math.max(1, Math.min(31, Math.round(weekGoal)))
-    : habit.weekGoal;
-  writeLocal(shape);
-  return habit;
-}
-
-export async function deleteHabit(id: string, confirmed = false): Promise<boolean> {
-  if (isTauri()) return invoke<boolean>('delete_habit', { id, confirmed });
-  if (!confirmed) {
-    throw new WorkbenchError('REQUIRES_CONFIRMATION', `delete_habit:${id}`);
-  }
-  const shape = readLocal();
-  const index = shape.habits.findIndex((h) => h.id === id);
-  if (index < 0) return false;
-  shape.habits.splice(index, 1);
-  shape.habitLogs = shape.habitLogs.filter((log) => log.habitId !== id);
-  writeLocal(shape);
-  return true;
-}
-
-export async function listScheduleEvents(): Promise<ScheduleEvent[]> {
-  if (isTauri()) return invoke<ScheduleEvent[]>('list_schedule_events');
-  return readLocal()
-    .scheduleEvents.slice()
-    .sort(
-      (a, b) =>
-        a.date.localeCompare(b.date) ||
-        a.startTime.localeCompare(b.startTime) ||
-        a.createdAt - b.createdAt,
-    );
-}
-
-export async function createScheduleEvent(
-  title: string,
-  startTime: string,
-  tag: string,
-  date = '',
-): Promise<ScheduleEvent> {
-  if (isTauri()) {
-    return invoke<ScheduleEvent>('create_schedule_event', { title, startTime, date, tag });
-  }
-  const shape = readLocal();
-  const event: ScheduleEvent = {
-    id: makeId(),
-    title,
-    startTime,
-    date,
-    done: false,
-    tag,
-    createdAt: Date.now(),
-  };
-  shape.scheduleEvents.push(event);
-  writeLocal(shape);
-  return event;
-}
-
-export async function toggleEventDone(id: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('toggle_event_done', { id });
-    return;
-  }
-  const shape = readLocal();
-  const event = shape.scheduleEvents.find((e) => e.id === id);
-  if (event) event.done = !event.done;
-  writeLocal(shape);
 }
 
 export async function listQuickPrompts(): Promise<QuickPrompt[]> {

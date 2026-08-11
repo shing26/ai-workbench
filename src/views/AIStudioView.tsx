@@ -2,7 +2,6 @@ import {
   Archive,
   ArchiveRestore,
   BookOpen,
-  CalendarDays,
   Check,
   ChevronDown,
   ChevronUp,
@@ -43,7 +42,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import * as db from '../lib/db';
-import { buildDailyRecapPrompt } from '../lib/dailyRecap';
 import {
   clearSearchHistory,
   loadSearchHistory,
@@ -58,12 +56,6 @@ import {
   recordTokenUsage,
   type TokenBudgetStatus,
 } from '../lib/tokenBudget';
-import {
-  loadRecapDraft,
-  markRecapDraftSaved,
-  saveRecapDraft,
-  type RecapDraft,
-} from '../lib/recapDraft';
 import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import type { InspectorSection } from '../stores/workbenchStore';
@@ -177,9 +169,6 @@ function SortablePromptRow({
 
 export default function AIStudioView() {
   const providers = useWorkbenchStore((s) => s.providers);
-  const tasks = useWorkbenchStore((s) => s.tasks);
-  const habits = useWorkbenchStore((s) => s.habits);
-  const scheduleEvents = useWorkbenchStore((s) => s.scheduleEvents);
   const addThought = useWorkbenchStore((s) => s.addThought);
   const openInspector = useWorkbenchStore((s) => s.openInspector);
   const setInspectorMetrics = useWorkbenchStore((s) => s.setInspectorMetrics);
@@ -299,11 +288,6 @@ export default function AIStudioView() {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const sortedCustomPrompts = [...customPrompts].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const pendingSelectedCount = pendingSelected?.size ?? 0;
-  const [recapReady, setRecapReady] = useState(false);
-  const [recapSaving, setRecapSaving] = useState(false);
-  const [recapSaveResult, setRecapSaveResult] = useState<string | null>(null);
-  const [recapDraft, setRecapDraft] = useState<RecapDraft | null>(() => loadRecapDraft());
-  const recapArmedRef = useRef(false);
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<db.MessageVersion[]>([]);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
@@ -371,7 +355,6 @@ export default function AIStudioView() {
   useEffect(() => {
     if (activeView !== 'ai-studio') return;
     void refreshQuickPrompts();
-    setRecapDraft(loadRecapDraft());
   }, [activeView]);
 
   const addCustom = async () => {
@@ -525,11 +508,6 @@ export default function AIStudioView() {
           }
           runsRef.current.delete(chunk.id);
           if (sessionIdRef.current && (run.content || chunk.error || chunk.cancelled)) {
-            if (recapArmedRef.current && !chunk.error && !chunk.cancelled) {
-              const today = new Date().toISOString().slice(0, 10);
-              setRecapDraft(saveRecapDraft(today, run.content));
-              recapArmedRef.current = false;
-            }
             void db
               .saveChatMessage(sessionIdRef.current, 'assistant', finalContent)
               .then((saved) => {
@@ -862,8 +840,6 @@ export default function AIStudioView() {
     setPendingSelected(null);
     setPendingSourceFilter(null);
     setRememberRagSources(false);
-    setRecapReady(false);
-    setRecapSaveResult(null);
   };
 
   const focusMessage = (id: string) => {
@@ -1749,8 +1725,6 @@ export default function AIStudioView() {
 
   const sendText = async (text: string) => {
     if (!text.trim() || busy) return;
-    setRecapReady(false);
-    setRecapSaveResult(null);
     let hits: db.RagSearchResult[] = [];
     if (useRag) {
       try {
@@ -1835,53 +1809,6 @@ export default function AIStudioView() {
 
   const send = async () => {
     await sendText(input.trim());
-  };
-
-  const runDailyRecap = async () => {
-    if (busy) return;
-    recapArmedRef.current = true;
-    await sendText(buildDailyRecapPrompt(tasks, habits, scheduleEvents));
-    recapArmedRef.current = false;
-    setRecapReady(true);
-  };
-
-  const persistRecapNote = async (content: string, date: string) => {
-    if (recapSaving) return;
-    setRecapSaving(true);
-    setRecapSaveResult(null);
-    try {
-      await addThought(`# 今日复盘 ${date}\n\n${content}`, '#daily,#recap', 'note');
-      const draft = loadRecapDraft() ?? saveRecapDraft(date, content);
-      setRecapDraft(markRecapDraftSaved(draft));
-      setRecapSaveResult(`Saved recap note (${date})`);
-    } catch (error) {
-      setRecapSaveResult(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRecapSaving(false);
-    }
-  };
-
-  const saveRecapNote = async () => {
-    if (!recapReady || recapSaving || recapDraft?.saved) return;
-    const reply = [...messages]
-      .reverse()
-      .find(
-        (m) =>
-          m.role === 'assistant' &&
-          m.content &&
-          !m.content.startsWith('__stream__') &&
-          !m.content.includes('Ready. Ask anything'),
-      )?.content;
-    if (!reply) return;
-    const date = recapDraft?.date ?? new Date().toISOString().slice(0, 10);
-    await persistRecapNote(reply, date);
-  };
-
-  const saveRecapMessage = async (message: Message) => {
-    if (!recapDraft || recapDraft.saved || recapSaving || message.content !== recapDraft.content) {
-      return;
-    }
-    await persistRecapNote(message.content, recapDraft.date);
   };
 
   const startEdit = (message: Message) => {
@@ -2844,23 +2771,6 @@ export default function AIStudioView() {
                   </div>
                 ) : m.id && m.content !== '__stream__' ? (
                   <div className="absolute -right-9 top-1 hidden items-center gap-0.5 group-hover:flex">
-                    {recapDraft && m.content === recapDraft.content && (
-                      <button
-                        type="button"
-                        aria-label="Save recap message"
-                        data-ai-recap-message-save
-                        onClick={() => void saveRecapMessage(m)}
-                        disabled={recapDraft.saved || recapSaving}
-                        title={recapDraft.saved ? 'Recap saved' : 'Save recap note'}
-                        className={`flex h-6 w-6 items-center justify-center rounded-md ${
-                          recapDraft.saved
-                            ? 'bg-emerald-500/15 text-emerald-400'
-                            : 'bg-white/5 text-slate-500 hover:text-blue-300'
-                        }`}
-                      >
-                        <Save size={11} />
-                      </button>
-                    )}
                     <button
                       type="button"
                       aria-label="Regenerate message"
@@ -3219,34 +3129,6 @@ export default function AIStudioView() {
                 )}
               </button>
             ))}
-            <button
-              type="button"
-              data-ai-daily-recap
-              onClick={runDailyRecap}
-              className="flex h-6 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] text-emerald-300 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/20 hover:text-emerald-200"
-            >
-              <CalendarDays size={10} />
-              今日复盘
-            </button>
-            <button
-              type="button"
-              data-ai-recap-save
-              onClick={() => void saveRecapNote()}
-              data-recap-saved={recapDraft?.saved ? 'true' : 'false'}
-              disabled={!recapReady || recapSaving || !!recapDraft?.saved}
-              className="flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-500 transition-colors hover:border-blue-500/30 hover:bg-blue-500/10 hover:text-blue-300 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Save size={10} />
-              {recapSaving ? 'Saving' : recapDraft?.saved ? '已保存' : '保存复盘'}
-            </button>
-            {recapSaveResult && (
-              <span
-                data-ai-recap-save-result
-                className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400"
-              >
-                {recapSaveResult}
-              </span>
-            )}
             <button
               type="button"
               data-quick-prompt-manage

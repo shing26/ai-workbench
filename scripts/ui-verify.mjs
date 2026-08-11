@@ -495,28 +495,24 @@ try {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chips = [...document.querySelectorAll("[data-quick-prompt]")];
     const input = document.querySelector('textarea[placeholder="Ask anything..."]');
-    if (chips.length < 4 || !input) {
+    if (chips.length < 2 || !input) {
       return { ok: false, chips: chips.length, hasInput: !!input };
     }
     const labels = chips.map((chip) => chip.getAttribute("data-quick-prompt-label"));
     const categories = chips.map((chip) => chip.getAttribute("data-quick-prompt-category"));
-    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    document.querySelector('[data-quick-prompt="summarize-notes"]')?.click();
     await sleep(80);
-    const dailyValue = input.value;
-    document.querySelector('[data-quick-prompt="week-plan"]')?.click();
-    await sleep(80);
-    const weekValue = input.value;
+    const summarizeValue = input.value;
     const ok =
-      dailyValue.includes("复盘") &&
-      weekValue.includes("本周") &&
-      categories.includes("life") &&
-      categories.includes("work");
+      summarizeValue.includes("提炼") &&
+      categories.includes("work") &&
+      labels.includes("Summarize notes") &&
+      labels.includes("Draft reply");
     return {
       ok,
       chips: chips.length,
       labels,
-      dailyValue: dailyValue.slice(0, 60),
-      weekValue: weekValue.slice(0, 60),
+      summarizeValue: summarizeValue.slice(0, 60),
     };
   })()`);
   if (!results.quickPrompts.ok) {
@@ -565,7 +561,7 @@ try {
   results.quickPromptPersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 30; i++) {
-      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 2) break;
       await sleep(150);
     }
     const persisted = [...document.querySelectorAll("[data-quick-prompt]")].some(
@@ -600,44 +596,36 @@ try {
   results.quickPromptUsage = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 30; i++) {
-      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 2) break;
       await sleep(150);
     }
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
     const firstLabel = () => chips()[0]?.getAttribute("data-quick-prompt-label") ?? "";
     const first = firstLabel();
-    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    document.querySelector('[data-quick-prompt="summarize-notes"]')?.click();
     await sleep(80);
-    document.querySelector('[data-quick-prompt="daily-recap"]')?.click();
+    document.querySelector('[data-quick-prompt="summarize-notes"]')?.click();
     await sleep(80);
     const afterTwo = firstLabel();
-    const dailyUsage = chips()
-      .find((el) => el.getAttribute("data-quick-prompt") === "daily-recap")
+    const summarizeUsage = chips()
+      .find((el) => el.getAttribute("data-quick-prompt") === "summarize-notes")
       ?.getAttribute("data-quick-prompt-usage");
-    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
+    document.querySelector('[data-quick-prompt="draft-reply"]')?.click();
     await sleep(80);
-    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
-    await sleep(80);
-    document.querySelector('[data-quick-prompt="wind-down"]')?.click();
-    await sleep(80);
-    const afterWindDown = firstLabel();
     const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
     const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
     const ok =
-      first === "Daily recap" &&
-      afterTwo === "Daily recap" &&
-      dailyUsage === "2" &&
-      afterWindDown === "Wind down" &&
-      order[0] === "wind-down" &&
-      order[1] === "daily-recap" &&
-      stored["daily-recap"] === 2 &&
-      stored["wind-down"] === 3;
+      first === "Summarize notes" &&
+      afterTwo === "Summarize notes" &&
+      summarizeUsage === "2" &&
+      order[0] === "summarize-notes" &&
+      stored["summarize-notes"] === 2 &&
+      stored["draft-reply"] === 1;
     return {
       ok,
       first,
       afterTwo,
-      dailyUsage,
-      afterWindDown,
+      summarizeUsage,
       order: order.slice(0, 4),
       stored,
     };
@@ -652,17 +640,16 @@ try {
   results.quickPromptUsagePersist = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (let i = 0; i < 30; i++) {
-      if (document.querySelectorAll("[data-quick-prompt]").length >= 4) break;
+      if (document.querySelectorAll("[data-quick-prompt]").length >= 2) break;
       await sleep(150);
     }
     const chips = () => [...document.querySelectorAll("[data-quick-prompt]")];
     const order = chips().map((el) => el.getAttribute("data-quick-prompt"));
     const stored = JSON.parse(localStorage.getItem("ai-workbench:quick-prompt-usage:v1") ?? "{}");
     const ok =
-      order[0] === "wind-down" &&
-      order[1] === "daily-recap" &&
-      stored["wind-down"] === 3 &&
-      stored["daily-recap"] === 2;
+      order[0] === "summarize-notes" &&
+      stored["summarize-notes"] === 2 &&
+      stored["draft-reply"] === 1;
     return { ok, order: order.slice(0, 4), stored };
   })()`);
   if (!results.quickPromptUsagePersist.ok) {
@@ -670,7 +657,6 @@ try {
       `Quick prompt usage persistence assertion failed: ${JSON.stringify(results.quickPromptUsagePersist)}`,
     );
   }
-
   await clickDock('System');
   results.quickPromptSync = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -692,7 +678,7 @@ try {
       ],
       quickPromptUsage: [
         { id: "sync-quick-custom", count: 2, updatedAt: Date.now() + 1000 },
-        { id: "daily-recap", count: 5, updatedAt: Date.now() + 1000 },
+        { id: "summarize-notes", count: 5, updatedAt: Date.now() + 1000 },
       ],
     };
     localStorage.setItem("ai-workbench:sync-snapshot:v1", JSON.stringify(remote));
@@ -704,7 +690,7 @@ try {
       imported =
         stored.some((p) => p.id === "sync-quick-custom") &&
         usage["sync-quick-custom"] === 2 &&
-        usage["daily-recap"] === 5;
+        usage["summarize-notes"] === 5;
       if (imported) break;
       await sleep(100);
     }
@@ -726,10 +712,10 @@ try {
     }
     const order = chips.map((el) => el.getAttribute("data-quick-prompt"));
     const syncChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom");
-    const dailyChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "daily-recap");
+    const dailyChip = chips.find((el) => el.getAttribute("data-quick-prompt") === "summarize-notes");
     const ok =
       !!syncChip &&
-      order[0] === "daily-recap" &&
+      order[0] === "summarize-notes" &&
       dailyChip?.getAttribute("data-quick-prompt-usage") === "5" &&
       syncChip.getAttribute("data-quick-prompt-usage") === "2";
     return {
@@ -760,7 +746,7 @@ try {
       chips.some((el) => el.getAttribute("data-quick-prompt") === "sync-quick-custom") &&
       stored.some((p) => p.id === "sync-quick-custom") &&
       usage["sync-quick-custom"] === 2 &&
-      usage["daily-recap"] === 5;
+      usage["summarize-notes"] === 5;
     return { ok, stored, usage };
   })()`);
   if (!results.quickPromptSyncPersist.ok) {
@@ -882,303 +868,6 @@ try {
     );
   }
 
-  results.aiDailyRecap = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const btn = document.querySelector("[data-ai-daily-recap]");
-    if (!btn) return { ok: false, reason: "no recap button" };
-    btn.click();
-    let userText = "";
-    for (let i = 0; i < 20; i++) {
-      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
-      userText = bubbles.find((t) => t.includes("请帮我生成今日复盘")) ?? "";
-      if (userText) break;
-      await sleep(80);
-    }
-    if (!userText) return { ok: false, reason: "recap user message missing" };
-    let reply = "";
-    for (let i = 0; i < 60; i++) {
-      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
-      reply =
-        bubbles.find((t) => t.includes("Streaming fallback") && !t.includes("请帮我生成今日复盘")) ??
-        "";
-      if (reply) break;
-      await sleep(100);
-    }
-    let idle = false;
-    for (let i = 0; i < 40; i++) {
-      if (
-        !document.querySelector(".stream-caret") &&
-        !document.querySelector(".thinking-dot") &&
-        !document.querySelector('[data-streaming="true"]')
-      ) {
-        idle = true;
-        break;
-      }
-      await sleep(100);
-    }
-    const newChatBtn = [...document.querySelectorAll("main button")].find(
-      (b) => b.textContent?.trim() === "New chat",
-    );
-    newChatBtn?.click();
-    await sleep(200);
-    const ok =
-      userText.includes("Ship App Shell") &&
-      userText.includes("晨间阅读") &&
-      userText.includes("每日复盘") &&
-      userText.includes("Overall") &&
-      reply.length > 0 &&
-      idle &&
-      !!newChatBtn;
-    return {
-      ok,
-      hasFocus: userText.includes("Ship App Shell"),
-      hasHabit: userText.includes("晨间阅读"),
-      hasEvent: userText.includes("每日复盘"),
-      hasOverall: userText.includes("Overall"),
-      replySeen: !!reply,
-      idle,
-      freshStarted: !!newChatBtn,
-      userPreview: userText.slice(0, 90),
-      replyPreview: reply.slice(0, 60),
-    };
-  })()`);
-  if (!results.aiDailyRecap.ok) {
-    throw new Error(`AI daily recap assertion failed: ${JSON.stringify(results.aiDailyRecap)}`);
-  }
-  results.aiRecapSave = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const btn = document.querySelector("[data-ai-daily-recap]");
-    if (!btn) return { ok: false, reason: "no recap button" };
-    const recapPrompt = "请帮我生成今日复盘";
-    const userBefore = [...document.querySelectorAll(".message-in")].filter(
-      (n) => (n.textContent ?? "").includes(recapPrompt),
-    ).length;
-    btn.click();
-    let userAdded = false;
-    for (let i = 0; i < 20; i++) {
-      const count = [...document.querySelectorAll(".message-in")].filter(
-        (n) => (n.textContent ?? "").includes(recapPrompt),
-      ).length;
-      if (count > userBefore) {
-        userAdded = true;
-        break;
-      }
-      await sleep(100);
-    }
-    let reply = "";
-    for (let i = 0; i < 60; i++) {
-      const bubbles = [...document.querySelectorAll(".message-in")].map((n) => n.textContent ?? "");
-      reply = [...bubbles]
-        .reverse()
-        .find((t) => t.includes("Streaming fallback") && !t.includes(recapPrompt)) ?? "";
-      if (reply) break;
-      await sleep(100);
-    }
-    if (!reply) return { ok: false, reason: "recap reply missing" };
-    let idle = false;
-    for (let i = 0; i < 40; i++) {
-      if (
-        !document.querySelector(".stream-caret") &&
-        !document.querySelector(".thinking-dot") &&
-        !document.querySelector('[data-streaming="true"]')
-      ) {
-        idle = true;
-        break;
-      }
-      await sleep(100);
-    }
-    const saveBtn = document.querySelector("[data-ai-recap-save]");
-    if (!saveBtn) return { ok: false, reason: "no save button" };
-    let enabled = false;
-    for (let i = 0; i < 40; i++) {
-      if (!saveBtn.disabled) {
-        enabled = true;
-        break;
-      }
-      await sleep(100);
-    }
-    if (!enabled) return { ok: false, reason: "save button disabled", idle, userAdded };
-    if (!userAdded) return { ok: false, reason: "recap user message not added", idle };
-    saveBtn.click();
-    let result = "";
-    for (let i = 0; i < 30; i++) {
-      result = document.querySelector("[data-ai-recap-save-result]")?.textContent ?? "";
-      if (result.includes("Saved")) break;
-      await sleep(100);
-    }
-    const stored = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
-    const saved = (stored.thoughts ?? []).find((t) => (t.content ?? "").includes("# 今日复盘"));
-    const ok =
-      result.includes("Saved") &&
-      !!saved &&
-      saved.tags === "#daily,#recap" &&
-      saved.type === "note";
-    return {
-      ok,
-      idle,
-      userAdded,
-      result,
-      savedTags: saved?.tags,
-      savedType: saved?.type,
-      replyPreview: reply.slice(0, 60),
-    };
-  })()`);
-  if (!results.aiRecapSave.ok) {
-    throw new Error(`AI recap save assertion failed: ${JSON.stringify(results.aiRecapSave)}`);
-  }
-  await clickDock('Knowledge');
-  results.aiRecapKnowledgeVisible = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    for (let i = 0; i < 20; i++) {
-      const body = document.body.innerText;
-      if (body.includes("# 今日复盘") || body.includes("今日复盘")) {
-        return { ok: true, visible: true };
-      }
-      await sleep(100);
-    }
-    return { ok: false, visible: false, body: document.body.innerText.slice(0, 200) };
-  })()`);
-  if (!results.aiRecapKnowledgeVisible.ok) {
-    throw new Error(
-      `AI recap knowledge visibility assertion failed: ${JSON.stringify(results.aiRecapKnowledgeVisible)}`,
-    );
-  }
-  results.recapSaveEntries = await evaluate(`(async () => {
-    localStorage.removeItem("ai-workbench:recap-draft:v1");
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const dock = [...document.querySelectorAll('nav button[aria-label]')]
-      .find((b) => b.getAttribute("aria-label") === "AI Studio");
-    if (!dock) return { ok: false, reason: "dock missing" };
-    dock.click();
-    await sleep(300);
-    [...document.querySelectorAll("main button")]
-      .find((b) => b.textContent?.trim() === "New chat")
-      ?.click();
-    await sleep(200);
-    const recapBtn = document.querySelector("[data-ai-daily-recap]");
-    if (!recapBtn) return { ok: false, reason: "no recap button" };
-    recapBtn.click();
-    let reply = "";
-    for (let i = 0; i < 60; i++) {
-      const bubbles = [...document.querySelectorAll(".message-in")].map(
-        (n) => n.textContent ?? "",
-      );
-      reply =
-        [...bubbles]
-          .reverse()
-          .find(
-            (t) =>
-              t.includes("Streaming fallback") &&
-              !t.includes("请帮我生成今日复盘"),
-          ) ?? "";
-      if (reply) break;
-      await sleep(100);
-    }
-    if (!reply) return { ok: false, reason: "recap reply missing" };
-    let idle = false;
-    for (let i = 0; i < 40; i++) {
-      if (
-        !document.querySelector(".stream-caret") &&
-        !document.querySelector(".thinking-dot") &&
-        !document.querySelector('[data-streaming="true"]')
-      ) {
-        idle = true;
-        break;
-      }
-      await sleep(100);
-    }
-    let messageSave = null;
-    for (let i = 0; i < 30; i++) {
-      messageSave = document.querySelector("[data-ai-recap-message-save]");
-      if (messageSave && !messageSave.disabled) break;
-      await sleep(100);
-    }
-    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
-    return {
-      ok: idle && !!messageSave && !messageSave.disabled && draft?.saved === false,
-      idle,
-      messageSaveSeen: !!messageSave,
-      messageSaveDisabled: messageSave?.disabled ?? null,
-      draftSaved: draft?.saved ?? null,
-      replyPreview: reply.slice(0, 40),
-    };
-  })()`);
-  if (!results.recapSaveEntries.ok) {
-    throw new Error(
-      `AI recap message entry assertion failed: ${JSON.stringify(results.recapSaveEntries)}`,
-    );
-  }
-  await clickDock('Knowledge');
-  results.recapSaveKnowledge = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    let saveBtn = null;
-    for (let i = 0; i < 20; i++) {
-      saveBtn = document.querySelector("[data-knowledge-recap-save]");
-      if (saveBtn) break;
-      await sleep(100);
-    }
-    if (!saveBtn) return { ok: false, reason: "no knowledge recap save" };
-    let enabled = false;
-    for (let i = 0; i < 20; i++) {
-      if (!saveBtn.disabled) {
-        enabled = true;
-        break;
-      }
-      await sleep(100);
-    }
-    const storedBefore = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
-    const recapCountBefore = (storedBefore.thoughts ?? []).filter((t) =>
-      (t.content ?? "").includes("# 今日复盘"),
-    ).length;
-    saveBtn.click();
-    let status = "";
-    for (let i = 0; i < 30; i++) {
-      status = document.querySelector("[data-knowledge-recap-status]")?.textContent ?? "";
-      if (status.includes("saved")) break;
-      await sleep(100);
-    }
-    const storedAfter = JSON.parse(localStorage.getItem("ai-workbench:db:v1") ?? "{}");
-    const recapCountAfter = (storedAfter.thoughts ?? []).filter((t) =>
-      (t.content ?? "").includes("# 今日复盘"),
-    ).length;
-    const draft = JSON.parse(localStorage.getItem("ai-workbench:recap-draft:v1") ?? "null");
-    const saved = draft?.saved === true && recapCountAfter === recapCountBefore + 1;
-    return {
-      ok: enabled && saved && status.includes("saved"),
-      enabled,
-      status,
-      saved,
-      recapCountBefore,
-      recapCountAfter,
-      draftSaved: draft?.saved ?? null,
-    };
-  })()`);
-  if (!results.recapSaveKnowledge.ok) {
-    throw new Error(
-      `Knowledge recap save assertion failed: ${JSON.stringify(results.recapSaveKnowledge)}`,
-    );
-  }
-  await clickDock('AI Studio');
-  results.recapSaveMessageState = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    let btn = null;
-    for (let i = 0; i < 30; i++) {
-      btn = document.querySelector("[data-ai-recap-message-save]");
-      if (btn) break;
-      await sleep(100);
-    }
-    return {
-      ok: !!btn && btn.disabled === true,
-      seen: !!btn,
-      disabled: btn?.disabled ?? null,
-      chip: document.querySelector("[data-ai-recap-save]")?.getAttribute("data-recap-saved") ?? "",
-    };
-  })()`);
-  if (!results.recapSaveMessageState.ok) {
-    throw new Error(
-      `AI recap saved state assertion failed: ${JSON.stringify(results.recapSaveMessageState)}`,
-    );
-  }
   await clickDock('AI Studio');
   await evaluate(
     `[...document.querySelectorAll("main button")].find((b) => b.textContent?.trim() === "New chat")?.click();`,
@@ -2641,141 +2330,6 @@ try {
   if (!results.taskManage?.ok) {
     throw new Error(`Task manage assertion failed: ${JSON.stringify(results.taskManage)}`);
   }
-
-  const focusWeekArchive = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const input = document.querySelector('input[placeholder="New task..."]');
-    if (!input) return { ok: false, reason: "no task input" };
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(input, "Focus week archive check");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    await sleep(100);
-    const add = [...document.querySelectorAll("main button")].find((b) => b.textContent.trim() === "Add");
-    if (!add) return { ok: false, reason: "no add button" };
-    add.click();
-    await sleep(350);
-    const created = [...document.querySelectorAll("[data-focus-week-day]")].map((el) => {
-      const tasks = el.getAttribute("data-focus-week-day") || "";
-      const done = el.getAttribute("data-focus-day-done") || "false";
-      return { key: tasks, done };
-    });
-    if (!created.length) return { ok: false, reason: "no week strip" };
-    const now = new Date();
-    const localToday =
-      now.getFullYear() +
-      "-" +
-      String(now.getMonth() + 1).padStart(2, "0") +
-      "-" +
-      String(now.getDate()).padStart(2, "0");
-    const todayKey = [...created].find((c) => c.key === localToday);
-    if (!todayKey) return { ok: false, reason: "today chip not found", keys: created.map((c) => c.key) };
-    const todayIndex = created.findIndex((c) => c.key === todayKey.key);
-    const tomorrow = created[(todayIndex + 1) % created.length];
-    if (!tomorrow) return { ok: false, reason: "no tomorrow chip" };
-    const row = [...document.querySelectorAll("[data-task-row]")]
-      .find((el) => (el.textContent || "").includes("Focus week archive check"));
-    if (!row) {
-      return {
-        ok: false,
-        reason: "planned task row not found",
-      };
-    }
-    const nextDay = row.querySelector("[data-task-next-day]");
-    if (!nextDay) return { ok: false, reason: "next day button not found" };
-    nextDay.click();
-    await sleep(400);
-    const tomorrowChip = document.querySelector('[data-focus-week-day="' + tomorrow.key + '"]');
-    tomorrowChip.click();
-    await sleep(250);
-    const plannedRow = [...document.querySelectorAll("[data-task-row]")]
-      .find((el) => (el.textContent || "").includes("Focus week archive check"));
-    const toggle = plannedRow ? plannedRow.querySelector('button[aria-label^="Toggle "]') : null;
-    if (!toggle) {
-      return {
-        ok: false,
-        reason: "planned task toggle not found after reassign",
-        rows: [...document.querySelectorAll("[data-task-row]")].map((el) =>
-          el.textContent?.trim().slice(0, 60),
-        ),
-      };
-    }
-    toggle.click();
-    await sleep(400);
-    const archive = document.querySelector("[data-focus-archive-count]");
-    const archiveText = archive ? archive.textContent : "";
-    const archiveSeen = archiveText.includes("Completed archive");
-    if (!archiveSeen) return { ok: false, reason: "archive not shown", archiveText };
-    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
-      .find((el) => (el.textContent || "").includes("Focus week archive check"));
-    const archiveRowText = archiveRow ? archiveRow.textContent : "";
-    const today = document.querySelector('[data-focus-week-day="' + todayKey.key + '"]');
-    today.click();
-    await sleep(600);
-    const todayTaskVisible = [...document.querySelectorAll("[data-task-row]")]
-      .some((el) => (el.textContent || "").includes("Focus week archive check"));
-    const todayRows = [...document.querySelectorAll("[data-task-row]")].map((el) =>
-      el.textContent?.trim().slice(0, 50),
-    );
-    return {
-      ok: archiveSeen && !!archiveRow,
-      chips: created.length,
-      archiveText,
-      archiveRowText,
-      todayTaskVisible,
-      todayRows,
-    };
-  })()`);
-  results.focusWeekArchive = focusWeekArchive;
-  await reloadAndWait();
-  await clickDock('Actions');
-  const focusWeekPersisted = await evaluate(`(async () => {
-    const archive = document.querySelector("[data-focus-archive-count]");
-    const archiveText = archive ? archive.textContent : "";
-    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
-      .find((el) => (el.textContent || "").includes("Focus week archive check"));
-    const activeTaskVisible = [...document.querySelectorAll("[data-task-row]")]
-      .some((el) => (el.textContent || "").includes("Focus week archive check"));
-    const chips = document.querySelectorAll("[data-focus-week-day]").length;
-    return {
-      ok:
-        chips === 7 &&
-        archiveText.includes("Completed archive") &&
-        !!archiveRow &&
-        !activeTaskVisible,
-      chips,
-      archiveText,
-      archiveRow: !!archiveRow,
-      activeTaskVisible,
-    };
-  })()`);
-  results.focusWeekPersisted = focusWeekPersisted;
-  const focusWeekRestored = await evaluate(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const archiveRow = [...document.querySelectorAll("[data-focus-archive-row]")]
-      .find((el) => (el.textContent || "").includes("Focus week archive check"));
-    if (!archiveRow) return { ok: false, reason: "archived row missing" };
-    const restore = archiveRow.querySelector("[data-focus-archive-restore]");
-    if (!restore) return { ok: false, reason: "restore button missing" };
-    restore.click();
-    await sleep(600);
-    const now = new Date();
-    const todayKey =
-      now.getFullYear() +
-      "-" +
-      String(now.getMonth() + 1).padStart(2, "0") +
-      "-" +
-      String(now.getDate()).padStart(2, "0");
-    const today = document.querySelector('[data-focus-week-day="' + todayKey + '"]');
-    if (!today) return { ok: false, reason: "today chip missing" };
-    today.click();
-    await sleep(400);
-    const taskVisible = [...document.querySelectorAll("[data-task-row]")]
-      .some((el) => (el.textContent || "").includes("Focus week archive check"));
-    const stillArchived = [...document.querySelectorAll("[data-focus-archive-row]")]
-      .some((el) => (el.textContent || "").includes("Focus week archive check"));
-    return { ok: taskVisible && !stillArchived, taskVisible, stillArchived };
-  })()`);
-  results.focusWeekRestored = focusWeekRestored;
 
   const taskManagePersisted = await evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5624,21 +5178,6 @@ try {
     results.knowledge.code === ''
   ) {
     throw new Error('Knowledge markdown preview assertion failed');
-  }
-  if (!results.focusWeekArchive.ok) {
-    throw new Error(
-      `focus week archive assertion failed: ${JSON.stringify(results.focusWeekArchive)}`,
-    );
-  }
-  if (!results.focusWeekPersisted.ok) {
-    throw new Error(
-      `focus week archive persistence assertion failed: ${JSON.stringify(results.focusWeekPersisted)}`,
-    );
-  }
-  if (!results.focusWeekRestored.ok) {
-    throw new Error(
-      `focus week archive restore assertion failed: ${JSON.stringify(results.focusWeekRestored)}`,
-    );
   }
 
   results.overlay = await evaluate(`(() => ({

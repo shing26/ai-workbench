@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import * as db from '../lib/db';
-import type { WeekPlanTemplate } from '../lib/weekPlanTemplates';
 import type { InspectorMetrics } from '../types/llm';
 
 export type ViewId = 'ai-studio' | 'dashboard' | 'projects' | 'knowledge' | 'actions' | 'system';
@@ -50,8 +49,6 @@ type WorkbenchState = {
   thoughts: db.Thought[];
   providers: db.Provider[];
   sessions: db.Session[];
-  habits: db.Habit[];
-  scheduleEvents: db.ScheduleEvent[];
   clipboard: db.ClipboardItem[];
   logs: db.ErrorLog[];
   inspector: InspectorState | null;
@@ -101,17 +98,6 @@ type WorkbenchState = {
   ) => Promise<void>;
   exportProviders: () => Promise<string>;
   importProviders: (payload: string) => Promise<number>;
-  addHabit: (name: string, weekGoal: number, color: db.Habit['color']) => Promise<void>;
-  toggleHabit: (id: string) => Promise<void>;
-  updateHabitWeekGoal: (id: string, weekGoal: number) => Promise<void>;
-  deleteHabit: (id: string, confirmed?: boolean) => Promise<void>;
-  addScheduleEvent: (title: string, startTime: string, tag: string, date: string) => Promise<void>;
-  applyWeekPlan: (
-    template: WeekPlanTemplate,
-    weekDays: string[],
-    todayKey: string,
-  ) => Promise<{ focusCount: number; eventCount: number }>;
-  toggleEventDone: (id: string) => Promise<void>;
   refreshSystem: () => Promise<void>;
   reportError: (
     source: string,
@@ -139,8 +125,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   thoughts: [],
   providers: [],
   sessions: [],
-  habits: [],
-  scheduleEvents: [],
   clipboard: [],
   logs: [],
   inspector: null,
@@ -152,24 +136,12 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
-    const [
-      tasks,
-      projects,
-      thoughts,
-      providers,
-      sessions,
-      habits,
-      scheduleEvents,
-      clipboard,
-      logs,
-    ] = await Promise.all([
+    const [tasks, projects, thoughts, providers, sessions, clipboard, logs] = await Promise.all([
       db.listTasks(),
       db.listProjects(),
       db.listThoughts(),
       db.listProviders(),
       db.listSessions(),
-      db.listHabits(),
-      db.listScheduleEvents(),
       db.listClipboard(),
       db.listErrorLogs(),
     ]);
@@ -179,8 +151,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       thoughts,
       providers,
       sessions,
-      habits,
-      scheduleEvents,
       clipboard,
       logs,
       loaded: true,
@@ -191,7 +161,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.initDb();
     try {
       const summary = await db.getWorkspaceSummary();
-      const bundle = await db.getActionsBundle();
       const [clipboard, logs] = await Promise.all([db.listClipboard(), db.listErrorLogs()]);
       set({
         projects: summary.projects,
@@ -199,8 +168,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
         thoughts: summary.thoughts,
         sessions: summary.sessions,
         providers: summary.providers,
-        habits: bundle.habits,
-        scheduleEvents: bundle.scheduleEvents,
         clipboard,
         logs,
         loaded: true,
@@ -300,55 +267,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     const count = await db.importProviders(payload);
     set({ providers: await db.listProviders() });
     return count;
-  },
-  addHabit: async (name, weekGoal, color) => {
-    await db.createHabit(name, weekGoal, color);
-    set({ habits: await db.listHabits() });
-  },
-  toggleHabit: async (id) => {
-    await db.toggleHabit(id);
-    set({ habits: await db.listHabits() });
-  },
-  updateHabitWeekGoal: async (id, weekGoal) => {
-    await db.updateHabitWeekGoal(id, weekGoal);
-    set({ habits: await db.listHabits() });
-  },
-  deleteHabit: async (id, confirmed = false) => {
-    await db.deleteHabit(id, confirmed);
-    set({ habits: await db.listHabits() });
-  },
-  addScheduleEvent: async (title, startTime, tag, date) => {
-    await db.createScheduleEvent(title, startTime, tag, date);
-    set({ scheduleEvents: await db.listScheduleEvents() });
-  },
-  applyWeekPlan: async (template, weekDays, todayKey) => {
-    let focusCount = 0;
-    let eventCount = 0;
-    for (let i = 0; i < template.days.length && i < weekDays.length; i += 1) {
-      const day = template.days[i];
-      const date = weekDays[i];
-      for (const focus of day.focus) {
-        if (!focus.trim()) continue;
-        const task = await db.createTask(focus.trim(), date === todayKey);
-        if (date !== todayKey) await db.setTaskToday(task.id, false);
-        await db.setTaskDueDate(task.id, date);
-        focusCount += 1;
-      }
-      for (const event of day.events) {
-        if (!event.title.trim()) continue;
-        await db.createScheduleEvent(event.title.trim(), event.time, event.tag, date);
-        eventCount += 1;
-      }
-    }
-    set({
-      tasks: await db.listTasks(),
-      scheduleEvents: await db.listScheduleEvents(),
-    });
-    return { focusCount, eventCount };
-  },
-  toggleEventDone: async (id) => {
-    await db.toggleEventDone(id);
-    set({ scheduleEvents: await db.listScheduleEvents() });
   },
   refreshSystem: async () => {
     const [clipboard, logs] = await Promise.all([db.listClipboard(), db.listErrorLogs()]);
