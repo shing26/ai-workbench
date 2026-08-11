@@ -25,6 +25,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 
+mod cli_spawn;
 mod db;
 mod file_ops;
 mod prism_agents;
@@ -7400,6 +7401,7 @@ pub fn run() {
             delete_secret,
             send_chat_message,
             run_codex,
+            cli_spawn::spawn_cli_process,
             fetch_url,
             fetch_rss,
             write_note,

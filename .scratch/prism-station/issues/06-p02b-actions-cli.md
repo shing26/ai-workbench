@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 (P0-2a spawn_cli_process)
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] 键盘扩展：`c` 派发（选任务 → CLI 模板预览）、`v` 健康检查（复用 Quality Gate）
 - [ ] `📎 关联知识` 弹窗（`data-link-knowledge`）：Knowledge 卡片列表，选中 → `.md` 路径注入模板

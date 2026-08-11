@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 - [ ] Rust `spawn_cli_process(project_path, command, args, cwd)`：
   - `tokio::process::Command` 或 `spawn_blocking` + 逐行读

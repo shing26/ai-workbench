@@ -1775,6 +1775,80 @@ export async function ensureAgentSpecs(projectPath: string): Promise<number> {
   return 0;
 }
 
+export type CliSpawnResult = {
+  runId: string;
+};
+
+export type CliLogLine = {
+  runId: string;
+  line: string;
+  stream: string;
+};
+
+export type CliExited = {
+  runId: string;
+  exitCode: number;
+};
+
+const localCliHandlers = {
+  log: new Set<(line: CliLogLine) => void>(),
+  exited: new Set<(evt: CliExited) => void>(),
+};
+
+export async function spawnCliProcess(
+  projectPath: string,
+  command: string,
+  args: string[],
+  cwd?: string,
+): Promise<CliSpawnResult> {
+  if (isTauri()) {
+    return invoke<CliSpawnResult>('spawn_cli_process', {
+      projectPath,
+      command,
+      args,
+      cwd: cwd ?? null,
+    });
+  }
+  const runId = `cli-mock-${Date.now().toString(36)}`;
+  const mockLines = [
+    `$ ${command} ${args.join(' ')}`,
+    '✓ 已唤醒本地 CLI（浏览器模拟模式）',
+    '→ 注入知识上下文：Spec.md + 相关卡片',
+    '→ 等待 agent 完成…',
+    '[exit 0]',
+  ];
+  mockLines.forEach((line, i) => {
+    setTimeout(
+      () => {
+        for (const h of localCliHandlers.log) h({ runId, line, stream: 'stdout' });
+        if (i === mockLines.length - 1) {
+          for (const h of localCliHandlers.exited) h({ runId, exitCode: 0 });
+        }
+      },
+      300 * (i + 1),
+    );
+  });
+  return { runId };
+}
+
+export async function listenCliLog(handler: (line: CliLogLine) => void): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import('@tauri-apps/api/event');
+    return listen<CliLogLine>('cli_log_line', (event) => handler(event.payload));
+  }
+  localCliHandlers.log.add(handler);
+  return () => localCliHandlers.log.delete(handler);
+}
+
+export async function listenCliExit(handler: (evt: CliExited) => void): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import('@tauri-apps/api/event');
+    return listen<CliExited>('cli_exited', (event) => handler(event.payload));
+  }
+  localCliHandlers.exited.add(handler);
+  return () => localCliHandlers.exited.delete(handler);
+}
+
 export type ApplySnippetResult = {
   success: boolean;
 
