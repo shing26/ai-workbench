@@ -32,22 +32,22 @@ export default function AppHeader() {
   }, [vibePath, qualityGate, refreshQualityGate]);
 
   return (
-    <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#16161A]/80 px-4 backdrop-blur-2xl">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm font-semibold text-slate-200">
+    <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-slate-950/40 px-4 backdrop-blur-2xl">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="truncate text-sm font-semibold text-slate-100">
           {t(TITLES[activeView])}
         </span>
-        <span className="hidden truncate text-xs text-slate-500 md:inline">
-          {t('app.subtitle')}
+        <span className="hidden truncate text-[10px] font-mono uppercase tracking-widest text-cyan-300/70 md:inline">
+          PRISM ENGINE · {t('app.subtitle')}
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-2">
         {activeProvider && (
           <span
             title={activeProvider.name}
-            className="flex max-w-44 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-400"
+            className="flex max-w-44 items-center gap-1.5 rounded-full border border-cyan-500/20 bg-cyan-500/[0.08] px-2.5 py-1 text-[11px] text-cyan-200"
           >
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
             <span className="truncate">{activeProvider.name}</span>
           </span>
         )}
@@ -64,7 +64,7 @@ export default function AppHeader() {
               title="Quality gate（点击刷新）"
               className={`flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[10px] transition-colors ${
                 qualityGate.status === 'GREEN'
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                  ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
                   : 'border-rose-500/30 bg-rose-500/10 text-rose-300'
               }`}
             >
@@ -74,14 +74,14 @@ export default function AppHeader() {
             {gateOpen && qualityGate.status !== 'GREEN' && (
               <div
                 data-quality-gate-errors
-                className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-white/10 bg-[#18181C] p-2 shadow-2xl"
+                className="prism-glass-surface absolute right-0 top-11 z-50 w-80 rounded-xl p-2 shadow-2xl"
               >
                 <div className="mb-1 px-1 text-[10px] font-semibold text-rose-300">
                   Quality Gate · {qualityGate.projectPath.split(/[\\/]/).pop()}
                 </div>
                 <div className="max-h-56 space-y-1 overflow-y-auto">
                   {qualityGate.errors.length === 0 && (
-                    <div className="px-1 py-2 text-[10px] text-slate-500">
+                    <div className="px-1 py-2 text-[10px] text-slate-400">
                       无错误（或命令不可用）
                     </div>
                   )}
@@ -105,7 +105,7 @@ export default function AppHeader() {
             data-locale
             aria-label="Locale"
             onClick={() => setLocaleOpen((v) => !v)}
-            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-300 transition-colors hover:border-cyan-500/30 hover:text-cyan-200"
           >
             <span aria-hidden>🌐</span>
             <span>{LOCALES.find((l) => l.code === locale)?.label ?? '中文'}</span>
@@ -113,7 +113,7 @@ export default function AppHeader() {
           {localeOpen && (
             <div
               data-locale-popover
-              className="absolute right-0 top-11 z-50 w-36 rounded-xl border border-white/10 bg-[#18181C] p-1 shadow-2xl"
+              className="prism-glass-surface absolute right-0 top-11 z-50 w-36 rounded-xl p-1 shadow-2xl"
             >
               {LOCALES.map((l) => (
                 <button
@@ -126,7 +126,7 @@ export default function AppHeader() {
                     setLocaleOpen(false);
                   }}
                   className={`flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] transition-colors hover:bg-white/[0.06] ${
-                    locale === l.code ? 'text-emerald-300' : 'text-slate-400'
+                    locale === l.code ? 'text-cyan-300' : 'text-slate-400'
                   }`}
                 >
                   {l.label}
@@ -143,7 +143,7 @@ export default function AppHeader() {
           aria-label="Search commands"
           aria-haspopup="dialog"
           onClick={() => emitEvent(TOPICS.COMMAND_PALETTE_TOGGLE)}
-          className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-400 transition-colors hover:border-white/20 hover:text-slate-200"
+          className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-300 transition-colors hover:border-cyan-500/30 hover:text-cyan-200"
         >
           <Search size={14} />
           <span className="hidden md:inline">Search</span>

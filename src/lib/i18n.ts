@@ -6,18 +6,18 @@ const LS_KEY = 'ai-workbench:locale:v1';
 
 const DICT: Record<Locale, Record<string, string>> = {
   'zh-CN': {
-    'app.subtitle': '本地优先 AI 工作台',
+    'app.subtitle': '一人公司 AI CPO 桌面操作系统',
     'app.allGreen': '全部通过',
     'app.checkFailed': '检查失败',
-    'view.dashboard': '控制塔',
-    'view.aiStudio': 'AI Studio',
-    'view.projects': '项目',
-    'view.knowledge': '知识与收件箱',
-    'view.actions': '行动与日程',
+    'view.dashboard': '总览控制塔',
+    'view.aiStudio': '需求论证 Canvas',
+    'view.projects': '项目矩阵',
+    'view.knowledge': '活体知识库',
+    'view.actions': '交付终端',
     'view.system': '系统与自动化',
   },
   'en-US': {
-    'app.subtitle': 'Local-first AI Workbench',
+    'app.subtitle': 'One-Person AI CPO Desktop OS',
     'app.allGreen': 'ALL GREEN',
     'app.checkFailed': 'CHECK FAILED',
     'view.dashboard': 'Dashboard',
@@ -28,7 +28,7 @@ const DICT: Record<Locale, Record<string, string>> = {
     'view.system': 'System & Automation',
   },
   'ja-JP': {
-    'app.subtitle': 'ローカル優先 AI ワークベンチ',
+    'app.subtitle': '一人会社 AI CPO デスクトップ OS',
     'app.allGreen': 'ALL GREEN',
     'app.checkFailed': 'CHECK FAILED',
     'view.dashboard': 'コントロールタワー',

@@ -34,7 +34,10 @@ export default function ViewRouter() {
   }, [activeView]);
 
   return (
-    <main data-view={activeView} className="canvas-ambient min-w-0 flex-1 overflow-hidden">
+    <main
+      data-view={activeView}
+      className="canvas-ambient bg-frost-mesh min-w-0 flex-1 overflow-hidden"
+    >
       {(Object.keys(views) as ViewId[]).map((view) => {
         if (!mountedViews.has(view)) return null;
         const View = views[view];

@@ -77,14 +77,13 @@ export default function BentoCard({
   const titleClass = tierStyle?.title ?? 'text-sm';
   const cardExtra = tierStyle?.card ?? '';
   const headerClass = tierStyle?.header ?? 'mb-3';
-  const background = tier === 'fold' ? 'bg-[#18181C]/85' : 'bg-[#18181C]';
 
   return (
     <section
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
       data-material={resolvedMaterial}
-      className={`bento-card material-card ${resolvedMaterial ? `material-${resolvedMaterial}` : ''} flex min-w-0 flex-col rounded-2xl border border-white/10 ${background} shadow-xl ${padding} ${cardExtra} ${className}`}
+      className={`bento-card slate-glass ${resolvedMaterial ? `material-${resolvedMaterial}` : ''} flex min-w-0 flex-col rounded-2xl ${padding} ${cardExtra} ${className}`}
       style={{ gridColumn: `span ${colSpan} / span ${colSpan}` }}
     >
       <header className={`flex items-start justify-between gap-2 ${headerClass}`}>

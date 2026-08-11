@@ -73,10 +73,10 @@ export default function DashboardView() {
                   data-token-sparkline-point
                   data-token-sparkline-day={point.day}
                   data-token-sparkline-value={point.tokens}
-                  className={`block w-full rounded-sm ${point.tokens > 0 ? 'accent-bg' : 'bg-white/[0.06]'}`}
+                  className={`block w-full rounded-sm ${point.tokens > 0 ? 'bg-cyan-400/60' : 'bg-white/[0.06]'}`}
                   style={{ height: `${Math.max(3, Math.round(pct * 56))}px` }}
                 />
-                <span className="font-mono text-[8px] text-slate-600">{point.day.slice(5)}</span>
+                <span className="font-mono text-[8px] text-slate-500">{point.day.slice(5)}</span>
               </div>
             );
           })}
@@ -87,7 +87,7 @@ export default function DashboardView() {
           </span>
           <span
             className={
-              budget.near ? 'text-amber-400' : budget.over ? 'text-rose-400' : 'text-emerald-400'
+              budget.near ? 'text-amber-400' : budget.over ? 'text-rose-400' : 'text-cyan-400'
             }
           >
             {budget.over ? '⚠ 已超限' : budget.near ? '⚠ 接近上限' : '✓ 预算健康'}
@@ -112,8 +112,8 @@ export default function DashboardView() {
               tone={cliStats.successRate >= 80 ? 'green' : 'neutral'}
             />
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] text-slate-500">
-            <GitBranch size={11} className="text-slate-600" />
+          <div className="flex items-center gap-2 rounded-xl border border-cyan-500/15 bg-cyan-500/[0.05] px-3 py-2 text-[10px] text-slate-400">
+            <GitBranch size={11} className="text-cyan-400/70" />
             支持 claude / aider / codex / git · 最近运行
             {cliStats.lastRunAt ? new Date(cliStats.lastRunAt).toLocaleTimeString() : '—'}
           </div>
@@ -130,9 +130,9 @@ export default function DashboardView() {
         <div className="grid gap-3 md:grid-cols-3">
           <div
             data-dashboard-today-dod
-            className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
+            className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-md"
           >
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-emerald-400/80">
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-cyan-300/90">
               <Flame size={11} /> Top DoD
             </div>
             {todayDoD.length === 0 && (
@@ -153,7 +153,7 @@ export default function DashboardView() {
 
           <div
             data-dashboard-blocked
-            className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3"
+            className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 backdrop-blur-md"
           >
             <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-amber-400/80">
               <AlertTriangle size={11} /> Blocked（{blockedCount}）
@@ -176,7 +176,7 @@ export default function DashboardView() {
 
           <div
             data-dashboard-risk
-            className="rounded-xl border border-rose-500/20 bg-rose-500/[0.04] p-3"
+            className="rounded-xl border border-rose-500/20 bg-rose-500/[0.04] p-3 backdrop-blur-md"
           >
             <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-rose-400/80">
               <ShieldAlert size={11} /> AI 风险
@@ -197,7 +197,7 @@ export default function DashboardView() {
               </div>
             )}
             {!budget.over && docCount > 0 && blockedCount < 3 && (
-              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] px-2 py-1.5 text-[11px] text-emerald-300">
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1.5 text-[11px] text-cyan-300">
                 ✓ 状态健康，无即时风险
               </div>
             )}
@@ -206,10 +206,10 @@ export default function DashboardView() {
       </BentoCard>
 
       <div
-        className="flex items-center gap-2 text-[10px] text-slate-600"
+        className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-cyan-300/60"
         style={{ gridColumn: 'span 12 / span 12' }}
       >
-        <LayoutDashboard size={11} /> 控制塔 · 只读视图 · CLI 交付在 Actions
+        <LayoutDashboard size={11} /> Prism Station · 控制塔只读视图 · CLI 交付在 Actions
       </div>
     </div>
   );

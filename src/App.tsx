@@ -71,7 +71,7 @@ export default function App() {
   }, [refreshSystem, reportError]);
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-[#101014] text-slate-200">
+    <div className="flex h-full w-full overflow-hidden bg-frost-mesh text-slate-200">
       <AppDock />
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader />
