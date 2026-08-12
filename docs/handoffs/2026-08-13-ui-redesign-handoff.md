@@ -38,3 +38,10 @@
 1. 归档流程端到端 UI 自动化（创建旅程 → 挂载 → 归档 → Knowledge 卡片出现）。
 2. `tauri dev` 实测真实 CLI 探测与 Obsidian 联动。
 3. 引入 vitest 并把 `verify:matrix` 接入 npm scripts（需用户确认后修改 `package.json`）。
+
+## v1.1 补充（2026-08-13 同日晚间）
+
+- 归档 E2E 已加入 `scripts/ui-verify.mjs`：新建项目 → 阶段 ready → 归档 → Knowledge 卡片出现并带项目名与归档标记，已通过。
+- 新增 `scripts/desktop-smoke.mjs`：盘点白名单 CLI、检查 Obsidian 协议、运行 Rust 单测；实跑检测到 codex/opencode，Obsidian 已注册，cargo test 133/133。
+- 接入 vitest：`package.json` 新增 `test:unit` / `verify:matrix`，`src/lib/tokenBudget.test.ts` 与 `src/stores/viewState.test.ts` 共 4 条用例；L2 已含 vitest。
+- `npm run verify:matrix` L1-L4 全绿。tickets 见 `.scratch/v11-hardening/`。

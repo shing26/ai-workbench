@@ -180,6 +180,7 @@ async function main() {
   }
 
   await runCommand('L2 cargo test', 2, srcTauri, 'cargo', ['test', '--quiet'], 180000);
+  await runCommand('L2 vitest', 2, root, 'npm', ['run', 'test:unit'], 120000);
   await runCommand('L2 build', 2, root, 'npm', ['run', 'build'], 180000);
   await runCommand('L3 preview verify', 3, root, 'node', ['scripts/preview-verify.mjs'], 240000);
   await runL4Mock();

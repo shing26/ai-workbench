@@ -245,6 +245,42 @@ async function main() {
     if (!ok) throw new Error(`missing project selector ${sel}`);
   }
 
+  await evaluate(`(() => {
+    const card = Array.from(document.querySelectorAll('[data-project-card]')).find((el) =>
+      (el.innerText || '').includes('Verify Project'),
+    );
+    const select = card?.querySelector('[data-project-stage]');
+    if (!card || !select) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(select, 'ready');
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await delay(250);
+  await click(`(() => {
+    const card = Array.from(document.querySelectorAll('[data-project-card]')).find((el) =>
+      (el.innerText || '').includes('Verify Project'),
+    );
+    return card?.querySelector('[data-project-archive]');
+  })()`);
+  await click(`document.querySelector('button[aria-label="Knowledge"]')`);
+  await waitFor(`document.querySelector('[data-prism-card]') !== null`, 'archive knowledge card');
+  results.archive = await evaluate(`(() => {
+    const card = Array.from(document.querySelectorAll('[data-prism-card]')).find((el) =>
+      (el.innerText || '').includes('Verify Project'),
+    );
+    const text = card?.innerText || '';
+    return {
+      hasCard: card !== null,
+      hasProject: text.includes('Verify Project'),
+      hasArchived: text.includes('#archived') || text.includes('归档'),
+      cardText: text.slice(0, 160),
+    };
+  })()`);
+  if (!results.archive.hasCard || !results.archive.hasProject || !results.archive.hasArchived) {
+    throw new Error(`archive flow assertion failed: ${JSON.stringify(results.archive)}`);
+  }
+
   await click(`document.querySelector('button[aria-label="AI Studio"]')`);
   await waitFor(`document.querySelector('[data-studio-chat-input]') !== null`, 'studio input');
   await click(`document.querySelector('[data-agent-dropdown-toggle]')`);
