@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import * as db from '../lib/db';
 import type { InspectorMetrics } from '../types/llm';
 
-export type ViewId = 'ai-studio' | 'dashboard' | 'projects' | 'knowledge' | 'actions' | 'system';
+export type ViewId = 'ai-studio' | 'dashboard' | 'projects' | 'knowledge' | 'actions';
 export type InspectorSection = { label: string; value: string };
 export type InspectorState = {
   title: string;
@@ -77,6 +77,11 @@ type WorkbenchState = {
   deleteTask: (id: string, confirmed?: boolean) => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   updateProject: (id: string, status: string, revenue: number) => Promise<void>;
+  updateProjectJourney: (
+    id: string,
+    stage: db.ProjectJourneyStage,
+    journeyDocPath?: string | null,
+  ) => Promise<void>;
   setProjectMaterial: (id: string, material: string) => Promise<void>;
   deleteProject: (id: string, confirmed?: boolean) => Promise<void>;
   reorderProjects: (ids: string[]) => Promise<void>;
@@ -207,6 +212,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
   updateProject: async (id, status, revenue) => {
     await db.updateProject(id, status, revenue);
+    set({ projects: await db.listProjects() });
+  },
+  updateProjectJourney: async (id, stage, journeyDocPath = null) => {
+    await db.updateProjectJourney(id, stage, journeyDocPath);
     set({ projects: await db.listProjects() });
   },
   setProjectMaterial: async (id, material) => {

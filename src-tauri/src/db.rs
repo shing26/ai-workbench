@@ -1,4 +1,3 @@
-use pinyin::ToPinyin;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,7 +24,9 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT DEFAULT 'active',
     created_at INTEGER,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    material TEXT NOT NULL DEFAULT ''
+    material TEXT NOT NULL DEFAULT '',
+    journey_stage TEXT NOT NULL DEFAULT 'idea',
+    journey_doc_path TEXT
 );
 CREATE TABLE IF NOT EXISTS project_revenue_history (
     id TEXT PRIMARY KEY,
@@ -533,6 +534,34 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     total_tokens INTEGER DEFAULT 0,
     status TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_catalog (
+    id TEXT PRIMARY KEY,
+    division TEXT NOT NULL,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    emoji TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT 'slate',
+    developer_instructions TEXT NOT NULL DEFAULT '',
+    tools TEXT NOT NULL DEFAULT '[]',
+    source_url TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_agent_catalog_division ON agent_catalog(division);
+CREATE TABLE IF NOT EXISTS team_presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    agent_slugs TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS cli_tools (
+    bin TEXT PRIMARY KEY,
+    label TEXT NOT NULL DEFAULT '',
+    detected INTEGER NOT NULL DEFAULT 0,
+    last_checked_at INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -557,6 +586,8 @@ pub struct Project {
     pub path: Option<String>,
     pub revenue: f64,
     pub status: String,
+    pub journey_stage: String,
+    pub journey_doc_path: Option<String>,
     pub created_at: i64,
     pub sort_order: i64,
     pub material: String,
@@ -624,47 +655,12 @@ pub struct Session {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSearchHit {
-    pub session: Session,
-    pub match_type: String,
-    pub snippet: String,
-    pub score: i64,
-    pub message_id: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
     pub session_id: String,
     pub role: String,
     pub content: String,
     pub created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageVersion {
-    pub id: String,
-    pub message_id: String,
-    pub content: String,
-    pub created_at: i64,
-    pub parent_version_id: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageAux {
-    pub message_id: String,
-    pub payload: String,
-    pub updated_at: i64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageDiff {
-    pub added: Vec<String>,
-    pub removed: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -737,35 +733,60 @@ pub struct Agent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentCatalogEntry {
+    pub id: String,
+    pub division: String,
+    pub name: String,
+    pub slug: String,
+    pub description: String,
+    pub emoji: String,
+    pub color: String,
+    pub developer_instructions: String,
+    pub tools: Vec<String>,
+    pub source_url: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogInput {
+    pub division: String,
+    pub name: String,
+    pub slug: String,
+    pub description: String,
+    pub emoji: String,
+    pub color: String,
+    pub developer_instructions: String,
+    pub tools: Vec<String>,
+    pub source_url: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamPreset {
+    pub id: String,
+    pub name: String,
+    pub agent_slugs: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliToolDetection {
+    pub bin: String,
+    pub label: String,
+    pub detected: bool,
+    pub last_checked_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentPromptVersion {
     pub id: String,
     pub agent_id: String,
     pub content: String,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Habit {
-    pub id: String,
-    pub name: String,
-    pub week_goal: i64,
-    pub current_streak: i64,
-    pub color: String,
-    pub done_today: bool,
-    pub created_at: i64,
-    pub recent_logs: Vec<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScheduleEvent {
-    pub id: String,
-    pub title: String,
-    pub start_time: String,
-    pub date: String,
-    pub done: bool,
-    pub tag: String,
     pub created_at: i64,
 }
 
@@ -849,39 +870,6 @@ pub struct SyncConflictRecord {
     pub remote_content: String,
     pub resolved_choice: Option<String>,
     pub resolved_at: Option<i64>,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultWatchConfig {
-    pub path: String,
-    pub ignore_patterns: Vec<String>,
-    pub enabled: bool,
-    pub updated_at: i64,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultWatchTarget {
-    pub path: String,
-    pub ignore_patterns: Vec<String>,
-    pub enabled: bool,
-    pub updated_at: i64,
-    pub last_event_at: i64,
-    pub event_count: i64,
-    pub created_events: i64,
-    pub modified_events: i64,
-    pub removed_events: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultWatchEvent {
-    pub id: i64,
-    pub vault_path: String,
-    pub file_path: String,
-    pub event_kind: String,
     pub created_at: i64,
 }
 
@@ -1022,15 +1010,6 @@ pub struct RagSourceFilter {
     pub file_paths: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RagIndexStatus {
-    pub documents: i64,
-    pub indexed: bool,
-    pub last_indexed_at: i64,
-    pub vector_indexed: bool,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingConfig {
@@ -1047,21 +1026,6 @@ pub struct EmbeddingConfig {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmbeddingConfigInput {
-    pub mode: String,
-    pub provider_id: String,
-    pub base_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub dimension: usize,
-    pub shard_count: usize,
-    pub auto_rebuild: bool,
-    pub ann_enabled: bool,
-    pub probe_count: usize,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorShardRecord {
@@ -1073,283 +1037,6 @@ pub struct VectorShardRecord {
     pub centroid: String,
     pub updated_at: i64,
     pub created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorIndexStatus {
-    pub total: i64,
-    pub pending: i64,
-    pub failed: i64,
-    pub indexed: i64,
-    pub model: String,
-    pub auto_rebuild: bool,
-    pub ann_enabled: bool,
-    pub probe_count: usize,
-    pub centroids_ready: bool,
-    pub shards: Vec<VectorShardRecord>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorRebuildResult {
-    pub total: i64,
-    pub rebuilt: i64,
-    pub failed: i64,
-    pub skipped: i64,
-    pub model: String,
-    pub shards: Vec<VectorShardRecord>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeClusterRecord {
-    pub id: String,
-    pub documents: i64,
-    pub representative: String,
-    pub model: String,
-    pub members: Vec<KnowledgeClusterMember>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeClusterMember {
-    pub id: String,
-    pub path: String,
-    pub title: String,
-    pub similarity: f64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeDedupCandidate {
-    pub id: String,
-    pub doc_a: String,
-    pub doc_b: String,
-    pub title_a: String,
-    pub title_b: String,
-    pub similarity: f64,
-    pub status: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeClusterStatus {
-    pub clusters: Vec<KnowledgeClusterRecord>,
-    pub dedup: Vec<KnowledgeDedupCandidate>,
-    pub cluster_threshold: f64,
-    pub dedup_threshold: f64,
-    pub last_recomputed_at: i64,
-    pub model: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeIndexStatus {
-    pub files: i64,
-    pub indexed_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IndexResult {
-    pub files: i64,
-    pub ignored: i64,
-    pub concurrency_used: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultTargetStats {
-    pub path: String,
-    pub files: i64,
-    pub last_indexed_at: i64,
-    pub last_event_at: i64,
-    pub event_count: i64,
-    pub created_events: i64,
-    pub modified_events: i64,
-    pub removed_events: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeFileRecord {
-    pub id: String,
-    pub path: String,
-    pub title: String,
-    pub tags: String,
-    pub vault_path: String,
-    pub indexed_at: i64,
-    pub exists: bool,
-    pub stale: bool,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeCleanupResult {
-    pub removed: i64,
-    pub reindexed: i64,
-    pub failed: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultIndexQueueRecord {
-    pub run_id: String,
-    pub path: String,
-    pub ignore_patterns: Vec<String>,
-    pub concurrency: usize,
-    pub status: String,
-    pub priority: usize,
-    pub attempts: usize,
-    pub last_error: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookRule {
-    pub id: String,
-    pub name: String,
-    pub url: String,
-    pub payload: String,
-    pub method: String,
-    pub token: String,
-    pub secret: String,
-    pub retries: i64,
-    pub cooldown_seconds: i64,
-    pub interval_seconds: i64,
-    pub trigger_event: String,
-    pub trigger_condition: String,
-    pub channels: Vec<String>,
-    pub recovery_backoff_seconds: i64,
-    pub circuit_opened_at: i64,
-    pub enabled: bool,
-    pub last_run_at: i64,
-    pub last_status: i64,
-    pub last_message: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub consecutive_failures: i64,
-    pub auto_disable_after: i64,
-    pub template_version: i64,
-}
-
-pub struct WebhookRuleInput<'a> {
-    pub name: &'a str,
-    pub url: &'a str,
-    pub payload: &'a str,
-    pub method: &'a str,
-    pub token: &'a str,
-    pub secret: &'a str,
-    pub retries: i64,
-    pub cooldown_seconds: i64,
-    pub interval_seconds: i64,
-    pub trigger_event: &'a str,
-    pub trigger_condition: &'a str,
-    pub channels: Vec<String>,
-    pub recovery_backoff_seconds: i64,
-    pub auto_disable_after: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookTemplateVersion {
-    pub id: String,
-    pub rule_id: String,
-    pub version: i64,
-    pub payload: String,
-    pub note: String,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookRuleRun {
-    pub id: String,
-    pub rule_id: String,
-    pub kind: String,
-    pub status: String,
-    pub http_status: i64,
-    pub attempts: i64,
-    pub message: String,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookDelivery {
-    pub id: String,
-    pub rule_id: String,
-    pub channel: String,
-    pub event: String,
-    pub payload: String,
-    pub method: String,
-    pub url: String,
-    pub token: String,
-    pub secret: String,
-    pub retries: i64,
-    pub attempts: i64,
-    pub status: String,
-    pub last_status: i64,
-    pub last_message: String,
-    pub next_attempt_at: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookRetentionConfig {
-    pub retention_days: i64,
-    pub max_records: i64,
-    pub auto_cleanup: bool,
-    pub updated_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookChannelConfig {
-    pub email_enabled: bool,
-    pub email_from: String,
-    pub email_to: String,
-    pub smtp_host: String,
-    pub smtp_port: i64,
-    pub smtp_user: String,
-    pub smtp_password: String,
-    pub notification_enabled: bool,
-    pub notification_title: String,
-    pub updated_at: i64,
-}
-
-pub struct WebhookChannelConfigInput<'a> {
-    pub email_enabled: bool,
-    pub email_from: &'a str,
-    pub email_to: &'a str,
-    pub smtp_host: &'a str,
-    pub smtp_port: i64,
-    pub smtp_user: &'a str,
-    pub smtp_password: &'a str,
-    pub notification_enabled: bool,
-    pub notification_title: &'a str,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookPruneResult {
-    pub removed_by_age: i64,
-    pub removed_by_count: i64,
-    pub total_removed: i64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebhookDeliveryStats {
-    pub total: i64,
-    pub queued: i64,
-    pub delivering: i64,
-    pub success: i64,
-    pub dead: i64,
-    pub failed: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1432,938 +1119,8 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn today_local() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-
-fn date_key_to_days(key: &str) -> Option<i64> {
-    let parts: Vec<&str> = key.split('-').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let year: i64 = parts[0].parse().ok()?;
-    let month: i64 = parts[1].parse().ok()?;
-    let day: i64 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
-}
-
-fn compute_habit_streak(log_dates: &[String], today: &str) -> i64 {
-    let Some(today_days) = date_key_to_days(today) else {
-        return 0;
-    };
-    let mut checked: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for date in log_dates {
-        if let Some(days) = date_key_to_days(date) {
-            checked.insert(days);
-        }
-    }
-    let mut cursor = if checked.contains(&today_days) {
-        today_days
-    } else {
-        today_days - 1
-    };
-    let mut streak = 0;
-    while checked.contains(&cursor) {
-        streak += 1;
-        cursor -= 1;
-    }
-    streak
-}
-
-fn recent_habit_logs(log_dates: &[String], today: &str, window: i64) -> Vec<String> {
-    let Some(today_days) = date_key_to_days(today) else {
-        return Vec::new();
-    };
-    let min = today_days - window + 1;
-    let mut dates: Vec<String> = log_dates
-        .iter()
-        .filter_map(|date| {
-            let days = date_key_to_days(date)?;
-            if days >= min {
-                Some(date.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    dates.sort();
-    dates.dedup();
-    dates
-}
-
 pub fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
-}
-
-const WEBHOOK_RULE_COLUMNS: &str =
-    "id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, enabled, \
-     last_run_at, last_status, last_message, created_at, updated_at, trigger_event, \
-     trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, \
-     consecutive_failures, auto_disable_after, template_version";
-
-fn parse_webhook_channels(text: &str) -> Vec<String> {
-    serde_json::from_str::<Vec<String>>(text)
-        .unwrap_or_else(|_| vec!["http".to_string()])
-        .into_iter()
-        .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
-        .collect::<Vec<_>>()
-}
-
-fn map_webhook_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRule> {
-    Ok(WebhookRule {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        url: row.get(2)?,
-        payload: row.get(3)?,
-        method: row.get(4)?,
-        token: row.get(5)?,
-        secret: row.get(6)?,
-        retries: row.get(7)?,
-        cooldown_seconds: row.get(8)?,
-        interval_seconds: row.get(9)?,
-        enabled: row.get::<_, i64>(10)? != 0,
-        last_run_at: row.get(11)?,
-        last_status: row.get(12)?,
-        last_message: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        trigger_event: row.get(16)?,
-        trigger_condition: row.get(17)?,
-        channels: parse_webhook_channels(&row.get::<_, String>(18)?),
-        recovery_backoff_seconds: row.get(19)?,
-        circuit_opened_at: row.get(20)?,
-        consecutive_failures: row.get(21)?,
-        auto_disable_after: row.get(22)?,
-        template_version: row.get(23)?,
-    })
-}
-
-pub fn get_webhook_rule(conn: &Connection, id: &str) -> Result<Option<WebhookRule>> {
-    conn.query_row(
-        &format!(
-            "SELECT {} FROM webhook_rules WHERE id = ?1",
-            WEBHOOK_RULE_COLUMNS
-        ),
-        params![id],
-        map_webhook_rule,
-    )
-    .optional()
-}
-
-pub fn list_webhook_rules(conn: &Connection) -> Result<Vec<WebhookRule>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM webhook_rules ORDER BY created_at ASC",
-        WEBHOOK_RULE_COLUMNS
-    ))?;
-    let rows = stmt.query_map([], map_webhook_rule)?;
-    rows.collect()
-}
-
-pub fn create_webhook_rule(conn: &Connection, input: &WebhookRuleInput<'_>) -> Result<WebhookRule> {
-    let now = now_millis();
-    let id = uid();
-    let method = if input.method.trim().is_empty() {
-        "POST".to_string()
-    } else {
-        input.method.trim().to_uppercase()
-    };
-    let payload = if input.payload.trim().is_empty() {
-        "{}".to_string()
-    } else {
-        input.payload.trim().to_string()
-    };
-    let interval = input.interval_seconds.max(5);
-    let cooldown = input.cooldown_seconds.max(0);
-    let channels = if input.channels.is_empty() {
-        vec!["http".to_string()]
-    } else {
-        input
-            .channels
-            .iter()
-            .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let channels = if channels.is_empty() {
-        vec!["http".to_string()]
-    } else {
-        channels
-    };
-    let channels_json =
-        serde_json::to_string(&channels).unwrap_or_else(|_| "[\"http\"]".to_string());
-    conn.execute(
-        "INSERT INTO webhook_rules (id, name, url, payload, method, token, secret, retries, cooldown_seconds, interval_seconds, trigger_event, trigger_condition, channels, recovery_backoff_seconds, circuit_opened_at, enabled, last_run_at, last_status, last_message, created_at, updated_at, consecutive_failures, auto_disable_after, template_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, 1, 0, 0, '', ?15, ?15, 0, ?16, 1)",
-        params![
-            id,
-            input.name,
-            input.url,
-            payload,
-            method,
-            input.token,
-            input.secret,
-            input.retries,
-            cooldown,
-            interval,
-            input.trigger_event,
-            input.trigger_condition,
-            channels_json,
-            input.recovery_backoff_seconds.max(0),
-            now,
-            input.auto_disable_after.max(0),
-        ],
-    )?;
-    conn.execute(
-        "INSERT INTO webhook_template_versions (id, rule_id, version, payload, note, created_at)
-         VALUES (?1, ?2, 1, ?3, '', ?4)",
-        params![uid(), id, payload, now],
-    )?;
-    get_webhook_rule(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn next_webhook_template_version(conn: &Connection, rule_id: &str) -> Result<i64> {
-    let current: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM webhook_template_versions WHERE rule_id = ?1",
-        params![rule_id],
-        |row| row.get(0),
-    )?;
-    Ok(current + 1)
-}
-
-pub fn save_webhook_template_version(
-    conn: &Connection,
-    rule_id: &str,
-    payload: &str,
-    note: &str,
-) -> Result<WebhookTemplateVersion> {
-    let version = next_webhook_template_version(conn, rule_id)?;
-    let now = now_millis();
-    let id = uid();
-    let updated = conn.execute(
-        "UPDATE webhook_rules
-         SET payload = ?1, template_version = ?2, updated_at = ?3
-         WHERE id = ?4",
-        params![payload, version, now, rule_id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    conn.execute(
-        "INSERT INTO webhook_template_versions (id, rule_id, version, payload, note, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, rule_id, version, payload, note, now],
-    )?;
-    Ok(WebhookTemplateVersion {
-        id,
-        rule_id: rule_id.to_string(),
-        version,
-        payload: payload.to_string(),
-        note: note.to_string(),
-        created_at: now,
-    })
-}
-
-pub fn list_webhook_template_versions(
-    conn: &Connection,
-    rule_id: &str,
-) -> Result<Vec<WebhookTemplateVersion>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, rule_id, version, payload, note, created_at
-         FROM webhook_template_versions
-         WHERE rule_id = ?1
-         ORDER BY version DESC",
-    )?;
-    let rows = stmt.query_map(params![rule_id], |row| {
-        Ok(WebhookTemplateVersion {
-            id: row.get(0)?,
-            rule_id: row.get(1)?,
-            version: row.get(2)?,
-            payload: row.get(3)?,
-            note: row.get(4)?,
-            created_at: row.get(5)?,
-        })
-    })?;
-    rows.collect()
-}
-
-pub fn restore_webhook_template_version(
-    conn: &Connection,
-    rule_id: &str,
-    version: i64,
-) -> Result<WebhookRule> {
-    let payload: String = conn.query_row(
-        "SELECT payload FROM webhook_template_versions
-         WHERE rule_id = ?1 AND version = ?2",
-        params![rule_id, version],
-        |row| row.get(0),
-    )?;
-    let updated = conn.execute(
-        "UPDATE webhook_rules
-         SET payload = ?1, template_version = ?2, updated_at = ?3
-         WHERE id = ?4",
-        params![payload, version, now_millis(), rule_id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    get_webhook_rule(conn, rule_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn set_webhook_rule_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<WebhookRule> {
-    let updated = conn.execute(
-        "UPDATE webhook_rules
-         SET enabled = ?1,
-             consecutive_failures = CASE WHEN ?1 = 1 THEN 0 ELSE consecutive_failures END,
-             circuit_opened_at = CASE WHEN ?1 = 1 THEN 0 ELSE circuit_opened_at END,
-             updated_at = ?2
-         WHERE id = ?3",
-        params![enabled as i64, now_millis(), id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    get_webhook_rule(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn delete_webhook_rule(conn: &Connection, id: &str) -> Result<()> {
-    let _ = conn.execute(
-        "DELETE FROM webhook_deliveries WHERE rule_id = ?1",
-        params![id],
-    )?;
-    let removed = conn.execute("DELETE FROM webhook_rules WHERE id = ?1", params![id])?;
-    if removed == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    Ok(())
-}
-
-pub fn list_due_webhook_rules(conn: &Connection, now_ms: i64) -> Result<Vec<WebhookRule>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM webhook_rules
-         WHERE enabled = 1 AND trigger_event = ''
-           AND (last_run_at = 0 OR ?1 - last_run_at >= interval_seconds * 1000)
-         ORDER BY last_run_at ASC",
-        WEBHOOK_RULE_COLUMNS
-    ))?;
-    let rows = stmt.query_map(params![now_ms], map_webhook_rule)?;
-    rows.collect()
-}
-
-pub fn list_event_webhook_rules(
-    conn: &Connection,
-    event: &str,
-    now_ms: i64,
-) -> Result<Vec<WebhookRule>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM webhook_rules
-         WHERE enabled = 1 AND trigger_event = ?1
-           AND (last_run_at = 0 OR ?2 - last_run_at >= cooldown_seconds * 1000)
-         ORDER BY created_at ASC",
-        WEBHOOK_RULE_COLUMNS
-    ))?;
-    let rows = stmt.query_map(params![event, now_ms], map_webhook_rule)?;
-    rows.collect()
-}
-
-pub fn mark_webhook_rule_run(
-    conn: &Connection,
-    id: &str,
-    status: i64,
-    message: &str,
-) -> Result<()> {
-    let now = now_millis();
-    conn.execute(
-        "UPDATE webhook_rules SET last_run_at = ?1, last_status = ?2, last_message = ?3, updated_at = ?1 WHERE id = ?4",
-        params![now, status, message, id],
-    )?;
-    Ok(())
-}
-
-pub fn record_webhook_rule_outcome(
-    conn: &Connection,
-    id: &str,
-    status: i64,
-    message: &str,
-) -> Result<()> {
-    let now = now_millis();
-    conn.execute(
-        "UPDATE webhook_rules
-         SET last_run_at = ?1,
-             last_status = ?2,
-             consecutive_failures = CASE
-                 WHEN ?2 >= 200 AND ?2 < 300 THEN 0
-                 ELSE consecutive_failures + 1
-             END,
-             last_message = CASE
-                 WHEN ?2 >= 200 AND ?2 < 300 THEN ?3
-                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after
-                     THEN 'Auto-disabled after ' || (consecutive_failures + 1) || ' consecutive failures'
-                 ELSE ?3
-             END,
-             enabled = CASE
-                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after THEN 0
-                 ELSE enabled
-             END,
-             circuit_opened_at = CASE
-                 WHEN ?2 >= 200 AND ?2 < 300 THEN 0
-                 WHEN auto_disable_after > 0 AND consecutive_failures + 1 >= auto_disable_after THEN ?1
-                 ELSE circuit_opened_at
-             END,
-             updated_at = ?1
-         WHERE id = ?4",
-        params![now, status, message, id],
-    )?;
-    Ok(())
-}
-
-pub fn list_circuit_open_webhook_rules(conn: &Connection) -> Result<Vec<WebhookRule>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM webhook_rules
-         WHERE enabled = 0
-           AND auto_disable_after > 0
-           AND consecutive_failures >= auto_disable_after
-           AND circuit_opened_at > 0
-         ORDER BY circuit_opened_at ASC",
-        WEBHOOK_RULE_COLUMNS
-    ))?;
-    let rows = stmt.query_map([], map_webhook_rule)?;
-    rows.collect()
-}
-
-pub fn set_webhook_circuit_opened_at(conn: &Connection, id: &str, at: i64) -> Result<()> {
-    let updated = conn.execute(
-        "UPDATE webhook_rules
-         SET circuit_opened_at = ?1, updated_at = ?1
-         WHERE id = ?2",
-        params![at, id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    Ok(())
-}
-
-const WEBHOOK_RULE_RUN_COLUMNS: &str =
-    "id, rule_id, kind, status, http_status, attempts, message, created_at";
-
-fn map_webhook_rule_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRuleRun> {
-    Ok(WebhookRuleRun {
-        id: row.get(0)?,
-        rule_id: row.get(1)?,
-        kind: row.get(2)?,
-        status: row.get(3)?,
-        http_status: row.get(4)?,
-        attempts: row.get(5)?,
-        message: row.get(6)?,
-        created_at: row.get(7)?,
-    })
-}
-
-pub fn get_webhook_rule_run(conn: &Connection, id: &str) -> Result<Option<WebhookRuleRun>> {
-    conn.query_row(
-        &format!(
-            "SELECT {} FROM webhook_rule_runs WHERE id = ?1",
-            WEBHOOK_RULE_RUN_COLUMNS
-        ),
-        params![id],
-        map_webhook_rule_run,
-    )
-    .optional()
-}
-
-pub fn record_webhook_rule_run(
-    conn: &Connection,
-    rule_id: &str,
-    kind: &str,
-    status: &str,
-    http_status: i64,
-    attempts: i64,
-    message: &str,
-) -> Result<WebhookRuleRun> {
-    let now = now_millis();
-    let id = uid();
-    conn.execute(
-        "INSERT INTO webhook_rule_runs (id, rule_id, kind, status, http_status, attempts, message, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            id,
-            rule_id,
-            kind,
-            status,
-            http_status,
-            attempts.max(1),
-            message,
-            now,
-        ],
-    )?;
-    conn.execute(
-        "DELETE FROM webhook_rule_runs
-         WHERE rule_id = ?1 AND id NOT IN (
-             SELECT id FROM webhook_rule_runs
-             WHERE rule_id = ?1
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT 50
-         )",
-        params![rule_id],
-    )?;
-    get_webhook_rule_run(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn list_webhook_rule_runs(
-    conn: &Connection,
-    rule_id: Option<&str>,
-    limit: i64,
-) -> Result<Vec<WebhookRuleRun>> {
-    let limit = limit.clamp(1, 200);
-    let rule_id = rule_id.filter(|id| !id.trim().is_empty());
-    let mut stmt = if rule_id.is_some() {
-        conn.prepare(&format!(
-            "SELECT {} FROM webhook_rule_runs
-             WHERE rule_id = ?1
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT ?2",
-            WEBHOOK_RULE_RUN_COLUMNS
-        ))?
-    } else {
-        conn.prepare(&format!(
-            "SELECT {} FROM webhook_rule_runs
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT ?1",
-            WEBHOOK_RULE_RUN_COLUMNS
-        ))?
-    };
-    let rows = if let Some(rule_id) = rule_id {
-        stmt.query_map(params![rule_id, limit], map_webhook_rule_run)?
-    } else {
-        stmt.query_map(params![limit], map_webhook_rule_run)?
-    };
-    rows.collect()
-}
-
-const WEBHOOK_DELIVERY_COLUMNS: &str =
-    "id, rule_id, channel, event, payload, method, url, token, secret, retries, attempts, status, \
-     last_status, last_message, next_attempt_at, created_at, updated_at";
-
-fn map_webhook_delivery(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookDelivery> {
-    Ok(WebhookDelivery {
-        id: row.get(0)?,
-        rule_id: row.get(1)?,
-        channel: row.get(2)?,
-        event: row.get(3)?,
-        payload: row.get(4)?,
-        method: row.get(5)?,
-        url: row.get(6)?,
-        token: row.get(7)?,
-        secret: row.get(8)?,
-        retries: row.get(9)?,
-        attempts: row.get(10)?,
-        status: row.get(11)?,
-        last_status: row.get(12)?,
-        last_message: row.get(13)?,
-        next_attempt_at: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
-    })
-}
-
-pub fn get_webhook_delivery(conn: &Connection, id: &str) -> Result<Option<WebhookDelivery>> {
-    conn.query_row(
-        &format!(
-            "SELECT {} FROM webhook_deliveries WHERE id = ?1",
-            WEBHOOK_DELIVERY_COLUMNS
-        ),
-        params![id],
-        map_webhook_delivery,
-    )
-    .optional()
-}
-
-#[allow(dead_code)]
-pub fn enqueue_webhook_delivery(
-    conn: &Connection,
-    rule: &WebhookRule,
-    event: &str,
-    payload: &str,
-) -> Result<WebhookDelivery> {
-    enqueue_webhook_delivery_channel(conn, rule, event, payload, "http")
-}
-
-pub fn enqueue_webhook_delivery_channel(
-    conn: &Connection,
-    rule: &WebhookRule,
-    event: &str,
-    payload: &str,
-    channel: &str,
-) -> Result<WebhookDelivery> {
-    let now = now_millis();
-    let id = uid();
-    conn.execute(
-        "INSERT INTO webhook_deliveries (id, rule_id, channel, event, payload, method, url, token, secret, retries, attempts, status, last_status, last_message, next_attempt_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 'queued', 0, '', ?11, ?11, ?11)",
-        params![
-            id,
-            rule.id,
-            channel,
-            event,
-            payload,
-            rule.method,
-            rule.url,
-            rule.token,
-            rule.secret,
-            rule.retries.max(0),
-            now,
-        ],
-    )?;
-    get_webhook_delivery(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn list_webhook_deliveries(
-    conn: &Connection,
-    limit: i64,
-    status_filter: &str,
-) -> Result<Vec<WebhookDelivery>> {
-    let mut stmt = if status_filter.trim().is_empty() {
-        conn.prepare(&format!(
-            "SELECT {} FROM webhook_deliveries ORDER BY created_at DESC LIMIT ?1",
-            WEBHOOK_DELIVERY_COLUMNS
-        ))?
-    } else {
-        conn.prepare(&format!(
-            "SELECT {} FROM webhook_deliveries WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
-            WEBHOOK_DELIVERY_COLUMNS
-        ))?
-    };
-    let rows = if status_filter.trim().is_empty() {
-        stmt.query_map(params![limit], map_webhook_delivery)?
-    } else {
-        stmt.query_map(params![status_filter, limit], map_webhook_delivery)?
-    };
-    rows.collect()
-}
-
-pub fn claim_due_webhook_deliveries(
-    conn: &Connection,
-    now_ms: i64,
-    limit: i64,
-) -> Result<Vec<WebhookDelivery>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM webhook_deliveries
-         WHERE status = 'queued' AND next_attempt_at <= ?1
-         ORDER BY next_attempt_at ASC, created_at ASC
-         LIMIT ?2",
-        WEBHOOK_DELIVERY_COLUMNS
-    ))?;
-    let rows = stmt.query_map(params![now_ms, limit], map_webhook_delivery)?;
-    let ids: Vec<String> = rows.filter_map(Result::ok).map(|d| d.id).collect();
-    for id in &ids {
-        conn.execute(
-            "UPDATE webhook_deliveries SET status = 'delivering', updated_at = ?1 WHERE id = ?2",
-            params![now_millis(), id],
-        )?;
-    }
-    Ok(ids
-        .into_iter()
-        .filter_map(|id| get_webhook_delivery(conn, &id).ok().flatten())
-        .collect::<Vec<_>>())
-}
-
-pub fn complete_webhook_delivery(
-    conn: &Connection,
-    id: &str,
-    status: &str,
-    last_status: i64,
-    message: &str,
-    attempts: i64,
-    next_attempt_at: i64,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE webhook_deliveries
-         SET attempts = ?1, status = ?2, last_status = ?3, last_message = ?4,
-             next_attempt_at = ?5, updated_at = ?6
-         WHERE id = ?7",
-        params![
-            attempts,
-            status,
-            last_status,
-            message,
-            next_attempt_at,
-            now_millis(),
-            id
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn retry_webhook_delivery(conn: &Connection, id: &str) -> Result<WebhookDelivery> {
-    let updated = conn.execute(
-        "UPDATE webhook_deliveries
-         SET attempts = 0, status = 'queued', last_message = '', next_attempt_at = ?1, updated_at = ?1
-         WHERE id = ?2",
-        params![now_millis(), id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    get_webhook_delivery(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn delete_webhook_delivery(conn: &Connection, id: &str) -> Result<()> {
-    let removed = conn.execute("DELETE FROM webhook_deliveries WHERE id = ?1", params![id])?;
-    if removed == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    Ok(())
-}
-
-pub fn clear_webhook_deliveries(conn: &Connection, status_filter: &str) -> Result<i64> {
-    let removed = if status_filter.trim().is_empty() {
-        conn.execute("DELETE FROM webhook_deliveries", [])?
-    } else {
-        conn.execute(
-            "DELETE FROM webhook_deliveries WHERE status = ?1",
-            params![status_filter],
-        )?
-    };
-    Ok(removed as i64)
-}
-
-pub fn get_webhook_retention_config(conn: &Connection) -> Result<WebhookRetentionConfig> {
-    let row = conn.query_row(
-        "SELECT retention_days, max_records, auto_cleanup, updated_at
-         FROM webhook_retention_config WHERE id = 1",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        },
-    );
-    match row {
-        Ok((retention_days, max_records, auto_cleanup, updated_at)) => Ok(WebhookRetentionConfig {
-            retention_days,
-            max_records,
-            auto_cleanup: auto_cleanup != 0,
-            updated_at,
-        }),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(WebhookRetentionConfig {
-            retention_days: 30,
-            max_records: 200,
-            auto_cleanup: true,
-            updated_at: 0,
-        }),
-        Err(e) => Err(e),
-    }
-}
-
-pub fn set_webhook_retention_config(
-    conn: &Connection,
-    retention_days: i64,
-    max_records: i64,
-    auto_cleanup: bool,
-) -> Result<WebhookRetentionConfig> {
-    let days = retention_days.clamp(1, 3650);
-    let max_records = max_records.clamp(1, 100_000);
-    conn.execute(
-        "INSERT INTO webhook_retention_config
-           (id, retention_days, max_records, auto_cleanup, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4)
-         ON CONFLICT(id) DO UPDATE SET
-           retention_days = excluded.retention_days,
-           max_records = excluded.max_records,
-           auto_cleanup = excluded.auto_cleanup,
-           updated_at = excluded.updated_at",
-        params![days, max_records, auto_cleanup as i64, now_millis()],
-    )?;
-    get_webhook_retention_config(conn)
-}
-
-pub fn get_webhook_channel_config(conn: &Connection) -> Result<WebhookChannelConfig> {
-    let row = conn.query_row(
-        "SELECT email_enabled, email_from, email_to, smtp_host, smtp_port, smtp_user, smtp_password,
-                notification_enabled, notification_title, updated_at
-         FROM webhook_channel_config WHERE id = 1",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, i64>(9)?,
-            ))
-        },
-    );
-    match row {
-        Ok((
-            email_enabled,
-            email_from,
-            email_to,
-            smtp_host,
-            smtp_port,
-            smtp_user,
-            smtp_password,
-            notification_enabled,
-            notification_title,
-            updated_at,
-        )) => Ok(WebhookChannelConfig {
-            email_enabled: email_enabled != 0,
-            email_from,
-            email_to,
-            smtp_host,
-            smtp_port,
-            smtp_user,
-            smtp_password,
-            notification_enabled: notification_enabled != 0,
-            notification_title,
-            updated_at,
-        }),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(WebhookChannelConfig {
-            email_enabled: false,
-            email_from: String::new(),
-            email_to: String::new(),
-            smtp_host: String::new(),
-            smtp_port: 587,
-            smtp_user: String::new(),
-            smtp_password: String::new(),
-            notification_enabled: false,
-            notification_title: "AI Workbench webhook".to_string(),
-            updated_at: 0,
-        }),
-        Err(e) => Err(e),
-    }
-}
-
-pub fn set_webhook_channel_config(
-    conn: &Connection,
-    input: &WebhookChannelConfigInput<'_>,
-) -> Result<WebhookChannelConfig> {
-    let port = input.smtp_port.clamp(1, 65_535);
-    let title = if input.notification_title.trim().is_empty() {
-        "AI Workbench webhook".to_string()
-    } else {
-        input.notification_title.trim().to_string()
-    };
-    conn.execute(
-        "INSERT INTO webhook_channel_config
-           (id, email_enabled, email_from, email_to, smtp_host, smtp_port, smtp_user, smtp_password,
-            notification_enabled, notification_title, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT(id) DO UPDATE SET
-           email_enabled = excluded.email_enabled,
-           email_from = excluded.email_from,
-           email_to = excluded.email_to,
-           smtp_host = excluded.smtp_host,
-           smtp_port = excluded.smtp_port,
-           smtp_user = excluded.smtp_user,
-           smtp_password = excluded.smtp_password,
-           notification_enabled = excluded.notification_enabled,
-           notification_title = excluded.notification_title,
-           updated_at = excluded.updated_at",
-        params![
-            input.email_enabled as i64,
-            input.email_from.trim(),
-            input.email_to.trim(),
-            input.smtp_host.trim(),
-            port,
-            input.smtp_user.trim(),
-            input.smtp_password,
-            input.notification_enabled as i64,
-            title,
-            now_millis(),
-        ],
-    )?;
-    get_webhook_channel_config(conn)
-}
-
-pub fn get_webhook_delivery_stats(conn: &Connection) -> Result<WebhookDeliveryStats> {
-    let mut stmt =
-        conn.prepare("SELECT status, COUNT(*) FROM webhook_deliveries GROUP BY status")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
-    let mut stats = WebhookDeliveryStats {
-        total: 0,
-        queued: 0,
-        delivering: 0,
-        success: 0,
-        dead: 0,
-        failed: 0,
-    };
-    for row in rows {
-        let (status, count) = row?;
-        stats.total += count;
-        match status.as_str() {
-            "queued" => stats.queued = count,
-            "delivering" => stats.delivering = count,
-            "success" => stats.success = count,
-            "dead" => stats.dead = count,
-            _ => stats.failed += count,
-        }
-    }
-    Ok(stats)
-}
-
-pub fn prune_webhook_deliveries(
-    conn: &Connection,
-    retention_days: i64,
-    max_records: i64,
-) -> Result<WebhookPruneResult> {
-    let now = now_millis();
-    let mut removed_by_age = 0_i64;
-    if retention_days > 0 {
-        let cutoff = now.saturating_sub(retention_days.saturating_mul(86_400_000));
-        removed_by_age = conn.execute(
-            "DELETE FROM webhook_deliveries
-             WHERE status IN ('success', 'dead') AND created_at < ?1",
-            params![cutoff],
-        )? as i64;
-    }
-
-    let terminal: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM webhook_deliveries WHERE status IN ('success', 'dead')",
-        [],
-        |row| row.get(0),
-    )?;
-    let excess = terminal.saturating_sub(max_records.max(0));
-    let mut removed_by_count = 0_i64;
-    if excess > 0 {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM webhook_deliveries
-             WHERE status IN ('success', 'dead')
-             ORDER BY created_at ASC, rowid ASC
-             LIMIT ?1",
-        )?;
-        let ids: Vec<String> = stmt
-            .query_map(params![excess], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        for id in ids {
-            removed_by_count +=
-                conn.execute("DELETE FROM webhook_deliveries WHERE id = ?1", params![id])? as i64;
-        }
-    }
-
-    Ok(WebhookPruneResult {
-        removed_by_age,
-        removed_by_count,
-        total_removed: removed_by_age + removed_by_count,
-    })
 }
 
 fn event_schema_validates(schema: &str, context: &Value) -> Result<(), String> {
@@ -2914,6 +1671,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_updated_at(&conn)?;
     migrate_project_sort_order(&conn)?;
     migrate_project_material(&conn)?;
+    migrate_project_journey(&conn)?;
     migrate_error_log_device(&conn)?;
     migrate_version_parent(&conn)?;
     migrate_vault_watch_targets(&conn)?;
@@ -3318,6 +2076,18 @@ fn migrate_project_sort_order(conn: &Connection) -> Result<()> {
 fn migrate_project_material(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "projects", "material")? {
         conn.execute_batch("ALTER TABLE projects ADD COLUMN material TEXT NOT NULL DEFAULT '';")?;
+    }
+    Ok(())
+}
+
+fn migrate_project_journey(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "projects", "journey_stage")? {
+        conn.execute_batch(
+            "ALTER TABLE projects ADD COLUMN journey_stage TEXT NOT NULL DEFAULT 'idea';",
+        )?;
+    }
+    if !column_exists(conn, "projects", "journey_doc_path")? {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN journey_doc_path TEXT;")?;
     }
     Ok(())
 }
@@ -3727,7 +2497,7 @@ pub fn delete_task(conn: &Connection, id: &str) -> Result<()> {
 
 pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, path, revenue, status, created_at, sort_order, material
+        "SELECT id, name, path, revenue, status, journey_stage, journey_doc_path, created_at, sort_order, material
          FROM projects ORDER BY sort_order ASC, created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -3737,9 +2507,11 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
             path: row.get(2)?,
             revenue: row.get(3)?,
             status: row.get(4)?,
-            created_at: row.get(5)?,
-            sort_order: row.get(6)?,
-            material: row.get(7)?,
+            journey_stage: row.get(5)?,
+            journey_doc_path: row.get(6)?,
+            created_at: row.get(7)?,
+            sort_order: row.get(8)?,
+            material: row.get(9)?,
         })
     })?;
     rows.collect()
@@ -3754,8 +2526,8 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         |row| row.get(0),
     )?;
     conn.execute(
-        "INSERT INTO projects (id, name, path, revenue, status, created_at, sort_order, material)
-         VALUES (?1, ?2, ?3, 0.0, 'active', ?4, ?5, '')",
+        "INSERT INTO projects (id, name, path, revenue, status, journey_stage, journey_doc_path, created_at, sort_order, material)
+         VALUES (?1, ?2, ?3, 0.0, 'active', 'idea', NULL, ?4, ?5, '')",
         params![
             id,
             name,
@@ -3778,6 +2550,8 @@ pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Proje
         },
         revenue: 0.0,
         status: "active".to_string(),
+        journey_stage: "idea".to_string(),
+        journey_doc_path: None,
         created_at: now,
         sort_order,
         material: String::new(),
@@ -3829,6 +2603,29 @@ pub fn update_project_material(conn: &Connection, id: &str, material: &str) -> R
     conn.execute(
         "UPDATE projects SET material = ?1 WHERE id = ?2",
         params![material, id],
+    )?;
+    list_projects(conn)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+const PROJECT_JOURNEY_STAGES: [&str; 5] = ["idea", "discussing", "ready", "building", "archived"];
+
+pub fn update_project_journey(
+    conn: &Connection,
+    id: &str,
+    stage: &str,
+    journey_doc_path: Option<String>,
+) -> Result<Project> {
+    if !PROJECT_JOURNEY_STAGES.contains(&stage) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "journey stage: {stage}"
+        )));
+    }
+    conn.execute(
+        "UPDATE projects SET journey_stage = ?1, journey_doc_path = ?2 WHERE id = ?3",
+        params![stage, journey_doc_path, id],
     )?;
     list_projects(conn)?
         .into_iter()
@@ -4006,76 +2803,6 @@ pub fn upsert_quick_prompt(conn: &Connection, prompt: &QuickPrompt) -> Result<()
     Ok(())
 }
 
-pub fn next_quick_prompt_order(conn: &Connection) -> Result<i64> {
-    let max: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(sort_order) FROM quick_prompts WHERE custom = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(max.unwrap_or(0) + 1)
-}
-
-pub fn update_custom_quick_prompt(
-    conn: &Connection,
-    id: &str,
-    label: &str,
-    category: &str,
-    text: &str,
-) -> Result<QuickPrompt, String> {
-    let existing = conn
-        .query_row(
-            "SELECT id, label, category, text, custom, sort_order, updated_at, created_at
-             FROM quick_prompts WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(QuickPrompt {
-                    id: row.get(0)?,
-                    label: row.get(1)?,
-                    category: row.get(2)?,
-                    text: row.get(3)?,
-                    custom: row.get::<_, i64>(4)? != 0,
-                    sort_order: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("quick prompt not found: {id}"))?;
-    if !existing.custom {
-        return Err(format!("quick prompt is not custom: {id}"));
-    }
-    let prompt = QuickPrompt {
-        label: label.to_string(),
-        category: category.to_string(),
-        text: text.to_string(),
-        updated_at: now_millis(),
-        ..existing
-    };
-    upsert_quick_prompt(conn, &prompt).map_err(|e| e.to_string())?;
-    Ok(prompt)
-}
-
-pub fn reorder_custom_quick_prompts(conn: &Connection, ids: &[String]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    for (index, id) in ids.iter().enumerate() {
-        tx.execute(
-            "UPDATE quick_prompts SET sort_order = ?1, updated_at = ?2 WHERE id = ?3 AND custom = 1",
-            params![index as i64, now_millis(), id],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn delete_quick_prompt(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("DELETE FROM quick_prompts WHERE id = ?1", params![id])?;
-    Ok(())
-}
-
 pub fn list_quick_prompt_usage(conn: &Connection) -> Result<Vec<QuickPromptUsageEntry>> {
     let mut stmt = conn.prepare(
         "SELECT id, count, updated_at FROM quick_prompt_usage WHERE count > 0 ORDER BY updated_at DESC",
@@ -4102,20 +2829,6 @@ pub fn upsert_quick_prompt_usage(
         params![id, count, updated_at],
     )?;
     Ok(())
-}
-
-pub fn record_quick_prompt_usage(conn: &Connection, id: &str) -> Result<i64> {
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO quick_prompt_usage (id, count, updated_at) VALUES (?1, 1, ?2)
-         ON CONFLICT(id) DO UPDATE SET count = count + 1, updated_at = ?2",
-        params![id, now],
-    )?;
-    conn.query_row(
-        "SELECT count FROM quick_prompt_usage WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )
 }
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
@@ -4236,20 +2949,6 @@ pub fn create_provider_with_options(
         retry_count,
         retry_delay_secs,
     })
-}
-
-#[allow(dead_code)]
-pub fn update_provider_api_key(
-    conn: &Connection,
-    id: &str,
-    stored_api_key: &str,
-    encrypted: bool,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE providers SET api_key = ?1, api_key_encrypted = ?2 WHERE id = ?3",
-        params![stored_api_key, encrypted as i64, id],
-    )?;
-    Ok(())
 }
 
 pub fn update_provider_stream_config(
@@ -4629,158 +3328,213 @@ pub fn restore_agent_prompt(conn: &Connection, agent_id: &str, version_id: &str)
     get_agent(conn, agent_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
-fn habit_log_dates(conn: &Connection, habit_id: &str) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT date FROM habit_logs WHERE habit_id = ?1 ORDER BY date ASC")?;
-    let rows = stmt.query_map(params![habit_id], |row| row.get(0))?;
-    rows.collect()
+fn json_array_text(values: &[String]) -> String {
+    serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string())
 }
 
-pub fn list_habits(conn: &Connection) -> Result<Vec<Habit>> {
+fn parse_json_array_text(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+pub fn list_agent_catalog(conn: &Connection) -> Result<Vec<AgentCatalogEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, week_goal, current_streak, color, created_at
-         FROM habits
-         ORDER BY created_at ASC",
+        "SELECT id, division, name, slug, COALESCE(description, ''), COALESCE(emoji, ''),
+                COALESCE(color, 'slate'), COALESCE(developer_instructions, ''),
+                COALESCE(tools, '[]'), COALESCE(source_url, ''), created_at, updated_at
+         FROM agent_catalog
+         ORDER BY division ASC, name ASC",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, i64>(5)?,
-        ))
-    })?;
-    let today = today_local();
-    let mut habits = Vec::new();
-    for row in rows {
-        let (id, name, week_goal, color, created_at) = row?;
-        let log_dates = habit_log_dates(conn, &id)?;
-        let done_today = log_dates.iter().any(|date| date == &today);
-        habits.push(Habit {
-            id,
-            name,
-            week_goal,
-            current_streak: compute_habit_streak(&log_dates, &today),
-            color,
-            done_today,
-            created_at,
-            recent_logs: recent_habit_logs(&log_dates, &today, 14),
-        });
-    }
-    Ok(habits)
-}
-
-pub fn create_habit(conn: &Connection, name: &str, week_goal: i64, color: &str) -> Result<Habit> {
-    let id = uid();
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO habits (id, name, week_goal, current_streak, color, created_at) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-        params![id, name, week_goal, color, now],
-    )?;
-    Ok(Habit {
-        id,
-        name: name.to_string(),
-        week_goal,
-        current_streak: 0,
-        color: color.to_string(),
-        done_today: false,
-        created_at: now,
-        recent_logs: Vec::new(),
-    })
-}
-
-pub fn toggle_habit(conn: &Connection, id: &str) -> Result<Habit> {
-    let today = today_local();
-    let checked: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?1 AND date = ?2",
-        params![id, today],
-        |row| row.get(0),
-    )?;
-    if checked > 0 {
-        conn.execute(
-            "DELETE FROM habit_logs WHERE habit_id = ?1 AND date = ?2",
-            params![id, today],
-        )?;
-    } else {
-        conn.execute(
-            "INSERT INTO habit_logs (id, habit_id, date, checked_at) VALUES (?1, ?2, ?3, ?4)",
-            params![uid(), id, today, now_millis()],
-        )?;
-    }
-    let habit = list_habits(conn)?
-        .into_iter()
-        .find(|h| h.id == id)
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
-    Ok(habit)
-}
-
-pub fn update_habit_week_goal(conn: &Connection, id: &str, week_goal: i64) -> Result<Habit> {
-    let goal = week_goal.clamp(1, 31);
-    conn.execute(
-        "UPDATE habits SET week_goal = ?1 WHERE id = ?2",
-        params![goal, id],
-    )?;
-    list_habits(conn)?
-        .into_iter()
-        .find(|h| h.id == id)
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn delete_habit(conn: &Connection, id: &str) -> Result<bool> {
-    conn.execute("DELETE FROM habit_logs WHERE habit_id = ?1", params![id])?;
-    let removed = conn.execute("DELETE FROM habits WHERE id = ?1", params![id])?;
-    Ok(removed > 0)
-}
-
-pub fn list_schedule_events(conn: &Connection) -> Result<Vec<ScheduleEvent>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, title, start_time, date, done, tag, created_at FROM schedule_events ORDER BY date ASC, start_time ASC, created_at ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(ScheduleEvent {
+        let tools_raw: String = row.get(8)?;
+        Ok(AgentCatalogEntry {
             id: row.get(0)?,
-            title: row.get(1)?,
-            start_time: row.get(2)?,
-            date: row.get(3)?,
-            done: row.get::<_, i64>(4)? != 0,
-            tag: row.get(5)?,
-            created_at: row.get(6)?,
+            division: row.get(1)?,
+            name: row.get(2)?,
+            slug: row.get(3)?,
+            description: row.get(4)?,
+            emoji: row.get(5)?,
+            color: row.get(6)?,
+            developer_instructions: row.get(7)?,
+            tools: parse_json_array_text(&tools_raw),
+            source_url: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
         })
     })?;
     rows.collect()
 }
 
-pub fn create_schedule_event(
+pub fn import_agent_catalog(
     conn: &Connection,
-    title: &str,
-    start_time: &str,
-    date: &str,
-    tag: &str,
-) -> Result<ScheduleEvent> {
+    entries: &[AgentCatalogInput],
+) -> Result<Vec<AgentCatalogEntry>> {
+    let now = now_millis();
+    for entry in entries {
+        if entry.slug.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "empty agent slug".into(),
+            ));
+        }
+        let tools = json_array_text(&entry.tools);
+        conn.execute(
+            "INSERT INTO agent_catalog
+               (id, division, name, slug, description, emoji, color,
+                developer_instructions, tools, source_url, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+             ON CONFLICT(slug) DO UPDATE SET
+                 division = excluded.division,
+                 name = excluded.name,
+                 description = excluded.description,
+                 emoji = excluded.emoji,
+                 color = excluded.color,
+                 developer_instructions = excluded.developer_instructions,
+                 tools = excluded.tools,
+                 source_url = excluded.source_url,
+                 updated_at = excluded.updated_at",
+            params![
+                uid(),
+                entry.division,
+                entry.name,
+                entry.slug,
+                entry.description,
+                entry.emoji,
+                entry.color,
+                entry.developer_instructions,
+                tools,
+                entry.source_url,
+                now
+            ],
+        )?;
+    }
+    list_agent_catalog(conn)
+}
+
+pub fn list_team_presets(conn: &Connection) -> Result<Vec<TeamPreset>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, COALESCE(agent_slugs, '[]'), created_at, updated_at
+         FROM team_presets
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let slugs_raw: String = row.get(2)?;
+        Ok(TeamPreset {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            agent_slugs: parse_json_array_text(&slugs_raw),
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn create_team_preset(
+    conn: &Connection,
+    name: &str,
+    agent_slugs: &[String],
+) -> Result<TeamPreset> {
+    if name.trim().is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "empty team preset name".into(),
+        ));
+    }
     let id = uid();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
-        params![id, title, start_time, date, tag, now],
+        "INSERT INTO team_presets (id, name, agent_slugs, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![id, name, json_array_text(agent_slugs), now],
     )?;
-    Ok(ScheduleEvent {
+    Ok(TeamPreset {
         id,
-        title: title.to_string(),
-        start_time: start_time.to_string(),
-        date: date.to_string(),
-        done: false,
-        tag: tag.to_string(),
+        name: name.to_string(),
+        agent_slugs: agent_slugs.to_vec(),
         created_at: now,
+        updated_at: now,
     })
 }
 
-pub fn toggle_event_done(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE schedule_events SET done = CASE WHEN done = 1 THEN 0 ELSE 1 END WHERE id = ?1",
-        params![id],
+pub fn update_team_preset(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    agent_slugs: &[String],
+) -> Result<TeamPreset> {
+    if name.trim().is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "empty team preset name".into(),
+        ));
+    }
+    let now = now_millis();
+    let changed = conn.execute(
+        "UPDATE team_presets SET name = ?1, agent_slugs = ?2, updated_at = ?3 WHERE id = ?4",
+        params![name, json_array_text(agent_slugs), now, id],
     )?;
+    if changed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    list_team_presets(conn)?
+        .into_iter()
+        .find(|preset| preset.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_team_preset(conn: &Connection, id: &str) -> Result<()> {
+    let changed = conn.execute("DELETE FROM team_presets WHERE id = ?1", params![id])?;
+    if changed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     Ok(())
+}
+
+pub fn list_cli_tools(conn: &Connection) -> Result<Vec<CliToolDetection>> {
+    let mut stmt = conn.prepare(
+        "SELECT bin, COALESCE(label, ''), detected, last_checked_at
+         FROM cli_tools
+         ORDER BY bin ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CliToolDetection {
+            bin: row.get(0)?,
+            label: row.get(1)?,
+            detected: row.get::<_, i64>(2)? != 0,
+            last_checked_at: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn save_cli_tool_detections(
+    conn: &Connection,
+    tools: &[CliToolDetection],
+) -> Result<Vec<CliToolDetection>> {
+    let now = now_millis();
+    for tool in tools {
+        if tool.bin.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "empty cli bin".into(),
+            ));
+        }
+        conn.execute(
+            "INSERT INTO cli_tools (bin, label, detected, last_checked_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(bin) DO UPDATE SET
+                 label = excluded.label,
+                 detected = excluded.detected,
+                 last_checked_at = excluded.last_checked_at",
+            params![
+                tool.bin,
+                tool.label,
+                tool.detected,
+                if tool.last_checked_at > 0 {
+                    tool.last_checked_at
+                } else {
+                    now
+                }
+            ],
+        )?;
+    }
+    list_cli_tools(conn)
 }
 
 pub fn capture_clipboard(conn: &Connection, content: &str, source: &str) -> Result<ClipboardItem> {
@@ -5905,338 +4659,6 @@ pub fn assess_passphrase_strength(passphrase: &str) -> PassphraseStrength {
     }
 }
 
-pub fn get_vault_watch_config(conn: &Connection) -> Result<VaultWatchConfig> {
-    let row = conn.query_row(
-        "SELECT path, ignore_patterns, enabled, updated_at
-         FROM vault_watch_config WHERE id = 1",
-        [],
-        |row| {
-            let raw: String = row.get(1)?;
-            let enabled: i64 = row.get(2)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                raw,
-                enabled,
-                row.get::<_, i64>(3)?,
-            ))
-        },
-    );
-    match row {
-        Ok((path, raw, enabled, updated_at)) => Ok(VaultWatchConfig {
-            path,
-            ignore_patterns: raw
-                .lines()
-                .map(|line| line.to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            enabled: enabled != 0,
-            updated_at,
-        }),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(VaultWatchConfig {
-            path: String::new(),
-            ignore_patterns: Vec::new(),
-            enabled: false,
-            updated_at: 0,
-        }),
-        Err(e) => Err(e),
-    }
-}
-
-pub fn set_vault_watch_config(
-    conn: &Connection,
-    path: &str,
-    ignore_patterns: &[String],
-    enabled: bool,
-) -> Result<VaultWatchConfig> {
-    let joined = ignore_patterns.join("\n");
-    conn.execute(
-        "INSERT INTO vault_watch_config (id, path, ignore_patterns, enabled, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4)
-         ON CONFLICT(id) DO UPDATE SET
-           path = excluded.path,
-           ignore_patterns = excluded.ignore_patterns,
-           enabled = excluded.enabled,
-           updated_at = excluded.updated_at",
-        params![path, joined, enabled as i64, now_millis()],
-    )?;
-    get_vault_watch_config(conn)
-}
-
-pub fn list_vault_watch_targets(conn: &Connection) -> Result<Vec<VaultWatchTarget>> {
-    let mut stmt = conn.prepare(
-        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
-                created_events, modified_events, removed_events
-         FROM vault_watch_targets ORDER BY path",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let raw: String = row.get(1)?;
-        let enabled: i64 = row.get(2)?;
-        Ok((
-            row.get::<_, String>(0)?,
-            raw,
-            enabled,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-            row.get::<_, i64>(6)?,
-            row.get::<_, i64>(7)?,
-            row.get::<_, i64>(8)?,
-        ))
-    })?;
-    let mut targets = Vec::new();
-    for row in rows {
-        let (
-            path,
-            raw,
-            enabled,
-            updated_at,
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        ) = row?;
-        targets.push(VaultWatchTarget {
-            path,
-            ignore_patterns: raw
-                .lines()
-                .map(|line| line.to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            enabled: enabled != 0,
-            updated_at,
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        });
-    }
-    Ok(targets)
-}
-
-fn get_vault_watch_target(conn: &Connection, path: &str) -> Result<Option<VaultWatchTarget>> {
-    let row = conn.query_row(
-        "SELECT path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
-                created_events, modified_events, removed_events
-         FROM vault_watch_targets WHERE path = ?1",
-        params![path],
-        |row| {
-            let raw: String = row.get(1)?;
-            let enabled: i64 = row.get(2)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                raw,
-                enabled,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-            ))
-        },
-    );
-    match row {
-        Ok((
-            path,
-            raw,
-            enabled,
-            updated_at,
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        )) => Ok(Some(VaultWatchTarget {
-            path,
-            ignore_patterns: raw
-                .lines()
-                .map(|line| line.to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            enabled: enabled != 0,
-            updated_at,
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        })),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-pub fn upsert_vault_watch_target(
-    conn: &Connection,
-    path: &str,
-    ignore_patterns: &[String],
-    enabled: bool,
-) -> Result<VaultWatchTarget> {
-    let patterns: Vec<String> = ignore_patterns
-        .iter()
-        .filter(|pattern| !pattern.is_empty())
-        .cloned()
-        .collect();
-    let joined = patterns.join("\n");
-    let updated_at = now_millis();
-    conn.execute(
-        "INSERT INTO vault_watch_targets
-         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
-          created_events, modified_events, removed_events)
-         VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0, 0)
-         ON CONFLICT(path) DO UPDATE SET
-           ignore_patterns = excluded.ignore_patterns,
-           enabled = excluded.enabled,
-           updated_at = excluded.updated_at",
-        params![path, joined, enabled as i64, updated_at],
-    )?;
-    Ok(VaultWatchTarget {
-        path: path.to_string(),
-        ignore_patterns: patterns,
-        enabled,
-        updated_at,
-        last_event_at: 0,
-        event_count: 0,
-        created_events: 0,
-        modified_events: 0,
-        removed_events: 0,
-    })
-}
-
-pub fn touch_vault_watch_event(
-    conn: &Connection,
-    path: &str,
-    file_path: &str,
-    event_kind: &str,
-) -> Result<(), String> {
-    let (created, modified, removed) = match event_kind {
-        "created" => (1, 0, 0),
-        "modified" => (0, 1, 0),
-        "removed" => (0, 0, 1),
-        _ => {
-            return Err(format!(
-                "Unsupported vault watch event kind: {}",
-                event_kind
-            ))
-        }
-    };
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO vault_watch_events (vault_path, file_path, event_kind, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![path, file_path, event_kind, now],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "DELETE FROM vault_watch_events
-         WHERE id NOT IN (SELECT id FROM vault_watch_events ORDER BY id DESC LIMIT 500)",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO vault_watch_targets
-         (path, ignore_patterns, enabled, updated_at, last_event_at, event_count,
-          created_events, modified_events, removed_events)
-         VALUES (?1, '', 0, ?2, ?2, 1, ?3, ?4, ?5)
-         ON CONFLICT(path) DO UPDATE SET
-           last_event_at = excluded.last_event_at,
-           event_count = event_count + 1,
-           created_events = created_events + excluded.created_events,
-           modified_events = modified_events + excluded.modified_events,
-           removed_events = removed_events + excluded.removed_events",
-        params![path, now, created, modified, removed],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn list_vault_watch_events(
-    conn: &Connection,
-    vault_path: Option<&str>,
-    limit: i64,
-) -> Result<Vec<VaultWatchEvent>, String> {
-    let limit = limit.clamp(1, 200);
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, vault_path, file_path, event_kind, created_at
-             FROM vault_watch_events
-             WHERE (?1 IS NULL OR vault_path = ?1)
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![vault_path, limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, vault_path, file_path, event_kind, created_at) = row.map_err(|e| e.to_string())?;
-        out.push(VaultWatchEvent {
-            id,
-            vault_path,
-            file_path,
-            event_kind,
-            created_at,
-        });
-    }
-    Ok(out)
-}
-
-pub fn clear_vault_watch_events(
-    conn: &Connection,
-    vault_path: Option<&str>,
-) -> Result<i64, String> {
-    let removed = match vault_path {
-        Some(path) => conn
-            .execute(
-                "DELETE FROM vault_watch_events WHERE vault_path = ?1",
-                params![path],
-            )
-            .map_err(|e| e.to_string())?,
-        None => conn
-            .execute("DELETE FROM vault_watch_events", [])
-            .map_err(|e| e.to_string())?,
-    };
-    Ok(removed as i64)
-}
-
-pub fn set_vault_watch_target_enabled(
-    conn: &Connection,
-    path: &str,
-    enabled: bool,
-) -> Result<Option<VaultWatchTarget>> {
-    let changed = conn.execute(
-        "UPDATE vault_watch_targets SET enabled = ?2, updated_at = ?3 WHERE path = ?1",
-        params![path, enabled as i64, now_millis()],
-    )?;
-    if changed == 0 {
-        return Ok(None);
-    }
-    get_vault_watch_target(conn, path)
-}
-
-pub fn delete_vault_watch_target(conn: &Connection, path: &str) -> Result<bool> {
-    conn.execute(
-        "DELETE FROM vault_watch_events WHERE vault_path = ?1",
-        params![path],
-    )?;
-    let deleted = conn.execute(
-        "DELETE FROM vault_watch_targets WHERE path = ?1",
-        params![path],
-    )?;
-    Ok(deleted > 0)
-}
-
 enum MergeOutcome {
     Added,
     Updated {
@@ -6807,15 +5229,6 @@ fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
-fn serialize_embedding(vector: &[f64]) -> String {
-    serde_json::to_string(vector).unwrap_or_else(|_| "[]".to_string())
-}
-
-fn shard_for(key: &str, shard_count: usize) -> String {
-    let count = shard_count.max(1);
-    ((fnv1a(key.as_bytes(), FNV_OFFSET) as usize) % count).to_string()
-}
-
 fn default_embedding_config() -> EmbeddingConfig {
     EmbeddingConfig {
         mode: "local".to_string(),
@@ -6829,14 +5242,6 @@ fn default_embedding_config() -> EmbeddingConfig {
         ann_enabled: true,
         probe_count: 2,
         updated_at: 0,
-    }
-}
-
-fn embedding_target_model(config: &EmbeddingConfig) -> String {
-    if config.mode == "local" {
-        "local".to_string()
-    } else {
-        format!("{}:{}", config.mode, config.model)
     }
 }
 
@@ -6892,67 +5297,6 @@ pub fn get_embedding_config(conn: &Connection) -> Result<EmbeddingConfig> {
     }
 }
 
-pub fn set_embedding_config(
-    conn: &Connection,
-    input: EmbeddingConfigInput,
-) -> Result<EmbeddingConfig> {
-    let mode = match input.mode.trim() {
-        "openai" | "ollama" => input.mode.trim().to_string(),
-        _ => "local".to_string(),
-    };
-    let shard_count = input.shard_count.clamp(1, 64);
-    let config = EmbeddingConfig {
-        mode,
-        provider_id: input.provider_id.trim().to_string(),
-        base_url: input.base_url.trim().to_string(),
-        api_key: input.api_key.trim().to_string(),
-        model: input.model.trim().to_string(),
-        dimension: input.dimension.clamp(64, 4096),
-        shard_count,
-        auto_rebuild: input.auto_rebuild,
-        ann_enabled: input.ann_enabled,
-        probe_count: input.probe_count.clamp(1, shard_count),
-        updated_at: now_millis(),
-    };
-    conn.execute(
-        "INSERT INTO embedding_config (id, mode, provider_id, base_url, api_key, model, dimension, shard_count, auto_rebuild, ann_enabled, probe_count, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-         ON CONFLICT(id) DO UPDATE SET
-           mode = excluded.mode,
-           provider_id = excluded.provider_id,
-           base_url = excluded.base_url,
-           api_key = excluded.api_key,
-           model = excluded.model,
-           dimension = excluded.dimension,
-           shard_count = excluded.shard_count,
-           auto_rebuild = excluded.auto_rebuild,
-           ann_enabled = excluded.ann_enabled,
-           probe_count = excluded.probe_count,
-           updated_at = excluded.updated_at",
-        params![
-            config.mode,
-            config.provider_id,
-            config.base_url,
-            config.api_key,
-            config.model,
-            config.dimension as i64,
-            config.shard_count as i64,
-            config.auto_rebuild as i64,
-            config.ann_enabled as i64,
-            config.probe_count as i64,
-            config.updated_at
-        ],
-    )?;
-    seed_vector_shards(
-        conn,
-        config.shard_count,
-        &embedding_target_model(&config),
-        config.dimension,
-    )?;
-    refresh_all_shard_stats(conn)?;
-    Ok(config)
-}
-
 pub fn seed_vector_shards(
     conn: &Connection,
     shard_count: usize,
@@ -6977,77 +5321,6 @@ pub fn seed_vector_shards(
         "DELETE FROM vector_shards WHERE CAST(shard_id AS INTEGER) >= ?1",
         params![count],
     )?;
-    Ok(())
-}
-
-pub fn refresh_shard_stats(conn: &Connection, shard_id: &str) -> Result<()> {
-    let documents: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM knowledge_files WHERE shard_id = ?1 AND embedding_status = 'indexed'",
-        params![shard_id],
-        |row| row.get(0),
-    )?;
-    let mut centroid_sum: Vec<f64> = Vec::new();
-    let mut centroid_count = 0usize;
-    {
-        let mut stmt = conn.prepare(
-            "SELECT embedding FROM knowledge_files
-             WHERE shard_id = ?1 AND embedding_status = 'indexed' AND embedding <> ''",
-        )?;
-        let rows = stmt.query_map(params![shard_id], |row| row.get::<_, String>(0))?;
-        for raw in rows.flatten() {
-            if let Ok(vector) = serde_json::from_str::<Vec<f64>>(&raw) {
-                if centroid_sum.is_empty() {
-                    centroid_sum = vec![0.0; vector.len()];
-                }
-                if centroid_sum.len() == vector.len() {
-                    for (sum, value) in centroid_sum.iter_mut().zip(vector) {
-                        *sum += value;
-                    }
-                    centroid_count += 1;
-                }
-            }
-        }
-    }
-    let centroid = if centroid_count > 0 {
-        let norm = centroid_sum.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if norm > 0.0 {
-            for value in &mut centroid_sum {
-                *value /= norm;
-            }
-        }
-        serialize_embedding(&centroid_sum)
-    } else {
-        String::new()
-    };
-    let status = if documents > 0 && !centroid.is_empty() {
-        "ready"
-    } else if documents > 0 {
-        "partial"
-    } else {
-        "idle"
-    };
-    conn.execute(
-        "UPDATE vector_shards SET documents = ?1, status = ?2, centroid = ?3, updated_at = ?4 WHERE shard_id = ?5",
-        params![
-            documents,
-            status,
-            centroid,
-            now_millis(),
-            shard_id
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn refresh_all_shard_stats(conn: &Connection) -> Result<()> {
-    let shard_ids: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT shard_id FROM vector_shards")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.filter_map(Result::ok).collect()
-    };
-    for shard_id in shard_ids {
-        refresh_shard_stats(conn, &shard_id)?;
-    }
     Ok(())
 }
 
@@ -7148,821 +5421,6 @@ pub fn list_vector_shards(conn: &Connection) -> Result<Vec<VectorShardRecord>> {
         })
     })?;
     rows.collect()
-}
-
-pub fn get_vector_index_status(conn: &Connection) -> Result<VectorIndexStatus> {
-    let config = get_embedding_config(conn)?;
-    let target = embedding_target_model(&config);
-    let total: i64 =
-        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
-    let indexed: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM knowledge_files WHERE embedding_status = 'indexed'",
-        [],
-        |row| row.get(0),
-    )?;
-    let failed: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM knowledge_files WHERE embedding_status = 'failed'",
-        [],
-        |row| row.get(0),
-    )?;
-    let pending: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM knowledge_files
-         WHERE embedding_status != 'indexed' OR embedding = '' OR embedding_model != ?1",
-        params![target],
-        |row| row.get(0),
-    )?;
-    let shards = list_vector_shards(conn)?;
-    let centroids_ready = shards
-        .iter()
-        .all(|shard| shard.documents == 0 || !shard.centroid.is_empty());
-    Ok(VectorIndexStatus {
-        total,
-        pending,
-        failed,
-        indexed,
-        model: target,
-        auto_rebuild: config.auto_rebuild,
-        ann_enabled: config.ann_enabled,
-        probe_count: config.probe_count,
-        centroids_ready,
-        shards,
-    })
-}
-
-pub fn rebuild_vector_index(conn: &Connection, force: bool) -> Result<VectorRebuildResult> {
-    let config = get_embedding_config(conn)?;
-    let target = embedding_target_model(&config);
-    let total: i64 =
-        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
-    let mut stmt = conn.prepare(
-        "SELECT id, path, content, shard_id FROM knowledge_files
-         WHERE ?1 OR embedding_status != 'indexed' OR embedding = '' OR embedding_model != ?2
-         ORDER BY rowid ASC LIMIT 25",
-    )?;
-    let rows = stmt.query_map(params![force as i64, target], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    })?;
-    let candidates: Vec<(String, String, String, String)> = rows.filter_map(Result::ok).collect();
-    let mut rebuilt = 0i64;
-    let mut failed = 0i64;
-    for (id, path, content, _) in candidates {
-        let shard_id = shard_for(&path, config.shard_count);
-        let outcome = embed_with_config(&config, &content);
-        let (embedding, status, error) = match outcome {
-            Ok(vector) => (
-                serialize_embedding(&vector),
-                "indexed".to_string(),
-                String::new(),
-            ),
-            Err(err) => (
-                serialize_embedding(&embed_text(&content)),
-                "failed".to_string(),
-                err,
-            ),
-        };
-        conn.execute(
-            "UPDATE knowledge_files
-             SET embedding = ?1, shard_id = ?2, embedding_model = ?3, embedding_dim = ?4,
-                 embedding_status = ?5, embedding_error = ?6
-             WHERE id = ?7",
-            params![
-                embedding,
-                shard_id,
-                target,
-                config.dimension as i64,
-                status,
-                error,
-                id
-            ],
-        )?;
-        refresh_shard_stats(conn, &shard_id)?;
-        if status == "indexed" {
-            rebuilt += 1;
-        } else {
-            failed += 1;
-        }
-    }
-    Ok(VectorRebuildResult {
-        total,
-        rebuilt,
-        failed,
-        skipped: total - rebuilt - failed,
-        model: target,
-        shards: list_vector_shards(conn)?,
-    })
-}
-
-pub fn rag_index_status(conn: &Connection) -> Result<RagIndexStatus> {
-    let documents: i64 = conn.query_row("SELECT COUNT(*) FROM thoughts", [], |row| row.get(0))?;
-    let files: i64 =
-        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
-    let last: Option<i64> =
-        conn.query_row("SELECT MAX(created_at) FROM thoughts", [], |row| row.get(0))?;
-    let file_last: Option<i64> =
-        conn.query_row("SELECT MAX(indexed_at) FROM knowledge_files", [], |row| {
-            row.get(0)
-        })?;
-    Ok(RagIndexStatus {
-        documents: documents + files,
-        indexed: documents + files > 0,
-        last_indexed_at: last.max(file_last).unwrap_or(0),
-        vector_indexed: documents + files > 0,
-    })
-}
-
-pub fn upsert_knowledge_file(
-    conn: &Connection,
-    path: &str,
-    title: &str,
-    tags: &str,
-    content: &str,
-    vault_path: &str,
-) -> Result<()> {
-    let config = get_embedding_config(conn)?;
-    let shard_id = shard_for(path, config.shard_count);
-    let target = embedding_target_model(&config);
-    let (embedding, status, error) = match embed_with_config(&config, content) {
-        Ok(vector) => (
-            serialize_embedding(&vector),
-            "indexed".to_string(),
-            String::new(),
-        ),
-        Err(err) => (
-            serialize_embedding(&embed_text(content)),
-            "failed".to_string(),
-            err,
-        ),
-    };
-    conn.execute(
-        "INSERT INTO knowledge_files (id, path, title, tags, content, vault_path, indexed_at, embedding, shard_id, embedding_model, embedding_dim, embedding_status, embedding_error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(path) DO UPDATE SET
-           title = excluded.title,
-           tags = excluded.tags,
-           content = excluded.content,
-           vault_path = excluded.vault_path,
-           indexed_at = excluded.indexed_at,
-           embedding = excluded.embedding,
-           shard_id = excluded.shard_id,
-           embedding_model = excluded.embedding_model,
-           embedding_dim = excluded.embedding_dim,
-           embedding_status = excluded.embedding_status,
-           embedding_error = excluded.embedding_error",
-        params![
-            uid(),
-            path,
-            title,
-            tags,
-            content,
-            vault_path,
-            now_millis(),
-            embedding,
-            shard_id,
-            target,
-            config.dimension as i64,
-            status,
-            error
-        ],
-    )?;
-    refresh_shard_stats(conn, &shard_id)?;
-    Ok(())
-}
-
-pub fn vault_target_stats(conn: &Connection) -> Result<Vec<VaultTargetStats>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT f.vault_path, COUNT(*), MAX(f.indexed_at),
-                    COALESCE(MAX(t.last_event_at), 0), COALESCE(MAX(t.event_count), 0),
-                    COALESCE(MAX(t.created_events), 0), COALESCE(MAX(t.modified_events), 0),
-                    COALESCE(MAX(t.removed_events), 0)
-             FROM knowledge_files f
-             LEFT JOIN vault_watch_targets t ON t.path = f.vault_path
-             WHERE f.vault_path <> ''
-             GROUP BY f.vault_path
-             ORDER BY f.vault_path",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (
-            path,
-            files,
-            last_indexed_at,
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        ) = row.map_err(|e| e.to_string())?;
-        out.push(VaultTargetStats {
-            path,
-            files,
-            last_indexed_at: last_indexed_at.unwrap_or(0),
-            last_event_at,
-            event_count,
-            created_events,
-            modified_events,
-            removed_events,
-        });
-    }
-    Ok(out)
-}
-
-pub fn delete_knowledge_file(conn: &Connection, path: &str) -> Result<()> {
-    let shard_id: Option<String> = conn
-        .query_row(
-            "SELECT shard_id FROM knowledge_files WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        )
-        .optional()?;
-    conn.execute("DELETE FROM knowledge_files WHERE path = ?1", params![path])?;
-    if let Some(shard_id) = shard_id {
-        refresh_shard_stats(conn, &shard_id)?;
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct ClusterDoc {
-    id: String,
-    content: String,
-    embedding: Vec<f64>,
-}
-
-fn cluster_docs(conn: &Connection) -> Result<Vec<ClusterDoc>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, content, embedding, embedding_status
-         FROM knowledge_files ORDER BY path ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    })?;
-    let mut docs = Vec::new();
-    for row in rows.flatten() {
-        let (id, content, embedding_raw, status) = row;
-        if status != "indexed" {
-            continue;
-        }
-        let embedding = if embedding_raw.is_empty() {
-            embed_text(&content)
-        } else {
-            serde_json::from_str(&embedding_raw).unwrap_or_else(|_| embed_text(&content))
-        };
-        docs.push(ClusterDoc {
-            id,
-            content,
-            embedding,
-        });
-    }
-    Ok(docs)
-}
-
-fn normalize_vector(vector: &[f64]) -> Vec<f64> {
-    let norm = vector.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if norm > 0.0 {
-        vector.iter().map(|v| v / norm).collect()
-    } else {
-        vector.to_vec()
-    }
-}
-
-struct ClusterAcc {
-    members: Vec<(String, f64)>,
-    representative: String,
-    centroid: Vec<f64>,
-}
-
-fn replace_knowledge_clusters(
-    conn: &Connection,
-    clusters: &[ClusterAcc],
-    model: &str,
-) -> Result<()> {
-    conn.execute("DELETE FROM knowledge_clusters", [])?;
-    let now = now_millis();
-    let mut stmt = conn.prepare(
-        "INSERT INTO knowledge_clusters (id, centroid, model, representative, documents, updated_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-    )?;
-    for cluster in clusters {
-        let cluster_id = uid();
-        let centroid_json =
-            serde_json::to_string(&cluster.centroid).unwrap_or_else(|_| "[]".to_string());
-        let representative_text = cluster
-            .representative
-            .chars()
-            .take(500)
-            .collect::<String>()
-            .trim()
-            .to_string();
-        stmt.execute(params![
-            cluster_id,
-            centroid_json,
-            model,
-            representative_text,
-            cluster.members.len() as i64,
-            now,
-        ])?;
-        for (member, member_similarity) in &cluster.members {
-            conn.execute(
-                "INSERT INTO knowledge_cluster_members (cluster_id, doc_id, similarity)
-                 VALUES (?1, ?2, ?3)",
-                params![cluster_id, member, member_similarity],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-pub fn recompute_knowledge_clusters(
-    conn: &Connection,
-    cluster_threshold: Option<f64>,
-    dedup_threshold: Option<f64>,
-) -> Result<KnowledgeClusterStatus, String> {
-    let config = get_embedding_config(conn).map_err(|e| e.to_string())?;
-    let model = embedding_target_model(&config);
-    let docs = cluster_docs(conn).map_err(|e| e.to_string())?;
-    let cluster_threshold = cluster_threshold.unwrap_or(0.62).clamp(0.0, 1.0);
-    let dedup_threshold = dedup_threshold.unwrap_or(0.92).clamp(0.0, 1.0);
-
-    let mut clusters: Vec<ClusterAcc> = Vec::new();
-    for doc in &docs {
-        let mut best: Option<(usize, f64)> = None;
-        for (index, cluster) in clusters.iter().enumerate() {
-            if cluster
-                .members
-                .iter()
-                .any(|(member_id, _)| member_id == &doc.id)
-            {
-                continue;
-            }
-            let score = cosine_similarity(&doc.embedding, &cluster.centroid);
-            if score >= cluster_threshold && best.map(|(_, s)| score > s).unwrap_or(true) {
-                best = Some((index, score));
-            }
-        }
-        if let Some((index, _)) = best {
-            let cluster = &mut clusters[index];
-            let score = cosine_similarity(&doc.embedding, &cluster.centroid);
-            cluster.members.push((doc.id.clone(), score));
-            if doc.content.len() > cluster.representative.len() {
-                cluster.representative = doc.content.clone();
-            }
-            cluster.centroid = normalize_vector(
-                &cluster
-                    .centroid
-                    .iter()
-                    .zip(doc.embedding.iter())
-                    .map(|(a, b)| a + b)
-                    .collect::<Vec<f64>>(),
-            );
-        } else {
-            clusters.push(ClusterAcc {
-                members: vec![(doc.id.clone(), 1.0)],
-                representative: doc.content.clone(),
-                centroid: normalize_vector(&doc.embedding),
-            });
-        }
-    }
-
-    replace_knowledge_clusters(conn, &clusters, &model).map_err(|e| e.to_string())?;
-    let _candidate_count =
-        refresh_knowledge_dedup_candidates(conn, dedup_threshold).map_err(|e| e.to_string())?;
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO knowledge_cluster_config (id, cluster_threshold, dedup_threshold, last_recomputed_at)
-         VALUES (1, ?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET
-           cluster_threshold = excluded.cluster_threshold,
-           dedup_threshold = excluded.dedup_threshold,
-           last_recomputed_at = excluded.last_recomputed_at",
-        params![cluster_threshold, dedup_threshold, now],
-    )
-    .map_err(|e| e.to_string())?;
-    let mut status = get_knowledge_cluster_status(conn).map_err(|e| e.to_string())?;
-    status
-        .clusters
-        .sort_by_key(|cluster| std::cmp::Reverse(cluster.documents));
-    Ok(status)
-}
-
-fn knowledge_cluster_status_rows(conn: &Connection) -> Result<Vec<KnowledgeClusterRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, representative, model, documents FROM knowledge_clusters ORDER BY documents DESC, id ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
-        ))
-    })?;
-    let mut clusters = Vec::new();
-    for row in rows.flatten() {
-        let (id, representative, model, documents) = row;
-        let mut member_stmt = conn.prepare(
-            "SELECT cm.doc_id, f.path, f.title, cm.similarity
-             FROM knowledge_cluster_members cm
-             LEFT JOIN knowledge_files f ON f.id = cm.doc_id
-             WHERE cm.cluster_id = ?1
-             ORDER BY cm.similarity DESC",
-        )?;
-        let member_rows = member_stmt.query_map(params![id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, f64>(3)?,
-            ))
-        })?;
-        let mut members = Vec::new();
-        for member in member_rows.flatten() {
-            let (doc_id, path, title, similarity) = member;
-            members.push(KnowledgeClusterMember {
-                id: doc_id.clone(),
-                path: path.unwrap_or_else(|| doc_id.clone()),
-                title: title.unwrap_or_else(|| "Untitled".to_string()),
-                similarity,
-            });
-        }
-        clusters.push(KnowledgeClusterRecord {
-            id,
-            documents,
-            representative,
-            model,
-            members,
-        });
-    }
-    Ok(clusters)
-}
-
-fn refresh_knowledge_dedup_candidates(conn: &Connection, dedup_threshold: f64) -> Result<usize> {
-    let docs = cluster_docs(conn)?;
-    let existing: std::collections::HashSet<(String, String)> = conn
-        .prepare("SELECT doc_a, doc_b FROM knowledge_dedup_candidates WHERE status <> 'open'")?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .filter_map(Result::ok)
-        .collect();
-    let mut count = 0usize;
-    let now = now_millis();
-    for a in 0..docs.len() {
-        for b in (a + 1)..docs.len() {
-            let similarity = cosine_similarity(&docs[a].embedding, &docs[b].embedding);
-            if similarity < dedup_threshold {
-                continue;
-            }
-            let (left, right) = if docs[a].id < docs[b].id {
-                (&docs[a], &docs[b])
-            } else {
-                (&docs[b], &docs[a])
-            };
-            let key = (left.id.clone(), right.id.clone());
-            if existing.contains(&key) {
-                continue;
-            }
-            conn.execute(
-                "INSERT OR IGNORE INTO knowledge_dedup_candidates
-                   (id, doc_a, doc_b, similarity, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?5)",
-                params![uid(), key.0, key.1, similarity, now],
-            )?;
-            count += 1;
-        }
-    }
-    conn.execute(
-        "UPDATE knowledge_dedup_candidates SET status = 'merged'
-         WHERE status = 'open' AND (
-           NOT EXISTS (SELECT 1 FROM knowledge_files f WHERE f.id = doc_a)
-           OR NOT EXISTS (SELECT 1 FROM knowledge_files f WHERE f.id = doc_b)
-         )",
-        [],
-    )?;
-    Ok(count)
-}
-
-fn list_knowledge_dedup_rows(conn: &Connection) -> Result<Vec<KnowledgeDedupCandidate>> {
-    let mut stmt = conn.prepare(
-        "SELECT d.id, d.doc_a, d.doc_b, d.similarity, d.status,
-                CAST(COALESCE(a.title, a.path, 'Deleted document') AS TEXT),
-                CAST(COALESCE(b.title, b.path, 'Deleted document') AS TEXT)
-         FROM knowledge_dedup_candidates d
-         LEFT JOIN knowledge_files a ON a.id = d.doc_a
-         LEFT JOIN knowledge_files b ON b.id = d.doc_b
-         ORDER BY CASE d.status WHEN 'open' THEN 0 WHEN 'dismissed' THEN 1 ELSE 2 END, d.similarity DESC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(KnowledgeDedupCandidate {
-            id: row.get(0)?,
-            doc_a: row.get(1)?,
-            doc_b: row.get(2)?,
-            similarity: row.get(3)?,
-            status: row.get(4)?,
-            title_a: row.get(5)?,
-            title_b: row.get(6)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<KnowledgeDedupCandidate>, _>>()
-}
-
-pub fn get_knowledge_cluster_status(conn: &Connection) -> Result<KnowledgeClusterStatus> {
-    let config = get_embedding_config(conn)?;
-    let model = embedding_target_model(&config);
-    let cluster_threshold: f64 = conn.query_row(
-        "SELECT cluster_threshold FROM knowledge_cluster_config WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    let dedup_threshold: f64 = conn.query_row(
-        "SELECT dedup_threshold FROM knowledge_cluster_config WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    let last_recomputed_at: i64 = conn.query_row(
-        "SELECT last_recomputed_at FROM knowledge_cluster_config WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(KnowledgeClusterStatus {
-        clusters: knowledge_cluster_status_rows(conn)?,
-        dedup: list_knowledge_dedup_rows(conn)?,
-        cluster_threshold,
-        dedup_threshold,
-        last_recomputed_at,
-        model: model.clone(),
-    })
-}
-
-pub fn dismiss_knowledge_duplicate(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE knowledge_dedup_candidates SET status = 'dismissed', updated_at = ?1 WHERE id = ?2",
-        params![now_millis(), id],
-    )?;
-    Ok(())
-}
-
-pub fn merge_knowledge_duplicate(conn: &Connection, id: &str) -> Result<(), String> {
-    let (doc_b, path_b): (String, String) = conn
-        .query_row(
-            "SELECT d.doc_b, COALESCE(f.path, '')
-             FROM knowledge_dedup_candidates d
-             LEFT JOIN knowledge_files f ON f.id = d.doc_b
-             WHERE d.id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| e.to_string())?;
-    if !path_b.is_empty() {
-        delete_knowledge_file(conn, &path_b).map_err(|e| e.to_string())?;
-    } else {
-        conn.execute("DELETE FROM knowledge_files WHERE id = ?1", params![doc_b])
-            .map_err(|e| e.to_string())?;
-    }
-    conn.execute(
-        "UPDATE knowledge_dedup_candidates SET status = 'merged', updated_at = ?1 WHERE id = ?2",
-        params![now_millis(), id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn persist_vault_index_queue(conn: &Connection, record: &VaultIndexQueueRecord) -> Result<()> {
-    let serialized =
-        serde_json::to_string(&record.ignore_patterns).unwrap_or_else(|_| "[]".to_string());
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO vault_index_queue (run_id, path, ignore_patterns, concurrency, status, priority, attempts, last_error, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-         ON CONFLICT(run_id) DO UPDATE SET
-           path = excluded.path,
-           ignore_patterns = excluded.ignore_patterns,
-           concurrency = excluded.concurrency,
-           status = excluded.status,
-           priority = excluded.priority,
-           attempts = excluded.attempts,
-           last_error = excluded.last_error,
-           updated_at = excluded.updated_at",
-        params![
-            record.run_id,
-            record.path,
-            serialized,
-            record.concurrency as i64,
-            record.status,
-            record.priority as i64,
-            record.attempts as i64,
-            record.last_error,
-            now
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn list_vault_index_queue(conn: &Connection) -> Result<Vec<VaultIndexQueueRecord>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT run_id, path, ignore_patterns, concurrency, status, priority, attempts, last_error
-             FROM vault_index_queue
-             ORDER BY priority DESC, created_at ASC, rowid ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut records = Vec::new();
-    for row in rows {
-        let (run_id, path, serialized, concurrency, status, priority, attempts, last_error) =
-            row.map_err(|e| e.to_string())?;
-        let ignore_patterns =
-            serde_json::from_str::<Vec<String>>(&serialized).unwrap_or_else(|_| Vec::new());
-        records.push(VaultIndexQueueRecord {
-            run_id,
-            path,
-            ignore_patterns,
-            concurrency: concurrency.clamp(0, 16) as usize,
-            status,
-            priority: priority.max(0) as usize,
-            attempts: attempts.max(0) as usize,
-            last_error,
-        });
-    }
-    Ok(records)
-}
-
-pub fn delete_vault_index_queue(conn: &Connection, run_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM vault_index_queue WHERE run_id = ?1",
-        params![run_id],
-    )?;
-    Ok(())
-}
-
-pub fn knowledge_index_status(conn: &Connection) -> Result<KnowledgeIndexStatus> {
-    let files: i64 =
-        conn.query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))?;
-    let last: Option<i64> =
-        conn.query_row("SELECT MAX(indexed_at) FROM knowledge_files", [], |row| {
-            row.get(0)
-        })?;
-    Ok(KnowledgeIndexStatus {
-        files,
-        indexed_at: last.unwrap_or(0),
-    })
-}
-
-pub fn list_knowledge_files(
-    conn: &Connection,
-    vault_path: Option<&str>,
-    limit: Option<i64>,
-) -> Result<Vec<KnowledgeFileRecord>, String> {
-    let limit = limit.unwrap_or(50).clamp(1, 200);
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, path, title, tags, vault_path, indexed_at FROM knowledge_files
-             WHERE (?1 IS NULL OR vault_path = ?1)
-             ORDER BY indexed_at DESC, path ASC
-             LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![vault_path, limit], |row| {
-            let id: String = row.get(0)?;
-            let path: String = row.get(1)?;
-            let title: String = row.get(2)?;
-            let tags: String = row.get(3)?;
-            let vault_path: String = row.get(4)?;
-            let indexed_at: i64 = row.get(5)?;
-            let exists = std::path::Path::new(&path).exists();
-            let stale = exists && knowledge_file_stale(&path, indexed_at);
-            Ok(KnowledgeFileRecord {
-                id,
-                path,
-                title,
-                tags,
-                vault_path,
-                indexed_at,
-                exists,
-                stale,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<KnowledgeFileRecord>, _>>()
-        .map_err(|e| e.to_string())
-}
-
-fn knowledge_file_stale(path: &str, indexed_at: i64) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    let Ok(modified) = metadata.modified() else {
-        return false;
-    };
-    let Ok(modified_ms) = modified.duration_since(std::time::UNIX_EPOCH) else {
-        return false;
-    };
-    (modified_ms.as_millis() as i64).saturating_sub(indexed_at) > 1_000
-}
-
-fn parse_knowledge_document(content: &str) -> (String, String, String) {
-    match parse_frontmatter(content) {
-        Some((fields, body)) => {
-            let title = fields
-                .iter()
-                .find(|(key, _)| key == "title")
-                .map(|(_, value)| value.clone())
-                .unwrap_or_else(|| "Untitled".to_string());
-            let tags = fields
-                .iter()
-                .find(|(key, _)| key == "tags")
-                .map(|(_, value)| value.clone())
-                .unwrap_or_default();
-            (title, tags, body)
-        }
-        None => ("Untitled".to_string(), String::new(), content.to_string()),
-    }
-}
-
-pub fn cleanup_knowledge_files(
-    conn: &Connection,
-    vault_path: Option<&str>,
-) -> Result<KnowledgeCleanupResult, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT path, vault_path, indexed_at FROM knowledge_files
-             WHERE (?1 IS NULL OR vault_path = ?1)",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![vault_path], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut removed = 0i64;
-    let mut reindexed = 0i64;
-    let mut failed = 0i64;
-    for row in rows {
-        let (path, doc_vault_path, indexed_at) = row.map_err(|e| e.to_string())?;
-        let path_ref = std::path::Path::new(&path);
-        if !path_ref.exists() {
-            delete_knowledge_file(conn, &path).map_err(|e| e.to_string())?;
-            removed += 1;
-        } else if knowledge_file_stale(&path, indexed_at) {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    let (title, tags, body) = parse_knowledge_document(&content);
-                    upsert_knowledge_file(conn, &path, &title, &tags, &body, &doc_vault_path)
-                        .map_err(|e| e.to_string())?;
-                    reindexed += 1;
-                }
-                Err(_) => failed += 1,
-            }
-        }
-    }
-    Ok(KnowledgeCleanupResult {
-        removed,
-        reindexed,
-        failed,
-    })
 }
 
 pub fn search_thoughts(
@@ -8182,211 +5640,6 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     rows.collect()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MatchMode {
-    Original,
-    FullPinyin,
-    InitialsPinyin,
-}
-
-fn substring_score(haystack: &str, query: &str) -> Option<i64> {
-    if haystack.is_empty() || query.is_empty() {
-        return None;
-    }
-    haystack.find(query).map(|index| 120 - index as i64)
-}
-
-fn subsequence_score(haystack: &str, query: &str) -> Option<i64> {
-    if haystack.is_empty() || query.is_empty() {
-        return None;
-    }
-    let hb = haystack.as_bytes();
-    let qb = query.as_bytes();
-    let mut qi = 0usize;
-    let mut gaps = 0i64;
-    let mut last: Option<usize> = None;
-    for (index, &byte) in hb.iter().enumerate() {
-        if qi < qb.len() && byte == qb[qi] {
-            if let Some(prev) = last {
-                gaps += (index - prev - 1) as i64;
-            }
-            last = Some(index);
-            qi += 1;
-            if qi == qb.len() {
-                return Some((80 - gaps).max(1));
-            }
-        }
-    }
-    None
-}
-
-fn pinyin_text(text: &str, first_letter: bool) -> String {
-    let mut out = String::new();
-    for ch in text.chars() {
-        if let Some(p) = ch.to_pinyin() {
-            out.push_str(if first_letter {
-                p.first_letter()
-            } else {
-                p.plain()
-            });
-        } else if !ch.is_whitespace() {
-            out.extend(ch.to_lowercase());
-        }
-    }
-    out
-}
-
-fn compact_query(query: &str) -> String {
-    query.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-fn text_match_score(text: &str, query: &str) -> Option<(i64, MatchMode)> {
-    let original_q = query.to_lowercase();
-    if let Some(score) = substring_score(&text.to_lowercase(), &original_q) {
-        return Some((score, MatchMode::Original));
-    }
-    if let Some(score) = subsequence_score(&text.to_lowercase(), &original_q) {
-        return Some((score, MatchMode::Original));
-    }
-
-    let compact_q = compact_query(&original_q);
-    let full = pinyin_text(text, false);
-    if let Some(score) = substring_score(&full, &compact_q) {
-        return Some((score - 5, MatchMode::FullPinyin));
-    }
-    if let Some(score) = subsequence_score(&full, &compact_q) {
-        return Some((score - 10, MatchMode::FullPinyin));
-    }
-
-    let initials = pinyin_text(text, true);
-    if let Some(score) = substring_score(&initials, &compact_q) {
-        return Some((score - 15, MatchMode::InitialsPinyin));
-    }
-    if let Some(score) = subsequence_score(&initials, &compact_q) {
-        return Some((score - 20, MatchMode::InitialsPinyin));
-    }
-    None
-}
-
-fn match_type(field: &str, mode: MatchMode) -> String {
-    match mode {
-        MatchMode::Original => field.to_string(),
-        MatchMode::FullPinyin | MatchMode::InitialsPinyin => format!("pinyin-{}", field),
-    }
-}
-
-fn session_snippet(content: &str) -> String {
-    let text = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = text.chars();
-    let mut out: String = chars.by_ref().take(90).collect();
-    if chars.next().is_some() {
-        out.push_str("...");
-    }
-    out
-}
-
-pub fn search_sessions(
-    conn: &Connection,
-    query: &str,
-    since_ms: Option<i64>,
-    until_ms: Option<i64>,
-    limit: Option<i64>,
-    include_messages: bool,
-) -> Result<Vec<SessionSearchHit>> {
-    let q = query.trim();
-    let sessions = list_sessions(conn)?
-        .into_iter()
-        .filter(|s| !s.archived)
-        .filter(|s| since_ms.is_none_or(|since| s.created_at >= since))
-        .filter(|s| until_ms.is_none_or(|until| s.created_at <= until));
-
-    if q.is_empty() {
-        return Ok(sessions
-            .map(|session| SessionSearchHit {
-                session,
-                match_type: "all".to_string(),
-                snippet: String::new(),
-                score: 0,
-                message_id: None,
-            })
-            .collect());
-    }
-
-    let mut hits = Vec::new();
-    for session in sessions {
-        let mut best: Option<(i64, String, String, Option<String>)> = None;
-        if let Some((score, mode)) = text_match_score(&session.title, q) {
-            best = Some((
-                score,
-                match_type("title", mode),
-                session.title.clone(),
-                None,
-            ));
-        }
-        if let Some((score, mode)) = text_match_score(&session.model, q) {
-            let candidate = (
-                score,
-                match_type("model", mode),
-                session.model.clone(),
-                None,
-            );
-            if best
-                .as_ref()
-                .is_none_or(|(current, _, _, _)| score > *current)
-            {
-                best = Some(candidate);
-            }
-        }
-        if include_messages {
-            let mut stmt = conn.prepare(
-                "SELECT id, content FROM chat_messages
-                 WHERE session_id = ?1
-                 ORDER BY created_at DESC
-                 LIMIT 100",
-            )?;
-            let rows = stmt.query_map(params![session.id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            for row in rows {
-                let (message_id, content) = row?;
-                if let Some((score, mode)) = text_match_score(&content, q) {
-                    let candidate = (
-                        score,
-                        match_type("message", mode),
-                        session_snippet(&content),
-                        Some(message_id),
-                    );
-                    if best
-                        .as_ref()
-                        .is_none_or(|(current, _, _, _)| score > *current)
-                    {
-                        best = Some(candidate);
-                    }
-                }
-            }
-        }
-        if let Some((score, match_type, snippet, message_id)) = best {
-            let pinned = session.pinned;
-            hits.push(SessionSearchHit {
-                session,
-                match_type,
-                snippet,
-                score: score + if pinned { 10 } else { 0 },
-                message_id,
-            });
-        }
-    }
-
-    hits.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| b.session.pinned.cmp(&a.session.pinned))
-            .then_with(|| b.session.created_at.cmp(&a.session.created_at))
-    });
-    hits.truncate(limit.unwrap_or(50).max(1) as usize);
-    Ok(hits)
-}
-
 pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Session> {
     let id = uid();
     let now = now_millis();
@@ -8402,152 +5655,6 @@ pub fn create_session(conn: &Connection, title: &str, model: &str) -> Result<Ses
         pinned: false,
         archived: false,
         message_count: 0,
-        created_at: now,
-    })
-}
-
-pub fn rename_session(conn: &Connection, id: &str, title: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE sessions SET title = ?1 WHERE id = ?2",
-        params![title, id],
-    )?;
-    Ok(())
-}
-
-pub fn set_session_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<()> {
-    let updated = conn.execute(
-        "UPDATE sessions SET pinned = ?1 WHERE id = ?2",
-        params![pinned as i64, id],
-    )?;
-    if updated == 0 {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-    Ok(())
-}
-
-pub fn set_session_archived(conn: &Connection, id: &str, archived: bool) -> Result<Session> {
-    conn.execute(
-        "UPDATE sessions SET archived = ?1 WHERE id = ?2",
-        params![archived as i64, id],
-    )?;
-    list_sessions(conn)?
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or(rusqlite::Error::QueryReturnedNoRows)
-}
-
-pub fn duplicate_session(conn: &Connection, id: &str) -> Result<Session, String> {
-    let source = conn
-        .query_row(
-            "SELECT id, project_id, title, model, created_at FROM sessions WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("session not found: {id}"))?;
-    let new_id = uid();
-    let now = now_millis();
-    let title = format!("{} (copy)", source.2);
-    conn.execute(
-        "INSERT INTO sessions (id, project_id, title, model, pinned, created_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-        params![new_id, source.1, title, source.3, now],
-    )
-    .map_err(|e| e.to_string())?;
-    let messages: Vec<(String, String, String, i64)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, role, content, created_at FROM chat_messages
-                 WHERE session_id = ?1 ORDER BY created_at ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
-        }
-        out
-    };
-    let mut message_ids = HashMap::new();
-    for (message_id, role, content, created_at) in &messages {
-        let new_message_id = uid();
-        message_ids.insert(message_id.clone(), new_message_id.clone());
-        conn.execute(
-            "INSERT INTO chat_messages (id, session_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![new_message_id, new_id, role, content, created_at],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    let mut version_ids = HashMap::new();
-    for (message_id, _, _, _) in &messages {
-        let versions: Vec<(String, String, i64, Option<String>)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, created_at, parent_version_id FROM message_versions
-                     WHERE message_id = ?1 ORDER BY created_at ASC",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![message_id], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .map_err(|e| e.to_string())?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row.map_err(|e| e.to_string())?);
-            }
-            out
-        };
-        for (version_id, content, created_at, parent) in &versions {
-            let new_version_id = uid();
-            version_ids.insert(version_id.clone(), new_version_id.clone());
-            let new_parent = parent.as_deref().and_then(|p| version_ids.get(p).cloned());
-            conn.execute(
-                "INSERT INTO message_versions (id, message_id, content, created_at, parent_version_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![new_version_id, message_ids[message_id], content, created_at, new_parent],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        let aux: Option<String> = conn
-            .query_row(
-                "SELECT payload FROM message_aux WHERE message_id = ?1",
-                params![message_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if let Some(payload) = aux {
-            conn.execute(
-                "INSERT INTO message_aux (message_id, payload, updated_at)
-                 VALUES (?1, ?2, ?3)",
-                params![message_ids[message_id], payload, now],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(Session {
-        id: new_id,
-        project_id: source.1,
-        title,
-        model: source.3,
-        pinned: false,
-        archived: false,
-        message_count: messages.len() as i64,
         created_at: now,
     })
 }
@@ -8606,220 +5713,6 @@ pub fn list_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<Cha
         })
     })?;
     rows.collect()
-}
-
-pub fn update_chat_message(conn: &Connection, id: &str, content: &str) -> Result<()> {
-    let old: Option<(String, Option<String>)> = conn
-        .query_row(
-            "SELECT m.content, v.id FROM chat_messages m
-             LEFT JOIN message_versions v ON v.message_id = m.id
-             WHERE m.id = ?1 ORDER BY v.created_at DESC LIMIT 1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((old_content, parent)) = old {
-        save_message_version(conn, id, &old_content, parent.as_deref())?;
-    }
-    conn.execute(
-        "UPDATE chat_messages SET content = ?1 WHERE id = ?2",
-        params![content, id],
-    )?;
-    Ok(())
-}
-
-pub fn save_message_version(
-    conn: &Connection,
-    message_id: &str,
-    content: &str,
-    parent_version_id: Option<&str>,
-) -> Result<MessageVersion> {
-    let id = uid();
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO message_versions (id, message_id, content, created_at, parent_version_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, message_id, content, now, parent_version_id],
-    )?;
-    Ok(MessageVersion {
-        id,
-        message_id: message_id.to_string(),
-        content: content.to_string(),
-        created_at: now,
-        parent_version_id: parent_version_id.map(|p| p.to_string()),
-    })
-}
-
-pub fn list_message_versions(conn: &Connection, message_id: &str) -> Result<Vec<MessageVersion>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, message_id, content, created_at, parent_version_id FROM message_versions
-         WHERE message_id = ?1 ORDER BY created_at ASC",
-    )?;
-    let rows = stmt.query_map(params![message_id], |row| {
-        Ok(MessageVersion {
-            id: row.get(0)?,
-            message_id: row.get(1)?,
-            content: row.get(2)?,
-            created_at: row.get(3)?,
-            parent_version_id: row.get(4)?,
-        })
-    })?;
-    rows.collect()
-}
-
-pub fn save_message_aux(
-    conn: &Connection,
-    message_id: &str,
-    payload: &str,
-) -> Result<MessageAux, String> {
-    let parsed: Value =
-        serde_json::from_str(payload).map_err(|e| format!("invalid aux payload: {e}"))?;
-    if !parsed.is_object() {
-        return Err("aux payload must be a JSON object".to_string());
-    }
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO message_aux (message_id, payload, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(message_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
-        params![message_id, payload, now],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(MessageAux {
-        message_id: message_id.to_string(),
-        payload: payload.to_string(),
-        updated_at: now,
-    })
-}
-
-pub fn list_message_aux(conn: &Connection, session_id: &str) -> Result<Vec<MessageAux>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT aux.message_id, aux.payload, aux.updated_at
-             FROM message_aux aux
-             JOIN chat_messages m ON m.id = aux.message_id
-             WHERE m.session_id = ?1
-             ORDER BY m.created_at ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![session_id], |row| {
-            Ok(MessageAux {
-                message_id: row.get(0)?,
-                payload: row.get(1)?,
-                updated_at: row.get(2)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
-}
-
-pub fn restore_message_version(
-    conn: &Connection,
-    message_id: &str,
-    version_id: &str,
-) -> Result<String> {
-    let content: Option<String> = conn
-        .query_row(
-            "SELECT content FROM message_versions WHERE id = ?1 AND message_id = ?2",
-            params![version_id, message_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let content = content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-    update_chat_message(conn, message_id, &content)?;
-    Ok(content)
-}
-
-pub fn diff_message_version_with_current(
-    conn: &Connection,
-    message_id: &str,
-    version_id: &str,
-) -> Result<MessageDiff> {
-    let version_content: Option<String> = conn
-        .query_row(
-            "SELECT content FROM message_versions WHERE id = ?1 AND message_id = ?2",
-            params![version_id, message_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let current_content: Option<String> = conn
-        .query_row(
-            "SELECT content FROM chat_messages WHERE id = ?1",
-            params![message_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let version = version_content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-    let current = current_content.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-    Ok(line_diff(&version, &current))
-}
-
-fn line_diff(a: &str, b: &str) -> MessageDiff {
-    let diff = similar::TextDiff::from_lines(a, b);
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Delete => removed.push(strip_line_ending(change.value())),
-            similar::ChangeTag::Insert => added.push(strip_line_ending(change.value())),
-            similar::ChangeTag::Equal => {}
-        }
-    }
-    MessageDiff { added, removed }
-}
-
-fn strip_line_ending(value: &str) -> String {
-    let trimmed = value.strip_suffix("\r\n").unwrap_or(value);
-    let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
-    let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
-    trimmed.to_string()
-}
-
-pub fn truncate_chat_messages(
-    conn: &Connection,
-    session_id: &str,
-    keep_message_id: &str,
-) -> Result<()> {
-    let keep_created_at: Option<i64> = conn.query_row(
-        "SELECT created_at FROM chat_messages WHERE id = ?1 AND session_id = ?2",
-        params![keep_message_id, session_id],
-        |row| row.get(0),
-    )?;
-    if let Some(created_at) = keep_created_at {
-        let removed: Vec<String> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM chat_messages
-                 WHERE session_id = ?1 AND created_at > ?2 AND id <> ?3",
-            )?;
-            let rows = stmt.query_map(params![session_id, created_at, keep_message_id], |row| {
-                row.get(0)
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row?);
-            }
-            out
-        };
-        for message_id in &removed {
-            conn.execute(
-                "DELETE FROM message_aux WHERE message_id = ?1",
-                params![message_id],
-            )?;
-            conn.execute(
-                "DELETE FROM message_versions WHERE message_id = ?1",
-                params![message_id],
-            )?;
-        }
-        conn.execute(
-            "DELETE FROM chat_messages
-             WHERE session_id = ?1 AND created_at > ?2 AND id <> ?3",
-            params![session_id, created_at, keep_message_id],
-        )?;
-    }
-    Ok(())
 }
 
 // ---- FSM orchestration (ADR-001 §6/§7/§11, Sprint 2 backend) ----
@@ -9020,38 +5913,6 @@ fn map_run_metric(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunMetric> {
     })
 }
 
-/// Upserts a run's metric row. Called by the FSM executor once built
-/// (Sprint 2 orchestration) and by tests today; kept public for the
-/// future in-process caller, mirroring `create_provider`.
-#[allow(dead_code)]
-pub fn upsert_run_metric(conn: &Connection, metric: &RunMetric) -> Result<()> {
-    conn.execute(
-        "INSERT INTO run_metrics (run_id, trace_id, kind, started_at, ended_at, node_count, hitl_count, total_tokens, status)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(run_id) DO UPDATE SET
-           trace_id = excluded.trace_id,
-           kind = excluded.kind,
-           started_at = excluded.started_at,
-           ended_at = excluded.ended_at,
-           node_count = excluded.node_count,
-           hitl_count = excluded.hitl_count,
-           total_tokens = excluded.total_tokens,
-           status = excluded.status",
-        params![
-            metric.run_id,
-            metric.trace_id,
-            metric.kind,
-            metric.started_at,
-            metric.ended_at,
-            metric.node_count,
-            metric.hitl_count,
-            metric.total_tokens,
-            metric.status,
-        ],
-    )?;
-    Ok(())
-}
-
 pub fn get_run_metric(conn: &Connection, run_id: &str) -> Result<Option<RunMetric>> {
     conn.query_row(
         "SELECT run_id, trace_id, kind, started_at, ended_at, node_count, hitl_count, total_tokens, status
@@ -9082,14 +5943,6 @@ pub struct WorkspaceSummary {
     pub providers: Vec<Provider>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActionsBundle {
-    pub tasks: Vec<Task>,
-    pub habits: Vec<Habit>,
-    pub schedule_events: Vec<ScheduleEvent>,
-}
-
 pub fn get_workspace_summary(conn: &Connection) -> Result<WorkspaceSummary> {
     Ok(WorkspaceSummary {
         projects: list_projects(conn)?,
@@ -9097,14 +5950,6 @@ pub fn get_workspace_summary(conn: &Connection) -> Result<WorkspaceSummary> {
         thoughts: list_thoughts(conn)?,
         sessions: list_sessions(conn)?,
         providers: list_providers(conn)?,
-    })
-}
-
-pub fn get_actions_bundle(conn: &Connection) -> Result<ActionsBundle> {
-    Ok(ActionsBundle {
-        tasks: list_tasks(conn)?,
-        habits: list_habits(conn)?,
-        schedule_events: list_schedule_events(conn)?,
     })
 }
 
@@ -9332,29 +6177,6 @@ mod tests {
     }
 
     #[test]
-    fn session_rename_and_delete_cascade_messages() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-session-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let session = create_session(&conn, "Old title", "openai").unwrap();
-        save_chat_message(&conn, &session.id, "user", "Hello", None).unwrap();
-
-        rename_session(&conn, &session.id, "New title").unwrap();
-        let sessions = list_sessions(&conn).unwrap();
-        assert_eq!(sessions[0].title, "New title");
-
-        delete_session(&conn, &session.id).unwrap();
-        let sessions = list_sessions(&conn).unwrap();
-        assert!(!sessions.iter().any(|s| s.id == session.id));
-        assert!(list_chat_messages(&conn, &session.id).unwrap().is_empty());
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn session_pinned_migration_adds_column() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -9413,371 +6235,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(archived, 0);
-    }
-
-    #[test]
-    fn session_archive_round_trip_search_and_duplicate() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let first = create_session(&conn, "Archive me", "openai").unwrap();
-        let _second = create_session(&conn, "Keep me", "ollama").unwrap();
-        save_chat_message(&conn, &first.id, "user", "archive question", None).unwrap();
-
-        let archived = set_session_archived(&conn, &first.id, true).unwrap();
-        assert!(archived.archived);
-        let sessions = list_sessions(&conn).unwrap();
-        assert!(sessions.iter().any(|s| s.id == first.id && s.archived));
-        assert!(search_sessions(&conn, "archive", None, None, None, true)
-            .unwrap()
-            .is_empty());
-
-        let restored = set_session_archived(&conn, &first.id, false).unwrap();
-        assert!(!restored.archived);
-        let copy = duplicate_session(&conn, &first.id).unwrap();
-        assert!(!copy.archived);
-        let hits = search_sessions(&conn, "archive", None, None, None, true).unwrap();
-        assert!(hits.iter().any(|h| h.session.id == first.id));
-
-        assert!(set_session_archived(&conn, "missing", true).is_err());
-        drop(conn);
-    }
-
-    #[test]
-    fn session_pin_duplicate_orders_and_counts() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-session-workspace-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let first = create_session(&conn, "First", "openai").unwrap();
-        let second = create_session(&conn, "Second", "ollama").unwrap();
-        save_chat_message(&conn, &first.id, "user", "Hello", None).unwrap();
-        save_chat_message(&conn, &first.id, "assistant", "Hi", None).unwrap();
-        save_chat_message(&conn, &second.id, "user", "Ollama question", None).unwrap();
-
-        let sessions = list_sessions(&conn).unwrap();
-        assert_eq!(sessions[0].id, second.id);
-        assert_eq!(sessions[0].message_count, 1);
-        assert_eq!(sessions[1].message_count, 2);
-
-        set_session_pinned(&conn, &first.id, true).unwrap();
-        let sessions = list_sessions(&conn).unwrap();
-        assert!(sessions[0].pinned);
-        assert_eq!(sessions[0].id, first.id);
-
-        let copy = duplicate_session(&conn, &first.id).unwrap();
-        assert!(copy.title.ends_with("(copy)"));
-        assert!(!copy.archived);
-        assert_eq!(copy.message_count, 2);
-        let messages = list_chat_messages(&conn, &copy.id).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].content, "Hello");
-
-        drop(conn);
-        let conn = init_connection(&db_path).unwrap();
-        let sessions = list_sessions(&conn).unwrap();
-        let restored = sessions.iter().find(|s| s.id == first.id).unwrap();
-        assert!(restored.pinned);
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn session_search_matches_title_model_and_message_content() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let planning = create_session(&conn, "Sprint Planning", "openai").unwrap();
-        let grocery = create_session(&conn, "Grocery list", "ollama").unwrap();
-        let planning_message = save_chat_message(
-            &conn,
-            &planning.id,
-            "user",
-            "Can you review the RAG architecture?",
-            None,
-        )
-        .unwrap();
-        save_chat_message(&conn, &grocery.id, "user", "Add milk and eggs", None).unwrap();
-
-        let title_hits = search_sessions(&conn, "planning", None, None, None, true).unwrap();
-        assert_eq!(title_hits.len(), 1);
-        assert_eq!(title_hits[0].session.id, planning.id);
-        assert_eq!(title_hits[0].match_type, "title");
-        assert!(title_hits[0].message_id.is_none());
-
-        let model_hits = search_sessions(&conn, "ollama", None, None, None, true).unwrap();
-        assert_eq!(model_hits.len(), 1);
-        assert_eq!(model_hits[0].session.id, grocery.id);
-        assert_eq!(model_hits[0].match_type, "model");
-
-        let message_hits =
-            search_sessions(&conn, "RAG architecture", None, None, None, true).unwrap();
-        assert_eq!(message_hits.len(), 1);
-        assert_eq!(message_hits[0].session.id, planning.id);
-        assert_eq!(message_hits[0].match_type, "message");
-        assert!(message_hits[0].snippet.contains("RAG architecture"));
-        assert_eq!(
-            message_hits[0].message_id.as_deref(),
-            Some(planning_message.id.as_str())
-        );
-
-        let title_only =
-            search_sessions(&conn, "RAG architecture", None, None, None, false).unwrap();
-        assert!(title_only.is_empty());
-    }
-
-    #[test]
-    fn session_search_fuzzy_subsequence_ranks_above_message_hits() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let planning = create_session(&conn, "Sprint Planning", "openai").unwrap();
-        let generic = create_session(&conn, "General chat", "openai").unwrap();
-        save_chat_message(
-            &conn,
-            &generic.id,
-            "user",
-            "Please prepare a sprint plan for next week",
-            None,
-        )
-        .unwrap();
-
-        let hits = search_sessions(&conn, "sprnt plan", None, None, None, true).unwrap();
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].session.id, planning.id);
-        assert_eq!(hits[0].match_type, "title");
-        assert!(hits[0].score > hits[1].score);
-    }
-
-    #[test]
-    fn session_search_pinyin_full_and_initials_match_chinese() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let plan = create_session(&conn, "每日计划", "openai").unwrap();
-        let message = save_chat_message(&conn, &plan.id, "user", "买牛奶和鸡蛋", None).unwrap();
-
-        let by_initials = search_sessions(&conn, "mrjh", None, None, None, true).unwrap();
-        assert_eq!(by_initials.len(), 1);
-        assert_eq!(by_initials[0].session.id, plan.id);
-        assert_eq!(by_initials[0].match_type, "pinyin-title");
-
-        let by_full = search_sessions(&conn, "meirijihua", None, None, None, true).unwrap();
-        assert_eq!(by_full.len(), 1);
-        assert_eq!(by_full[0].session.id, plan.id);
-        assert_eq!(by_full[0].match_type, "pinyin-title");
-
-        let by_message = search_sessions(&conn, "mnhjd", None, None, None, true).unwrap();
-        assert_eq!(by_message.len(), 1);
-        assert_eq!(by_message[0].session.id, plan.id);
-        assert_eq!(by_message[0].match_type, "pinyin-message");
-        assert_eq!(
-            by_message[0].message_id.as_deref(),
-            Some(message.id.as_str())
-        );
-
-        let by_chinese = search_sessions(&conn, "计划", None, None, None, true).unwrap();
-        assert_eq!(by_chinese.len(), 1);
-        assert_eq!(by_chinese[0].match_type, "title");
-    }
-
-    #[test]
-    fn session_search_filters_by_time_range_and_limit() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let old = create_session(&conn, "Old planning", "openai").unwrap();
-        let recent = create_session(&conn, "Recent planning", "openai").unwrap();
-        conn.execute(
-            "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
-            params![1_000i64, old.id],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
-            params![2_000i64, recent.id],
-        )
-        .unwrap();
-
-        let hits = search_sessions(&conn, "planning", Some(1_500), None, None, true).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].session.id, recent.id);
-
-        let limited = search_sessions(&conn, "planning", None, None, Some(1), true).unwrap();
-        assert_eq!(limited.len(), 1);
-    }
-
-    #[test]
-    fn chat_message_edit_and_truncate_tail() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-message-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let session = create_session(&conn, "Edit test", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "Old question", None).unwrap();
-        let first = save_chat_message(&conn, &session.id, "assistant", "Old answer", None).unwrap();
-        let tail =
-            save_chat_message(&conn, &session.id, "assistant", "Should be removed", None).unwrap();
-
-        update_chat_message(&conn, &user.id, "New question").unwrap();
-        truncate_chat_messages(&conn, &session.id, &user.id).unwrap();
-
-        let messages = list_chat_messages(&conn, &session.id).unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].content, "New question");
-        assert!(!messages.iter().any(|m| m.id == first.id || m.id == tail.id));
-        let versions = list_message_versions(&conn, &user.id).unwrap();
-        assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].content, "Old question");
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn message_versions_persist_and_restore() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-version-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let session = create_session(&conn, "Version test", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "v1 original", None).unwrap();
-        let assistant =
-            save_chat_message(&conn, &session.id, "assistant", "old answer", None).unwrap();
-        save_message_version(&conn, &assistant.id, "old answer", None).unwrap();
-        update_chat_message(&conn, &user.id, "v2 edited").unwrap();
-        update_chat_message(&conn, &user.id, "v3 edited again").unwrap();
-
-        let versions = list_message_versions(&conn, &user.id).unwrap();
-        assert_eq!(versions.len(), 2);
-        assert_eq!(versions[0].content, "v1 original");
-        assert_eq!(versions[1].content, "v2 edited");
-        assert!(versions[0].parent_version_id.is_none());
-        assert_eq!(
-            versions[1].parent_version_id.as_deref(),
-            Some(versions[0].id.as_str())
-        );
-        let assistant_versions = list_message_versions(&conn, &assistant.id).unwrap();
-        assert_eq!(assistant_versions.len(), 1);
-        assert_eq!(assistant_versions[0].content, "old answer");
-
-        let restored = restore_message_version(&conn, &user.id, &versions[0].id).unwrap();
-        assert_eq!(restored, "v1 original");
-        assert_eq!(
-            list_chat_messages(&conn, &session.id).unwrap()[0].content,
-            "v1 original"
-        );
-        assert_eq!(list_message_versions(&conn, &user.id).unwrap().len(), 3);
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn message_aux_lifecycle_and_invalid_payload() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let session = create_session(&conn, "Aux test", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "question", None).unwrap();
-
-        let saved = save_message_aux(&conn, &user.id, r#"{"rag":[],"trace":null}"#).unwrap();
-        assert_eq!(saved.message_id, user.id);
-        let list = list_message_aux(&conn, &session.id).unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].payload, r#"{"rag":[],"trace":null}"#);
-
-        save_message_aux(&conn, &user.id, r#"{"rag":[{"id":"r1","content":"hit"}]}"#).unwrap();
-        let list = list_message_aux(&conn, &session.id).unwrap();
-        assert_eq!(list.len(), 1);
-        assert!(list[0].payload.contains("r1"));
-
-        assert!(save_message_aux(&conn, &user.id, "not-json").is_err());
-        assert!(save_message_aux(&conn, &user.id, "[1,2]").is_err());
-        drop(conn);
-    }
-
-    #[test]
-    fn duplicate_session_copies_message_versions_and_aux() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let session = create_session(&conn, "Copy me", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "v1 question", None).unwrap();
-        let assistant = save_chat_message(&conn, &session.id, "assistant", "answer", None).unwrap();
-        update_chat_message(&conn, &user.id, "v2 question").unwrap();
-        update_chat_message(&conn, &user.id, "v3 question").unwrap();
-        save_message_aux(
-            &conn,
-            &user.id,
-            r#"{"rag":[{"id":"r1","content":"hit"}],"trace":{"title":"RAG Context","sections":[]}}"#,
-        )
-        .unwrap();
-        save_message_aux(
-            &conn,
-            &assistant.id,
-            r#"{"trace":{"title":"Agent Trace","sections":[{"label":"Agent","value":"UI Designer"}]}}"#,
-        )
-        .unwrap();
-
-        let copy = duplicate_session(&conn, &session.id).unwrap();
-        assert_eq!(copy.message_count, 2);
-        let copy_messages = list_chat_messages(&conn, &copy.id).unwrap();
-        assert_eq!(copy_messages.len(), 2);
-
-        let versions = list_message_versions(&conn, &copy_messages[0].id).unwrap();
-        assert_eq!(versions.len(), 2);
-        assert_eq!(versions[0].content, "v1 question");
-        assert_eq!(versions[1].content, "v2 question");
-        assert!(versions[0].parent_version_id.is_none());
-        assert_eq!(
-            versions[1].parent_version_id.as_deref(),
-            Some(versions[0].id.as_str())
-        );
-
-        let aux = list_message_aux(&conn, &copy.id).unwrap();
-        assert_eq!(aux.len(), 2);
-        let user_aux = aux
-            .iter()
-            .find(|a| a.message_id == copy_messages[0].id)
-            .unwrap();
-        assert!(user_aux.payload.contains("r1"));
-        let assistant_aux = aux
-            .iter()
-            .find(|a| a.message_id == copy_messages[1].id)
-            .unwrap();
-        assert!(assistant_aux.payload.contains("UI Designer"));
-        drop(conn);
-    }
-
-    #[test]
-    fn message_version_diff_with_current_reports_added_and_removed_lines() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-diff-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let session = create_session(&conn, "Diff test", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "current", None).unwrap();
-        save_message_version(&conn, &user.id, "alpha\nbeta\nold line", None).unwrap();
-        save_message_version(&conn, &user.id, "alpha\nbeta\nnew line", None).unwrap();
-        update_chat_message(&conn, &user.id, "alpha\nbeta\nnew line").unwrap();
-
-        let versions = list_message_versions(&conn, &user.id).unwrap();
-        assert_eq!(versions.len(), 3);
-        assert_eq!(versions[0].content, "alpha\nbeta\nold line");
-        assert_eq!(versions[1].content, "alpha\nbeta\nnew line");
-        let diff = diff_message_version_with_current(&conn, &user.id, &versions[0].id).unwrap();
-        assert_eq!(diff.removed, vec!["old line"]);
-        assert_eq!(diff.added, vec!["new line"]);
-
-        let same = diff_message_version_with_current(&conn, &user.id, &versions[1].id).unwrap();
-        assert!(same.added.is_empty());
-        assert!(same.removed.is_empty());
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -9846,6 +6303,7 @@ mod tests {
             .unwrap();
             migrate_project_sort_order(&conn).unwrap();
             migrate_project_material(&conn).unwrap();
+            migrate_project_journey(&conn).unwrap();
             let order: Vec<(String, i64)> = conn
                 .prepare("SELECT id, sort_order FROM projects ORDER BY sort_order ASC")
                 .unwrap()
@@ -9905,6 +6363,7 @@ mod tests {
             )
             .unwrap();
             migrate_project_material(&conn).unwrap();
+            migrate_project_journey(&conn).unwrap();
             let initial: String = conn
                 .query_row("SELECT material FROM projects WHERE id = 'a'", [], |row| {
                     row.get(0)
@@ -9919,6 +6378,78 @@ mod tests {
             assert_eq!(created.material, "");
             let all = list_projects(&conn).unwrap();
             assert_eq!(all[0].material, "");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_journey_migrates_and_persists() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-project-journey-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT,
+                    revenue REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'active',
+                    created_at INTEGER,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    material TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE project_revenue_history (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    revenue REAL NOT NULL,
+                    recorded_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, sort_order) VALUES (?1, ?2, ?3, 0)",
+                params!["a", "Alpha", 1000],
+            )
+            .unwrap();
+            migrate_project_journey(&conn).unwrap();
+            let initial: String = conn
+                .query_row(
+                    "SELECT journey_stage FROM projects WHERE id = 'a'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(initial, "idea");
+            let updated = update_project_journey(
+                &conn,
+                "a",
+                "ready",
+                Some("docs/journey/alpha.md".to_string()),
+            )
+            .unwrap();
+            assert_eq!(updated.journey_stage, "ready");
+            assert_eq!(
+                updated.journey_doc_path.as_deref(),
+                Some("docs/journey/alpha.md")
+            );
+            let invalid = update_project_journey(&conn, "a", "shipped", None);
+            assert!(invalid.is_err());
+            let created = create_project(&conn, "Gamma", "").unwrap();
+            assert_eq!(created.journey_stage, "idea");
+            assert_eq!(created.journey_doc_path, None);
+            let all = list_projects(&conn).unwrap();
+            let alpha = all
+                .iter()
+                .find(|project| project.name == "Alpha")
+                .expect("Alpha should be listed");
+            assert_eq!(alpha.journey_stage, "ready");
+            let gamma = all
+                .iter()
+                .find(|project| project.name == "Gamma")
+                .expect("Gamma should be listed");
+            assert_eq!(gamma.journey_stage, "idea");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -10108,174 +6639,6 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn habit_week_goal_edit_and_delete_persist() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-manage-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let habit = create_habit(&conn, "Deep work", 3, "blue").unwrap();
-        toggle_habit(&conn, &habit.id).unwrap();
-        let updated = update_habit_week_goal(&conn, &habit.id, 7).unwrap();
-        assert_eq!(updated.week_goal, 7);
-        let clamped = update_habit_week_goal(&conn, &habit.id, 99).unwrap();
-        assert_eq!(clamped.week_goal, 31);
-        drop(conn);
-
-        let conn = init_connection(&db_path).unwrap();
-        let saved = list_habits(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|h| h.id == habit.id)
-            .expect("updated habit should be listed");
-        assert_eq!(saved.week_goal, 31);
-
-        let deleted = delete_habit(&conn, &habit.id).unwrap();
-        assert!(deleted);
-        let logs: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?1",
-                params![habit.id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(logs, 0);
-        assert!(!list_habits(&conn).unwrap().iter().any(|h| h.id == habit.id));
-        assert!(!delete_habit(&conn, &habit.id).unwrap());
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn habits_and_schedule_persist_across_reopen() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let habit = create_habit(&conn, "早睡", 5, "emerald").unwrap();
-        assert!(!habit.done_today);
-        let toggled = toggle_habit(&conn, &habit.id).unwrap();
-        assert!(toggled.done_today);
-        let event =
-            create_schedule_event(&conn, "发布 Sprint 3", "20:00", "2026-08-10", "work").unwrap();
-        assert!(!event.done);
-        assert_eq!(event.date, "2026-08-10");
-        toggle_event_done(&conn, &event.id).unwrap();
-        drop(conn);
-
-        let conn = init_connection(&db_path).unwrap();
-        let habits = list_habits(&conn).unwrap();
-        let saved_habit = habits
-            .iter()
-            .find(|h| h.id == habit.id)
-            .expect("created habit should be listed");
-        assert!(saved_habit.done_today);
-        assert_eq!(saved_habit.name, "早睡");
-        assert_eq!(saved_habit.current_streak, 1);
-        assert!(saved_habit.recent_logs.iter().any(|d| d == &today_local()));
-
-        let events = list_schedule_events(&conn).unwrap();
-        let saved_event = events
-            .iter()
-            .find(|e| e.id == event.id)
-            .expect("created event should be listed");
-        assert!(saved_event.done);
-        assert_eq!(saved_event.start_time, "20:00");
-        assert_eq!(saved_event.date, "2026-08-10");
-
-        let untoggled = toggle_habit(&conn, &habit.id).unwrap();
-        assert!(!untoggled.done_today);
-        assert_eq!(untoggled.current_streak, 0);
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn schedule_event_date_migration_adds_column_and_orders() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schedule_events (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                done INTEGER DEFAULT 0,
-                tag TEXT DEFAULT 'general',
-                created_at INTEGER
-            );",
-        )
-        .unwrap();
-        migrate_schedule_event_date(&conn).unwrap();
-        migrate_schedule_event_date(&conn).unwrap();
-        assert!(column_exists(&conn, "schedule_events", "date").unwrap());
-        conn.execute(
-            "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at)
-             VALUES ('a', 'A', '10:00', '2026-08-11', 0, 'work', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO schedule_events (id, title, start_time, date, done, tag, created_at)
-             VALUES ('b', 'B', '09:00', '2026-08-10', 0, 'work', 2)",
-            [],
-        )
-        .unwrap();
-        let events = list_schedule_events(&conn).unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].id, "b");
-        assert_eq!(events[0].date, "2026-08-10");
-        assert_eq!(events[1].id, "a");
-        assert_eq!(events[1].date, "2026-08-11");
-    }
-
-    #[test]
-    fn seeded_habits_have_log_backed_streaks() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-habit-seed-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let habits = list_habits(&conn).unwrap();
-        assert_eq!(habits.len(), 3);
-        let reading = habits.iter().find(|h| h.name == "晨间阅读").unwrap();
-        let deep_work = habits.iter().find(|h| h.name == "深水工作").unwrap();
-        let exercise = habits.iter().find(|h| h.name == "运动 30 分钟").unwrap();
-        assert_eq!(reading.current_streak, 3);
-        assert_eq!(deep_work.current_streak, 2);
-        assert_eq!(exercise.current_streak, 5);
-        assert!(!reading.done_today);
-        assert!(!reading.recent_logs.is_empty());
-        assert!(!deep_work.recent_logs.is_empty());
-        assert!(!exercise.recent_logs.is_empty());
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn habit_streak_math_counts_consecutive_days() {
-        let now = chrono::Local::now();
-        let today = now.format("%Y-%m-%d").to_string();
-        let yesterday = (now - chrono::Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
-        let two_days_ago = (now - chrono::Duration::days(2))
-            .format("%Y-%m-%d")
-            .to_string();
-
-        let ending_yesterday = vec![two_days_ago.clone(), yesterday.clone()];
-        assert_eq!(compute_habit_streak(&ending_yesterday, &today), 2);
-
-        let ending_today = vec![two_days_ago.clone(), yesterday, today.clone()];
-        assert_eq!(compute_habit_streak(&ending_today, &today), 3);
-
-        let with_gap = vec![two_days_ago, today.clone()];
-        assert_eq!(compute_habit_streak(&with_gap, &today), 1);
     }
 
     #[test]
@@ -10473,60 +6836,6 @@ mod tests {
         assert_eq!(prompt.label, "Remote prompt");
         assert_eq!(prompt.category, "life");
         assert!(prompt.updated_at >= 2000);
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn quick_prompt_edit_and_reorder_persist() {
-        let dir = std::env::temp_dir().join(format!("aiwb-quick-edit-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-        for (id, label, order) in [
-            ("custom-a", "Alpha", 0),
-            ("custom-b", "Beta", 1),
-            ("builtin-x", "Builtin", 2),
-        ] {
-            upsert_quick_prompt(
-                &conn,
-                &QuickPrompt {
-                    id: id.to_string(),
-                    label: label.to_string(),
-                    category: "work".to_string(),
-                    text: format!("{label} text"),
-                    custom: id.starts_with("custom"),
-                    sort_order: order,
-                    updated_at: 1000,
-                    created_at: 500,
-                },
-            )
-            .unwrap();
-        }
-
-        let updated =
-            update_custom_quick_prompt(&conn, "custom-a", "Alpha edited", "life", "new text")
-                .unwrap();
-        assert_eq!(updated.label, "Alpha edited");
-        assert_eq!(updated.category, "life");
-        assert_eq!(updated.text, "new text");
-        assert!(updated.updated_at > 1000);
-        assert!(update_custom_quick_prompt(&conn, "builtin-x", "x", "work", "x").is_err());
-
-        reorder_custom_quick_prompts(&conn, &["custom-b".to_string(), "custom-a".to_string()])
-            .unwrap();
-        let prompts = list_quick_prompts(&conn).unwrap();
-        let alpha = prompts.iter().find(|p| p.id == "custom-a").unwrap();
-        let beta = prompts.iter().find(|p| p.id == "custom-b").unwrap();
-        assert_eq!(alpha.sort_order, 1);
-        assert_eq!(beta.sort_order, 0);
-        assert_eq!(
-            prompts
-                .iter()
-                .find(|p| p.id == "builtin-x")
-                .unwrap()
-                .sort_order,
-            2
-        );
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -11300,586 +7609,6 @@ mod tests {
     }
 
     #[test]
-    fn vault_watch_config_persists_path_ignore_and_enabled() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-config-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-        let conn = init_connection(&db_path).unwrap();
-
-        let saved = set_vault_watch_config(
-            &conn,
-            "C:/vault",
-            &["Daily Notes".to_string(), "node_modules".to_string()],
-            true,
-        )
-        .unwrap();
-        assert_eq!(saved.path, "C:/vault");
-        assert_eq!(saved.ignore_patterns.len(), 2);
-        assert!(saved.enabled);
-        drop(conn);
-
-        let reopened = init_connection(&db_path).unwrap();
-        let restored = get_vault_watch_config(&reopened).unwrap();
-        assert_eq!(restored.path, "C:/vault");
-        assert_eq!(
-            restored.ignore_patterns,
-            vec!["Daily Notes", "node_modules"]
-        );
-        assert!(restored.enabled);
-        assert!(restored.updated_at > 0);
-
-        let stopped =
-            set_vault_watch_config(&reopened, &restored.path, &restored.ignore_patterns, false)
-                .unwrap();
-        assert!(!stopped.enabled);
-        assert_eq!(stopped.path, "C:/vault");
-        assert_eq!(stopped.ignore_patterns.len(), 2);
-
-        let empty = get_vault_watch_config(&reopened).unwrap();
-        assert!(!empty.enabled);
-        drop(reopened);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn vault_watch_targets_crud_and_legacy_migration() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-targets-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-
-        set_vault_watch_config(&conn, "C:/legacy", &["node_modules".to_string()], true).unwrap();
-        migrate_vault_watch_targets(&conn).unwrap();
-        let targets = list_vault_watch_targets(&conn).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].path, "C:/legacy");
-        assert_eq!(targets[0].ignore_patterns, vec!["node_modules"]);
-        assert!(targets[0].enabled);
-        assert_eq!(targets[0].last_event_at, 0);
-        assert_eq!(targets[0].event_count, 0);
-        assert_eq!(targets[0].created_events, 0);
-        assert_eq!(targets[0].modified_events, 0);
-        assert_eq!(targets[0].removed_events, 0);
-
-        upsert_vault_watch_target(&conn, "D:/work", &[], false).unwrap();
-        let targets = list_vault_watch_targets(&conn).unwrap();
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets[1].path, "D:/work");
-        assert!(!targets[1].enabled);
-
-        touch_vault_watch_event(&conn, "D:/work", "D:/work/note.md", "created").unwrap();
-        touch_vault_watch_event(&conn, "D:/work", "D:/work/task.md", "modified").unwrap();
-        let touched = list_vault_watch_targets(&conn).unwrap();
-        let work = touched.iter().find(|t| t.path == "D:/work").unwrap();
-        assert_eq!(work.event_count, 2);
-        assert!(work.last_event_at > 0);
-        assert_eq!(work.created_events, 1);
-        assert_eq!(work.modified_events, 1);
-        assert_eq!(work.removed_events, 0);
-        let events = list_vault_watch_events(&conn, Some("D:/work"), 20).unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_kind, "modified");
-        assert_eq!(events[0].file_path, "D:/work/task.md");
-        assert_eq!(events[1].event_kind, "created");
-        assert_eq!(events[1].file_path, "D:/work/note.md");
-        assert_eq!(
-            list_vault_watch_events(&conn, Some("C:/missing"), 20)
-                .unwrap()
-                .len(),
-            0
-        );
-
-        let enabled = set_vault_watch_target_enabled(&conn, "D:/work", true).unwrap();
-        assert_eq!(enabled.as_ref().map(|t| t.enabled), Some(true));
-        assert!(set_vault_watch_target_enabled(&conn, "missing:/path", true)
-            .unwrap()
-            .is_none());
-
-        assert!(delete_vault_watch_target(&conn, "C:/legacy").unwrap());
-        assert!(!delete_vault_watch_target(&conn, "C:/legacy").unwrap());
-        let remaining = list_vault_watch_targets(&conn).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].path, "D:/work");
-
-        assert_eq!(clear_vault_watch_events(&conn, Some("D:/work")).unwrap(), 2);
-        assert_eq!(
-            list_vault_watch_events(&conn, Some("D:/work"), 20)
-                .unwrap()
-                .len(),
-            0
-        );
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn vault_target_stats_group_by_vault_path() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-stats-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-
-        upsert_knowledge_file(&conn, "C:/a/a.md", "A", "", "a", "C:/a").unwrap();
-        upsert_knowledge_file(&conn, "C:/a/b.md", "B", "", "b", "C:/a").unwrap();
-        upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
-        upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
-        upsert_vault_watch_target(&conn, "C:/a", &[], true).unwrap();
-        touch_vault_watch_event(&conn, "C:/a", "C:/a/note.md", "created").unwrap();
-
-        let stats = vault_target_stats(&conn).unwrap();
-        assert_eq!(stats.len(), 2);
-        assert_eq!(stats[0].path, "C:/a");
-        assert_eq!(stats[0].files, 2);
-        assert!(stats[0].last_indexed_at > 0);
-        assert_eq!(stats[0].event_count, 1);
-        assert!(stats[0].last_event_at > 0);
-        assert_eq!(stats[0].created_events, 1);
-        assert_eq!(stats[0].modified_events, 0);
-        assert_eq!(stats[0].removed_events, 0);
-        assert_eq!(stats[1].path, "D:/b");
-        assert_eq!(stats[1].files, 1);
-        assert_eq!(stats[1].event_count, 0);
-        assert_eq!(stats[1].created_events, 0);
-
-        upsert_knowledge_file(&conn, "C:/a/c.md", "C", "", "c", "C:/a").unwrap();
-        let stats = vault_target_stats(&conn).unwrap();
-        assert_eq!(stats[0].files, 3);
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn knowledge_files_list_filters_by_vault_and_limit() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-files-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-
-        upsert_knowledge_file(&conn, "C:/a/a.md", "A", "#work", "a", "C:/a").unwrap();
-        upsert_knowledge_file(&conn, "C:/a/b.md", "B", "#life", "b", "C:/a").unwrap();
-        upsert_knowledge_file(&conn, "D:/b/c.md", "C", "", "c", "D:/b").unwrap();
-        upsert_knowledge_file(&conn, "E:/legacy.md", "L", "", "l", "").unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
-            params![1000, "C:/a/a.md"],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
-            params![2000, "C:/a/b.md"],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
-            params![3000, "D:/b/c.md"],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = ?1 WHERE path = ?2",
-            params![4000, "E:/legacy.md"],
-        )
-        .unwrap();
-
-        let all = list_knowledge_files(&conn, None, None).unwrap();
-        assert_eq!(all.len(), 4);
-        assert_eq!(all[0].title, "L");
-        assert_eq!(all[0].vault_path, "");
-
-        let c_files = list_knowledge_files(&conn, Some("C:/a"), None).unwrap();
-        assert_eq!(c_files.len(), 2);
-        assert_eq!(c_files[0].title, "B");
-        assert_eq!(c_files[1].title, "A");
-        assert!(c_files.iter().all(|file| file.vault_path == "C:/a"));
-
-        let limited = list_knowledge_files(&conn, None, Some(1)).unwrap();
-        assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].title, "L");
-
-        let legacy = list_knowledge_files(&conn, Some(""), None).unwrap();
-        assert_eq!(legacy.len(), 1);
-        assert_eq!(legacy[0].path, "E:/legacy.md");
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn knowledge_files_list_reports_missing_and_stale() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-status-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file_path = dir.join("note.md");
-        std::fs::write(&file_path, "# note").unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-        let path_str = file_path.to_string_lossy().to_string();
-        upsert_knowledge_file(&conn, &path_str, "Note", "", "note", "C:/vault").unwrap();
-
-        let fresh = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
-        assert_eq!(fresh.len(), 1);
-        assert!(fresh[0].exists);
-        assert!(!fresh[0].stale);
-
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = 0 WHERE path = ?1",
-            params![path_str],
-        )
-        .unwrap();
-        let stale = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
-        assert!(stale[0].exists);
-        assert!(stale[0].stale);
-
-        std::fs::remove_file(&file_path).unwrap();
-        let missing = list_knowledge_files(&conn, Some("C:/vault"), None).unwrap();
-        assert!(!missing[0].exists);
-        assert!(!missing[0].stale);
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn knowledge_cleanup_removes_missing_and_reindexes_stale() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-knowledge-cleanup-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-
-        let stale_path = dir.join("stale.md");
-        std::fs::write(&stale_path, "---\ntitle: Stale\n---\n# old").unwrap();
-        let stale_str = stale_path.to_string_lossy().to_string();
-        upsert_knowledge_file(&conn, &stale_str, "Stale", "", "# old", "C:/vault").unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET indexed_at = 0 WHERE path = ?1",
-            params![stale_str],
-        )
-        .unwrap();
-        std::fs::write(&stale_path, "---\ntitle: Stale\n---\n# new").unwrap();
-
-        let missing_path = dir.join("missing.md");
-        let missing_str = missing_path.to_string_lossy().to_string();
-        std::fs::write(&missing_path, "gone").unwrap();
-        upsert_knowledge_file(&conn, &missing_str, "Missing", "", "gone", "C:/vault").unwrap();
-        std::fs::remove_file(&missing_path).unwrap();
-
-        let fresh_path = dir.join("fresh.md");
-        let fresh_str = fresh_path.to_string_lossy().to_string();
-        std::fs::write(&fresh_path, "# fresh").unwrap();
-        upsert_knowledge_file(&conn, &fresh_str, "Fresh", "", "# fresh", "D:/vault").unwrap();
-
-        let result = cleanup_knowledge_files(&conn, Some("C:/vault")).unwrap();
-        assert_eq!(result.removed, 1);
-        assert_eq!(result.reindexed, 1);
-        assert_eq!(result.failed, 0);
-
-        let remaining = list_knowledge_files(&conn, None, None).unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert!(remaining.iter().all(|doc| doc.path != missing_str));
-
-        let stale_doc = remaining.iter().find(|doc| doc.path == stale_str).unwrap();
-        assert!(stale_doc.exists);
-        assert!(!stale_doc.stale);
-        let content: String = conn
-            .query_row(
-                "SELECT content FROM knowledge_files WHERE path = ?1",
-                params![stale_str],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(content.contains("new"));
-
-        let fresh_doc = remaining.iter().find(|doc| doc.path == fresh_str).unwrap();
-        assert_eq!(fresh_doc.vault_path, "D:/vault");
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn vault_index_queue_persists_across_reopen() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-index-queue-persist-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-        let conn = init_connection(&db_path).unwrap();
-        persist_vault_index_queue(
-            &conn,
-            &VaultIndexQueueRecord {
-                run_id: "run-1".to_string(),
-                path: "C:/vault".to_string(),
-                ignore_patterns: vec!["Daily Notes".to_string(), "*.tmp".to_string()],
-                concurrency: 2,
-                status: "queued".to_string(),
-                priority: 1,
-                attempts: 0,
-                last_error: String::new(),
-            },
-        )
-        .unwrap();
-        persist_vault_index_queue(
-            &conn,
-            &VaultIndexQueueRecord {
-                run_id: "run-2".to_string(),
-                path: "D:/vault".to_string(),
-                ignore_patterns: Vec::new(),
-                concurrency: 4,
-                status: "running".to_string(),
-                priority: 0,
-                attempts: 1,
-                last_error: "boom".to_string(),
-            },
-        )
-        .unwrap();
-        drop(conn);
-
-        let conn = init_connection(&db_path).unwrap();
-        let records = list_vault_index_queue(&conn).unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].run_id, "run-1");
-        assert_eq!(records[0].path, "C:/vault");
-        assert_eq!(records[0].ignore_patterns, vec!["Daily Notes", "*.tmp"]);
-        assert_eq!(records[0].concurrency, 2);
-        assert_eq!(records[0].status, "queued");
-        assert_eq!(records[0].priority, 1);
-        assert_eq!(records[0].attempts, 0);
-        assert_eq!(records[0].last_error, "");
-        assert_eq!(records[1].status, "running");
-        assert_eq!(records[1].priority, 0);
-        assert_eq!(records[1].attempts, 1);
-        assert_eq!(records[1].last_error, "boom");
-
-        delete_vault_index_queue(&conn, "run-1").unwrap();
-        let records = list_vault_index_queue(&conn).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].run_id, "run-2");
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn vault_index_queue_migrates_priority_columns() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE vault_index_queue (
-                run_id TEXT PRIMARY KEY,
-                path TEXT NOT NULL,
-                ignore_patterns TEXT NOT NULL DEFAULT '[]',
-                concurrency INTEGER NOT NULL DEFAULT 4,
-                status TEXT NOT NULL DEFAULT 'queued',
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );",
-        )
-        .unwrap();
-        migrate_vault_index_queue_priority(&conn).unwrap();
-        assert!(column_exists(&conn, "vault_index_queue", "priority").unwrap());
-        assert!(column_exists(&conn, "vault_index_queue", "attempts").unwrap());
-        assert!(column_exists(&conn, "vault_index_queue", "last_error").unwrap());
-        persist_vault_index_queue(
-            &conn,
-            &VaultIndexQueueRecord {
-                run_id: "run-1".to_string(),
-                path: "C:/vault".to_string(),
-                ignore_patterns: Vec::new(),
-                concurrency: 4,
-                status: "queued".to_string(),
-                priority: 1,
-                attempts: 2,
-                last_error: "boom".to_string(),
-            },
-        )
-        .unwrap();
-        let records = list_vault_index_queue(&conn).unwrap();
-        assert_eq!(records[0].priority, 1);
-        assert_eq!(records[0].attempts, 2);
-        assert_eq!(records[0].last_error, "boom");
-        migrate_vault_index_queue_priority(&conn).unwrap();
-        assert_eq!(list_vault_index_queue(&conn).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn vault_watch_events_clear_all_and_prune() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-vault-events-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = init_connection(&dir.join("workbench.db")).unwrap();
-
-        touch_vault_watch_event(&conn, "A:/one", "A:/one/1.md", "created").unwrap();
-        touch_vault_watch_event(&conn, "B:/two", "B:/two/2.md", "removed").unwrap();
-        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 2);
-        assert_eq!(clear_vault_watch_events(&conn, None).unwrap(), 2);
-        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 0);
-        assert!(touch_vault_watch_event(&conn, "A:/one", "A:/one/bad.txt", "watched").is_err());
-        assert_eq!(list_vault_watch_events(&conn, None, 50).unwrap().len(), 0);
-
-        drop(conn);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn message_version_parent_lineage_tracks_edit_chain() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-lineage-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        let session = create_session(&conn, "Lineage test", "openai").unwrap();
-        let user = save_chat_message(&conn, &session.id, "user", "v1 original", None).unwrap();
-        update_chat_message(&conn, &user.id, "v2 edited").unwrap();
-        update_chat_message(&conn, &user.id, "v3 edited again").unwrap();
-        restore_message_version(
-            &conn,
-            &user.id,
-            &list_message_versions(&conn, &user.id).unwrap()[0].id,
-        )
-        .unwrap();
-
-        let versions = list_message_versions(&conn, &user.id).unwrap();
-        assert_eq!(versions.len(), 3);
-        assert!(versions[0].parent_version_id.is_none());
-        assert_eq!(
-            versions[1].parent_version_id.as_deref(),
-            Some(versions[0].id.as_str())
-        );
-        assert_eq!(
-            versions[2].parent_version_id.as_deref(),
-            Some(versions[1].id.as_str())
-        );
-        assert_eq!(
-            list_chat_messages(&conn, &session.id).unwrap()[0].content,
-            "v1 original"
-        );
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn rag_search_ranks_relevant_thought_first() {
-        let dir = std::env::temp_dir().join(format!("aiwb-db-rag-test-{}", uid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("workbench.db");
-
-        let conn = init_connection(&db_path).unwrap();
-        create_thought(
-            &conn,
-            "Rust SQLite migration plan with tasks and sprints",
-            "#work",
-            "note",
-        )
-        .unwrap();
-        create_thought(&conn, "Dinner recipe for tomato pasta", "#life", "note").unwrap();
-
-        let results = search_thoughts(&conn, "sqlite migration", 5, None).unwrap();
-        assert!(!results.is_empty());
-        assert!(results[0].content.contains("SQLite"));
-        assert!(results[0].score > 0.0);
-
-        let status = rag_index_status(&conn).unwrap();
-        assert!(status.indexed);
-        assert!(status.documents >= 2);
-        drop(conn);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn webhook_rules_crud_and_due_selection() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let now = now_millis();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Daily sync",
-                url: "https://example.test/hook",
-                payload: "{\"event\":\"daily\"}",
-                method: "POST",
-                token: "secret-token",
-                secret: "hook-secret",
-                retries: 2,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        assert!(rule.enabled);
-        assert_eq!(rule.interval_seconds, 60);
-        assert_eq!(rule.method, "POST");
-        assert_eq!(rule.token, "secret-token");
-        assert_eq!(rule.secret, "hook-secret");
-        assert_eq!(rule.retries, 2);
-        assert_eq!(rule.cooldown_seconds, 0);
-        assert_eq!(rule.trigger_event, "");
-        assert_eq!(rule.consecutive_failures, 0);
-        assert_eq!(rule.auto_disable_after, 3);
-
-        let due = list_due_webhook_rules(&conn, now).unwrap();
-        assert!(due.iter().any(|r| r.id == rule.id));
-
-        mark_webhook_rule_run(&conn, &rule.id, 200, "HTTP 200 delivered").unwrap();
-        let after = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after.last_status, 200);
-        assert!(after.last_message.contains("HTTP 200"));
-        let not_due = list_due_webhook_rules(&conn, now + 1000).unwrap();
-        assert!(!not_due.iter().any(|r| r.id == rule.id));
-
-        set_webhook_rule_enabled(&conn, &rule.id, false).unwrap();
-        let disabled = list_due_webhook_rules(&conn, now + 10_000_000).unwrap();
-        assert!(!disabled.iter().any(|r| r.id == rule.id));
-
-        delete_webhook_rule(&conn, &rule.id).unwrap();
-        assert!(get_webhook_rule(&conn, &rule.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn webhook_template_version_lifecycle() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Versioned",
-                url: "https://example.test/hook",
-                payload: "{\"v\":1}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "sync.completed",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        assert_eq!(rule.template_version, 1);
-        let versions = list_webhook_template_versions(&conn, &rule.id).unwrap();
-        assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].version, 1);
-        assert_eq!(versions[0].payload, "{\"v\":1}");
-
-        let v2 = save_webhook_template_version(&conn, &rule.id, "{\"v\":2}", "second").unwrap();
-        assert_eq!(v2.version, 2);
-        let updated = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(updated.payload, "{\"v\":2}");
-        assert_eq!(updated.template_version, 2);
-
-        let restored = restore_webhook_template_version(&conn, &rule.id, 1).unwrap();
-        assert_eq!(restored.payload, "{\"v\":1}");
-        assert_eq!(restored.template_version, 1);
-        assert_eq!(
-            list_webhook_template_versions(&conn, &rule.id)
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-
-    #[test]
     fn webhook_template_version_migration_adds_column() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -11975,295 +7704,6 @@ mod tests {
         let empty = embed_text("");
         let norm = empty.iter().map(|v| v * v).sum::<f64>().sqrt();
         assert!(norm <= 1e-9);
-    }
-
-    #[test]
-    fn knowledge_embedding_migration_adds_column_and_search_reports_vector() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE knowledge_files (
-                id TEXT PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                title TEXT,
-                tags TEXT,
-                content TEXT NOT NULL,
-                vault_path TEXT NOT NULL DEFAULT '',
-                indexed_at INTEGER
-            );",
-        )
-        .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE thoughts (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                tags TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL DEFAULT 'inbox',
-                created_at INTEGER
-            );",
-        )
-        .unwrap();
-        migrate_knowledge_embedding(&conn).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS embedding_config (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                mode TEXT NOT NULL DEFAULT 'local',
-                provider_id TEXT NOT NULL DEFAULT '',
-                base_url TEXT NOT NULL DEFAULT '',
-                api_key TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL DEFAULT '',
-                dimension INTEGER NOT NULL DEFAULT 256,
-                shard_count INTEGER NOT NULL DEFAULT 8,
-                auto_rebuild INTEGER NOT NULL DEFAULT 1,
-                updated_at INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS vector_shards (
-                shard_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL DEFAULT '',
-                dimension INTEGER NOT NULL DEFAULT 256,
-                documents INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'idle',
-                updated_at INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL DEFAULT 0
-            );",
-        )
-        .unwrap();
-        migrate_vector_index(&conn).unwrap();
-        assert!(column_exists(&conn, "knowledge_files", "embedding").unwrap());
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/notes.md",
-            "Notes",
-            "#work",
-            "Local RAG vector search",
-            "C:/vault",
-        )
-        .unwrap();
-        let embedding: String = conn
-            .query_row(
-                "SELECT embedding FROM knowledge_files WHERE path = 'C:/vault/notes.md'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!embedding.is_empty());
-        let results = search_thoughts(&conn, "local vector search", 5, None).unwrap();
-        assert!(!results.is_empty());
-        assert!(results[0].vector_score > 0.0);
-        let status = rag_index_status(&conn).unwrap();
-        assert!(status.vector_indexed);
-    }
-
-    #[test]
-    fn vector_shard_assignment_is_stable_and_bounded() {
-        let first = shard_for("C:/vault/alpha.md", 8);
-        assert_eq!(first, shard_for("C:/vault/alpha.md", 8));
-        let mut seen = std::collections::HashSet::new();
-        for index in 0..64 {
-            let shard = shard_for(&format!("C:/vault/file-{index}.md"), 8)
-                .parse::<usize>()
-                .unwrap();
-            assert!(shard < 8);
-            seen.insert(shard);
-        }
-        assert!(seen.len() > 1);
-    }
-
-    #[test]
-    fn embedding_config_defaults_roundtrip_and_clamp() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let defaults = get_embedding_config(&conn).unwrap();
-        assert_eq!(defaults.mode, "local");
-        assert_eq!(defaults.shard_count, 8);
-        let saved = set_embedding_config(
-            &conn,
-            EmbeddingConfigInput {
-                mode: "ollama".to_string(),
-                provider_id: "local-ollama".to_string(),
-                base_url: "http://127.0.0.1:11434".to_string(),
-                api_key: String::new(),
-                model: "nomic-embed-text".to_string(),
-                dimension: 768,
-                shard_count: 16,
-                auto_rebuild: false,
-                ann_enabled: true,
-                probe_count: 2,
-            },
-        )
-        .unwrap();
-        assert_eq!(saved.mode, "ollama");
-        assert_eq!(saved.dimension, 768);
-        assert_eq!(saved.shard_count, 16);
-        assert!(!saved.auto_rebuild);
-        assert!(saved.ann_enabled);
-        assert_eq!(saved.probe_count, 2);
-        let clamped = set_embedding_config(
-            &conn,
-            EmbeddingConfigInput {
-                mode: "bogus".to_string(),
-                provider_id: String::new(),
-                base_url: String::new(),
-                api_key: String::new(),
-                model: String::new(),
-                dimension: 8,
-                shard_count: 999,
-                auto_rebuild: true,
-                ann_enabled: false,
-                probe_count: 999,
-            },
-        )
-        .unwrap();
-        assert_eq!(clamped.mode, "local");
-        assert_eq!(clamped.dimension, 64);
-        assert_eq!(clamped.shard_count, 64);
-        assert!(!clamped.ann_enabled);
-        assert_eq!(clamped.probe_count, 64);
-        let reloaded = get_embedding_config(&conn).unwrap();
-        assert_eq!(reloaded.shard_count, 64);
-        assert_eq!(reloaded.probe_count, 64);
-        assert_eq!(list_vector_shards(&conn).unwrap().len(), 64);
-    }
-
-    #[test]
-    fn vector_shards_compute_normalized_centroid() {
-        let conn = new_test_connection();
-        migrate_vector_index(&conn).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/centroid-a.md",
-            "A",
-            "#work",
-            "alpha plan with vector search",
-            "C:/vault",
-        )
-        .unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/centroid-b.md",
-            "B",
-            "#work",
-            "alpha plan with vector search again",
-            "C:/vault",
-        )
-        .unwrap();
-        conn.execute("UPDATE knowledge_files SET shard_id = '2'", [])
-            .unwrap();
-        refresh_shard_stats(&conn, "2").unwrap();
-        let shards = list_vector_shards(&conn).unwrap();
-        let shard = shards.iter().find(|shard| shard.shard_id == "2").unwrap();
-        assert_eq!(shard.status, "ready");
-        assert_eq!(shard.documents, 2);
-        let centroid: Vec<f64> = serde_json::from_str(&shard.centroid).unwrap();
-        assert!(!centroid.is_empty());
-        let norm = centroid
-            .iter()
-            .map(|value| value * value)
-            .sum::<f64>()
-            .sqrt();
-        assert!((norm - 1.0).abs() < 1e-6);
-        let status = get_vector_index_status(&conn).unwrap();
-        assert!(status.centroids_ready);
-    }
-
-    #[test]
-    fn ann_search_prunes_to_top_shards() {
-        let conn = new_test_connection();
-        set_embedding_config(
-            &conn,
-            EmbeddingConfigInput {
-                mode: "local".to_string(),
-                provider_id: String::new(),
-                base_url: String::new(),
-                api_key: String::new(),
-                model: String::new(),
-                dimension: 256,
-                shard_count: 8,
-                auto_rebuild: true,
-                ann_enabled: true,
-                probe_count: 2,
-            },
-        )
-        .unwrap();
-        for (index, content) in [
-            "alpha shard zero",
-            "alpha shard one",
-            "alpha shard two",
-            "alpha shard three",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let path = format!("C:/vault/ann-{index}.md");
-            upsert_knowledge_file(&conn, &path, "ANN", "#work", content, "C:/vault").unwrap();
-            conn.execute(
-                "UPDATE knowledge_files SET shard_id = ?1 WHERE path = ?2",
-                params![index.to_string(), path],
-            )
-            .unwrap();
-        }
-        refresh_all_shard_stats(&conn).unwrap();
-        let pruned = search_thoughts(&conn, "alpha", 10, None).unwrap();
-        let pruned_shards: std::collections::HashSet<String> = pruned
-            .iter()
-            .map(|result| result.shard_id.clone())
-            .collect();
-        assert_eq!(
-            pruned_shards.len(),
-            2,
-            "ANN should keep only the two closest shards"
-        );
-
-        set_embedding_config(
-            &conn,
-            EmbeddingConfigInput {
-                mode: "local".to_string(),
-                provider_id: String::new(),
-                base_url: String::new(),
-                api_key: String::new(),
-                model: String::new(),
-                dimension: 256,
-                shard_count: 8,
-                auto_rebuild: true,
-                ann_enabled: true,
-                probe_count: 8,
-            },
-        )
-        .unwrap();
-        let full = search_thoughts(&conn, "alpha", 10, None).unwrap();
-        let full_shards: std::collections::HashSet<String> =
-            full.iter().map(|result| result.shard_id.clone()).collect();
-        assert_eq!(
-            full_shards.len(),
-            4,
-            "probe=shard_count should disable pruning"
-        );
-
-        set_embedding_config(
-            &conn,
-            EmbeddingConfigInput {
-                mode: "local".to_string(),
-                provider_id: String::new(),
-                base_url: String::new(),
-                api_key: String::new(),
-                model: String::new(),
-                dimension: 256,
-                shard_count: 8,
-                auto_rebuild: true,
-                ann_enabled: false,
-                probe_count: 2,
-            },
-        )
-        .unwrap();
-        let disabled = search_thoughts(&conn, "alpha", 10, None).unwrap();
-        let disabled_shards: std::collections::HashSet<String> = disabled
-            .iter()
-            .map(|result| result.shard_id.clone())
-            .collect();
-        assert_eq!(
-            disabled_shards.len(),
-            4,
-            "disabled ANN should search all shards"
-        );
     }
 
     #[test]
@@ -12389,196 +7829,6 @@ mod tests {
     }
 
     #[test]
-    fn knowledge_clusters_group_similar_docs_and_keep_distinct() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        for (path, title, content) in [
-            ("C:/vault/a.md", "A", "knowledge graph vector search"),
-            ("C:/vault/b.md", "B", "knowledge graph vector search rerank"),
-            ("C:/vault/c.md", "C", "weather forecast weekend run"),
-        ] {
-            upsert_knowledge_file(&conn, path, title, "", content, "C:/vault").unwrap();
-        }
-        let status = recompute_knowledge_clusters(&conn, Some(0.5), Some(0.99)).unwrap();
-        assert!(!status.clusters.is_empty());
-        assert!(status.clusters.iter().any(|cluster| cluster.documents >= 2));
-        assert!(status.clusters.iter().any(|cluster| cluster.documents == 1));
-        assert_eq!(status.cluster_threshold, 0.5);
-        assert_eq!(status.dedup_threshold, 0.99);
-        assert!(status.last_recomputed_at > 0);
-        assert!(status
-            .clusters
-            .iter()
-            .flat_map(|cluster| cluster.members.iter())
-            .any(|member| member.similarity > 0.0));
-    }
-
-    #[test]
-    fn knowledge_dedup_candidates_dismiss_and_merge() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/original.md",
-            "Original",
-            "",
-            "duplicate duplicate duplicate content",
-            "C:/vault",
-        )
-        .unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/copy.md",
-            "Copy",
-            "",
-            "duplicate duplicate duplicate content",
-            "C:/vault",
-        )
-        .unwrap();
-        let mut status = recompute_knowledge_clusters(&conn, None, Some(0.9)).unwrap();
-        let open: Vec<KnowledgeDedupCandidate> = status
-            .dedup
-            .iter()
-            .filter(|candidate| candidate.status == "open")
-            .cloned()
-            .collect();
-        assert!(!open.is_empty());
-        dismiss_knowledge_duplicate(&conn, &open[0].id).unwrap();
-        status = get_knowledge_cluster_status(&conn).unwrap();
-        assert_eq!(
-            status
-                .dedup
-                .iter()
-                .find(|candidate| candidate.id == open[0].id)
-                .map(|candidate| candidate.status.as_str()),
-            Some("dismissed")
-        );
-
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/original2.md",
-            "Original 2",
-            "",
-            "second duplicate second duplicate",
-            "C:/vault",
-        )
-        .unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/copy2.md",
-            "Copy 2",
-            "",
-            "second duplicate second duplicate",
-            "C:/vault",
-        )
-        .unwrap();
-        status = recompute_knowledge_clusters(&conn, None, Some(0.9)).unwrap();
-        let open2: Vec<KnowledgeDedupCandidate> = status
-            .dedup
-            .iter()
-            .filter(|candidate| candidate.status == "open")
-            .cloned()
-            .collect();
-        assert!(!open2.is_empty());
-        let id = open2[0].id.clone();
-        merge_knowledge_duplicate(&conn, &id).unwrap();
-        status = get_knowledge_cluster_status(&conn).unwrap();
-        assert_eq!(
-            status
-                .dedup
-                .iter()
-                .find(|candidate| candidate.id == id)
-                .map(|candidate| candidate.status.as_str()),
-            Some("merged")
-        );
-        let files: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge_files", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(files, 3);
-    }
-
-    #[test]
-    fn upsert_knowledge_file_marks_shard_and_baseline_embedding() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        migrate_vector_index(&conn).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/notes.md",
-            "Notes",
-            "#work",
-            "Local RAG vector search",
-            "C:/vault",
-        )
-        .unwrap();
-        let (shard_id, model, status, dim, embedding): (String, String, String, i64, String) = conn
-            .query_row(
-                "SELECT shard_id, embedding_model, embedding_status, embedding_dim, embedding
-                 FROM knowledge_files WHERE path = 'C:/vault/notes.md'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(model, "local");
-        assert_eq!(status, "indexed");
-        assert_eq!(dim, 256);
-        assert!(!embedding.is_empty());
-        let shard = list_vector_shards(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|item| item.shard_id == shard_id)
-            .unwrap();
-        assert_eq!(shard.documents, 1);
-        assert_eq!(shard.status, "ready");
-    }
-
-    #[test]
-    fn rebuild_vector_index_rebuilds_pending_files() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/alpha.md",
-            "Alpha",
-            "",
-            "Alpha vector content",
-            "C:/vault",
-        )
-        .unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/beta.md",
-            "Beta",
-            "",
-            "Beta vector content",
-            "C:/vault",
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE knowledge_files SET embedding_status = 'pending', embedding_model = 'stale'
-             WHERE path = 'C:/vault/alpha.md'",
-            [],
-        )
-        .unwrap();
-        let first = rebuild_vector_index(&conn, false).unwrap();
-        assert_eq!(first.rebuilt, 1);
-        assert_eq!(first.failed, 0);
-        let status = get_vector_index_status(&conn).unwrap();
-        assert_eq!(status.pending, 0);
-        assert_eq!(status.indexed, 2);
-        let forced = rebuild_vector_index(&conn, true).unwrap();
-        assert_eq!(forced.rebuilt, 2);
-    }
-
-    #[test]
     fn embedding_response_parses_openai_and_ollama_shapes() {
         let openai = r#"{"data":[{"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small"}"#;
         assert_eq!(
@@ -12592,87 +7842,6 @@ mod tests {
         );
         assert!(parse_embedding_response("openai", r#"{"data":[]}"#).is_err());
         assert!(parse_embedding_response("ollama", r#"{"embeddings":[]}"#).is_err());
-    }
-
-    #[test]
-    fn search_thoughts_reports_shard_and_model() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/notes.md",
-            "Notes",
-            "#work",
-            "Local RAG vector search",
-            "C:/vault",
-        )
-        .unwrap();
-        let results = search_thoughts(&conn, "local vector search", 5, None).unwrap();
-        let doc = results.iter().find(|result| result.kind == "doc").unwrap();
-        assert!(!doc.shard_id.is_empty());
-        assert_eq!(doc.embedding_model, "local");
-    }
-
-    #[test]
-    fn search_thoughts_filters_by_remembered_sources() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/alpha.md",
-            "Alpha",
-            "#work",
-            "Alpha sprint plan with local RAG vector search",
-            "C:/vault",
-        )
-        .unwrap();
-        upsert_knowledge_file(
-            &conn,
-            "C:/vault/beta.md",
-            "Beta",
-            "#work",
-            "Beta release notes with local RAG vector search",
-            "C:/vault",
-        )
-        .unwrap();
-
-        let all = search_thoughts(&conn, "local RAG vector search", 5, None).unwrap();
-        assert!(all.iter().any(|r| r.source_file == "C:/vault/alpha.md"));
-        assert!(all.iter().any(|r| r.source_file == "C:/vault/beta.md"));
-
-        let filter = RagSourceFilter {
-            enabled: true,
-            mode: "selected".to_string(),
-            file_paths: vec!["C:/vault/alpha.md".to_string()],
-        };
-        let filtered = search_thoughts(&conn, "local RAG vector search", 5, Some(&filter)).unwrap();
-        assert!(filtered
-            .iter()
-            .all(|r| r.source_file == "C:/vault/alpha.md"));
-        assert!(!filtered.iter().any(|r| r.source_file == "C:/vault/beta.md"));
-
-        let all_mode = RagSourceFilter {
-            enabled: true,
-            mode: "all".to_string(),
-            file_paths: Vec::new(),
-        };
-        let unrestricted =
-            search_thoughts(&conn, "local RAG vector search", 5, Some(&all_mode)).unwrap();
-        assert!(unrestricted.len() >= 2);
-
-        let empty_selected = RagSourceFilter {
-            enabled: true,
-            mode: "selected".to_string(),
-            file_paths: Vec::new(),
-        };
-        let no_restriction =
-            search_thoughts(&conn, "local RAG vector search", 5, Some(&empty_selected)).unwrap();
-        assert!(no_restriction
-            .iter()
-            .any(|r| r.source_file == "C:/vault/alpha.md"));
-        assert!(no_restriction
-            .iter()
-            .any(|r| r.source_file == "C:/vault/beta.md"));
     }
 
     #[test]
@@ -13061,521 +8230,6 @@ mod tests {
     }
 
     #[test]
-    fn webhook_trigger_condition_persists_through_create_and_list() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Conditional hook",
-                url: "https://example.test/conditional",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "sync.completed",
-                trigger_condition: "context.status == \"ok\"",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        assert_eq!(rule.trigger_condition, "context.status == \"ok\"");
-        let listed = list_webhook_rules(&conn).unwrap();
-        assert!(listed
-            .iter()
-            .any(|r| r.trigger_condition == "context.status == \"ok\""));
-    }
-
-    #[test]
-    fn webhook_circuit_breaker_tracks_failures_and_disables() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Circuit hook",
-                url: "https://example.test/circuit",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 2,
-            },
-        )
-        .unwrap();
-        assert_eq!(rule.consecutive_failures, 0);
-        assert_eq!(rule.auto_disable_after, 2);
-
-        record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500 boom").unwrap();
-        let after_one = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after_one.consecutive_failures, 1);
-        assert!(after_one.enabled);
-        assert_eq!(after_one.last_status, 500);
-
-        record_webhook_rule_outcome(&conn, &rule.id, 0, "Webhook delivery failed: timeout")
-            .unwrap();
-        let after_two = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after_two.consecutive_failures, 2);
-        assert!(!after_two.enabled);
-        assert!(
-            after_two
-                .last_message
-                .contains("Auto-disabled after 2 consecutive failures"),
-            "{}",
-            after_two.last_message
-        );
-
-        let restored = set_webhook_rule_enabled(&conn, &rule.id, true).unwrap();
-        assert!(restored.enabled);
-        assert_eq!(restored.consecutive_failures, 0);
-
-        record_webhook_rule_outcome(&conn, &rule.id, 200, "HTTP 200 delivered").unwrap();
-        let after_success = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after_success.consecutive_failures, 0);
-        assert!(after_success.enabled);
-        assert!(after_success.last_message.contains("HTTP 200"));
-    }
-
-    #[test]
-    fn webhook_circuit_breaker_zero_threshold_never_disables() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "No auto-off hook",
-                url: "https://example.test/no-auto-off",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 0,
-            },
-        )
-        .unwrap();
-        for _ in 0..5 {
-            record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500").unwrap();
-        }
-        let after = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after.consecutive_failures, 5);
-        assert!(after.enabled);
-    }
-
-    #[test]
-    fn webhook_rule_runs_record_list_and_prune() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Log hook",
-                url: "https://example.test/log",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-
-        let first = record_webhook_rule_run(
-            &conn,
-            &rule.id,
-            "manual",
-            "success",
-            200,
-            1,
-            "HTTP 200 delivered",
-        )
-        .unwrap();
-        assert_eq!(first.kind, "manual");
-        assert_eq!(first.status, "success");
-        assert_eq!(first.http_status, 200);
-        assert_eq!(first.attempts, 1);
-
-        record_webhook_rule_run(
-            &conn,
-            &rule.id,
-            "scheduled",
-            "failed",
-            500,
-            3,
-            "HTTP 500 boom",
-        )
-        .unwrap();
-
-        let runs = list_webhook_rule_runs(&conn, Some(&rule.id), 10).unwrap();
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].status, "failed");
-        assert_eq!(runs[0].kind, "scheduled");
-        assert_eq!(runs[1].status, "success");
-
-        for i in 0..60 {
-            record_webhook_rule_run(
-                &conn,
-                &rule.id,
-                "event",
-                "success",
-                200,
-                1,
-                &format!("run {}", i),
-            )
-            .unwrap();
-        }
-        let pruned = list_webhook_rule_runs(&conn, Some(&rule.id), 200).unwrap();
-        assert_eq!(pruned.len(), 50);
-        assert_eq!(pruned[0].message, "run 59");
-
-        let all = list_webhook_rule_runs(&conn, None, 200).unwrap();
-        assert_eq!(all.len(), 50);
-        let limited = list_webhook_rule_runs(&conn, None, 3).unwrap();
-        assert_eq!(limited.len(), 3);
-    }
-
-    #[test]
-    fn webhook_event_cooldown_suppresses_repeat_triggers() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let now = now_millis();
-        let cooled = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Cooled hook",
-                url: "https://example.test/cooled",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 30,
-                interval_seconds: 60,
-                trigger_event: "error.reported",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        let instant = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Instant hook",
-                url: "https://example.test/instant",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "error.reported",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-
-        let first = list_event_webhook_rules(&conn, "error.reported", now).unwrap();
-        assert!(first.iter().any(|r| r.id == cooled.id));
-        assert!(first.iter().any(|r| r.id == instant.id));
-
-        mark_webhook_rule_run(&conn, &cooled.id, 202, "Queued for delivery").unwrap();
-        mark_webhook_rule_run(&conn, &instant.id, 202, "Queued for delivery").unwrap();
-
-        let suppressed = list_event_webhook_rules(&conn, "error.reported", now + 1000).unwrap();
-        assert!(!suppressed.iter().any(|r| r.id == cooled.id));
-        assert!(suppressed.iter().any(|r| r.id == instant.id));
-
-        let restored = list_event_webhook_rules(&conn, "error.reported", now + 31_000).unwrap();
-        assert!(restored.iter().any(|r| r.id == cooled.id));
-    }
-
-    #[test]
-    fn webhook_delivery_queue_lifecycle() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let event_rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Event hook",
-                url: "https://example.test/event",
-                payload: "{\"source\":\"event\"}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 2,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "sync.completed",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        let interval_rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Interval hook",
-                url: "https://example.test/interval",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        assert_eq!(event_rule.trigger_event, "sync.completed");
-        let fail_rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Fail hook",
-                url: "https://example.test/fail",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "sync.completed",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        let due = list_due_webhook_rules(&conn, now_millis()).unwrap();
-        assert!(due.iter().any(|r| r.id == interval_rule.id));
-        assert!(!due.iter().any(|r| r.id == event_rule.id));
-
-        let now = now_millis();
-        let delivery =
-            enqueue_webhook_delivery(&conn, &event_rule, "sync.completed", &event_rule.payload)
-                .unwrap();
-        assert_eq!(delivery.status, "queued");
-        assert!(delivery.next_attempt_at <= now + 1);
-        let claimed = claim_due_webhook_deliveries(&conn, now, 8).unwrap();
-        assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].status, "delivering");
-        complete_webhook_delivery(
-            &conn,
-            &delivery.id,
-            "success",
-            200,
-            "HTTP 200 delivered",
-            1,
-            now,
-        )
-        .unwrap();
-        let done = get_webhook_delivery(&conn, &delivery.id).unwrap().unwrap();
-        assert_eq!(done.status, "success");
-
-        let failing = enqueue_webhook_delivery(&conn, &fail_rule, "sync.completed", "{}").unwrap();
-        claim_due_webhook_deliveries(&conn, now, 8).unwrap();
-        let backoff = now + 2000;
-        complete_webhook_delivery(&conn, &failing.id, "queued", 500, "HTTP 500", 1, backoff)
-            .unwrap();
-        let retryable = get_webhook_delivery(&conn, &failing.id).unwrap().unwrap();
-        assert_eq!(retryable.status, "queued");
-        assert_eq!(retryable.attempts, 1);
-        assert_eq!(retryable.next_attempt_at, backoff);
-        claim_due_webhook_deliveries(&conn, backoff, 8).unwrap();
-        complete_webhook_delivery(&conn, &failing.id, "dead", 500, "HTTP 500", 2, backoff).unwrap();
-        let dead = get_webhook_delivery(&conn, &failing.id).unwrap().unwrap();
-        assert_eq!(dead.status, "dead");
-        let retried = retry_webhook_delivery(&conn, &failing.id).unwrap();
-        assert_eq!(retried.status, "queued");
-        assert_eq!(retried.attempts, 0);
-        delete_webhook_delivery(&conn, &failing.id).unwrap();
-        assert!(get_webhook_delivery(&conn, &failing.id).unwrap().is_none());
-
-        enqueue_webhook_delivery(&conn, &event_rule, "sync.completed", "{}").unwrap();
-        delete_webhook_rule(&conn, &event_rule.id).unwrap();
-        let remaining = list_webhook_deliveries(&conn, 100, "").unwrap();
-        assert!(remaining.iter().all(|d| d.rule_id != event_rule.id));
-    }
-
-    #[test]
-    fn webhook_retention_config_defaults_and_clamps() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-
-        let defaults = get_webhook_retention_config(&conn).unwrap();
-        assert_eq!(defaults.retention_days, 30);
-        assert_eq!(defaults.max_records, 200);
-        assert!(defaults.auto_cleanup);
-
-        let clamped = set_webhook_retention_config(&conn, 0, 100_001, false).unwrap();
-        assert_eq!(clamped.retention_days, 1);
-        assert_eq!(clamped.max_records, 100_000);
-        assert!(!clamped.auto_cleanup);
-
-        let clamped_up = set_webhook_retention_config(&conn, 3651, 0, true).unwrap();
-        assert_eq!(clamped_up.retention_days, 3650);
-        assert_eq!(clamped_up.max_records, 1);
-        assert!(clamped_up.auto_cleanup);
-        assert!(clamped_up.updated_at > 0);
-    }
-
-    #[test]
-    fn webhook_retention_prunes_by_age_and_count() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Retention hook",
-                url: "https://example.test/retention",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-
-        let old = now_millis() - 2 * 86_400_000;
-        let recent = now_millis();
-        let set = |label: &str, age: i64, status: &str| {
-            let delivery = enqueue_webhook_delivery(
-                &conn,
-                &rule,
-                "sync.completed",
-                &format!("{{\"n\":\"{label}\"}}"),
-            )
-            .unwrap();
-            conn.execute(
-                "UPDATE webhook_deliveries SET status = ?1, created_at = ?2, updated_at = ?2
-                 WHERE id = ?3",
-                params![status, age, delivery.id],
-            )
-            .unwrap();
-            delivery.id
-        };
-
-        set("old-success", old, "success");
-        set("old-dead", old, "dead");
-        let recent_dead = set("recent-dead", recent, "dead");
-        set("recent-success", recent + 1, "success");
-        set("old-queued", old, "queued");
-        set("recent-queued", recent, "queued");
-
-        let result = prune_webhook_deliveries(&conn, 1, 1).unwrap();
-        assert_eq!(result.removed_by_age, 2);
-        assert_eq!(result.removed_by_count, 1);
-        assert_eq!(result.total_removed, 3);
-
-        assert!(get_webhook_delivery(&conn, &recent_dead).unwrap().is_none());
-        let remaining = list_webhook_deliveries(&conn, 100, "").unwrap();
-        assert_eq!(remaining.len(), 3);
-        assert!(remaining.iter().any(|d| d.status == "queued"));
-        assert!(remaining.iter().any(|d| d.created_at == old));
-
-        let stats = get_webhook_delivery_stats(&conn).unwrap();
-        assert_eq!(stats.total, 3);
-        assert_eq!(stats.success, 1);
-        assert_eq!(stats.dead, 0);
-        assert_eq!(stats.queued, 2);
-    }
-
-    #[test]
-    fn webhook_delivery_stats_counts_each_status() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Stats hook",
-                url: "https://example.test/stats",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-
-        let queued = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
-        let delivering = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
-        let success = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
-        let dead = enqueue_webhook_delivery(&conn, &rule, "", "{}").unwrap();
-        let now = now_millis();
-        conn.execute(
-            "UPDATE webhook_deliveries SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            params!["delivering", now, delivering.id],
-        )
-        .unwrap();
-        complete_webhook_delivery(&conn, &success.id, "success", 200, "ok", 1, now).unwrap();
-        complete_webhook_delivery(&conn, &dead.id, "dead", 500, "fail", 2, now).unwrap();
-
-        let stats = get_webhook_delivery_stats(&conn).unwrap();
-        assert_eq!(stats.total, 4);
-        assert_eq!(stats.queued, 1);
-        assert_eq!(stats.delivering, 1);
-        assert_eq!(stats.success, 1);
-        assert_eq!(stats.dead, 1);
-        assert_eq!(stats.failed, 0);
-        assert!(get_webhook_delivery(&conn, &queued.id).unwrap().is_some());
-    }
-
-    #[test]
     fn webhook_channels_recovery_migration_adds_columns() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -13675,173 +8329,6 @@ mod tests {
         assert_eq!(backoff, 300);
         assert_eq!(circuit, 0);
         assert_eq!(channel, "http");
-    }
-
-    #[test]
-    fn webhook_channel_config_default_roundtrip_and_clamp() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let defaults = get_webhook_channel_config(&conn).unwrap();
-        assert!(!defaults.email_enabled);
-        assert_eq!(defaults.smtp_port, 587);
-        assert_eq!(defaults.notification_title, "AI Workbench webhook");
-
-        let saved = set_webhook_channel_config(
-            &conn,
-            &WebhookChannelConfigInput {
-                email_enabled: true,
-                email_from: "from@example.test",
-                email_to: "to@example.test",
-                smtp_host: "smtp.example.test",
-                smtp_port: 70_000,
-                smtp_user: "smtp-user",
-                smtp_password: "smtp-pass",
-                notification_enabled: true,
-                notification_title: "   ",
-            },
-        )
-        .unwrap();
-        assert!(saved.email_enabled);
-        assert_eq!(saved.email_from, "from@example.test");
-        assert_eq!(saved.email_to, "to@example.test");
-        assert_eq!(saved.smtp_host, "smtp.example.test");
-        assert_eq!(saved.smtp_port, 65_535);
-        assert_eq!(saved.smtp_user, "smtp-user");
-        assert_eq!(saved.smtp_password, "smtp-pass");
-        assert!(saved.notification_enabled);
-        assert_eq!(saved.notification_title, "AI Workbench webhook");
-        assert!(saved.updated_at > 0);
-
-        let clamped = set_webhook_channel_config(
-            &conn,
-            &WebhookChannelConfigInput {
-                email_enabled: false,
-                email_from: "a@example.test",
-                email_to: "b@example.test",
-                smtp_host: "host",
-                smtp_port: 0,
-                smtp_user: "user",
-                smtp_password: "pass",
-                notification_enabled: false,
-                notification_title: "Custom title",
-            },
-        )
-        .unwrap();
-        assert_eq!(clamped.smtp_port, 1);
-        assert_eq!(clamped.notification_title, "Custom title");
-        let roundtrip = get_webhook_channel_config(&conn).unwrap();
-        assert!(!roundtrip.email_enabled);
-        assert_eq!(roundtrip.smtp_port, 1);
-        assert_eq!(roundtrip.notification_title, "Custom title");
-        assert_eq!(roundtrip.smtp_user, "user");
-    }
-
-    #[test]
-    fn webhook_multi_channel_create_persists_and_enqueues_channel() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Multi channel hook",
-                url: "https://example.test/multi",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "sync.completed",
-                trigger_condition: "",
-                channels: vec![
-                    "http".to_string(),
-                    "email".to_string(),
-                    "notification".to_string(),
-                ],
-                recovery_backoff_seconds: 600,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        assert_eq!(rule.channels, vec!["http", "email", "notification"]);
-        assert_eq!(rule.recovery_backoff_seconds, 600);
-        assert_eq!(rule.circuit_opened_at, 0);
-        let stored = list_webhook_rules(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|r| r.id == rule.id)
-            .unwrap();
-        assert_eq!(stored.channels, vec!["http", "email", "notification"]);
-        assert_eq!(stored.recovery_backoff_seconds, 600);
-
-        for channel in ["http", "email", "notification"] {
-            let delivery =
-                enqueue_webhook_delivery_channel(&conn, &stored, "sync.completed", "{}", channel)
-                    .unwrap();
-            assert_eq!(delivery.channel, channel);
-        }
-        let deliveries = list_webhook_deliveries(&conn, 100, "").unwrap();
-        assert_eq!(deliveries.len(), 3);
-        let channels: std::collections::HashSet<&str> =
-            deliveries.iter().map(|d| d.channel.as_str()).collect();
-        assert_eq!(channels.len(), 3);
-        assert!(channels.contains("http"));
-        assert!(channels.contains("email"));
-        assert!(channels.contains("notification"));
-    }
-
-    #[test]
-    fn webhook_circuit_open_list_and_recovery_reset() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let rule = create_webhook_rule(
-            &conn,
-            &WebhookRuleInput {
-                name: "Circuit recovery hook",
-                url: "https://example.test/recovery",
-                payload: "{}",
-                method: "POST",
-                token: "",
-                secret: "",
-                retries: 1,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 30,
-                auto_disable_after: 2,
-            },
-        )
-        .unwrap();
-        assert!(list_circuit_open_webhook_rules(&conn).unwrap().is_empty());
-        record_webhook_rule_outcome(&conn, &rule.id, 500, "HTTP 500 boom").unwrap();
-        record_webhook_rule_outcome(&conn, &rule.id, 0, "timeout").unwrap();
-        let opened = get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert!(!opened.enabled);
-        assert!(opened.circuit_opened_at > 0);
-        assert_eq!(opened.consecutive_failures, 2);
-
-        let open = list_circuit_open_webhook_rules(&conn).unwrap();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].id, rule.id);
-
-        let later = opened.circuit_opened_at + 10_000;
-        set_webhook_circuit_opened_at(&conn, &rule.id, later).unwrap();
-        assert_eq!(
-            get_webhook_rule(&conn, &rule.id)
-                .unwrap()
-                .unwrap()
-                .circuit_opened_at,
-            later
-        );
-
-        let restored = set_webhook_rule_enabled(&conn, &rule.id, true).unwrap();
-        assert!(restored.enabled);
-        assert_eq!(restored.circuit_opened_at, 0);
-        assert_eq!(restored.consecutive_failures, 0);
-        assert!(list_circuit_open_webhook_rules(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -14061,54 +8548,6 @@ mod tests {
     }
 
     #[test]
-    fn fsm_run_metrics_roundtrip() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let run_id = uid();
-        let trace_id = generate_trace_id();
-        upsert_run_metric(
-            &conn,
-            &RunMetric {
-                run_id: run_id.clone(),
-                trace_id: Some(trace_id.clone()),
-                kind: "workflow".to_string(),
-                started_at: Some(now_millis()),
-                ended_at: None,
-                node_count: 3,
-                hitl_count: 1,
-                total_tokens: 4096,
-                status: Some("running".to_string()),
-            },
-        )
-        .unwrap();
-
-        let got = get_run_metric(&conn, &run_id).unwrap().unwrap();
-        assert_eq!(got.kind, "workflow");
-        assert_eq!(got.trace_id.as_deref(), Some(trace_id.as_str()));
-        assert_eq!(got.node_count, 3);
-
-        upsert_run_metric(
-            &conn,
-            &RunMetric {
-                run_id: run_id.clone(),
-                trace_id: Some(trace_id),
-                kind: "workflow".to_string(),
-                started_at: Some(1),
-                ended_at: Some(2),
-                node_count: 5,
-                hitl_count: 2,
-                total_tokens: 8192,
-                status: Some("complete".to_string()),
-            },
-        )
-        .unwrap();
-        let listed = list_run_metrics(&conn, 10).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].status.as_deref(), Some("complete"));
-        assert_eq!(listed[0].node_count, 5);
-    }
-
-    #[test]
     fn active_runs_detects_nonterminal() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -14122,36 +8561,6 @@ mod tests {
             update_fsm_node_status(&conn, &node.id, "complete").unwrap();
         }
         assert!(!list_active_fsm_runs(&conn).unwrap().contains(&run_id));
-    }
-
-    #[test]
-    fn delete_fsm_run_removes_nodes_and_metrics() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        let run_id = uid();
-        let trace_id = generate_trace_id();
-        create_fsm_run(&conn, &run_id, &trace_id).unwrap();
-        create_fsm_node(&conn, &run_id, "extra", None, "pending", "{}").unwrap();
-        upsert_run_metric(
-            &conn,
-            &RunMetric {
-                run_id: run_id.clone(),
-                trace_id: Some(trace_id),
-                kind: "workflow".to_string(),
-                started_at: Some(now_millis()),
-                ended_at: None,
-                node_count: 2,
-                hitl_count: 0,
-                total_tokens: 0,
-                status: Some("running".to_string()),
-            },
-        )
-        .unwrap();
-        assert_eq!(list_fsm_nodes(&conn, &run_id).unwrap().len(), 2);
-
-        delete_fsm_run(&conn, &run_id).unwrap();
-        assert!(list_fsm_nodes(&conn, &run_id).unwrap().is_empty());
-        assert!(get_run_metric(&conn, &run_id).unwrap().is_none());
     }
 
     #[test]
@@ -14182,17 +8591,104 @@ mod tests {
     }
 
     #[test]
-    fn actions_bundle_includes_tasks_habits_schedule() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
+    fn agent_catalog_import_is_idempotent_and_persists() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-agent-catalog-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
 
-        create_task(&conn, "Bundle Task", true, None, false).unwrap();
-        create_habit(&conn, "Bundle Habit", 5, "emerald").unwrap();
-        create_schedule_event(&conn, "Bundle Event", "09:00", "2026-08-10", "work").unwrap();
+        let conn = init_connection(&db_path).unwrap();
+        let inputs = vec![
+            AgentCatalogInput {
+                division: "Product".to_string(),
+                name: "Product Lead".to_string(),
+                slug: "product-lead".to_string(),
+                description: "Owns PRD".to_string(),
+                emoji: "🧭".to_string(),
+                color: "ocean".to_string(),
+                developer_instructions: "Draft PRD".to_string(),
+                tools: vec!["read".to_string()],
+                source_url: "https://example.com/product-lead".to_string(),
+            },
+            AgentCatalogInput {
+                division: "Engineering".to_string(),
+                name: "Rust Architect".to_string(),
+                slug: "rust-architect".to_string(),
+                description: "Owns architecture".to_string(),
+                emoji: "🦀".to_string(),
+                color: "emerald".to_string(),
+                developer_instructions: "Design modules".to_string(),
+                tools: vec!["read".to_string(), "write".to_string()],
+                source_url: "https://example.com/rust-architect".to_string(),
+            },
+        ];
+        let imported = import_agent_catalog(&conn, &inputs).unwrap();
+        assert_eq!(imported.len(), 2);
+        assert!(imported
+            .iter()
+            .any(|agent| agent.slug == "rust-architect" && agent.tools.len() == 2));
 
-        let bundle = get_actions_bundle(&conn).unwrap();
-        assert_eq!(bundle.tasks.len(), 1);
-        assert_eq!(bundle.habits.len(), 1);
-        assert_eq!(bundle.schedule_events.len(), 1);
+        let mut product = inputs[0].clone();
+        product.description = "Owns PRD v2".to_string();
+        import_agent_catalog(&conn, &[product]).unwrap();
+        let catalog = list_agent_catalog(&conn).unwrap();
+        assert_eq!(catalog.len(), 2);
+        assert!(catalog
+            .iter()
+            .any(|agent| agent.slug == "product-lead" && agent.description == "Owns PRD v2"));
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        assert_eq!(list_agent_catalog(&conn).unwrap().len(), 2);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn team_presets_and_cli_tool_detections_persist() {
+        let dir = std::env::temp_dir().join(format!("aiwb-db-team-preset-test-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("workbench.db");
+
+        let conn = init_connection(&db_path).unwrap();
+        let preset = create_team_preset(
+            &conn,
+            "产品评审团",
+            &["product-lead".to_string(), "ui-designer".to_string()],
+        )
+        .unwrap();
+        assert_eq!(preset.agent_slugs.len(), 2);
+
+        let updated = update_team_preset(
+            &conn,
+            &preset.id,
+            "产品评审团 v2",
+            &["product-lead".to_string()],
+        )
+        .unwrap();
+        assert_eq!(updated.agent_slugs.len(), 1);
+
+        let tools = vec![CliToolDetection {
+            bin: "claude".to_string(),
+            label: "Claude Code".to_string(),
+            detected: true,
+            last_checked_at: 0,
+        }];
+        let saved = save_cli_tool_detections(&conn, &tools).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert!(saved[0].detected);
+
+        delete_team_preset(&conn, &preset.id).unwrap();
+        assert!(list_team_presets(&conn).unwrap().is_empty());
+        assert!(delete_team_preset(&conn, &preset.id).is_err());
+        drop(conn);
+
+        let conn = init_connection(&db_path).unwrap();
+        let cli = list_cli_tools(&conn).unwrap();
+        assert_eq!(cli.len(), 1);
+        assert_eq!(cli[0].bin, "claude");
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

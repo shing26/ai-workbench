@@ -30,7 +30,8 @@ try {
 
   process.env.AIWB_APP_URL = 'http://localhost:4173';
   process.env.AIWB_SHOT_PREFIX = 'prod';
-  await import('./ui-verify.mjs');
+  const { runUiVerify } = await import('./ui-verify.mjs');
+  await runUiVerify();
   console.log('PREVIEW_VERIFY_EXIT=0');
 } catch (err) {
   exitCode = 1;

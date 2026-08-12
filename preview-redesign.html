@@ -1,0 +1,3466 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prism Station — 旅程指挥台 设计预览</title>
+    <style>
+      :root {
+        --bg: #0a0d13;
+        --bg-panel: #0e1218;
+        --bg-panel-2: #11161f;
+        --bg-raise: #151c28;
+        --line: rgba(148, 163, 184, 0.14);
+        --line-strong: rgba(148, 163, 184, 0.28);
+        --cyan: #22d3ee;
+        --cyan-soft: rgba(34, 211, 238, 0.12);
+        --cyan-softer: rgba(34, 211, 238, 0.06);
+        --amber: #f59e0b;
+        --amber-soft: rgba(245, 158, 11, 0.13);
+        --green: #10b981;
+        --green-soft: rgba(16, 185, 129, 0.13);
+        --red: #ef4444;
+        --red-soft: rgba(239, 68, 68, 0.13);
+        --purple: #a78bfa;
+        --purple-soft: rgba(167, 139, 250, 0.14);
+        --text: #e2e8f0;
+        --text-dim: #a7b4c6;
+        --muted: #8494a8;
+        --mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+        --sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      }
+
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        letter-spacing: 0;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      body {
+        background-image:
+          linear-gradient(rgba(34, 211, 238, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(34, 211, 238, 0.035) 1px, transparent 1px);
+        background-size: 44px 44px;
+      }
+
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        cursor: pointer;
+      }
+
+      input,
+      textarea,
+      select {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        outline: none;
+      }
+
+      ::selection {
+        background: rgba(34, 211, 238, 0.25);
+      }
+
+      ::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #2b3544;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #3a4757;
+      }
+
+      *:focus-visible {
+        outline: 1.5px solid var(--cyan);
+        outline-offset: 1px;
+      }
+
+      .ic {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+      }
+
+      .app {
+        display: flex;
+        height: 100vh;
+        width: 100%;
+        overflow: hidden;
+      }
+
+      /* ---------- Dock ---------- */
+      .dock {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        width: 64px;
+        flex: 0 0 64px;
+        border-right: 1px solid var(--line);
+        background: rgba(10, 14, 20, 0.86);
+        backdrop-filter: blur(14px);
+        z-index: 20;
+        transition:
+          width 180ms cubic-bezier(0.16, 1, 0.3, 1),
+          flex-basis 180ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .dock.collapsed {
+        width: 64px;
+        flex-basis: 64px;
+      }
+
+      .dock.collapsed .dock-label {
+        display: none;
+      }
+
+      .dock.collapsed .nav-item {
+        justify-content: center;
+        padding: 0 12px;
+      }
+
+      .dock.collapsed .dock-brand {
+        justify-content: center;
+      }
+
+      .dock.collapsed .icon-btn {
+        margin: 0 auto;
+      }
+
+      .dock.collapsed .collapse-ic {
+        transform: rotate(180deg);
+      }
+
+      .dock-top,
+      .dock-bottom {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px 8px;
+      }
+
+      .dock-brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        height: 44px;
+        padding: 0 6px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 8px;
+      }
+
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        flex: 0 0 30px;
+        border: 1px solid rgba(34, 211, 238, 0.5);
+        background:
+          linear-gradient(135deg, rgba(34, 211, 238, 0.22), rgba(34, 211, 238, 0.02)), #0d1520;
+        display: grid;
+        place-items: center;
+        clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
+      }
+
+      .brand-mark span {
+        color: var(--cyan);
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .dock-label {
+        display: none;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0;
+        color: var(--text-dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid transparent;
+        border-left: 2px solid transparent;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        text-align: left;
+        white-space: nowrap;
+        transition:
+          background 120ms,
+          color 120ms,
+          border-color 120ms;
+        justify-content: center;
+      }
+
+      .nav-item:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .nav-item.active {
+        color: var(--cyan);
+        background: var(--cyan-soft);
+        border-left-color: var(--cyan);
+      }
+
+      .dock-foot {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .icon-btn {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        margin: 0 auto;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        transition:
+          color 120ms,
+          border-color 120ms,
+          background 120ms;
+      }
+
+      .icon-btn:hover {
+        color: var(--cyan);
+        border-color: rgba(34, 211, 238, 0.4);
+        background: var(--cyan-softer);
+      }
+
+      .obsidian-btn {
+        color: var(--purple);
+        border-color: rgba(167, 139, 250, 0.35);
+        background: var(--purple-soft);
+      }
+
+      .obsidian-btn:hover {
+        color: #c4b5fd;
+        border-color: rgba(167, 139, 250, 0.6);
+      }
+
+      .dock-collapse {
+        display: none;
+      }
+
+      @media (min-width: 1180px) {
+        .dock {
+          width: 224px;
+          flex-basis: 224px;
+        }
+        .dock-label {
+          display: block;
+        }
+        .nav-item {
+          justify-content: flex-start;
+        }
+        .icon-btn {
+          margin: 0;
+        }
+        .dock-collapse {
+          display: grid;
+        }
+        .dock-foot {
+          padding: 0 6px;
+        }
+        .dock-brand {
+          justify-content: flex-start;
+        }
+      }
+
+      /* ---------- Main column ---------- */
+      .main {
+        display: flex;
+        min-width: 0;
+        flex: 1 1 auto;
+        flex-direction: column;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        height: 56px;
+        flex: 0 0 56px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(10, 14, 20, 0.86);
+        backdrop-filter: blur(14px);
+        z-index: 15;
+      }
+
+      .header-title {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
+
+      .header-title b {
+        color: var(--cyan);
+        font-weight: 600;
+      }
+
+      .journey {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        flex: 1 1 auto;
+        overflow-x: auto;
+        gap: 2px;
+        padding: 4px 0;
+        scrollbar-width: none;
+      }
+
+      .journey::-webkit-scrollbar {
+        display: none;
+      }
+
+      .stage {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid transparent;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+        transition:
+          color 120ms,
+          border-color 120ms,
+          background 120ms;
+      }
+
+      .stage:hover {
+        color: var(--text-dim);
+      }
+
+      .stage.active {
+        color: var(--cyan);
+        border-color: rgba(34, 211, 238, 0.32);
+        background: var(--cyan-soft);
+      }
+
+      .stage-dot {
+        width: 8px;
+        height: 8px;
+        border: 1px solid currentColor;
+        transform: rotate(45deg);
+        flex: 0 0 8px;
+      }
+
+      .stage.active .stage-dot {
+        background: var(--cyan);
+        box-shadow: 0 0 10px rgba(34, 211, 238, 0.7);
+      }
+
+      .stage-num {
+        color: rgba(148, 163, 184, 0.55);
+        font-size: 9px;
+      }
+
+      .stage-arrow {
+        flex: 0 0 auto;
+        color: rgba(100, 116, 139, 0.5);
+        display: grid;
+        place-items: center;
+      }
+
+      .header-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+
+      .cli-pill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .cli-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+      }
+
+      .cli-pill select {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--cyan);
+        cursor: pointer;
+        max-width: 120px;
+      }
+
+      .cmd-search {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        width: 190px;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        text-align: left;
+        transition:
+          border-color 120ms,
+          color 120ms;
+      }
+
+      .cmd-search:hover {
+        border-color: rgba(34, 211, 238, 0.35);
+        color: var(--text-dim);
+      }
+
+      .cmd-search kbd {
+        margin-left: auto;
+        padding: 1px 5px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text-dim);
+        font-family: var(--mono);
+        font-size: 9px;
+      }
+
+      .obsidian-chip {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid rgba(167, 139, 250, 0.35);
+        background: var(--purple-soft);
+        color: var(--purple);
+        font-family: var(--mono);
+        font-size: 10px;
+        white-space: nowrap;
+        transition: background 120ms;
+      }
+
+      .obsidian-chip:hover {
+        background: rgba(167, 139, 250, 0.22);
+      }
+
+      @media (min-width: 1100px) {
+        .header-title {
+          display: flex;
+        }
+        .cmd-search {
+          display: flex;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .obsidian-chip span {
+          display: none;
+        }
+        .cli-pill {
+          padding: 0 8px;
+        }
+      }
+
+      /* ---------- Workspace ---------- */
+      .workspace {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+
+      .view-pane {
+        min-height: 100%;
+        padding: 16px;
+        animation: pane-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+
+      @keyframes pane-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        min-height: 24px;
+      }
+
+      .section-code {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--cyan);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+        background: var(--cyan-softer);
+        padding: 2px 7px;
+        white-space: nowrap;
+      }
+
+      .section-title {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        white-space: nowrap;
+      }
+
+      .section-meta {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .panel {
+        position: relative;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+          var(--bg-panel);
+        border-radius: 2px;
+        padding: 20px;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .panel::before,
+      .panel::after {
+        content: '';
+        position: absolute;
+        width: 9px;
+        height: 9px;
+        pointer-events: none;
+        opacity: 0.8;
+      }
+
+      .panel::before {
+        top: -1px;
+        left: -1px;
+        border-top: 1px solid rgba(34, 211, 238, 0.7);
+        border-left: 1px solid rgba(34, 211, 238, 0.7);
+      }
+
+      .panel::after {
+        bottom: -1px;
+        right: -1px;
+        border-bottom: 1px solid rgba(34, 211, 238, 0.5);
+        border-right: 1px solid rgba(34, 211, 238, 0.5);
+      }
+
+      .panel.plain::before,
+      .panel.plain::after {
+        display: none;
+      }
+
+      .panel-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
+
+      .panel-title .tick {
+        width: 14px;
+        height: 1px;
+        background: var(--cyan);
+        flex: 0 0 14px;
+      }
+
+      .panel-title .right {
+        margin-left: auto;
+        color: var(--muted);
+      }
+
+      .stat-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .stat {
+        min-height: 128px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .stat-value {
+        font-family: var(--mono);
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--text);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .stat-value em {
+        font-style: normal;
+        font-size: 13px;
+        color: var(--cyan);
+        margin-left: 4px;
+      }
+
+      .stat-label {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .delta-up {
+        color: var(--green);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+
+      .sparkline {
+        width: 100%;
+        height: 38px;
+        display: block;
+      }
+
+      .sparkline path {
+        fill: none;
+        stroke: var(--cyan);
+        stroke-width: 1.6;
+      }
+
+      .sparkline .fill {
+        fill: rgba(34, 211, 238, 0.12);
+        stroke: none;
+      }
+
+      .bar-row {
+        display: grid;
+        grid-template-columns: 76px 1fr 44px;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+
+      .bar-track {
+        height: 5px;
+        background: rgba(148, 163, 184, 0.12);
+        position: relative;
+      }
+
+      .bar-track i {
+        position: absolute;
+        inset: 0 auto 0 0;
+        background: linear-gradient(90deg, var(--cyan), rgba(34, 211, 238, 0.3));
+      }
+
+      .bar-track.amber i {
+        background: linear-gradient(90deg, var(--amber), rgba(245, 158, 11, 0.3));
+      }
+
+      .bar-track.green i {
+        background: linear-gradient(90deg, var(--green), rgba(16, 185, 129, 0.3));
+      }
+
+      .focus-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .focus-card {
+        min-height: 164px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 20px;
+        padding: 0 7px;
+        font-family: var(--mono);
+        font-size: 9px;
+        white-space: nowrap;
+      }
+
+      .badge.cyan {
+        color: var(--cyan);
+        background: var(--cyan-soft);
+        border: 1px solid rgba(34, 211, 238, 0.3);
+      }
+
+      .badge.amber {
+        color: var(--amber);
+        background: var(--amber-soft);
+        border: 1px solid rgba(245, 158, 11, 0.32);
+      }
+
+      .badge.green {
+        color: var(--green);
+        background: var(--green-soft);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+      }
+
+      .badge.red {
+        color: var(--red);
+        background: var(--red-soft);
+        border: 1px solid rgba(239, 68, 68, 0.32);
+      }
+
+      .badge.purple {
+        color: var(--purple);
+        background: var(--purple-soft);
+        border: 1px solid rgba(167, 139, 250, 0.32);
+      }
+
+      .focus-title {
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+
+      .focus-desc {
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--text-dim);
+      }
+
+      .meta-line {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--muted);
+      }
+
+      .blocked {
+        border-color: rgba(239, 68, 68, 0.4);
+      }
+
+      .blocked::before,
+      .blocked::after {
+        border-color: rgba(239, 68, 68, 0.75);
+      }
+
+      .system-strip {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        flex-wrap: wrap;
+      }
+
+      .sys-item {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
+
+      .sys-item .val {
+        color: var(--cyan);
+      }
+
+      /* ---------- Projects ---------- */
+      .project-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .project-card {
+        min-height: 202px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .project-top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .project-name {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .project-path {
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .coverage {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--amber);
+      }
+
+      .card-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: auto;
+        flex-wrap: wrap;
+      }
+
+      .mini-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 26px;
+        padding: 0 9px;
+        border: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--text-dim);
+        white-space: nowrap;
+        transition:
+          border-color 120ms,
+          color 120ms,
+          background 120ms,
+          transform 120ms,
+          box-shadow 120ms;
+      }
+
+      .mini-btn:hover {
+        color: var(--cyan);
+        border-color: rgba(34, 211, 238, 0.5);
+        background: var(--cyan-softer);
+        transform: translateY(-1px);
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.18);
+      }
+
+      .mini-btn.primary {
+        color: #04121a;
+        background: linear-gradient(135deg, #67e8f9, #22d3ee);
+        border-color: transparent;
+        font-weight: 700;
+      }
+
+      .mini-btn.primary:hover {
+        color: #04121a;
+        background: linear-gradient(135deg, #a5f3fc, #22d3ee);
+      }
+
+      .mini-btn.danger {
+        color: var(--red);
+        border-color: rgba(239, 68, 68, 0.3);
+      }
+
+      .bottom-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 12px;
+      }
+
+      .git-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .git-cell {
+        border: 1px solid var(--line);
+        padding: 10px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+
+      .git-cell b {
+        display: block;
+        font-size: 20px;
+        color: var(--text);
+        margin-bottom: 4px;
+      }
+
+      .git-cell.amber b {
+        color: var(--amber);
+      }
+
+      .git-cell.green b {
+        color: var(--green);
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+      }
+
+      .text-input {
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text);
+        min-width: 0;
+      }
+
+      .text-input:focus {
+        border-color: rgba(34, 211, 238, 0.5);
+      }
+
+      .commit-box {
+        margin-top: 12px;
+        border: 1px solid rgba(34, 211, 238, 0.22);
+        background: var(--cyan-softer);
+        padding: 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        line-height: 1.7;
+        word-break: break-word;
+      }
+
+      .commit-box b {
+        color: var(--cyan);
+      }
+
+      /* ---------- Studio ---------- */
+      .studio-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 12px;
+        height: calc(100vh - 56px - 32px - 44px);
+        min-height: 520px;
+      }
+
+      .canvas-panel {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        padding: 0;
+      }
+
+      .canvas-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+      }
+
+      .agent-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid rgba(34, 211, 238, 0.3);
+        color: var(--cyan);
+        background: var(--cyan-softer);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+
+      .seat-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+      }
+
+      .seat {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 26px;
+        padding: 0 9px;
+        border: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+
+      .seat.on {
+        border-color: currentColor;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .seat .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        flex: 0 0 6px;
+      }
+
+      .messages {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .msg {
+        max-width: 86%;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        background: var(--bg-panel-2);
+        font-size: 12px;
+        line-height: 1.65;
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      .msg.user {
+        align-self: flex-end;
+        border-color: rgba(34, 211, 238, 0.4);
+        background: rgba(34, 211, 238, 0.08);
+      }
+
+      .msg .who {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 5px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+
+      .msg .who i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        flex: 0 0 7px;
+      }
+
+      .consensus {
+        align-self: center;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 12px;
+        border: 1px solid rgba(16, 185, 129, 0.4);
+        background: var(--green-soft);
+        color: var(--green);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+
+      .composer {
+        display: flex;
+        gap: 8px;
+        padding: 10px 14px;
+        border-top: 1px solid var(--line);
+      }
+
+      .composer-field {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+      }
+
+      .composer-field textarea {
+        flex: 1 1 auto;
+        width: 100%;
+        height: 42px;
+        resize: vertical;
+        max-height: 160px;
+        padding: 10px 12px 24px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+
+      .composer-field textarea:focus {
+        border-color: rgba(34, 211, 238, 0.5);
+      }
+
+      .composer-field textarea::placeholder {
+        color: var(--muted);
+      }
+
+      .composer-hint {
+        position: absolute;
+        right: 10px;
+        bottom: 7px;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--muted);
+        pointer-events: none;
+        opacity: 0.85;
+        white-space: nowrap;
+      }
+
+      .send-btn {
+        flex: 0 0 auto;
+        align-self: stretch;
+        width: 44px;
+        display: grid;
+        place-items: center;
+        color: #04121a;
+        background: linear-gradient(135deg, #67e8f9, #22d3ee);
+        border: 0;
+      }
+
+      .drawer {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .drawer .panel {
+        flex: 0 0 auto;
+      }
+
+      .trade-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .trade-col {
+        border: 1px solid var(--line);
+        padding: 10px;
+      }
+
+      .trade-col.pro {
+        border-color: rgba(16, 185, 129, 0.35);
+      }
+
+      .trade-col.con {
+        border-color: rgba(239, 68, 68, 0.35);
+      }
+
+      .trade-col h4 {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+      }
+
+      .trade-col ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .trade-col li {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-dim);
+        padding-left: 12px;
+        position: relative;
+      }
+
+      .trade-col li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 7px;
+        width: 5px;
+        height: 5px;
+        background: currentColor;
+      }
+
+      .trade-col.pro li::before {
+        background: var(--green);
+      }
+
+      .trade-col.con li::before {
+        background: var(--red);
+      }
+
+      .adr-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        list-style: none;
+      }
+
+      .adr-list li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+        cursor: pointer;
+        transition:
+          border-color 120ms,
+          color 120ms;
+      }
+
+      .adr-list li:hover {
+        border-color: rgba(34, 211, 238, 0.4);
+        color: var(--text);
+      }
+
+      .solid-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        height: 34px;
+        padding: 0 14px;
+        color: #04121a;
+        background: linear-gradient(135deg, #67e8f9, #22d3ee);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .solid-btn:hover {
+        background: linear-gradient(135deg, #a5f3fc, #22d3ee);
+      }
+
+      .ghost-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        height: 34px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        color: var(--text-dim);
+        font-family: var(--mono);
+        font-size: 11px;
+        white-space: nowrap;
+        transition:
+          border-color 120ms,
+          color 120ms,
+          background 120ms,
+          transform 120ms,
+          box-shadow 120ms;
+      }
+
+      .ghost-btn:hover {
+        color: var(--cyan);
+        border-color: rgba(34, 211, 238, 0.4);
+        background: var(--cyan-softer);
+        transform: translateY(-1px);
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.16);
+      }
+
+      /* ---------- Actions ---------- */
+      .actions-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+        gap: 12px;
+      }
+
+      .task-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        list-style: none;
+      }
+
+      .task {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .task.done {
+        opacity: 0.55;
+      }
+
+      .task.done .task-title {
+        text-decoration: line-through;
+        color: var(--muted);
+      }
+
+      .task.blocked {
+        border-color: rgba(239, 68, 68, 0.5);
+        border-style: dashed;
+        background: var(--red-soft);
+      }
+
+      .check {
+        width: 18px;
+        height: 18px;
+        border: 1px solid var(--line-strong);
+        display: grid;
+        place-items: center;
+        color: transparent;
+        cursor: pointer;
+        transition:
+          border-color 120ms,
+          color 120ms,
+          background 120ms;
+      }
+
+      .task.done .check {
+        background: var(--green-soft);
+        border-color: var(--green);
+        color: var(--green);
+      }
+
+      .task-title {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text);
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
+      .task-meta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .gate-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        list-style: none;
+      }
+
+      .gate {
+        display: grid;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .gate-level {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--cyan);
+      }
+
+      .gate-name {
+        font-size: 11px;
+        color: var(--text-dim);
+        line-height: 1.4;
+      }
+
+      .gate-state {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--green);
+        white-space: nowrap;
+      }
+
+      .gate.warn .gate-state {
+        color: var(--amber);
+      }
+
+      .log-box {
+        margin-top: 12px;
+        border: 1px solid var(--line);
+        background: #080b10;
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1.7;
+        color: var(--text-dim);
+        padding: 12px;
+        min-height: 96px;
+        word-break: break-word;
+      }
+
+      .log-box .ok {
+        color: var(--green);
+      }
+
+      .log-box .err {
+        color: var(--red);
+      }
+
+      /* ---------- Knowledge ---------- */
+      .kb-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+
+      .kb-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1 1 260px;
+        min-width: 200px;
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .kb-search:focus-within {
+        border-color: rgba(34, 211, 238, 0.5);
+      }
+
+      .kb-search input {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 11px;
+      }
+
+      .kb-search kbd {
+        padding: 1px 5px;
+        border: 1px solid var(--line);
+        color: var(--text-dim);
+        font-size: 9px;
+      }
+
+      .seg {
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--line);
+      }
+
+      .seg button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 12px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+        border-right: 1px solid var(--line);
+      }
+
+      .seg button:last-child {
+        border-right: 0;
+      }
+
+      .seg button.active {
+        color: var(--cyan);
+        background: var(--cyan-soft);
+      }
+
+      .kb-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .kb-card {
+        min-height: 146px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        cursor: default;
+        transition:
+          border-color 120ms,
+          transform 120ms;
+      }
+
+      .kb-card:hover {
+        border-color: rgba(34, 211, 238, 0.42);
+        transform: translateY(-1px);
+      }
+
+      .kb-card.wide {
+        grid-column: 1 / -1;
+        min-height: 132px;
+      }
+
+      .kb-title {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        line-height: 1.5;
+      }
+
+      .kb-desc {
+        font-size: 11px;
+        color: var(--text-dim);
+        line-height: 1.6;
+      }
+
+      .kb-tags {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: auto;
+      }
+
+      .kb-tag {
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--text-dim);
+        padding: 2px 7px;
+        border: 1px solid var(--line);
+      }
+
+      .kb-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+
+      .kb-actions .mini-btn {
+        height: 24px;
+      }
+
+      .graph-view {
+        display: none;
+        border: 1px solid var(--line);
+        background:
+          radial-gradient(circle at 50% 40%, rgba(34, 211, 238, 0.08), transparent 46%),
+          var(--bg-panel);
+        min-height: 360px;
+        position: relative;
+        overflow: hidden;
+        padding: 20px;
+      }
+
+      .graph-view.on {
+        display: block;
+      }
+
+      .graph-node {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px;
+        border: 1px solid rgba(34, 211, 238, 0.35);
+        background: var(--bg-panel-2);
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
+
+      .graph-node i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        flex: 0 0 7px;
+      }
+
+      .graph-edge {
+        position: absolute;
+        height: 1px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.5), transparent);
+        transform-origin: left center;
+      }
+
+      .graph-edge.purple {
+        background: linear-gradient(90deg, rgba(167, 139, 250, 0.55), transparent);
+      }
+
+      /* ---------- Modals ---------- */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 7, 12, 0.7);
+        backdrop-filter: blur(6px);
+        padding: 16px;
+      }
+
+      .modal-overlay.open {
+        display: flex;
+      }
+
+      .modal {
+        width: 640px;
+        max-width: 100%;
+        max-height: calc(100vh - 48px);
+        border: 1px solid var(--line-strong);
+        background: var(--bg-panel);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .modal.sm {
+        width: 440px;
+      }
+
+      .modal-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .modal-head h3 {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .modal-head .code {
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--cyan);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+        padding: 2px 7px;
+      }
+
+      .modal-close {
+        margin-left: auto;
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        border: 1px solid transparent;
+      }
+
+      .modal-close:hover {
+        color: var(--text);
+        border-color: var(--line);
+      }
+
+      .modal-body {
+        padding: 16px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .field-label {
+        font-family: var(--mono);
+        font-size: 9px;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .cli-kind-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .cli-kind {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        cursor: pointer;
+        transition:
+          border-color 120ms,
+          color 120ms,
+          background 120ms;
+      }
+
+      .cli-kind:hover {
+        color: var(--text);
+        border-color: rgba(34, 211, 238, 0.4);
+      }
+
+      .cli-kind.active {
+        color: var(--cyan);
+        border-color: rgba(34, 211, 238, 0.55);
+        background: var(--cyan-soft);
+      }
+
+      .cmd-preview {
+        border: 1px solid var(--line);
+        background: #080b10;
+        padding: 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.7;
+        color: var(--text-dim);
+        word-break: break-word;
+      }
+
+      .cmd-preview b {
+        color: var(--cyan);
+        font-weight: 600;
+      }
+
+      .modal-foot {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--line);
+      }
+
+      .search-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        list-style: none;
+      }
+
+      .search-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+        font-size: 11px;
+        color: var(--text-dim);
+        cursor: pointer;
+      }
+
+      .search-item:hover {
+        border-color: rgba(34, 211, 238, 0.4);
+        color: var(--text);
+      }
+
+      .search-item .type {
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--cyan);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+        padding: 2px 6px;
+        flex: 0 0 auto;
+      }
+
+      .shortcut-row {
+        display: grid;
+        grid-template-columns: 120px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+
+      .shortcut-row:last-child {
+        border-bottom: 0;
+      }
+
+      .shortcut-row kbd {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--cyan);
+      }
+
+      /* ---------- Toast ---------- */
+      .toast {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 80;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border: 1px solid rgba(34, 211, 238, 0.45);
+        background: var(--bg-panel);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 11px;
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition:
+          opacity 160ms,
+          transform 160ms;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .preview-tag {
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        z-index: 70;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: rgba(148, 163, 184, 0.5);
+        pointer-events: none;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        padding: 4px 8px;
+        background: rgba(10, 14, 20, 0.8);
+        backdrop-filter: blur(8px);
+      }
+
+      /* ---------- Responsive ---------- */
+      @media (max-width: 1180px) {
+        .project-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .studio-grid {
+          grid-template-columns: minmax(0, 1fr);
+          height: auto;
+        }
+        .drawer {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .drawer .panel:last-child {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .stat-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .focus-row {
+          grid-template-columns: 1fr;
+        }
+        .bottom-grid,
+        .actions-grid {
+          grid-template-columns: 1fr;
+        }
+        .kb-grid {
+          grid-template-columns: 1fr;
+        }
+        .kb-card.wide {
+          grid-column: auto;
+        }
+        .form-row {
+          grid-template-columns: 1fr;
+        }
+        .header-tools .cli-pill span {
+          display: none;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .stat-row,
+        .project-grid,
+        .git-row {
+          grid-template-columns: 1fr;
+        }
+        .view-pane {
+          padding: 12px;
+        }
+        .section-meta {
+          display: none;
+        }
+        .header {
+          gap: 8px;
+          padding: 0 10px;
+        }
+        .header-tools .obsidian-chip span,
+        .header-tools .cmd-search {
+          display: none;
+        }
+        .stage {
+          padding: 0 8px;
+        }
+        .stage-num {
+          display: none;
+        }
+        .drawer {
+          display: flex;
+        }
+      }
+
+      [data-theme='light'] {
+        --bg: #eef1f5;
+        --bg-panel: #f7f9fc;
+        --bg-panel-2: #ffffff;
+        --bg-raise: #e6ebf2;
+        --line: rgba(15, 23, 42, 0.12);
+        --line-strong: rgba(15, 23, 42, 0.22);
+        --cyan: #0891b2;
+        --cyan-soft: rgba(8, 145, 178, 0.1);
+        --cyan-softer: rgba(8, 145, 178, 0.05);
+        --amber: #b45309;
+        --amber-soft: rgba(180, 83, 9, 0.1);
+        --green: #047857;
+        --green-soft: rgba(4, 120, 87, 0.1);
+        --red: #b91c1c;
+        --red-soft: rgba(185, 28, 28, 0.08);
+        --purple: #7c3aed;
+        --purple-soft: rgba(124, 58, 237, 0.1);
+        --text: #0f172a;
+        --text-dim: #475569;
+        --muted: #5b6b7d;
+      }
+
+      [data-theme='light'] body {
+        background-image:
+          linear-gradient(rgba(8, 145, 178, 0.05) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(8, 145, 178, 0.05) 1px, transparent 1px);
+      }
+
+      [data-theme='light'] .dock,
+      [data-theme='light'] .header {
+        background: rgba(247, 249, 252, 0.86);
+      }
+
+      [data-theme='light'] .solid-btn,
+      [data-theme='light'] .mini-btn.primary,
+      [data-theme='light'] .send-btn {
+        color: #06222b;
+      }
+
+      [data-theme='light'] .log-box,
+      [data-theme='light'] .cmd-preview {
+        background: #10141c;
+        color: #cbd5e1;
+      }
+    </style>
+  </head>
+  <body data-theme="dark">
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="i-dash" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+      </symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24">
+        <path d="M21 12a8 8 0 0 1-8 8H6l-3 2 1-4a8 8 0 1 1 17-6Z" />
+      </symbol>
+      <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" /></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24">
+        <path d="M4 5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2V5Z" />
+        <path d="M4 19a2 2 0 0 0 2 2h13" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m21 21-4.3-4.3" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path
+          d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+        />
+      </symbol>
+      <symbol id="i-help" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.3 9a2.7 2.7 0 1 1 4.6 1.9c-.9.8-1.9 1.3-1.9 2.6" />
+        <path d="M12 17h.01" />
+      </symbol>
+      <symbol id="i-gem" viewBox="0 0 24 24">
+        <path d="M6 3h12l4 6-10 12L2 9l4-6Z" />
+        <path d="M2 9h20M9 3 7 9l5 12m3-18 2 6-5 12" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></symbol>
+      <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24">
+        <path d="M12 3 2 20h20L12 3Z" />
+        <path d="M12 10v4m0 3h.01" />
+      </symbol>
+      <symbol id="i-git" viewBox="0 0 24 24">
+        <circle cx="6" cy="6" r="2.5" />
+        <circle cx="6" cy="18" r="2.5" />
+        <circle cx="18" cy="8" r="2.5" />
+        <path d="M6 8.5v7m0-1.5 9-4" />
+      </symbol>
+      <symbol id="i-db" viewBox="0 0 24 24">
+        <ellipse cx="12" cy="5" rx="8" ry="3" />
+        <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+        <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+      </symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="M12 2v6m0 8v6M2 12h6m8 0h6M5 5l4 4m6 6 4 4M19 5l-4 4m-6 6-4 4" />
+        <circle cx="12" cy="12" r="3" />
+      </symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5M12 18h7" /></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M6 3h9l4 4v14H6V3Z" />
+        <path d="M14 3v5h5M9 13h6m-6 4h4" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 3" />
+      </symbol>
+      <symbol id="i-graph" viewBox="0 0 24 24">
+        <circle cx="5" cy="6" r="2" />
+        <circle cx="19" cy="6" r="2" />
+        <circle cx="12" cy="18" r="2" />
+        <path d="M7 6h10M6 7.8 11 16.5m7-9.5-5 9.5" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" />
+        <rect x="14" y="3" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
+        <rect x="14" y="14" width="7" height="7" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 11 18-8-8 18-2-8-8-2Z" /></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24">
+        <rect x="5" y="11" width="14" height="9" rx="1" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+      </symbol>
+      <symbol id="i-doc" viewBox="0 0 24 24">
+        <path d="M7 3h7l5 5v13H7V3Z" />
+        <path d="M14 3v5h5" />
+      </symbol>
+    </svg>
+
+    <div class="app">
+      <aside class="dock" aria-label="Primary navigation">
+        <div>
+          <div class="dock-brand">
+            <div class="brand-mark"><span>P</span></div>
+            <span class="dock-label"><b style="color: var(--cyan)">PRISM</b> STATION</span>
+          </div>
+          <nav class="nav">
+            <button type="button" class="nav-item" data-nav="dashboard" aria-label="Dashboard">
+              <svg class="ic"><use href="#i-dash" /></svg>
+              <span class="dock-label">总览控制塔</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="projects" aria-label="Projects">
+              <svg class="ic"><use href="#i-folder" /></svg>
+              <span class="dock-label">项目矩阵</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="ai-studio" aria-label="AI Studio">
+              <svg class="ic"><use href="#i-chat" /></svg>
+              <span class="dock-label">需求论证 Canvas</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="actions" aria-label="Actions">
+              <svg class="ic"><use href="#i-zap" /></svg>
+              <span class="dock-label">交付终端</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="knowledge" aria-label="Knowledge">
+              <svg class="ic"><use href="#i-book" /></svg>
+              <span class="dock-label">活体知识库</span>
+            </button>
+          </nav>
+        </div>
+        <div class="dock-foot">
+          <button
+            type="button"
+            class="icon-btn obsidian-btn"
+            data-header-obsidian
+            aria-label="Open Obsidian vault"
+          >
+            <svg class="ic"><use href="#i-gem" /></svg>
+          </button>
+          <button
+            type="button"
+            class="icon-btn dock-collapse"
+            data-dock-collapse
+            aria-label="Collapse dock"
+          >
+            <svg class="ic collapse-ic"><use href="#i-chev" /></svg>
+          </button>
+          <button type="button" class="icon-btn" data-theme-toggle aria-label="Toggle theme">
+            <svg class="ic theme-ic"><use href="#i-moon" /></svg>
+          </button>
+          <button type="button" class="icon-btn" data-shortcuts-trigger aria-label="Shortcuts">
+            <svg class="ic"><use href="#i-help" /></svg>
+          </button>
+          <button type="button" class="icon-btn" data-dock-search aria-label="Search">
+            <svg class="ic"><use href="#i-search" /></svg>
+          </button>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="header">
+          <div class="header-title">
+            <span>MISSION</span><b>PRISM STATION</b>
+            <span style="color: var(--muted)">v0.2-preview</span>
+          </div>
+          <nav class="journey" aria-label="Product journey stages">
+            <button type="button" class="stage" data-stage="dashboard">
+              <span class="stage-dot"></span>
+              <span class="stage-num">SYS.00</span>
+              <span>总览</span>
+            </button>
+            <span class="stage-arrow"
+              ><svg class="ic" style="width: 14px; height: 14px"><use href="#i-chev" /></svg
+            ></span>
+            <button type="button" class="stage" data-stage="projects">
+              <span class="stage-dot"></span>
+              <span class="stage-num">SYS.01</span>
+              <span>构想</span>
+            </button>
+            <span class="stage-arrow"
+              ><svg class="ic" style="width: 14px; height: 14px"><use href="#i-chev" /></svg
+            ></span>
+            <button type="button" class="stage" data-stage="ai-studio">
+              <span class="stage-dot"></span>
+              <span class="stage-num">SYS.02</span>
+              <span>论证</span>
+            </button>
+            <span class="stage-arrow"
+              ><svg class="ic" style="width: 14px; height: 14px"><use href="#i-chev" /></svg
+            ></span>
+            <button type="button" class="stage" data-stage="actions">
+              <span class="stage-dot"></span>
+              <span class="stage-num">SYS.03</span>
+              <span>落地</span>
+            </button>
+            <span class="stage-arrow"
+              ><svg class="ic" style="width: 14px; height: 14px"><use href="#i-chev" /></svg
+            ></span>
+            <button type="button" class="stage" data-stage="knowledge">
+              <span class="stage-dot"></span>
+              <span class="stage-num">SYS.04</span>
+              <span>归档</span>
+            </button>
+          </nav>
+          <div class="header-tools">
+            <div class="cli-pill">
+              <span class="cli-dot"></span>
+              <span>CLI</span>
+              <select data-cli-selector aria-label="Current CLI tool">
+                <option value="claude">claude</option>
+                <option value="aider">aider</option>
+                <option value="codex">codex</option>
+                <option value="gemini">gemini</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              class="obsidian-chip"
+              data-header-obsidian
+              aria-label="Open Obsidian"
+            >
+              <svg class="ic" style="width: 14px; height: 14px"><use href="#i-gem" /></svg>
+              <span>Obsidian</span>
+            </button>
+            <button
+              type="button"
+              class="cmd-search"
+              data-command-trigger
+              aria-label="Search commands"
+            >
+              <svg class="ic" style="width: 14px; height: 14px"><use href="#i-search" /></svg>
+              <span>全局搜索</span>
+              <kbd>⌘K</kbd>
+            </button>
+          </div>
+        </header>
+
+        <main class="workspace">
+          <!-- ================= Dashboard ================= -->
+          <section class="view-pane" data-view-pane="dashboard" id="view-dashboard">
+            <div class="section-head">
+              <span class="section-code">SYS.01 / OVERVIEW</span>
+              <span class="section-title">总览控制塔</span>
+              <span class="section-meta">SYNC 10:42:07 · LOCAL-FIRST</span>
+            </div>
+
+            <div class="stat-row">
+              <div class="panel stat">
+                <div>
+                  <div class="stat-value">6<em>+2</em></div>
+                  <div class="stat-label">纳管项目</div>
+                </div>
+                <div class="delta-up">▲ 本周新增 2 个旅程</div>
+              </div>
+              <div class="panel stat">
+                <div>
+                  <div class="stat-value">38%</div>
+                  <div class="stat-label">7 天 Token 上下文瘦身</div>
+                </div>
+                <svg
+                  class="sparkline"
+                  viewBox="0 0 120 38"
+                  preserveAspectRatio="none"
+                  data-token-sparkline-point
+                >
+                  <path
+                    class="fill"
+                    d="M0,30 C12,28 18,20 30,22 C42,24 48,14 60,16 C72,18 80,8 92,12 C104,16 112,6 120,4 L120,38 L0,38 Z"
+                  />
+                  <path
+                    d="M0,30 C12,28 18,20 30,22 C42,24 48,14 60,16 C72,18 80,8 92,12 C104,16 112,6 120,4"
+                  />
+                </svg>
+              </div>
+              <div class="panel stat">
+                <div>
+                  <div class="stat-value">
+                    3<span style="font-size: 13px; color: var(--green)"> 在线</span>
+                  </div>
+                  <div class="stat-label">CLI 智能体状态</div>
+                </div>
+                <div class="bar-row">
+                  <span>成功率</span>
+                  <span class="bar-track green"><i style="width: 98%"></i></span>
+                  <span style="color: var(--green)">98.2%</span>
+                </div>
+              </div>
+              <div class="panel stat">
+                <div>
+                  <div class="stat-value">82%</div>
+                  <div class="stat-label">活体知识健康度</div>
+                </div>
+                <div class="bar-row">
+                  <span>34 卡片</span>
+                  <span class="bar-track"><i style="width: 82%"></i></span>
+                  <span style="color: var(--amber)">需维护</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="focus-row">
+              <div class="panel focus-card" data-dashboard-today-dod>
+                <div class="panel-title">
+                  <span class="tick"></span>今日 Top DoD<span class="right">1 / 3</span>
+                </div>
+                <span class="badge green">Sprint 9</span>
+                <div class="focus-title">完成 Knowledge 语义搜索并接入 ⌘K</div>
+                <div class="focus-desc">
+                  本地向量 RAG 索引状态从 82% 提到 95%，覆盖全部 Markdown 知识卡片。
+                </div>
+                <div class="meta-line">
+                  <svg class="ic" style="width: 12px; height: 12px"><use href="#i-clock" /></svg>
+                  预计 3h · 依赖 AI Studio 共识
+                </div>
+              </div>
+              <div class="panel focus-card blocked" data-dashboard-blocked>
+                <div class="panel-title">
+                  <span class="tick"></span>阻塞告警<span class="right">2 项</span>
+                </div>
+                <span class="badge red">BLOCKED</span>
+                <div class="focus-title">Actions #42 被 AI Studio 论证结论阻塞</div>
+                <div class="focus-desc">
+                  MoA 编排方案尚未达成共识，前置 Spec 未冻结，无法派发 CLI。
+                </div>
+                <div class="meta-line">
+                  <svg class="ic" style="width: 12px; height: 12px"><use href="#i-lock" /></svg>
+                  等待 论证 → 固化
+                </div>
+              </div>
+              <div class="panel focus-card" data-dashboard-risk>
+                <div class="panel-title">
+                  <span class="tick"></span>AI 风险推送<span class="right">LIVE</span>
+                </div>
+                <span class="badge amber">TRADE-OFF</span>
+                <div class="focus-title">MoA 并行延迟 vs Token 成本</div>
+                <div class="focus-desc">
+                  CTO 建议串行共识节省 32% Token，CDO 坚持并行保留多样性，待圆桌终裁。
+                </div>
+                <div class="meta-line">
+                  <svg class="ic" style="width: 12px; height: 12px"><use href="#i-alert" /></svg>
+                  2026-08-13 · ADR 关联 3 条
+                </div>
+              </div>
+            </div>
+
+            <div class="panel system-strip plain">
+              <div class="sys-item">
+                <svg class="ic" style="width: 13px; height: 13px"><use href="#i-db" /></svg> SQLite
+                <span class="val">OK</span>
+              </div>
+              <div class="sys-item">
+                <svg class="ic" style="width: 13px; height: 13px"><use href="#i-git" /></svg>
+                develop <span class="val">42 ahead</span>
+              </div>
+              <div class="sys-item">
+                <svg class="ic" style="width: 13px; height: 13px"><use href="#i-terminal" /></svg>
+                Tauri IPC <span class="val">0 error</span>
+              </div>
+              <div class="sys-item">
+                <svg class="ic" style="width: 13px; height: 13px"><use href="#i-gem" /></svg>
+                Obsidian <span class="val" style="color: var(--purple)">Linked</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================= Projects ================= -->
+          <section
+            class="view-pane"
+            data-view-pane="projects"
+            id="view-projects"
+            style="display: none"
+          >
+            <div class="section-head">
+              <span class="section-code">SYS.02 / IDEAS &amp; SCOPES</span>
+              <span class="section-title">项目矩阵</span>
+              <span class="section-meta">SCOPE-LOCKED · 3 个活动旅程</span>
+            </div>
+
+            <div class="project-grid">
+              <article class="panel project-card" data-project-card>
+                <div class="project-top">
+                  <div>
+                    <div class="project-name">Prism Station</div>
+                    <div class="project-path">D:\ai-workbench</div>
+                  </div>
+                  <span class="badge cyan" style="margin-left: auto">BUILDING</span>
+                </div>
+                <div class="bar-row">
+                  <span>进度</span>
+                  <span class="bar-track"><i style="width: 68%"></i></span>
+                  <span>68%</span>
+                </div>
+                <div class="coverage">
+                  <svg class="ic" style="width: 13px; height: 13px"><use href="#i-book" /></svg>
+                  知识覆盖 82% · 建议补 ADR-008
+                </div>
+                <div class="card-actions">
+                  <button type="button" class="mini-btn" data-project-mount>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-git" /></svg>
+                    Git
+                  </button>
+                  <button type="button" class="mini-btn" data-project-cli>
+                    <svg class="ic" style="width: 13px; height: 13px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    CLI
+                  </button>
+                  <button type="button" class="mini-btn danger" data-project-archive>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-lock" /></svg>
+                    归档
+                  </button>
+                </div>
+              </article>
+              <article class="panel project-card" data-project-card>
+                <div class="project-top">
+                  <div>
+                    <div class="project-name">ResuAlign-Lite</div>
+                    <div class="project-path">D:\ResuAlign-Lite</div>
+                  </div>
+                  <span class="badge amber" style="margin-left: auto">DISCUSSING</span>
+                </div>
+                <div class="bar-row">
+                  <span>进度</span>
+                  <span class="bar-track amber"><i style="width: 35%"></i></span>
+                  <span>35%</span>
+                </div>
+                <div class="coverage" style="color: var(--red)">
+                  <svg class="ic" style="width: 13px; height: 13px"><use href="#i-alert" /></svg>
+                  知识覆盖 21% · 低于阈值
+                </div>
+                <div class="card-actions">
+                  <button type="button" class="mini-btn" data-project-mount>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-git" /></svg>
+                    Git
+                  </button>
+                  <button type="button" class="mini-btn" data-project-cli>
+                    <svg class="ic" style="width: 13px; height: 13px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    CLI
+                  </button>
+                  <button type="button" class="mini-btn danger" data-project-archive>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-lock" /></svg>
+                    归档
+                  </button>
+                </div>
+              </article>
+              <article class="panel project-card" data-project-card>
+                <div class="project-top">
+                  <div>
+                    <div class="project-name">Agency 团队册</div>
+                    <div class="project-path">D:\HermesData\ai-workbench</div>
+                  </div>
+                  <span class="badge green" style="margin-left: auto">READY</span>
+                </div>
+                <div class="bar-row">
+                  <span>进度</span>
+                  <span class="bar-track green"><i style="width: 88%"></i></span>
+                  <span>88%</span>
+                </div>
+                <div class="coverage" style="color: var(--green)">
+                  <svg class="ic" style="width: 13px; height: 13px"><use href="#i-book" /></svg>
+                  知识覆盖 94% · 可派发
+                </div>
+                <div class="card-actions">
+                  <button type="button" class="mini-btn" data-project-mount>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-git" /></svg>
+                    Git
+                  </button>
+                  <button type="button" class="mini-btn" data-project-cli>
+                    <svg class="ic" style="width: 13px; height: 13px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    CLI
+                  </button>
+                  <button type="button" class="mini-btn danger" data-project-archive>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-lock" /></svg>
+                    归档
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div class="bottom-grid">
+              <div class="panel">
+                <div class="panel-title">
+                  <span class="tick"></span>Git 变更挂载<span class="right">LOCAL ONLY</span>
+                </div>
+                <div class="git-row">
+                  <div class="git-cell green"><b>12</b>staged</div>
+                  <div class="git-cell amber"><b>5</b>unstaged</div>
+                  <div class="git-cell"><b>3</b>untracked</div>
+                </div>
+                <div class="commit-box">
+                  <b>feat(ui):</b> complete Sprint 9 DoD — knowledge semantic search + journey rail
+                  shell<br />
+                  <span style="color: var(--muted)"
+                    ># generated from git diff + DoD-009 · conventional commit</span
+                  >
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-title">
+                  <span class="tick"></span>新建项目<span class="right">SCOPE LOCK</span>
+                </div>
+                <div class="form-row">
+                  <input class="text-input" data-project-name placeholder="项目名称" />
+                  <input class="text-input" data-project-path placeholder="D:\path\to\repo" />
+                  <button type="button" class="mini-btn primary" data-project-add>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-plus" /></svg>
+                    添加
+                  </button>
+                </div>
+                <p style="margin-top: 10px; font-size: 11px; color: var(--muted); line-height: 1.6">
+                  新增项目默认锁定为
+                  <span style="color: var(--cyan); font-family: var(--mono)">IDEA</span>
+                  阶段，禁止跨目录读写。
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================= AI Studio ================= -->
+          <section
+            class="view-pane"
+            data-view-pane="ai-studio"
+            id="view-ai-studio"
+            style="display: none"
+          >
+            <div class="section-head">
+              <span class="section-code">SYS.03 / ROUNDTABLE</span>
+              <span class="section-title">需求论证 Canvas</span>
+              <span class="section-meta">4 席在席 · 共识阈值 3/4</span>
+            </div>
+
+            <div class="studio-grid">
+              <div class="panel canvas-panel">
+                <div class="canvas-toolbar">
+                  <button type="button" class="agent-toggle" data-agent-dropdown-toggle>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-spark" /></svg>
+                    在席高管 4
+                  </button>
+                  <button type="button" class="mini-btn" data-seat-toggle data-seat="rust">
+                    <span
+                      class="dot"
+                      style="
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 50%;
+                        background: var(--cyan);
+                        display: inline-block;
+                      "
+                    ></span>
+                    @rust-architect
+                  </button>
+                  <button type="button" class="mini-btn" data-seat-toggle data-seat="ui">
+                    <span
+                      class="dot"
+                      style="
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 50%;
+                        background: var(--amber);
+                        display: inline-block;
+                      "
+                    ></span>
+                    @ui-designer
+                  </button>
+                  <button type="button" class="mini-btn" data-seat-toggle data-seat="sec">
+                    <span
+                      class="dot"
+                      style="
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 50%;
+                        background: var(--red);
+                        display: inline-block;
+                      "
+                    ></span>
+                    @security-auditor
+                  </button>
+                  <button type="button" class="mini-btn" data-seat-toggle data-seat="qa">
+                    <span
+                      class="dot"
+                      style="
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 50%;
+                        background: var(--green);
+                        display: inline-block;
+                      "
+                    ></span>
+                    @qa-engineer
+                  </button>
+                </div>
+                <div class="seat-row" id="seatRow">
+                  <span class="seat on" data-agent-seat style="color: var(--cyan)"
+                    ><span class="dot"></span>rust-architect</span
+                  >
+                  <span class="seat on" data-agent-seat style="color: var(--amber)"
+                    ><span class="dot"></span>ui-designer</span
+                  >
+                  <span class="seat on" data-agent-seat style="color: var(--red)"
+                    ><span class="dot"></span>security-auditor</span
+                  >
+                  <span class="seat on" data-agent-seat style="color: var(--green)"
+                    ><span class="dot"></span>qa-engineer</span
+                  >
+                </div>
+                <div class="messages" id="messages">
+                  <div class="msg user">
+                    <div class="who">CPO · 你</div>
+                    想把 Knowledge 的语义搜索接入 ⌘K，同时保持本地优先，不引入远程 API。大家怎么看？
+                  </div>
+                  <div class="msg">
+                    <div class="who" style="color: var(--cyan)"><i></i>@rust-architect</div>
+                    建议用 SQLite FTS5 + 轻量 embedding 缓存，冷启动 < 400ms；拒绝远程 API，符合
+                    Local-First。
+                  </div>
+                  <div class="msg">
+                    <div class="who" style="color: var(--amber)"><i></i>@ui-designer</div>
+                    ⌘K 面板我建议用“指令 + 知识”双栏，命中结果直接可注入 Actions，交互路径最短。
+                  </div>
+                  <div class="msg">
+                    <div class="who" style="color: var(--red)"><i></i>@security-auditor</div>
+                    风险：embedding
+                    模型若走系统代理会外泄文档内容，需加物理断网开关或纯本地模型白名单。
+                  </div>
+                  <div class="msg">
+                    <div class="who" style="color: var(--green)"><i></i>@qa-engineer</div>
+                    验收建议：100 张卡片检索 P95 &lt; 500ms，且 ⌘K 命中率 ≥ 90%，纳入 Level 2
+                    契约测试。
+                  </div>
+                  <div class="consensus">
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-check" /></svg>
+                    共识已达成 · 4/4 席位 · 待固化为知识
+                  </div>
+                </div>
+                <div class="composer">
+                  <div class="composer-field">
+                    <textarea
+                      data-studio-chat-input
+                      placeholder="继续追问，或按 ⌘Enter 发送…"
+                    ></textarea>
+                    <span class="composer-hint">⌘Enter 发送 · Shift+Enter 换行</span>
+                  </div>
+                  <button type="button" class="send-btn" data-studio-send aria-label="Send message">
+                    <svg class="ic"><use href="#i-send" /></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="drawer">
+                <div class="panel">
+                  <div class="panel-title">
+                    <span class="tick"></span>Trade-off 评估<span class="right">3 ADR</span>
+                  </div>
+                  <div class="trade-row">
+                    <div class="trade-col pro">
+                      <h4>PROS</h4>
+                      <ul>
+                        <li>纯本地，零成本</li>
+                        <li>冷启动 &lt; 400ms</li>
+                        <li>契约可测试</li>
+                      </ul>
+                    </div>
+                    <div class="trade-col con">
+                      <h4>CONS</h4>
+                      <ul>
+                        <li>语义召回有限</li>
+                        <li>模型白名单维护</li>
+                        <li>索引重建耗时</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-title">
+                    <span class="tick"></span>历史决策回溯<span class="right">2026-08</span>
+                  </div>
+                  <ul class="adr-list">
+                    <li>
+                      <svg class="ic" style="width: 13px; height: 13px; color: var(--cyan)">
+                        <use href="#i-doc" />
+                      </svg>
+                      ADR-006 · 四层验证矩阵
+                    </li>
+                    <li>
+                      <svg class="ic" style="width: 13px; height: 13px; color: var(--cyan)">
+                        <use href="#i-doc" />
+                      </svg>
+                      ADR-004 · 旅程单文档归档
+                    </li>
+                    <li>
+                      <svg class="ic" style="width: 13px; height: 13px; color: var(--cyan)">
+                        <use href="#i-doc" />
+                      </svg>
+                      ADR-002 · 部门员工模型
+                    </li>
+                  </ul>
+                </div>
+                <button type="button" class="solid-btn" data-freeze-knowledge>
+                  <svg class="ic" style="width: 14px; height: 14px"><use href="#i-lock" /></svg>
+                  固化为知识
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================= Actions ================= -->
+          <section
+            class="view-pane"
+            data-view-pane="actions"
+            id="view-actions"
+            style="display: none"
+          >
+            <div class="section-head">
+              <span class="section-code">SYS.04 / DELIVERY</span>
+              <span class="section-title">交付终端</span>
+              <span class="section-meta">j/k 游走 · x 完成 · c 派发 · v 校验</span>
+            </div>
+
+            <div class="actions-grid">
+              <div class="panel">
+                <div class="panel-title">
+                  <span class="tick"></span>DoD 任务队列<span class="right">5 项 · 2 阻塞</span>
+                </div>
+                <ul class="task-list" id="taskList">
+                  <li class="task" data-task-id="t1">
+                    <span class="check" data-task-toggle aria-label="Toggle task"
+                      ><svg class="ic" style="width: 12px; height: 12px">
+                        <use href="#i-check" /></svg
+                    ></span>
+                    <div>
+                      <div class="task-title">T1 · 落地 Knowledge 语义搜索 / ⌘K 面板</div>
+                      <div class="task-meta">
+                        <span class="badge cyan">S9</span
+                        ><span
+                          class="badge green"
+                          style="
+                            color: var(--text-dim);
+                            border-color: var(--line);
+                            background: transparent;
+                          "
+                          >spec-ready</span
+                        >
+                      </div>
+                    </div>
+                    <button type="button" class="mini-btn" data-task-cli>
+                      <svg class="ic" style="width: 13px; height: 13px">
+                        <use href="#i-terminal" />
+                      </svg>
+                      CLI
+                    </button>
+                  </li>
+                  <li class="task blocked" data-task-id="t2">
+                    <span class="check" data-task-toggle aria-label="Toggle task"
+                      ><svg class="ic" style="width: 12px; height: 12px">
+                        <use href="#i-check" /></svg
+                    ></span>
+                    <div>
+                      <div class="task-title">T2 · MoA 编排串行共识改造</div>
+                      <div class="task-meta">
+                        <span class="badge red">BLOCKED</span
+                        ><span class="badge amber">等待论证</span>
+                      </div>
+                    </div>
+                    <button type="button" class="mini-btn" data-task-cli>
+                      <svg class="ic" style="width: 13px; height: 13px">
+                        <use href="#i-terminal" />
+                      </svg>
+                      CLI
+                    </button>
+                  </li>
+                  <li class="task" data-task-id="t3">
+                    <span class="check" data-task-toggle aria-label="Toggle task"
+                      ><svg class="ic" style="width: 12px; height: 12px">
+                        <use href="#i-check" /></svg
+                    ></span>
+                    <div>
+                      <div class="task-title">T3 · 修复 AIStudio seat.color 气泡吞色</div>
+                      <div class="task-meta">
+                        <span class="badge cyan">S9</span
+                        ><span
+                          class="badge amber"
+                          style="
+                            color: var(--text-dim);
+                            border-color: var(--line);
+                            background: transparent;
+                          "
+                          >frontend</span
+                        >
+                      </div>
+                    </div>
+                    <button type="button" class="mini-btn" data-task-cli>
+                      <svg class="ic" style="width: 13px; height: 13px">
+                        <use href="#i-terminal" />
+                      </svg>
+                      CLI
+                    </button>
+                  </li>
+                </ul>
+                <div class="form-row" style="margin-top: 12px">
+                  <input class="text-input" data-task-fast-input placeholder="快速添加 DoD 任务…" />
+                  <button type="button" class="mini-btn primary" data-task-add>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-plus" /></svg>
+                    添加
+                  </button>
+                </div>
+              </div>
+
+              <div class="panel" data-quality-gate>
+                <div class="panel-title">
+                  <span class="tick"></span>验证矩阵<span class="right">L1–L4</span>
+                </div>
+                <ul class="gate-list">
+                  <li class="gate">
+                    <span class="gate-level">L1</span>
+                    <div class="gate-name">静态类型与编译 · cargo check / tsc</div>
+                    <span class="gate-state">PASS 2.4s</span>
+                  </li>
+                  <li class="gate">
+                    <span class="gate-level">L2</span>
+                    <div class="gate-name">单元与契约测试 · cargo test / vitest</div>
+                    <span class="gate-state">PASS 8.1s</span>
+                  </li>
+                  <li class="gate warn">
+                    <span class="gate-level">L3</span>
+                    <div class="gate-name">CDP 无头浏览器 UI 比对</div>
+                    <span class="gate-state">1 REGRESSION</span>
+                  </li>
+                  <li class="gate">
+                    <span class="gate-level">L4</span>
+                    <div class="gate-name">AI DoD 语义对齐 + CISO 审计</div>
+                    <span class="gate-state">PENDING</span>
+                  </li>
+                </ul>
+                <div class="log-box" id="logBox">
+                  <span class="ok">✔</span> verify-matrix: L1 PASS (cargo check, tsc --noEmit)<br />
+                  <span class="ok">✔</span> verify-matrix: L2 PASS (141 contracts, 0 missing)<br />
+                  <span class="err">✘</span> ui-verify: knowledge graph overlay overlap detected →
+                  auto-fix prompt queued
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 12px">
+                  <button type="button" class="ghost-btn" data-task-cli>
+                    <svg class="ic" style="width: 13px; height: 13px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    派发 CLI
+                  </button>
+                  <button type="button" class="ghost-btn" data-quality-run>
+                    <svg class="ic" style="width: 13px; height: 13px"><use href="#i-spark" /></svg>
+                    跑 Level 1–3
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================= Knowledge ================= -->
+          <section
+            class="view-pane"
+            data-view-pane="knowledge"
+            id="view-knowledge"
+            style="display: none"
+          >
+            <div class="section-head">
+              <span class="section-code">SYS.05 / LIVING MEMORY</span>
+              <span class="section-title">活体知识库</span>
+              <span class="section-meta">34 卡片 · 3 待激活 · 82% 健康</span>
+            </div>
+
+            <div class="kb-toolbar">
+              <div class="kb-search">
+                <svg class="ic" style="width: 14px; height: 14px"><use href="#i-search" /></svg>
+                <input data-knowledge-search placeholder="自然语言搜索，如：上次 UI 降噪方案…" />
+                <kbd>⌘K</kbd>
+              </div>
+              <div class="seg">
+                <button type="button" class="active" data-prism-view-grid>
+                  <svg class="ic" style="width: 13px; height: 13px"><use href="#i-grid" /></svg>
+                  田字格
+                </button>
+                <button type="button" data-prism-view-graph>
+                  <svg class="ic" style="width: 13px; height: 13px"><use href="#i-graph" /></svg>
+                  图谱
+                </button>
+              </div>
+            </div>
+
+            <div class="kb-grid" id="kbGrid">
+              <article class="panel kb-card wide" data-kb-card>
+                <div class="kb-title">ADR-006 · 四层验证矩阵落地</div>
+                <div class="kb-desc">
+                  L1 编译门禁、L2 契约测试、L3 CDP 视觉回归、L4 AI 语义终审；失败自动反哺下一轮 CLI
+                  Prompt。已关联 Actions 验证矩阵。
+                </div>
+                <div class="kb-tags">
+                  <span class="badge cyan">🔥 3h 前引用</span>
+                  <span class="kb-tag">#prism</span>
+                  <span class="kb-tag">#verification</span>
+                  <span class="kb-tag">#adr</span>
+                </div>
+                <div class="kb-actions">
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-zap" /></svg>
+                    注入 Context
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    拆解 DoD
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-chat" /></svg>
+                    论证
+                  </button>
+                  <button
+                    type="button"
+                    class="mini-btn"
+                    style="color: var(--purple); border-color: rgba(167, 139, 250, 0.35)"
+                  >
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-gem" /></svg>
+                    Obsidian
+                  </button>
+                </div>
+              </article>
+              <article class="panel kb-card" data-kb-card>
+                <div class="kb-title">Sprint 9 · Knowledge 语义搜索决策</div>
+                <div class="kb-desc">
+                  SQLite FTS5 + 本地 embedding 白名单；⌘K 双栏：指令 + 知识注入。
+                </div>
+                <div class="kb-tags">
+                  <span class="badge green">论证中</span>
+                  <span class="kb-tag">#journey</span>
+                  <span class="kb-tag">#sprint9</span>
+                </div>
+                <div class="kb-actions">
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-zap" /></svg>
+                    注入 Context
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px">
+                      <use href="#i-terminal" />
+                    </svg>
+                    拆解 DoD
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-gem" /></svg>
+                    Obsidian
+                  </button>
+                </div>
+              </article>
+              <article class="panel kb-card" data-kb-card>
+                <div class="kb-title">Agency 圆桌议事规则 v2</div>
+                <div class="kb-desc">
+                  并行发言一轮 + 定向质疑一轮，共识阈值 3/4；CPO 拥有终裁权。
+                </div>
+                <div class="kb-tags">
+                  <span class="badge amber">❄️ 45d 未激活</span>
+                  <span class="kb-tag">#agency</span>
+                  <span class="kb-tag">#rule</span>
+                </div>
+                <div class="kb-actions">
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-zap" /></svg>
+                    注入 Context
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-gem" /></svg>
+                    Obsidian
+                  </button>
+                </div>
+              </article>
+              <article class="panel kb-card" data-kb-card>
+                <div class="kb-title">CLI 检测清单 · 本机已装 8 款</div>
+                <div class="kb-desc">
+                  claude / aider / codex / gemini / opencode / qwen / cursor / windsurf 自动识别。
+                </div>
+                <div class="kb-tags">
+                  <span class="badge cyan">常驻</span>
+                  <span class="kb-tag">#cli</span>
+                  <span class="kb-tag">#tooling</span>
+                </div>
+                <div class="kb-actions">
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-zap" /></svg>
+                    注入 Context
+                  </button>
+                  <button type="button" class="mini-btn">
+                    <svg class="ic" style="width: 12px; height: 12px"><use href="#i-gem" /></svg>
+                    Obsidian
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div class="graph-view" id="graphView" data-prism-graph>
+              <div class="graph-edge" style="left: 22%; top: 34%; width: 26%"></div>
+              <div class="graph-edge" style="left: 46%; top: 26%; width: 18%"></div>
+              <div class="graph-edge purple" style="left: 46%; top: 46%; width: 18%"></div>
+              <div class="graph-edge" style="left: 62%; top: 26%; width: 20%"></div>
+              <div class="graph-edge purple" style="left: 62%; top: 46%; width: 20%"></div>
+              <div class="graph-node" style="left: 6%; top: 24%">
+                <i style="color: var(--cyan)"></i>CPO · Prism Station
+              </div>
+              <div class="graph-node" style="left: 38%; top: 22%">
+                <i style="color: var(--amber)"></i>ADR-006
+              </div>
+              <div class="graph-node" style="left: 38%; top: 42%">
+                <i style="color: var(--green)"></i>Sprint 9
+              </div>
+              <div class="graph-node" style="left: 62%; top: 20%">
+                <i style="color: var(--red)"></i>ui-verify
+              </div>
+              <div class="graph-node" style="left: 62%; top: 40%">
+                <i style="color: var(--purple)"></i>Obsidian Vault
+              </div>
+              <div class="graph-node" style="left: 82%; top: 30%">
+                <i style="color: var(--cyan)"></i>Journey Console
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <!-- CLI modal -->
+    <div
+      class="modal-overlay"
+      id="cliModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="CLI dispatch"
+    >
+      <div class="modal">
+        <div class="modal-head">
+          <span class="code">SYS.04 / DISPATCH</span>
+          <h3>派发本地 CLI</h3>
+          <button type="button" class="modal-close" aria-label="Close">
+            <svg class="ic"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div>
+            <div class="field-label">选择 CLI 引擎</div>
+            <div class="cli-kind-grid">
+              <button type="button" class="cli-kind active" data-cli-kind="claude">
+                <svg class="ic" style="width: 15px; height: 15px; color: var(--cyan)">
+                  <use href="#i-terminal" />
+                </svg>
+                claude
+              </button>
+              <button type="button" class="cli-kind" data-cli-kind="aider">
+                <svg class="ic" style="width: 15px; height: 15px; color: var(--cyan)">
+                  <use href="#i-terminal" />
+                </svg>
+                aider
+              </button>
+              <button type="button" class="cli-kind" data-cli-kind="codex">
+                <svg class="ic" style="width: 15px; height: 15px; color: var(--cyan)">
+                  <use href="#i-terminal" />
+                </svg>
+                codex
+              </button>
+              <button type="button" class="cli-kind" data-cli-kind="gemini">
+                <svg class="ic" style="width: 15px; height: 15px; color: var(--cyan)">
+                  <use href="#i-terminal" />
+                </svg>
+                gemini
+              </button>
+            </div>
+          </div>
+          <div>
+            <div class="field-label">命令预览</div>
+            <div class="cmd-preview" id="cmdPreview">
+              <b>claude</b> "请读取 docs/plans/sprint-9.md，实现 Task 1"
+            </div>
+          </div>
+          <div>
+            <div class="field-label">输出日志</div>
+            <div class="log-box" id="cliLog">
+              <span style="color: var(--muted)">— 等待派发 —</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="ghost-btn" data-modal-cancel>取消</button>
+          <button type="button" class="solid-btn" data-cli-run>
+            <svg class="ic" style="width: 14px; height: 14px"><use href="#i-zap" /></svg> 运行
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search modal -->
+    <div
+      class="modal-overlay"
+      id="searchModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Global search"
+    >
+      <div class="modal sm">
+        <div class="modal-head">
+          <span class="code">⌘K</span>
+          <h3>全局搜索</h3>
+          <button type="button" class="modal-close" aria-label="Close">
+            <svg class="ic"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <input
+            class="text-input"
+            id="searchInput"
+            style="width: 100%"
+            placeholder="自然语言，如：上次 UI 降噪方案…"
+          />
+          <ul class="search-list" id="searchList">
+            <li class="search-item"><span class="type">KB</span> ADR-006 · 四层验证矩阵落地</li>
+            <li class="search-item">
+              <span class="type">KB</span> Sprint 9 · Knowledge 语义搜索决策
+            </li>
+            <li class="search-item"><span class="type">CMD</span> 派发本地 CLI → Actions</li>
+            <li class="search-item"><span class="type">DOC</span> docs/journey/prism-station.md</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shortcuts modal -->
+    <div
+      class="modal-overlay"
+      id="shortcutsModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Shortcuts"
+    >
+      <div class="modal sm">
+        <div class="modal-head">
+          <span class="code">KEYS</span>
+          <h3>快捷键</h3>
+          <button type="button" class="modal-close" aria-label="Close">
+            <svg class="ic"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="shortcut-row"><kbd>⌘K</kbd><span>全局搜索 / 知识检索</span></div>
+          <div class="shortcut-row"><kbd>j / k</kbd><span>任务队列上下移动</span></div>
+          <div class="shortcut-row"><kbd>x</kbd><span>切换任务完成状态</span></div>
+          <div class="shortcut-row"><kbd>c</kbd><span>派发当前任务到 CLI</span></div>
+          <div class="shortcut-row"><kbd>v</kbd><span>运行 Level 1–3 验证</span></div>
+          <div class="shortcut-row"><kbd>⌘Enter</kbd><span>AI Studio 发送消息</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast">已固化到 Knowledge</div>
+    <div class="preview-tag">DESIGN PREVIEW · 旅程指挥台</div>
+
+    <script>
+      const $ = (sel, root = document) => root.querySelector(sel);
+      const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+      const VIEWS = ['dashboard', 'projects', 'ai-studio', 'actions', 'knowledge'];
+      let activeView = 'dashboard';
+      let activeCli = 'claude';
+
+      function showToast(text) {
+        const t = $('#toast');
+        t.textContent = text;
+        t.classList.add('show');
+        clearTimeout(t._timer);
+        t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+      }
+
+      function setView(view) {
+        if (!VIEWS.includes(view)) return;
+        activeView = view;
+        VIEWS.forEach((v) => {
+          const pane = $(`[data-view-pane="${v}"]`);
+          if (pane) pane.style.display = v === view ? '' : 'none';
+        });
+        $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.nav === view));
+        $$('.stage').forEach((b) => b.classList.toggle('active', b.dataset.stage === view));
+      }
+
+      $$('.nav-item').forEach((btn) =>
+        btn.addEventListener('click', () => setView(btn.dataset.nav)),
+      );
+      $$('.stage').forEach((btn) =>
+        btn.addEventListener('click', () => setView(btn.dataset.stage)),
+      );
+
+      function openModal(id) {
+        $$('.modal-overlay').forEach((m) => m.classList.remove('open'));
+        $(id).classList.add('open');
+      }
+      function closeModals() {
+        $$('.modal-overlay').forEach((m) => m.classList.remove('open'));
+      }
+
+      $$('[data-command-trigger], [data-dock-search]').forEach((b) =>
+        b.addEventListener('click', () => openModal('#searchModal')),
+      );
+      $$('[data-shortcuts-trigger]').forEach((b) =>
+        b.addEventListener('click', () => openModal('#shortcutsModal')),
+      );
+      $$('.modal-close, [data-modal-cancel]').forEach((b) =>
+        b.addEventListener('click', closeModals),
+      );
+      $$('.modal-overlay').forEach((m) =>
+        m.addEventListener('click', (e) => {
+          if (e.target === m) closeModals();
+        }),
+      );
+
+      document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          openModal('#searchModal');
+        }
+      });
+
+      // CLI dispatch
+      let cliLogTimer;
+      function openCliModal(kind) {
+        if (kind) {
+          activeCli = kind;
+          $$('[data-cli-kind]').forEach((b) =>
+            b.classList.toggle('active', b.dataset.cliKind === kind),
+          );
+          $('#cmdPreview').innerHTML =
+            `<b>${kind}</b> "请读取 docs/plans/sprint-9.md，实现 Task 1"`;
+        }
+        openModal('#cliModal');
+      }
+      $$('[data-cli-kind]').forEach((b) =>
+        b.addEventListener('click', () => openCliModal(b.dataset.cliKind)),
+      );
+      $$('[data-task-cli]').forEach((b) =>
+        b.addEventListener('click', () => openCliModal(activeCli)),
+      );
+      $('#cliModal [data-cli-run]').addEventListener('click', () => {
+        const log = $('#cliLog');
+        clearInterval(cliLogTimer);
+        log.innerHTML = '<span style="color:var(--muted)">$ claude — 正在启动…</span><br />';
+        const lines = [
+          ['<span style="color:var(--text-dim)">→ read docs/plans/sprint-9.md</span>', 400],
+          ['<span style="color:var(--text-dim)">→ implement Task 1 (knowledge search)</span>', 900],
+          ['<span style="color:var(--green)">✔ 3 files changed · 0 errors</span>', 1500],
+          ['<span style="color:var(--green)">✔ exit code 0</span>', 1900],
+        ];
+        let i = 0;
+        cliLogTimer = setInterval(() => {
+          if (i >= lines.length) {
+            clearInterval(cliLogTimer);
+            return;
+          }
+          log.innerHTML += lines[i][0] + '<br />';
+          i++;
+        }, 200);
+        showToast(`已派发 ${activeCli} · 任务 T1`);
+      });
+
+      // Studio
+      $$('[data-seat-toggle]').forEach((b) =>
+        b.addEventListener('click', () => {
+          b.classList.toggle('on');
+        }),
+      );
+      $('#seatRow').style.display = 'flex';
+      function sendStudioMessage() {
+        const input = $('[data-studio-chat-input]');
+        const text = input.value.trim();
+        if (!text) return;
+        const box = $('#messages');
+        const user = document.createElement('div');
+        user.className = 'msg user';
+        user.innerHTML = `<div class="who">CPO · 你</div>${text.replace(/</g, '&lt;')}`;
+        box.appendChild(user);
+        input.value = '';
+        const reply = document.createElement('div');
+        reply.className = 'msg';
+        reply.innerHTML = `<div class="who" style="color:var(--cyan)"><i></i>@rust-architect</div>收到，已把这条约束并入讨论纪要：<span style="color:var(--text)">${text.replace(/</g, '&lt;')}</span>。建议同步到 Knowledge 后进入固化。`;
+        box.appendChild(reply);
+        box.scrollTop = box.scrollHeight;
+      }
+      $('[data-studio-send]').addEventListener('click', sendStudioMessage);
+      $('[data-studio-chat-input]').addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') sendStudioMessage();
+      });
+      $('[data-freeze-knowledge]').addEventListener('click', () =>
+        showToast('已固化到 Knowledge · docs/journey/…'),
+      );
+
+      // Tasks
+      $$('[data-task-toggle]').forEach((b) =>
+        b.addEventListener('click', () => b.closest('.task').classList.toggle('done')),
+      );
+      let taskSeq = 4;
+      $('[data-task-add]').addEventListener('click', () => {
+        const input = $('[data-task-fast-input]');
+        const text = input.value.trim();
+        if (!text) return;
+        const li = document.createElement('li');
+        li.className = 'task';
+        li.dataset.taskId = `t${taskSeq++}`;
+        li.innerHTML = `
+        <span class="check" data-task-toggle aria-label="Toggle task"><svg class="ic" style="width:12px;height:12px"><use href="#i-check"/></svg></span>
+        <div><div class="task-title">${text.replace(/</g, '&lt;')}</div></div>
+        <button type="button" class="mini-btn" data-task-cli><svg class="ic" style="width:13px;height:13px"><use href="#i-terminal"/></svg> CLI</button>`;
+        $('#taskList').appendChild(li);
+        input.value = '';
+        li.querySelector('[data-task-toggle]').addEventListener('click', () =>
+          li.classList.toggle('done'),
+        );
+        li.querySelector('[data-task-cli]').addEventListener('click', () =>
+          openCliModal(activeCli),
+        );
+        showToast('已加入 DoD 任务队列');
+      });
+      $('[data-quality-run]').addEventListener('click', () => {
+        const box = $('#logBox');
+        box.innerHTML = '<span style="color:var(--muted)">$ running Level 1–3…</span><br />';
+        setTimeout(() => {
+          box.innerHTML =
+            '<span class="ok">✔</span> L1 PASS · cargo check / tsc 2.4s<br />' +
+            '<span class="ok">✔</span> L2 PASS · 141 contracts 0 missing<br />' +
+            '<span class="ok">✔</span> L3 PASS · CDP 5 views no regression';
+          showToast('Level 1–3 全绿');
+        }, 700);
+      });
+
+      // Projects
+      let projSeq = 4;
+      $('[data-project-add]').addEventListener('click', () => {
+        const name = $('[data-project-name]').value.trim();
+        const path = $('[data-project-path]').value.trim();
+        if (!name) return;
+        const card = document.createElement('article');
+        card.className = 'panel project-card';
+        card.dataset.projectCard = '';
+        card.innerHTML = `
+        <div class="project-top">
+          <div><div class="project-name">${name.replace(/</g, '&lt;')}</div>
+          <div class="project-path">${(path || 'D:\\new-project').replace(/</g, '&lt;')}</div></div>
+          <span class="badge amber" style="margin-left:auto">IDEA</span>
+        </div>
+        <div class="bar-row"><span>进度</span><span class="bar-track amber"><i style="width:5%"></i></span><span>5%</span></div>
+        <div class="coverage" style="color:var(--red)"><svg class="ic" style="width:13px;height:13px"><use href="#i-alert"/></svg> 知识覆盖 0% · 尚未立项</div>
+        <div class="card-actions">
+          <button type="button" class="mini-btn" data-project-mount><svg class="ic" style="width:13px;height:13px"><use href="#i-git"/></svg> Git</button>
+          <button type="button" class="mini-btn" data-project-cli><svg class="ic" style="width:13px;height:13px"><use href="#i-terminal"/></svg> CLI</button>
+          <button type="button" class="mini-btn danger" data-project-archive><svg class="ic" style="width:13px;height:13px"><use href="#i-lock"/></svg> 归档</button>
+        </div>`;
+        $('.project-grid').appendChild(card);
+        $('[data-project-name]').value = '';
+        $('[data-project-path]').value = '';
+        showToast(`已锁定 ${name} · IDEA`);
+      });
+
+      // Knowledge
+      $('[data-knowledge-search]').addEventListener('input', (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        $$('[data-kb-card]').forEach((c) => {
+          c.style.display = c.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
+      $('[data-prism-view-grid]').addEventListener('click', () => {
+        $('#graphView').classList.remove('on');
+        $('#kbGrid').style.display = '';
+        $('[data-prism-view-grid]').classList.add('active');
+        $('[data-prism-view-graph]').classList.remove('active');
+      });
+      $('[data-prism-view-graph]').addEventListener('click', () => {
+        $('#graphView').classList.add('on');
+        $('#kbGrid').style.display = 'none';
+        $('[data-prism-view-graph]').classList.add('active');
+        $('[data-prism-view-grid]').classList.remove('active');
+      });
+
+      // Theme
+      let dark = true;
+      $$('[data-theme-toggle]').forEach((b) =>
+        b.addEventListener('click', () => {
+          dark = !dark;
+          document.body.dataset.theme = dark ? 'dark' : 'light';
+          $$('.theme-ic').forEach((ic) => {
+            ic.innerHTML = dark ? '<use href="#i-moon"/>' : '<use href="#i-sun"/>';
+          });
+        }),
+      );
+
+      // Dock collapse
+      const dock = document.querySelector('.dock');
+      const dockCollapse = document.querySelector('[data-dock-collapse]');
+      if (dockCollapse) {
+        dockCollapse.addEventListener('click', () => {
+          const collapsed = dock.classList.toggle('collapsed');
+          dockCollapse.setAttribute('aria-label', collapsed ? 'Expand dock' : 'Collapse dock');
+          showToast(collapsed ? '侧边栏已折叠 · 图标模式' : '侧边栏已展开');
+        });
+      }
+
+      // Studio input auto-grow
+      const studioInput = document.querySelector('[data-studio-chat-input]');
+      if (studioInput) {
+        const growInput = () => {
+          studioInput.style.height = 'auto';
+          studioInput.style.height = Math.min(studioInput.scrollHeight, 160) + 'px';
+        };
+        studioInput.addEventListener('input', growInput);
+        growInput();
+      }
+
+      // CLI selector in header
+      $('[data-cli-selector]').addEventListener('change', (e) => {
+        activeCli = e.target.value;
+        showToast(`CLI 引擎 → ${activeCli}`);
+      });
+
+      setView('dashboard');
+    </script>
+  </body>
+</html>

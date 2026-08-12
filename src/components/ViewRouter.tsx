@@ -5,7 +5,6 @@ import DashboardView from '../views/DashboardView';
 import ProjectsView from '../views/ProjectsView';
 import KnowledgeView from '../views/KnowledgeView';
 import ActionsView from '../views/ActionsView';
-import SystemView from '../views/SystemView';
 
 const views = {
   dashboard: DashboardView,
@@ -13,13 +12,12 @@ const views = {
   projects: ProjectsView,
   knowledge: KnowledgeView,
   actions: ActionsView,
-  system: SystemView,
 } as const;
 
 type ViewId = keyof typeof views;
 
 export default function ViewRouter() {
-  const activeView = useWorkbenchStore((s) => s.activeView);
+  const activeView = useWorkbenchStore((s) => s.activeView) as ViewId;
   const [mountedViews, setMountedViews] = useState<Set<ViewId>>(() => new Set([activeView]));
   const activeRef = useRef(activeView);
   activeRef.current = activeView;

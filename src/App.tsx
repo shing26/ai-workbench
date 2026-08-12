@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import AppDock from './components/layout/AppDock';
 import AppHeader from './components/layout/AppHeader';
-import AppInspector from './components/layout/AppInspector';
+import PrismModals from './components/modals/PrismModals';
 import ToastHost from './components/ui/Toast';
 import ViewRouter from './components/ViewRouter';
 import { useTauriEvents } from './hooks/useTauriEvents';
@@ -77,9 +77,9 @@ export default function App() {
         <AppHeader />
         <div className="relative flex min-h-0 flex-1">
           <ViewRouter />
-          <AppInspector />
         </div>
       </div>
+      <PrismModals />
       <ToastHost />
     </div>
   );

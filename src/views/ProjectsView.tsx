@@ -1,715 +1,35 @@
-import {
-  Check,
-  Copy,
-  ExternalLink,
-  FolderKanban,
-  GitBranch,
-  GitMerge,
-  LayoutGrid,
-  Orbit,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Undo2,
-  Wand2,
-  X,
-} from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Archive, FolderKanban, Pin, Plus, Terminal, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { usePrismModals } from '../components/modals/prismModalsStore';
 import * as db from '../lib/db';
-import {
-  detectLanguage,
-  highlightLine,
-  parseDiffLines,
-  type DiffLineKind,
-} from '../lib/diffHighlight';
+import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
-import { useViewState } from '../stores/viewState';
-import BentoCard from '../components/ui/BentoCard';
-import ProjectCarousel from '../components/ui/ProjectCarousel';
-import StatPill from '../components/ui/StatPill';
-import ModelBadge from '../components/ui/ModelBadge';
-import MockBadge from '../components/ui/MockBadge';
-import ProjectDetailView from './ProjectDetailView';
 
-const PROJECT_MATERIALS = ['cyan', 'original', 'rain', 'chrome'] as const;
-const GIT_RANGES = [
-  { value: 'all', label: 'All time', ms: 0 },
-  { value: '24h', label: '24 hours', ms: 86_400_000 },
-  { value: '7d', label: '7 days', ms: 7 * 86_400_000 },
-  { value: '30d', label: '30 days', ms: 30 * 86_400_000 },
-];
-const GIT_CHANGE_GROUPS = [
-  { key: 'staged', label: 'Staged' },
-  { key: 'unstaged', label: 'Unstaged' },
-  { key: 'untracked', label: 'Untracked' },
-  { key: 'both', label: 'Both' },
-] as const;
-
-function diffLineClass(kind: DiffLineKind): string {
-  switch (kind) {
-    case 'file':
-      return 'text-slate-500';
-    case 'hunk':
-      return 'text-cyan-300/90';
-    case 'add':
-      return 'bg-emerald-500/10 text-emerald-300/90';
-    case 'del':
-      return 'bg-rose-500/10 text-rose-300/90';
-    default:
-      return 'text-slate-400';
-  }
-}
-
-function FileVersionPane({
-  title,
-  dataKey,
-  content,
-  language,
-}: {
-  title: string;
-  dataKey: string;
-  content: string;
-  language: string;
-}) {
-  const lines = content ? content.split('\n') : [];
-  return (
-    <div className="min-w-0 rounded-lg border border-white/10 bg-black/30">
-      <div className="border-b border-white/10 px-2 py-1 text-[8px] uppercase tracking-normal text-slate-500">
-        {title}
-      </div>
-      <div className="max-h-56 overflow-auto">
-        {lines.length === 0 ? (
-          <div className="px-2 py-1 text-[9px] text-slate-600">empty</div>
-        ) : (
-          lines.map((line, index) => (
-            <div
-              key={index}
-              data-git-file-version={dataKey}
-              className="flex gap-2 px-1 text-[9px] leading-relaxed"
-            >
-              <span className="w-6 shrink-0 select-none text-right text-slate-700">
-                {index + 1}
-              </span>
-              <span className="min-w-0 whitespace-pre-wrap text-slate-300">
-                {highlightLine(line, language)}
-              </span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-type ProjectCardBodyProps = {
-  project: db.Project;
-  gitCtx?: db.GitContext;
-  draft?: db.CommitPrDraft;
-  projectEdit?: { status: string };
-  projectEditResult?: string;
-  commitResult?: db.GitCommitResult;
-  commitError?: string;
-  prResult?: db.RemotePrResult;
-  prError?: string;
-  rebaseResult?: db.GitRebaseResult;
-  rebaseError?: string;
-  resolveResult?: db.ConflictResolutionResult;
-  confirmDelete: boolean;
-  onSaveEdit: () => void;
-  onRequestDelete: () => void;
-  onDelete: () => void;
-  onCancelDelete: () => void;
-  onEditChange: (draft: { status: string }) => void;
-  onGenerateDraft: () => void;
-  onApplyDraft: () => void;
-  onCreatePr: () => void;
-  onRebase: () => void;
-  onAbortRebase: () => void;
-  onResolve: (strategy: string) => void;
-  onAiCoding: () => void;
-  onVibeCoding: () => void;
-  diffTree?: db.GitDiffFile[];
-  diffTreeOpen?: boolean;
-  diffTreeBusy?: boolean;
-  onToggleDiffTree: () => void;
-  onOpenHunk: (file: db.GitDiffFile) => void;
+const STAGE_PCT: Record<db.ProjectJourneyStage, number> = {
+  idea: 5,
+  discussing: 35,
+  ready: 70,
+  building: 85,
+  archived: 100,
 };
-
-function ProjectCardBody({
-  project,
-  gitCtx,
-  draft,
-  projectEdit,
-  projectEditResult,
-  commitResult,
-  commitError,
-  prResult,
-  prError,
-  rebaseResult,
-  rebaseError,
-  resolveResult,
-  confirmDelete,
-  onSaveEdit,
-  onRequestDelete,
-  onDelete,
-  onCancelDelete,
-  onEditChange,
-  onGenerateDraft,
-  onApplyDraft,
-  onCreatePr,
-  onRebase,
-  onAbortRebase,
-  onResolve,
-  onAiCoding,
-  onVibeCoding,
-  diffTree,
-  diffTreeOpen,
-  diffTreeBusy,
-  onToggleDiffTree,
-  onOpenHunk,
-}: ProjectCardBodyProps) {
-  return (
-    <div className="flex min-w-0 flex-col">
-      <div className="mb-3 grid grid-cols-2 gap-2">
-        <StatPill label="Status" value={project.status} />
-      </div>
-      <div
-        data-project-edit={project.id}
-        className="mb-3 rounded-xl border border-white/10 bg-white/[0.02] p-2"
-      >
-        <div className="mb-1.5 text-[9px] uppercase tracking-normal text-slate-500">
-          Project settings
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <select
-            data-project-status={project.id}
-            value={projectEdit?.status ?? project.status}
-            onChange={(e) =>
-              onEditChange({
-                status: e.target.value,
-              })
-            }
-            className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
-          >
-            <option value="active">active</option>
-            <option value="paused">paused</option>
-          </select>
-          <button
-            type="button"
-            data-project-save={project.id}
-            onClick={onSaveEdit}
-            disabled={!projectEdit}
-            className="flex h-7 items-center gap-1 rounded-lg bg-emerald-500/15 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Check size={11} /> Save
-          </button>
-          {projectEditResult && (
-            <span
-              data-project-edit-result={project.id}
-              className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
-            >
-              {projectEditResult}
-            </span>
-          )}
-          {confirmDelete ? (
-            <span className="flex items-center gap-1 rounded-lg border border-rose-500/20 bg-rose-500/10 px-1 py-0.5">
-              <button
-                type="button"
-                data-project-delete-confirm={project.id}
-                onClick={onDelete}
-                className="h-6 rounded-md bg-rose-500/25 px-2 text-[9px] text-rose-200 hover:bg-rose-500/35"
-              >
-                Confirm
-              </button>
-              <button
-                type="button"
-                data-project-delete-cancel={project.id}
-                onClick={onCancelDelete}
-                className="h-6 rounded-md border border-white/10 px-2 text-[9px] text-slate-500 hover:text-slate-300"
-              >
-                Cancel
-              </button>
-            </span>
-          ) : (
-            <button
-              type="button"
-              data-project-delete={project.id}
-              onClick={onRequestDelete}
-              className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-400 hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300"
-            >
-              <Trash2 size={11} /> Delete
-            </button>
-          )}
-        </div>
-      </div>
-      <p className="mb-3 truncate text-[11px] text-slate-500">{project.path || 'No local path'}</p>
-      {gitCtx && (
-        <div className="project-git-graph mb-3 rounded-xl border border-white/10 bg-black/20 p-2.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <ModelBadge label={gitCtx.branch} tone="blue" />
-            <span className="text-[10px] text-slate-500">{gitCtx.commitCount} commits</span>
-            <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-500">
-              <GitBranch size={9} /> {gitCtx.head}
-            </span>
-          </div>
-          <div className="mt-2 flex items-center gap-2">
-            <div className="flex items-center gap-1">
-              <span className="accent-dot accent-dot-ring h-2 w-2 rounded-full ring-2" />
-              <span className="h-px w-3 bg-white/15" />
-              <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/20" />
-            </div>
-            <span className="truncate text-[10px] text-slate-400">{gitCtx.latestCommit}</span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {gitCtx.changes.slice(0, 3).map((file) => (
-              <span
-                key={file}
-                className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500"
-              >
-                {file}
-              </span>
-            ))}
-          </div>
-          {gitCtx.changes.length > 0 && (
-            <button
-              type="button"
-              data-diff-fold-toggle={project.id}
-              onClick={onToggleDiffTree}
-              className="mt-2 flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
-            >
-              {gitCtx.changes.length} files changed {diffTreeOpen ? '▴' : '▾'}
-            </button>
-          )}
-          {diffTreeOpen && (
-            <div data-diff-fold-tree={project.id} className="mt-1.5 space-y-0.5">
-              {diffTreeBusy && !diffTree ? (
-                <div className="py-2 text-center text-[9px] text-slate-600">加载变动树…</div>
-              ) : (
-                (diffTree ?? []).map((f) => (
-                  <button
-                    key={f.path}
-                    type="button"
-                    data-diff-file={f.path}
-                    data-diff-file-status={f.status}
-                    onClick={() => onOpenHunk(f)}
-                    className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[9px] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{f.path}</span>
-                    <span className="shrink-0 rounded bg-emerald-500/10 px-1 text-[8px] text-emerald-300">
-                      +{f.insertions}
-                    </span>
-                    <span className="shrink-0 rounded bg-rose-500/10 px-1 text-[8px] text-rose-300">
-                      -{f.deletions}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              aria-label="Rebase onto main"
-              data-rebase-branch
-              onClick={onRebase}
-              className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
-            >
-              <RefreshCw size={9} /> Rebase onto main
-            </button>
-            {rebaseResult && (
-              <span
-                data-rebase-result
-                className={`rounded-md border px-1.5 py-0.5 text-[9px] ${
-                  rebaseResult.conflict
-                    ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                    : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                }`}
-              >
-                {rebaseResult.conflict
-                  ? `Conflicts: ${rebaseResult.files.join(', ') || 'unknown files'}`
-                  : `Rebased ${rebaseResult.branch} onto ${rebaseResult.base} (${rebaseResult.head})`}
-              </span>
-            )}
-            {rebaseResult?.conflict && (
-              <>
-                <button
-                  type="button"
-                  aria-label="Resolve conflicts with ours"
-                  data-resolve-conflicts="ours"
-                  onClick={() => onResolve('ours')}
-                  className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
-                >
-                  <GitBranch size={9} /> Take feature
-                </button>
-                <button
-                  type="button"
-                  aria-label="Resolve conflicts with theirs"
-                  data-resolve-conflicts="theirs"
-                  onClick={() => onResolve('theirs')}
-                  className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
-                >
-                  <RefreshCw size={9} /> Take main
-                </button>
-                <button
-                  type="button"
-                  aria-label="Resolve conflicts with union"
-                  data-resolve-conflicts="union"
-                  onClick={() => onResolve('union')}
-                  className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
-                >
-                  <GitMerge size={9} /> Union merge
-                </button>
-                <button
-                  type="button"
-                  aria-label="Abort rebase"
-                  data-abort-rebase
-                  onClick={onAbortRebase}
-                  className="flex h-6 items-center gap-1 rounded-md bg-rose-500/15 px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/25"
-                >
-                  <Undo2 size={9} /> Abort rebase
-                </button>
-              </>
-            )}
-            {resolveResult && (
-              <span
-                data-resolve-result
-                className={`rounded-md border px-1.5 py-0.5 text-[9px] ${
-                  resolveResult.rebased
-                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                    : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                }`}
-              >
-                {resolveResult.message}
-              </span>
-            )}
-            {rebaseError && (
-              <span
-                data-rebase-error
-                className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-0.5 text-[9px] text-rose-300/90"
-              >
-                {rebaseError}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-      {draft && (
-        <div className="commit-pr-draft mb-3 rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-2.5">
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <span className="text-[10px] font-medium text-violet-300">Commit / PR draft</span>
-            <span className="rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
-              {draft.branch}
-            </span>
-          </div>
-          <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-2 text-[10px] leading-relaxed text-emerald-300/90">
-            {draft.commitMessage}
-          </pre>
-          <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-2 text-[10px] leading-relaxed text-slate-400">
-            {draft.prBody}
-          </pre>
-          <div className="mt-1.5 flex gap-1.5">
-            <button
-              type="button"
-              aria-label="Copy commit message"
-              onClick={() => void navigator.clipboard?.writeText(draft.commitMessage)}
-              className="flex h-6 items-center gap-1 rounded-md bg-violet-500/15 px-1.5 text-[9px] text-violet-300 hover:bg-violet-500/25"
-            >
-              <Copy size={9} /> Copy commit
-            </button>
-            <button
-              type="button"
-              aria-label="Copy PR body"
-              onClick={() => void navigator.clipboard?.writeText(draft.prBody)}
-              className="flex h-6 items-center gap-1 rounded-md bg-white/5 px-1.5 text-[9px] text-slate-400 hover:text-slate-200"
-            >
-              <Copy size={9} /> Copy PR
-            </button>
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              aria-label="Apply commit"
-              data-apply-commit
-              onClick={onApplyDraft}
-              className="flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25"
-            >
-              <Check size={9} /> Commit changes
-            </button>
-            <button
-              type="button"
-              aria-label="Create remote PR"
-              data-create-pr
-              onClick={onCreatePr}
-              className="flex h-6 items-center gap-1 rounded-md accent-bg-15 px-1.5 text-[9px] accent-text-strong accent-hover-bg-25"
-            >
-              <ExternalLink size={9} /> Create PR
-            </button>
-          </div>
-          {commitResult && (
-            <div
-              data-commit-result
-              className="mt-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/[0.06] px-1.5 py-1 text-[9px] text-emerald-300/90"
-            >
-              {commitResult.committed
-                ? `Committed ${commitResult.hash} on ${commitResult.branch}`
-                : `Nothing to commit on ${commitResult.branch}`}
-            </div>
-          )}
-          {commitError && (
-            <div
-              data-commit-error
-              className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90"
-            >
-              {commitError}
-            </div>
-          )}
-          {prResult && (
-            <div
-              data-pr-result
-              className="mt-1.5 truncate rounded-md accent-border-20 accent-bg-6 px-1.5 py-1 text-[9px] accent-text-strong"
-            >
-              {prResult.url ? (
-                <a href={prResult.url ?? undefined} target="_blank" rel="noreferrer">
-                  {prResult.url}
-                </a>
-              ) : (
-                `PR created on ${prResult.branch}`
-              )}
-            </div>
-          )}
-          {prError && (
-            <div
-              data-pr-error
-              className="mt-1.5 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-1.5 py-1 text-[9px] text-rose-300/90"
-            >
-              {prError}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onAiCoding}
-          className="flex h-8 items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 text-[11px] text-emerald-400 hover:bg-emerald-500/20"
-        >
-          AI Coding
-        </button>
-        <button
-          type="button"
-          data-project-vibe={project.id}
-          onClick={onVibeCoding}
-          className="flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/30"
-        >
-          <Wand2 size={12} /> 进入 Vibe Coding
-        </button>
-        <button
-          type="button"
-          aria-label="Generate commit PR draft"
-          onClick={onGenerateDraft}
-          className="flex h-8 items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 text-[11px] text-violet-300 hover:bg-violet-500/20"
-        >
-          Commit/PR draft
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export default function ProjectsView() {
   const projects = useWorkbenchStore((s) => s.projects);
-  const allTasks = useWorkbenchStore((s) => s.tasks);
+  const tasks = useWorkbenchStore((s) => s.tasks);
+  const thoughts = useWorkbenchStore((s) => s.thoughts);
+  const vibeContext = useWorkbenchStore((s) => s.vibeContext);
   const addProject = useWorkbenchStore((s) => s.addProject);
-  const updateProject = useWorkbenchStore((s) => s.updateProject);
-  const deleteProject = useWorkbenchStore((s) => s.deleteProject);
-  const openInspector = useWorkbenchStore((s) => s.openInspector);
+  const updateProjectJourney = useWorkbenchStore((s) => s.updateProjectJourney);
   const setVibeContext = useWorkbenchStore((s) => s.setVibeContext);
   const setActiveView = useWorkbenchStore((s) => s.setActiveView);
+  const addThought = useWorkbenchStore((s) => s.addThought);
+  const deleteProject = useWorkbenchStore((s) => s.deleteProject);
+  const openCli = usePrismModals((s) => s.openCli);
+  const openAttach = usePrismModals((s) => s.openAttach);
+
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
-  const [gitCtx, setGitCtx] = useState<Record<string, db.GitContext>>({});
-  const [diffTrees, setDiffTrees] = useState<Record<string, db.GitDiffFile[]>>({});
-  const [diffTreeOpen, setDiffTreeOpen] = useState<Record<string, boolean>>({});
-  const [diffTreeBusy, setDiffTreeBusy] = useState<Record<string, boolean>>({});
-  const [hunkDrawer, setHunkDrawer] = useState<{
-    projectId: string;
-    file: db.GitDiffFile;
-    patch: string;
-  } | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, db.CommitPrDraft>>({});
-  const [commitResults, setCommitResults] = useState<Record<string, db.GitCommitResult>>({});
-  const [prResults, setPrResults] = useState<Record<string, db.RemotePrResult>>({});
-  const [commitErrors, setCommitErrors] = useState<Record<string, string>>({});
-  const [prErrors, setPrErrors] = useState<Record<string, string>>({});
-  const [rebaseResults, setRebaseResults] = useState<Record<string, db.GitRebaseResult>>({});
-  const [rebaseErrors, setRebaseErrors] = useState<Record<string, string>>({});
-  const [resolveResults, setResolveResults] = useState<Record<string, db.ConflictResolutionResult>>(
-    {},
-  );
-  const [gitActivity, setGitActivity] = useState<db.GitActivityBoard | null>(null);
-  const [gitRange, setGitRange] = useState('all');
-  const [gitCommitter, setGitCommitter] = useState('');
-  const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
-  const [gitDiffs, setGitDiffs] = useState<Record<string, db.GitFileDiff>>({});
-  const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
-  const [sideBySide, setSideBySide] = useState<Record<string, boolean>>({});
-  const [fileVersions, setFileVersions] = useState<Record<string, db.GitFileVersions>>({});
-  const [loadingVersions, setLoadingVersions] = useState<Record<string, boolean>>({});
-  const [batchDiff, setBatchDiff] = useState<{
-    projectId: string;
-    content: string;
-  } | null>(null);
-  const [batchLoading, setBatchLoading] = useState(false);
-  const [selectedFiles, setSelectedFiles] = useState<Record<string, string[]>>({});
-  const [lintGate, setLintGate] = useState<Record<string, { issues: db.GitLintIssue[] }>>({});
-  const [projectEdits, setProjectEdits] = useState<Record<string, { status: string }>>({});
-  const [projectEditResults, setProjectEditResults] = useState<Record<string, string>>({});
-  const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useViewState<'grid' | 'carousel'>('projects', 'viewMode', 'grid');
-  const [detailProjectId, setDetailProjectId] = useViewState<string | null>(
-    'projects',
-    'detailProjectId',
-    null,
-  );
-  const projectKey = projects.map((p) => `${p.id}:${p.path}`).join('|');
-  const commitTrendMax = gitActivity
-    ? Math.max(1, ...gitActivity.commitTrend.buckets.map((bucket) => bucket.count))
-    : 1;
-
-  const toggleGitDiff = (projectId: string, projectPath: string, file: string) => {
-    const key = `${projectId}:${file}`;
-    if (gitDiffs[key]) {
-      setGitDiffs((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-      return;
-    }
-    if (loadingDiffs[key]) return;
-    setLoadingDiffs((prev) => ({ ...prev, [key]: true }));
-    void db.getGitFileDiff(projectPath, file).then((diff) => {
-      setGitDiffs((prev) => ({ ...prev, [key]: diff }));
-      setLoadingDiffs((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    });
-  };
-
-  const toggleSideBySide = (projectId: string, projectPath: string, file: string) => {
-    const key = `${projectId}:${file}`;
-    setSideBySide((prev) => ({ ...prev, [key]: !prev[key] }));
-    if (!fileVersions[key] && !loadingVersions[key]) {
-      setLoadingVersions((prev) => ({ ...prev, [key]: true }));
-      void db.getGitFileVersions(projectPath, file).then((versions) => {
-        setFileVersions((prev) => ({ ...prev, [key]: versions }));
-        setLoadingVersions((prev) => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
-      });
-    }
-  };
-
-  const loadBatchPreview = async (projectId: string, projectPath: string, files: string[]) => {
-    if (batchLoading) return;
-    if (batchDiff?.projectId === projectId) {
-      setBatchDiff(null);
-      return;
-    }
-    setBatchLoading(true);
-    const parts: string[] = [];
-    for (const file of files) {
-      try {
-        const diff = await db.getGitFileDiff(projectPath, file);
-        parts.push(`# ${file}${diff.status ? ` (${diff.status})` : ''}\n${diff.diff}`);
-      } catch {
-        parts.push(`# ${file}\n(error reading diff)`);
-      }
-    }
-    setBatchDiff({ projectId, content: parts.join('\n\n') });
-    setBatchLoading(false);
-  };
-
-  const toggleSelectFile = (projectId: string, file: string) => {
-    setSelectedFiles((prev) => {
-      const current = prev[projectId] ?? [];
-      const next = current.includes(file) ? current.filter((f) => f !== file) : [...current, file];
-      return { ...prev, [projectId]: next };
-    });
-  };
-
-  const commitSelected = async (item: db.GitActivityItem) => {
-    const files = selectedFiles[item.projectId] ?? [];
-    if (files.length === 0) return;
-    try {
-      const issues = await db.runCommitLintGate(item.path, files);
-      if (issues.length > 0) {
-        setLintGate((prev) => ({ ...prev, [item.projectId]: { issues } }));
-        setCommitResults((prev) => {
-          const next = { ...prev };
-          delete next[item.projectId];
-          return next;
-        });
-        return;
-      }
-      setLintGate((prev) => {
-        const next = { ...prev };
-        delete next[item.projectId];
-        return next;
-      });
-      let draft = drafts[item.projectId];
-      if (!draft) {
-        draft = await db.generateCommitPrDraft(item.path, item.projectName);
-        setDrafts((prev) => ({ ...prev, [item.projectId]: draft }));
-      }
-      const result = await db.commitGitFiles(item.path, files, draft.commitMessage);
-      setCommitResults((prev) => ({ ...prev, [item.projectId]: result }));
-      setCommitErrors((prev) => {
-        const next = { ...prev };
-        delete next[item.projectId];
-        return next;
-      });
-      setSelectedFiles((prev) => ({ ...prev, [item.projectId]: [] }));
-      setBatchDiff((prev) => (prev?.projectId === item.projectId ? null : prev));
-      const board = await db.getGitActivity({});
-      setGitActivity(board);
-    } catch (error) {
-      setCommitErrors((prev) => ({
-        ...prev,
-        [item.projectId]: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  };
-
-  useEffect(() => {
-    let disposed = false;
-    const range = GIT_RANGES.find((r) => r.value === gitRange);
-    const sinceMs = range && range.ms > 0 ? Date.now() - range.ms : undefined;
-    void db.getGitActivity({ sinceMs, committer: gitCommitter || undefined }).then((board) => {
-      if (!disposed) setGitActivity(board);
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [gitRange, gitCommitter, projectKey]);
-
-  useEffect(() => {
-    let disposed = false;
-    void Promise.all(
-      projects
-        .filter((p) => p.path)
-        .map(async (p) => [p.id, await db.getProjectGitContext(p.path ?? '')] as const),
-    ).then((entries) => {
-      if (!disposed) setGitCtx(Object.fromEntries(entries));
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [projectKey, projects]);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -718,742 +38,326 @@ export default function ProjectsView() {
     setPath('');
   };
 
-  const saveProjectEdit = async (project: db.Project) => {
-    const draft = projectEdits[project.id];
-    if (!draft) return;
-    await updateProject(project.id, draft.status, 0);
-    setProjectEditResults((prev) => ({ ...prev, [project.id]: 'Saved' }));
-    setProjectEdits((prev) => {
-      const next = { ...prev };
-      delete next[project.id];
-      return next;
-    });
+  const documentedFor = (project: db.Project) =>
+    (project.material?.trim().length ?? 0) > 0 ||
+    thoughts.some((t) => t.tags.includes(project.id) || (t.content || '').includes(project.name));
+
+  const pendingTasksFor = (projectId: string) =>
+    tasks.filter((t) => t.projectId === projectId && t.status !== 'done');
+
+  const doneTasksFor = (projectId: string) =>
+    tasks.filter((t) => t.projectId === projectId && t.status === 'done');
+
+  const progressFor = (project: db.Project) => {
+    const done = doneTasksFor(project.id).length;
+    const pending = pendingTasksFor(project.id).length;
+    if (done + pending > 0) return Math.round((done / (done + pending)) * 100);
+    return STAGE_PCT[project.journeyStage];
   };
 
-  const deleteProjectRow = async (project: db.Project) => {
-    await deleteProject(project.id, true);
-    setConfirmDeleteProjectId(null);
-    setProjectEdits((prev) => {
-      const next = { ...prev };
-      delete next[project.id];
-      return next;
-    });
-    setProjectEditResults((prev) => {
-      const next = { ...prev };
-      delete next[project.id];
-      return next;
-    });
-  };
-
-  const aiCoding = async (project: db.Project) => {
-    const ctx = await db.getProjectGitContext(project.path ?? '');
-    openInspector('AI Coding', [
-      { label: 'Project', value: project.name },
-      { label: 'HEAD', value: ctx.head },
-      { label: 'Modified files', value: ctx.changes.join('\n') || 'none' },
-    ]);
-  };
-
-  const vibeCoding = async (project: db.Project) => {
-    const ctx = await db.getProjectGitContext(project.path ?? '');
-    setVibeContext({
-      projectId: project.id,
-      projectName: project.name,
-      path: project.path ?? '',
-      branch: ctx.branch,
-      head: ctx.head,
-      commitCount: ctx.commitCount,
-      latestCommit: ctx.latestCommit,
-      changes: ctx.changes,
-      mountedAt: Date.now(),
-    });
-    setActiveView('ai-studio');
-  };
-
-  const toggleDiffTree = async (project: db.Project) => {
-    if (diffTreeOpen[project.id]) {
-      setDiffTreeOpen((prev) => ({ ...prev, [project.id]: false }));
+  const mountProject = async (project: db.Project) => {
+    if (!project.path?.trim()) {
+      toast.error('该项目未绑定本地路径，无法挂载');
       return;
     }
-    setDiffTreeOpen((prev) => ({ ...prev, [project.id]: true }));
-    if (!diffTrees[project.id]) {
-      setDiffTreeBusy((prev) => ({ ...prev, [project.id]: true }));
-      try {
-        const tree = await db.getProjectDiffTree(project.path ?? '');
-        setDiffTrees((prev) => ({ ...prev, [project.id]: tree }));
-      } finally {
-        setDiffTreeBusy((prev) => ({ ...prev, [project.id]: false }));
-      }
-    }
-  };
-
-  const openHunk = async (project: db.Project, file: db.GitDiffFile) => {
     try {
-      const patch = await db.getFileHunkPatch(project.path ?? '', file.path);
-      setHunkDrawer({ projectId: project.id, file, patch: patch.diff });
-    } catch {
-      setHunkDrawer({ projectId: project.id, file, patch: file.hunkPreview });
+      const ctx = await db.getProjectGitContext(project.path);
+      setVibeContext({
+        projectId: project.id,
+        projectName: project.name,
+        path: project.path,
+        branch: ctx.branch,
+        head: ctx.head,
+        commitCount: ctx.commitCount,
+        latestCommit: ctx.latestCommit,
+        changes: ctx.changes,
+        mountedAt: Date.now(),
+      });
+      setActiveView('ai-studio');
+      toast.success(`已挂载「${project.name}」，Studio 将自动检索关联旅程`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const generateDraft = async (project: db.Project) => {
-    const draft = await db.generateCommitPrDraft(project.path ?? '', project.name);
-    setDrafts((prev) => ({ ...prev, [project.id]: draft }));
+  const archiveProject = async (project: db.Project) => {
+    const doneTasks = doneTasksFor(project.id);
+    const pending = pendingTasksFor(project.id);
+    const runs = db.listCliRuns();
+    const successRuns = runs.filter((r) => r.exitCode === 0).length;
+    const summary = [
+      '# 📚 项目旅程归档',
+      '',
+      `**项目**：${project.name}`,
+      `**归档阶段**：${project.journeyStage} → archived`,
+      `**旅程文档**：${project.journeyDocPath || '未生成'}`,
+      '',
+      '## 交付总结',
+      `- 已完成 DoD：${doneTasks.length} 项`,
+      `- 待完成：${pending.length} 项`,
+      `- CLI 运行记录：${runs.length} 次（成功 ${successRuns} 次）`,
+      '',
+      '## 归档结论',
+      `项目「${project.name}」已手动归档，可在 Knowledge 检索并重新打开。`,
+    ].join('\n');
+    await addThought(summary, `#prism,#journey,#archived,#project-${project.id}`, 'doc');
+    await updateProjectJourney(project.id, 'archived', project.journeyDocPath);
+    toast.success(`已归档「${project.name}」到 Knowledge`);
   };
 
-  const applyDraft = async (project: db.Project) => {
-    const draft = drafts[project.id];
-    if (!draft) return;
-    try {
-      const result = await db.applyCommit(project.path ?? '', draft.commitMessage);
-      setCommitResults((prev) => ({ ...prev, [project.id]: result }));
-      setCommitErrors((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      const ctx = await db.getProjectGitContext(project.path ?? '');
-      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
-    } catch (error) {
-      setCommitErrors((prev) => ({
-        ...prev,
-        [project.id]: error instanceof Error ? error.message : String(error),
-      }));
-    }
+  const reopenProject = async (project: db.Project) => {
+    await updateProjectJourney(project.id, 'ready', project.journeyDocPath);
+    toast.success(`已重新打开「${project.name}」`);
   };
 
-  const createPr = async (project: db.Project) => {
-    const draft = drafts[project.id];
-    if (!draft) return;
-    try {
-      const result = await db.createRemotePr(project.path ?? '', draft.prTitle, draft.prBody);
-      setPrResults((prev) => ({ ...prev, [project.id]: result }));
-      setPrErrors((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-    } catch (error) {
-      setPrErrors((prev) => ({
-        ...prev,
-        [project.id]: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  };
-
-  const rebaseProject = async (project: db.Project) => {
-    try {
-      const result = await db.rebaseBranch(project.path ?? '', 'main');
-      setRebaseResults((prev) => ({ ...prev, [project.id]: result }));
-      setRebaseErrors((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      const ctx = await db.getProjectGitContext(project.path ?? '');
-      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
-    } catch (error) {
-      setRebaseErrors((prev) => ({
-        ...prev,
-        [project.id]: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  };
-
-  const abortProjectRebase = async (project: db.Project) => {
-    try {
-      await db.abortRebase(project.path ?? '');
-      setRebaseResults((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      setRebaseErrors((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      const ctx = await db.getProjectGitContext(project.path ?? '');
-      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
-    } catch (error) {
-      setRebaseErrors((prev) => ({
-        ...prev,
-        [project.id]: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  };
-
-  const resolveConflicts = async (project: db.Project, strategy: string) => {
-    try {
-      const result = await db.resolveRebaseConflicts(project.path ?? '', strategy);
-      setResolveResults((prev) => ({ ...prev, [project.id]: result }));
-      setRebaseResults((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      setRebaseErrors((prev) => {
-        const next = { ...prev };
-        delete next[project.id];
-        return next;
-      });
-      const ctx = await db.getProjectGitContext(project.path ?? '');
-      setGitCtx((prev) => ({ ...prev, [project.id]: ctx }));
-    } catch (error) {
-      setRebaseErrors((prev) => ({
-        ...prev,
-        [project.id]: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  };
-
-  const renderGitFiles = (item: db.GitActivityItem) => {
-    const groups =
-      item.changeGroups.length > 0
-        ? item.changeGroups
-        : item.changedPaths.map((path) => ({
-            path,
-            status: '',
-            group: 'unstaged' as const,
-          }));
-    return GIT_CHANGE_GROUPS.flatMap((meta) => {
-      const files = groups.filter((entry) => entry.group === meta.key);
-      if (files.length === 0) return [];
-      return [
-        <div key={meta.key} className="flex flex-col gap-1">
-          <div
-            data-git-change-group-header={meta.key}
-            className="rounded bg-white/[0.03] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.08em] text-slate-500"
-          >
-            {meta.label} · {files.length}
-          </div>
-          {files.map((entry) => (
-            <div
-              key={entry.path}
-              data-git-file={entry.path}
-              data-git-change-group={entry.group}
-              className="flex min-w-0 flex-col gap-1"
-            >
-              <div className="flex min-w-0 items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  data-git-select-file={entry.path}
-                  checked={(selectedFiles[item.projectId] ?? []).includes(entry.path)}
-                  onChange={() => toggleSelectFile(item.projectId, entry.path)}
-                  aria-label={`Select ${entry.path}`}
-                  className="h-3 w-3 shrink-0 accent-emerald-500"
-                />
-                <span className="min-w-0 flex-1 truncate rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500">
-                  {entry.path}
-                </span>
-                <button
-                  type="button"
-                  data-git-diff-toggle={entry.path}
-                  onClick={() => toggleGitDiff(item.projectId, item.path, entry.path)}
-                  className="shrink-0 rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
-                >
-                  {loadingDiffs[`${item.projectId}:${entry.path}`]
-                    ? 'Loading'
-                    : gitDiffs[`${item.projectId}:${entry.path}`]
-                      ? 'Hide diff'
-                      : 'Diff'}
-                </button>
-              </div>
-              {gitDiffs[`${item.projectId}:${entry.path}`] && (
-                <div
-                  data-git-diff-content={entry.path}
-                  data-git-diff-status={gitDiffs[`${item.projectId}:${entry.path}`].status}
-                  className="rounded-lg border border-white/10 bg-black/30"
-                >
-                  <div className="flex items-center gap-2 border-b border-white/10 px-2 py-1">
-                    <span className="text-[8px] uppercase tracking-normal text-slate-500">
-                      diff
-                    </span>
-                    <button
-                      type="button"
-                      data-git-side-by-side-toggle={entry.path}
-                      onClick={() => toggleSideBySide(item.projectId, item.path, entry.path)}
-                      className="ml-auto rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
-                    >
-                      {sideBySide[`${item.projectId}:${entry.path}`] ? 'Inline' : 'Side by side'}
-                    </button>
-                  </div>
-                  {sideBySide[`${item.projectId}:${entry.path}`] ? (
-                    loadingVersions[`${item.projectId}:${entry.path}`] ? (
-                      <div className="px-2 py-1 text-[9px] text-slate-500">Loading versions...</div>
-                    ) : fileVersions[`${item.projectId}:${entry.path}`] ? (
-                      <div
-                        data-git-side-by-side={entry.path}
-                        className="grid grid-cols-2 gap-2 p-2"
-                      >
-                        <FileVersionPane
-                          title="HEAD"
-                          dataKey="old"
-                          content={fileVersions[`${item.projectId}:${entry.path}`].oldContent}
-                          language={detectLanguage(entry.path)}
-                        />
-                        <FileVersionPane
-                          title="Working tree"
-                          dataKey="new"
-                          content={fileVersions[`${item.projectId}:${entry.path}`].newContent}
-                          language={detectLanguage(entry.path)}
-                        />
-                      </div>
-                    ) : null
-                  ) : (
-                    <div
-                      data-git-diff-lines={entry.path}
-                      className="max-h-40 overflow-auto px-2 py-1.5"
-                    >
-                      {parseDiffLines(gitDiffs[`${item.projectId}:${entry.path}`].diff).map(
-                        (line, index) => (
-                          <div
-                            key={index}
-                            data-git-diff-line={entry.path}
-                            data-git-diff-line-type={line.kind}
-                            className={`whitespace-pre-wrap rounded px-1 text-[9px] leading-relaxed ${diffLineClass(line.kind)}`}
-                          >
-                            {highlightLine(line.text, detectLanguage(entry.path))}
-                          </div>
-                        ),
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>,
-      ];
-    });
-  };
-
-  const projectCardBody = (project: db.Project) => (
-    <ProjectCardBody
-      project={project}
-      gitCtx={gitCtx[project.id]}
-      draft={drafts[project.id]}
-      projectEdit={projectEdits[project.id]}
-      projectEditResult={projectEditResults[project.id]}
-      commitResult={commitResults[project.id]}
-      commitError={commitErrors[project.id]}
-      prResult={prResults[project.id]}
-      prError={prErrors[project.id]}
-      rebaseResult={rebaseResults[project.id]}
-      rebaseError={rebaseErrors[project.id]}
-      resolveResult={resolveResults[project.id]}
-      confirmDelete={confirmDeleteProjectId === project.id}
-      onSaveEdit={() => void saveProjectEdit(project)}
-      onRequestDelete={() => setConfirmDeleteProjectId(project.id)}
-      onDelete={() => void deleteProjectRow(project)}
-      onCancelDelete={() => setConfirmDeleteProjectId(null)}
-      onEditChange={(draft) => setProjectEdits((prev) => ({ ...prev, [project.id]: draft }))}
-      onGenerateDraft={() => void generateDraft(project)}
-      onApplyDraft={() => void applyDraft(project)}
-      onCreatePr={() => void createPr(project)}
-      onRebase={() => void rebaseProject(project)}
-      onAbortRebase={() => void abortProjectRebase(project)}
-      onResolve={(strategy) => void resolveConflicts(project, strategy)}
-      onAiCoding={() => void aiCoding(project)}
-      onVibeCoding={() => void vibeCoding(project)}
-      diffTree={diffTrees[project.id]}
-      diffTreeOpen={diffTreeOpen[project.id]}
-      diffTreeBusy={diffTreeBusy[project.id]}
-      onToggleDiffTree={() => void toggleDiffTree(project)}
-      onOpenHunk={(file) => void openHunk(project, file)}
-    />
-  );
-
-  const detailProject = detailProjectId
-    ? projects.find((p) => p.id === detailProjectId)
-    : undefined;
+  const changes = vibeContext?.changes ?? [];
+  const stagedCount = changes.filter((c) => /^[MADR]/.test(c.trim())).length;
+  const untrackedCount = changes.filter((c) => c.trim().startsWith('?')).length;
+  const unstagedCount = Math.max(0, changes.length - stagedCount - untrackedCount);
 
   return (
-    <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
-      {hunkDrawer && (
-        <div className="fixed inset-0 z-40 flex justify-end">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setHunkDrawer(null)}
-            aria-hidden="true"
-          />
-          <aside
-            data-hunk-drawer
-            className="relative h-full w-[420px] max-w-[94vw] border-l border-white/10 bg-[#16161A] shadow-2xl"
-          >
-            <div className="flex h-12 items-center justify-between border-b border-white/10 px-3">
-              <span className="truncate font-mono text-[10px] text-slate-400">
-                {hunkDrawer.file.path}
-              </span>
-              <button
-                type="button"
-                data-hunk-drawer-close
-                onClick={() => setHunkDrawer(null)}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-white/[0.06] hover:text-slate-200"
-                aria-label="Close hunk drawer"
-              >
-                <X size={13} />
-              </button>
-            </div>
-            <div className="p-3">
-              <div className="mb-2 flex items-center gap-1.5">
-                <span
-                  data-hunk-status={hunkDrawer.file.status}
-                  className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400"
-                >
-                  {hunkDrawer.file.status}
-                </span>
-                <span className="rounded bg-emerald-500/10 px-1 text-[8px] text-emerald-300">
-                  +{hunkDrawer.file.insertions}
-                </span>
-                <span className="rounded bg-rose-500/10 px-1 text-[8px] text-rose-300">
-                  -{hunkDrawer.file.deletions}
-                </span>
-              </div>
-              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/[0.06] bg-[#0d0d11] p-3 font-mono text-[10px] leading-relaxed text-slate-300">
-                {hunkDrawer.patch || hunkDrawer.file.hunkPreview || '（无 diff 内容）'}
-              </pre>
-            </div>
-          </aside>
-        </div>
-      )}
-      <div className="col-span-12 flex justify-end">
-        <MockBadge />
+    <div className="mission-view space-y-4 p-4 sm:p-5 lg:space-y-5">
+      <div className="pc-section-head">
+        <span className="pc-section-code">SYS.02 / IDEAS &amp; SCOPES</span>
+        <span className="pc-section-title">项目矩阵</span>
+        <span className="pc-section-meta">
+          SCOPE-LOCKED · {projects.filter((p) => p.journeyStage !== 'archived').length} 个活动旅程
+        </span>
       </div>
 
-      <BentoCard title="New project" subtitle="从想法到代码落地" icon={FolderKanban} colSpan={12}>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Project name"
-            className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
-          />
-          <input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="Local path (optional)"
-            className="h-9 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-xs text-slate-200 outline-none focus:border-emerald-500/40 placeholder:text-slate-600"
-          />
-          <button
-            type="button"
-            onClick={() => void create()}
-            className="flex h-9 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-xs font-medium text-emerald-400 hover:bg-emerald-500/30"
-          >
-            <Plus size={14} /> Create
-          </button>
-        </div>
-      </BentoCard>
-
-      {gitActivity && (
-        <BentoCard
-          title="Git activity"
-          subtitle={`${gitActivity.totalProjects} projects`}
-          icon={GitBranch}
-          colSpan={4}
-        >
-          <div data-git-activity className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                data-git-activity-range
-                value={gitRange}
-                onChange={(e) => setGitRange(e.target.value)}
-                className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
-              >
-                {GIT_RANGES.map((range) => (
-                  <option key={range.value} value={range.value}>
-                    {range.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                data-git-activity-committer-select
-                value={gitCommitter}
-                onChange={(e) => setGitCommitter(e.target.value)}
-                className="h-7 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-300 outline-none focus:border-emerald-500/40"
-              >
-                <option value="">All committers</option>
-                {gitActivity.committers.map((committer) => (
-                  <option key={committer} value={committer}>
-                    {committer}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div
-              data-git-activity-total={gitActivity.totalProjects}
-              data-git-activity-commits={gitActivity.totalCommits}
-              data-git-activity-dirty={gitActivity.dirtyProjects}
-              className="flex flex-wrap items-center gap-2"
+      <div className="pc-project-grid">
+        {projects.map((project) => {
+          const isDocumented = documentedFor(project);
+          const pending = pendingTasksFor(project.id);
+          const progress = progressFor(project);
+          return (
+            <article
+              key={project.id}
+              data-project-card={project.id}
+              className="pc-panel pc-project-card"
             >
-              <StatPill label="Projects" value={String(gitActivity.totalProjects)} />
-              <StatPill label="Commits" value={String(gitActivity.totalCommits)} tone="blue" />
-              <StatPill
-                label="Dirty"
-                value={String(gitActivity.dirtyProjects)}
-                tone={gitActivity.dirtyProjects > 0 ? 'neutral' : 'green'}
-              />
-            </div>
-            <div
-              data-git-activity-trend
-              className="grid grid-cols-7 items-end gap-1.5 rounded-lg bg-white/[0.02] p-2"
-            >
-              {gitActivity.commitTrend.buckets.map((bucket) => (
-                <div key={bucket.dayMs} className="flex min-w-0 flex-col items-center gap-1">
-                  <span
-                    data-git-trend-bar
-                    data-git-trend-bar-count={bucket.count}
-                    data-git-trend-bar-day={bucket.dayMs}
-                    className="block w-full rounded-sm bg-blue-500/30"
-                    style={{
-                      height: `${Math.max(3, Math.round((bucket.count / commitTrendMax) * 28))}px`,
-                    }}
-                  />
-                  <span className="truncate text-[8px] text-slate-600">
-                    {new Date(bucket.dayMs).toLocaleDateString('en', { weekday: 'short' })}
-                  </span>
-                </div>
-              ))}
-            </div>
-            {gitActivity.items.map((item) => (
-              <div
-                key={item.projectId}
-                data-git-activity-project
-                data-git-activity-branch={item.branch}
-                data-git-activity-commits={item.commitCount}
-                data-git-activity-changed={item.changedFiles}
-                data-git-activity-latest={item.latestCommit}
-                data-git-activity-committer={item.committer}
-                data-git-activity-dirty={item.dirty}
-                className="rounded-lg bg-white/[0.03]"
-              >
-                <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                  <span className="text-[10px] font-medium text-slate-300">{item.projectName}</span>
-                  <ModelBadge label={item.branch} tone="blue" />
-                  <span className="rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-400">
-                    {item.committer || 'unknown'}
-                  </span>
-                  <span className="text-[9px] text-slate-500">{item.commitCount} commits</span>
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-[8px] ${
-                      item.dirty
-                        ? 'bg-amber-500/10 text-amber-300'
-                        : 'bg-emerald-500/10 text-emerald-300'
-                    }`}
-                  >
-                    {item.dirty ? 'dirty' : 'clean'}
-                  </span>
-                  {item.dirty && (
-                    <button
-                      type="button"
-                      data-git-activity-preview={item.projectId}
-                      onClick={() =>
-                        setExpandedPreview(
-                          expandedPreview === item.projectId ? null : item.projectId,
-                        )
-                      }
-                      className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
-                    >
-                      {expandedPreview === item.projectId ? 'Hide' : 'Preview'}
-                    </button>
-                  )}
-                  <span className="min-w-0 flex-1 truncate text-[9px] text-slate-400">
-                    {item.latestCommit}
-                  </span>
-                </div>
-                {expandedPreview === item.projectId && item.changedPaths.length > 0 && (
-                  <div
-                    data-git-activity-preview-files={item.projectId}
-                    className="mx-2 mb-2 flex flex-col gap-1.5 rounded-lg bg-black/20 p-2"
-                  >
-                    <div className="flex flex-col gap-1.5">
-                      <button
-                        type="button"
-                        data-git-batch-preview={item.projectId}
-                        onClick={() =>
-                          void loadBatchPreview(item.projectId, item.path, item.changedPaths)
-                        }
-                        className="self-start rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-slate-400 hover:bg-white/[0.08]"
-                      >
-                        {batchLoading
-                          ? 'Loading'
-                          : batchDiff?.projectId === item.projectId
-                            ? 'Hide batch'
-                            : 'Preview all'}
-                      </button>
-                      {batchDiff?.projectId === item.projectId && (
-                        <pre
-                          data-git-batch-preview-content={item.projectId}
-                          className="max-h-44 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 px-2 py-1.5 text-[9px] leading-relaxed text-slate-400"
-                        >
-                          {batchDiff.content}
-                        </pre>
-                      )}
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          data-git-commit-selected={item.projectId}
-                          onClick={() => void commitSelected(item)}
-                          disabled={(selectedFiles[item.projectId] ?? []).length === 0}
-                          className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          Commit selected ({selectedFiles[item.projectId]?.length ?? 0})
-                        </button>
-                        {(commitResults[item.projectId] || commitErrors[item.projectId]) && (
-                          <span
-                            data-git-commit-selected-result={item.projectId}
-                            className={`min-w-0 truncate rounded px-1.5 py-0.5 text-[9px] ${
-                              commitErrors[item.projectId]
-                                ? 'bg-rose-500/10 text-rose-300'
-                                : 'bg-emerald-500/10 text-emerald-300'
-                            }`}
-                          >
-                            {commitErrors[item.projectId]
-                              ? commitErrors[item.projectId]
-                              : commitResults[item.projectId]?.committed
-                                ? `Committed ${commitResults[item.projectId]?.hash} on ${commitResults[item.projectId]?.branch}`
-                                : 'Nothing to commit'}
-                          </span>
-                        )}
-                        {lintGate[item.projectId] && (
-                          <span
-                            data-git-lint-gate={item.projectId}
-                            data-git-lint-gate-issues={lintGate[item.projectId].issues.length}
-                            className="min-w-0 truncate rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] text-rose-300"
-                          >
-                            Lint gate blocked:{' '}
-                            {lintGate[item.projectId].issues
-                              .map((issue) => `${issue.file}:${issue.line} ${issue.message}`)
-                              .join('; ')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {renderGitFiles(item)}
+              <div className="pc-project-top">
+                <div className="min-w-0">
+                  <div className="pc-project-name" data-project-name={project.name}>
+                    {project.name}
                   </div>
+                  <div className="pc-project-path">{project.path || '未绑定路径'}</div>
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                  <select
+                    value={project.journeyStage}
+                    onChange={(e) =>
+                      void updateProjectJourney(
+                        project.id,
+                        e.target.value as db.ProjectJourneyStage,
+                      )
+                    }
+                    data-project-stage={project.journeyStage}
+                    className="h-7 rounded border border-white/10 bg-white/[0.04] px-1.5 text-[10px] text-slate-300 outline-none"
+                  >
+                    <option value="idea">💡 想法池</option>
+                    <option value="discussing">💬 Agency 圆桌论证</option>
+                    <option value="ready">📦 方案定稿</option>
+                    <option value="building">🛠 本地 CLI 实现</option>
+                    <option value="archived">📚 已归档</option>
+                  </select>
+                  <button
+                    type="button"
+                    data-project-delete={project.id}
+                    onClick={() => setDeleteId(deleteId === project.id ? null : project.id)}
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-rose-500/10 hover:text-rose-400"
+                    aria-label="Delete project"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="pc-bar-row">
+                <span>进度</span>
+                <span className="pc-bar-track">
+                  <i style={{ width: `${progress}%` }} />
+                </span>
+                <span>{progress}%</span>
+              </div>
+
+              <div
+                className={isDocumented ? 'pc-coverage' : 'pc-coverage'}
+                style={{ color: isDocumented ? 'var(--color-success)' : undefined }}
+                data-project-coverage={isDocumented ? 'ok' : 'low'}
+              >
+                {isDocumented ? '已文档化' : '⚠️ 建议补充文档 ➔'} · 知识覆盖
+              </div>
+
+              <div className="pc-card-actions">
+                <button
+                  type="button"
+                  data-project-cli={project.id}
+                  onClick={() =>
+                    openCli({
+                      projectName: project.name,
+                      specPath: project.journeyDocPath || undefined,
+                      tasks: pending.slice(0, 3).map((t) => t.title),
+                    })
+                  }
+                  className="pc-mini-btn"
+                >
+                  <Terminal size={12} />
+                  CLI
+                </button>
+                <button
+                  type="button"
+                  data-project-attach={project.id}
+                  onClick={() => openAttach({ taskTitle: project.name })}
+                  className="pc-mini-btn"
+                >
+                  <FolderKanban size={12} />
+                  关联
+                </button>
+                <button
+                  type="button"
+                  data-project-mount={project.id}
+                  onClick={() => void mountProject(project)}
+                  className="pc-mini-btn"
+                >
+                  <Pin size={12} />
+                  挂载
+                </button>
+                {project.journeyStage === 'archived' ? (
+                  <button
+                    type="button"
+                    data-project-reopen={project.id}
+                    onClick={() => void reopenProject(project)}
+                    className="pc-mini-btn"
+                  >
+                    <Archive size={12} />
+                    重新打开
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-project-archive={project.id}
+                    onClick={() => void archiveProject(project)}
+                    className="pc-mini-btn danger"
+                  >
+                    <Archive size={12} />
+                    归档
+                  </button>
                 )}
               </div>
-            ))}
-          </div>
-        </BentoCard>
-      )}
 
-      {detailProject ? (
-        <ProjectDetailView
-          project={detailProject}
-          gitCtx={gitCtx[detailProject.id]}
-          onBack={() => setDetailProjectId(null)}
-        >
-          {projectCardBody(detailProject)}
-        </ProjectDetailView>
-      ) : (
-        <div className="col-span-8 flex flex-col gap-4">
-          <div
-            data-projects-view-toggle
-            data-projects-view-mode={viewMode}
-            className="flex w-fit items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] p-1"
-          >
-            <button
-              type="button"
-              data-projects-view-grid
-              aria-label="Projects grid view"
-              aria-pressed={viewMode === 'grid'}
-              onClick={() => setViewMode('grid')}
-              className="flex h-6 items-center gap-1 rounded-md px-2 text-[9px] text-slate-400 transition-colors hover:text-slate-200 aria-pressed:bg-emerald-500/15 aria-pressed:text-emerald-300"
-            >
-              <LayoutGrid size={10} /> Grid
-            </button>
-            <button
-              type="button"
-              data-projects-view-carousel
-              aria-label="Projects carousel view"
-              aria-pressed={viewMode === 'carousel'}
-              onClick={() => setViewMode('carousel')}
-              className="flex h-6 items-center gap-1 rounded-md px-2 text-[9px] text-slate-400 transition-colors hover:text-slate-200 aria-pressed:bg-emerald-500/15 aria-pressed:text-emerald-300"
-            >
-              <Orbit size={10} /> Carousel
-            </button>
-          </div>
-
-          {viewMode === 'carousel' ? (
-            <BentoCard
-              title="Project carousel"
-              subtitle="Orbit / fan project explorer"
-              icon={Orbit}
-              colSpan={12}
-            >
-              <ProjectCarousel onOpenProject={setDetailProjectId} />
-            </BentoCard>
-          ) : (
-            <div
-              data-projects-grid
-              className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3"
-            >
-              {projects.map((p, i) => {
-                const material = PROJECT_MATERIALS[i % PROJECT_MATERIALS.length];
-                return (
-                  <section
-                    key={p.id}
-                    data-project-card={p.id}
-                    data-project-name={p.name}
-                    data-material={material}
-                    onClick={() => setDetailProjectId(p.id)}
-                    className={`bento-card material-card material-${material} flex min-w-0 cursor-pointer flex-col rounded-2xl border border-white/10 bg-[#18181C] p-4 shadow-xl hover:border-emerald-500/40`}
-                  >
-                    <header className="mb-3 flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h2 className="text-sm font-semibold text-slate-200">{p.name}</h2>
-                        <p className="mt-0.5 text-[11px] text-slate-500">{p.status}</p>
-                        <span
-                          data-project-dod={p.id}
-                          data-project-dod-count={
-                            allTasks.filter(
-                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
-                            ).length
-                          }
-                          className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] ${
-                            allTasks.filter(
-                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
-                            ).length > 0
-                              ? 'bg-amber-500/10 text-amber-300'
-                              : 'bg-white/5 text-slate-600'
-                          }`}
-                        >
-                          🎯 待攻坚 DoD ·{' '}
-                          {
-                            allTasks.filter(
-                              (t) => t.projectId === p.id && t.isDod && t.status !== 'done',
-                            ).length
-                          }
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        data-project-open={p.id}
-                        aria-label={`Open details for ${p.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDetailProjectId(p.id);
-                        }}
-                        className="flex h-6 shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[10px] text-slate-400 transition-colors hover:text-slate-200"
-                      >
-                        Details
-                      </button>
-                    </header>
-                    <div
-                      data-project-interactive
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex min-w-0 flex-col"
+              {deleteId === project.id && (
+                <div className="flex items-center justify-between rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] text-rose-300">
+                  <span>确认删除项目？此操作不可撤销。</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-project-delete-cancel={project.id}
+                      onClick={() => setDeleteId(null)}
+                      className="rounded border border-white/10 px-2 py-1 hover:bg-white/10"
                     >
-                      {projectCardBody(p)}
-                    </div>
-                  </section>
-                );
-              })}
-            </div>
-          )}
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      data-project-delete-confirm={project.id}
+                      onClick={() => void deleteProject(project.id, true)}
+                      className="rounded bg-rose-500/20 px-2 py-1 font-semibold hover:bg-rose-500/30"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+
+      {projects.length === 0 && (
+        <div className="py-16 text-center text-xs text-slate-600">
+          还没有项目，先新建一个开始 PRISM 管线。
         </div>
       )}
+
+      <div className="pc-bottom-grid">
+        <div className="pc-panel">
+          <div className="pc-panel-title">
+            <span className="tick" />
+            Git 变更挂载<span className="right">LOCAL ONLY</span>
+          </div>
+          <div className="pc-git-row">
+            <div className="pc-git-cell green">
+              <b>{stagedCount}</b>staged
+            </div>
+            <div className="pc-git-cell amber">
+              <b>{unstagedCount}</b>unstaged
+            </div>
+            <div className="pc-git-cell">
+              <b>{untrackedCount}</b>untracked
+            </div>
+          </div>
+          <div className="pc-commit-box">
+            <b>feat(ui):</b> complete Sprint DoD — {vibeContext?.projectName ?? 'Prism Station'}
+            <br />
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              # generated from git diff + DoD · conventional commit
+            </span>
+          </div>
+        </div>
+
+        <div className="pc-panel">
+          <div className="pc-panel-title">
+            <span className="tick" />
+            新建项目<span className="right">SCOPE LOCK</span>
+          </div>
+          <div className="pc-form-row">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void create();
+              }}
+              placeholder="项目名称"
+              data-project-name
+              className="pc-text-input"
+            />
+            <input
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void create();
+              }}
+              placeholder="D:\path\to\repo"
+              data-project-path
+              className="pc-text-input"
+            />
+            <button
+              type="button"
+              data-project-add
+              onClick={() => void create()}
+              className="pc-mini-btn primary"
+            >
+              <Plus size={13} />
+              添加
+            </button>
+          </div>
+          <p
+            style={{
+              marginTop: 10,
+              fontSize: 11,
+              color: 'var(--color-text-muted)',
+              lineHeight: 1.6,
+            }}
+          >
+            新增项目默认锁定为{' '}
+            <span style={{ color: 'var(--prism-accent-strong)', fontFamily: 'var(--font-mono)' }}>
+              IDEA
+            </span>{' '}
+            阶段，禁止跨目录读写。
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

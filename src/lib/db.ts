@@ -1,12 +1,7 @@
 import {
   QUICK_PROMPTS,
-  addCustomQuickPrompt as addCustomQuickPromptLocal,
-  deleteCustomQuickPrompt as deleteCustomQuickPromptLocal,
   getQuickPromptUsage as getQuickPromptUsageLocal,
   listCustomQuickPrompts as listCustomQuickPromptsLocal,
-  recordQuickPromptUsage as recordQuickPromptUsageLocal,
-  reorderCustomQuickPrompts as reorderCustomQuickPromptsLocal,
-  updateCustomQuickPrompt as updateCustomQuickPromptLocal,
   type CustomQuickPrompt,
   type QuickPrompt,
 } from './quickPrompts';
@@ -15,18 +10,11 @@ import {
   embedText,
   embedTextRemote,
   hybridRagScore,
-  shardFor,
   type EmbeddingMode,
 } from './embed';
 export type { EmbeddingMode };
-import { pinyin } from 'pinyin-pro';
 import { parseWorkbenchError, WorkbenchError } from './errors';
-import {
-  isMockAgentsEnabled,
-  mockLlmReply,
-  mockProviderHealth,
-  mockWebhookDelivery,
-} from './mockAgents';
+import { isMockAgentsEnabled, mockLlmReply, mockProviderHealth } from './mockAgents';
 
 export type { CustomQuickPrompt, QuickPrompt };
 
@@ -44,12 +32,16 @@ export type Task = {
   isDod?: boolean;
 };
 
+export type ProjectJourneyStage = 'idea' | 'discussing' | 'ready' | 'building' | 'archived';
+
 export type Project = {
   id: string;
   name: string;
   path: string | null;
   revenue: number;
   status: string;
+  journeyStage: ProjectJourneyStage;
+  journeyDocPath: string | null;
   createdAt: number;
   sortOrder?: number;
   material?: string;
@@ -214,6 +206,48 @@ export type Agent = {
   systemPrompt: string;
   isActive: boolean;
   createdAt: number;
+};
+
+export type AgencyAgent = {
+  id: string;
+  division: string;
+  name: string;
+  slug: string;
+  description: string;
+  emoji: string;
+  color: string;
+  developerInstructions: string;
+  tools: string[];
+  sourceUrl: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AgencyAgentInput = {
+  division: string;
+  name: string;
+  slug: string;
+  description: string;
+  emoji: string;
+  color: string;
+  developerInstructions: string;
+  tools: string[];
+  sourceUrl: string;
+};
+
+export type TeamPreset = {
+  id: string;
+  name: string;
+  agentSlugs: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type CliToolDetection = {
+  bin: string;
+  label: string;
+  detected: boolean;
+  lastCheckedAt: number;
 };
 
 export type AgentPromptVersion = {
@@ -965,8 +999,6 @@ export type RecommendedConcurrency = {
 
 const LS_KEY = 'ai-workbench:db:v1';
 const VAULT_LS_KEY = 'ai-workbench:vault:v1';
-const VAULT_WATCH_LS_KEY = 'ai-workbench:vault-watch:v1';
-const VAULT_WATCH_TARGETS_LS_KEY = 'ai-workbench:vault-watch-targets:v1';
 const RAG_SOURCE_PREF_LS_KEY = 'ai-workbench:rag-source-preference:v1';
 
 export function getRagSourcePreference(): RagSourcePreference {
@@ -995,10 +1027,6 @@ export function setRagSourcePreference(pref: RagSourcePreference): RagSourcePref
   localStorage.setItem(RAG_SOURCE_PREF_LS_KEY, JSON.stringify(next));
   return next;
 }
-const VAULT_WATCH_EVENTS_LS_KEY = 'ai-workbench:vault-watch-events:v1';
-const DOC_HEALTH_AUTO_LS_KEY = 'ai-workbench:doc-health-auto:v1';
-const DOC_HEALTH_HISTORY_LS_KEY = 'ai-workbench:doc-health-history:v1';
-const DOC_HEALTH_ALERT_DISMISSED_LS_KEY = 'ai-workbench:doc-health-alert-dismissed:v1';
 
 type LocalShape = {
   tasks: Task[];
@@ -1008,6 +1036,9 @@ type LocalShape = {
   providers: Provider[];
   departments: Department[];
   agents: Agent[];
+  agentCatalog: AgencyAgent[];
+  teamPresets: TeamPreset[];
+  cliTools: CliToolDetection[];
   promptVersions: AgentPromptVersion[];
   sessions: Session[];
   chatMessages: ChatMessage[];
@@ -1033,21 +1064,12 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 const makeId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`;
-const WEBHOOK_RULES_LS_KEY = 'ai-workbench:webhook-rules:v1';
-const WEBHOOK_RULE_RUNS_LS_KEY = 'ai-workbench:webhook-rule-runs:v1';
-const WEBHOOK_DELIVERIES_LS_KEY = 'ai-workbench:webhook-deliveries:v1';
-const WEBHOOK_TEMPLATE_VERSIONS_LS_KEY = 'ai-workbench:webhook-template-versions:v1';
-const WEBHOOK_RETENTION_LS_KEY = 'ai-workbench:webhook-retention:v1';
-const WEBHOOK_CHANNEL_CONFIG_LS_KEY = 'ai-workbench:webhook-channel-config:v1';
 const EVENT_LOGS_LS_KEY = 'ai-workbench:event-logs:v1';
 const EVENT_SCHEMAS_LS_KEY = 'ai-workbench:event-schemas:v1';
 const EVENT_FORWARDS_LS_KEY = 'ai-workbench:event-forwards:v1';
 const EVENT_BUS_CONFIG_LS_KEY = 'ai-workbench:event-bus-config:v1';
 const EMBEDDING_CONFIG_LS_KEY = 'ai-workbench:embedding-config:v1';
 const VECTOR_SHARDS_LS_KEY = 'ai-workbench:vector-shards:v1';
-const KNOWLEDGE_CLUSTERS_LS_KEY = 'ai-workbench:knowledge-clusters:v1';
-const KNOWLEDGE_CLUSTER_CONFIG_LS_KEY = 'ai-workbench:knowledge-cluster-config:v1';
-const KNOWLEDGE_DEDUP_LS_KEY = 'ai-workbench:knowledge-dedup:v1';
 
 function emptyShape(): LocalShape {
   return {
@@ -1058,6 +1080,9 @@ function emptyShape(): LocalShape {
     providers: [],
     departments: [],
     agents: [],
+    agentCatalog: [],
+    teamPresets: [],
+    cliTools: [],
     promptVersions: [],
     sessions: [],
     chatMessages: [],
@@ -1112,10 +1137,12 @@ function seedShape(): LocalShape {
     projects: [
       {
         id: makeId(),
-        name: 'AI Workbench',
+        name: 'Prism Station',
         path: 'D:\\ai-workbench',
         revenue: 0,
         status: 'active',
+        journeyStage: 'building',
+        journeyDocPath: null,
         createdAt: now - 86400000,
         sortOrder: 0,
       },
@@ -1125,6 +1152,8 @@ function seedShape(): LocalShape {
         path: 'D:\\PrismData\\demo',
         revenue: 0,
         status: 'paused',
+        journeyStage: 'idea',
+        journeyDocPath: null,
         createdAt: now - 172800000,
         sortOrder: 1,
       },
@@ -1233,7 +1262,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 UI Designer，负责设计系统、动效与视觉验收。输出需遵循 Design Token，并服务于 5 大主视图。',
+          '你是 Prism Station 的 UI Designer，负责设计系统、动效与视觉验收。输出需遵循 Design Token，并服务于 5 大主视图。',
         isActive: true,
         createdAt: now - 4900,
       },
@@ -1246,7 +1275,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Frontend Developer，负责 React/Tailwind 实现。输出需可运行、可验证，并保持布局稳定。',
+          '你是 Prism Station 的 Frontend Developer，负责 React/Tailwind 实现。输出需可运行、可验证，并保持布局稳定。',
         isActive: true,
         createdAt: now - 4800,
       },
@@ -1259,7 +1288,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 UI Finish-Gate Reviewer，负责视觉验收。输出必须给出可测量的验收项与风险。',
+          '你是 Prism Station 的 UI Finish-Gate Reviewer，负责视觉验收。输出必须给出可测量的验收项与风险。',
         isActive: true,
         createdAt: now - 4700,
       },
@@ -1272,7 +1301,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Product Manager，负责范围冻结与验收标准。每个需求必须给出明确的 AC。',
+          '你是 Prism Station 的 Product Manager，负责范围冻结与验收标准。每个需求必须给出明确的 AC。',
         isActive: true,
         createdAt: now - 4600,
       },
@@ -1285,7 +1314,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 UX Architect，负责交互与信息架构。输出需考虑工作台高频路径与 5 大主视图。',
+          '你是 Prism Station 的 UX Architect，负责交互与信息架构。输出需考虑工作台高频路径与 5 大主视图。',
         isActive: true,
         createdAt: now - 4500,
       },
@@ -1298,7 +1327,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Backend Architect，负责 Tauri 命令与分层设计。输出需保持模块边界清晰并考虑错误路径。',
+          '你是 Prism Station 的 Backend Architect，负责 Tauri 命令与分层设计。输出需保持模块边界清晰并考虑错误路径。',
         isActive: true,
         createdAt: now - 4400,
       },
@@ -1311,7 +1340,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Data Engineer，负责 SQLite 表结构与迁移。输出需包含索引、外键与迁移脚本。',
+          '你是 Prism Station 的 Data Engineer，负责 SQLite 表结构与迁移。输出需包含索引、外键与迁移脚本。',
         isActive: true,
         createdAt: now - 4300,
       },
@@ -1324,7 +1353,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 AI Engineer，负责模型路由与流式链路。输出需兼容 Tauri 与浏览器 fallback。',
+          '你是 Prism Station 的 AI Engineer，负责模型路由与流式链路。输出需兼容 Tauri 与浏览器 fallback。',
         isActive: true,
         createdAt: now - 4200,
       },
@@ -1337,7 +1366,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Prompt Engineer，负责 Prompt 版本与测试用例。输出需给出可复现的用例。',
+          '你是 Prism Station 的 Prompt Engineer，负责 Prompt 版本与测试用例。输出需给出可复现的用例。',
         isActive: true,
         createdAt: now - 4100,
       },
@@ -1350,7 +1379,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Multi-Agent Systems Architect，负责部门与 Agent 编排。输出需明确分工、并行度与汇总结论。',
+          '你是 Prism Station 的 Multi-Agent Systems Architect，负责部门与 Agent 编排。输出需明确分工、并行度与汇总结论。',
         isActive: true,
         createdAt: now - 4000,
       },
@@ -1363,7 +1392,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Test Automation Engineer，负责自动化验收与回归。输出需覆盖 verify:ui 与 Rust 单测。',
+          '你是 Prism Station 的 Test Automation Engineer，负责自动化验收与回归。输出需覆盖 verify:ui 与 Rust 单测。',
         isActive: true,
         createdAt: now - 3900,
       },
@@ -1376,7 +1405,7 @@ function seedShape(): LocalShape {
         model: 'openai',
         providerId: null,
         systemPrompt:
-          '你是 AI Workbench 的 Reality Checker，负责证据驱动的发布门禁。输出必须引用实际文件与命令结果。',
+          '你是 Prism Station 的 Reality Checker，负责证据驱动的发布门禁。输出必须引用实际文件与命令结果。',
         isActive: true,
         createdAt: now - 3800,
       },
@@ -1425,6 +1454,9 @@ function seedShape(): LocalShape {
       },
     ],
     modelCache: {},
+    agentCatalog: existing.agentCatalog ?? [],
+    teamPresets: existing.teamPresets ?? [],
+    cliTools: existing.cliTools ?? [],
     syncDeviceId: existing.syncDeviceId || makeId(),
     lastSyncedAt: existing.lastSyncedAt ?? 0,
   };
@@ -1504,9 +1536,60 @@ function writeLocal(shape: LocalShape) {
 export async function initDb(): Promise<void> {
   if (isTauri()) {
     await invoke('init_db');
-    return;
+  } else if (!localStorage.getItem(LS_KEY)) {
+    writeLocal(seedShape());
   }
-  if (!localStorage.getItem(LS_KEY)) writeLocal(seedShape());
+  await seedAgencyIfEmpty();
+}
+
+const AGENCY_TEAM_PRESETS: { name: string; agentSlugs: string[] }[] = [
+  {
+    name: '产品评审团',
+    agentSlugs: ['product-manager', 'design-ux-researcher', 'testing-reality-checker'],
+  },
+  {
+    name: '技术方案团',
+    agentSlugs: [
+      'engineering-backend-architect',
+      'engineering-ai-engineer',
+      'engineering-api-platform-engineer',
+    ],
+  },
+  {
+    name: '全栈落地团',
+    agentSlugs: [
+      'engineering-desktop-app-engineer',
+      'engineering-database-optimizer',
+      'engineering-code-reviewer',
+    ],
+  },
+  {
+    name: '质量安全门',
+    agentSlugs: [
+      'testing-test-automation-engineer',
+      'testing-api-tester',
+      'security-appsec-engineer',
+      'security-ai-generated-code-auditor',
+    ],
+  },
+  {
+    name: '极简快评团',
+    agentSlugs: ['product-manager', 'design-ui-designer'],
+  },
+];
+
+export async function seedAgencyIfEmpty(): Promise<void> {
+  const existing = await listAgentCatalog();
+  if (existing.length === 0) {
+    const { AGENCY_CATALOG } = await import('../data/agencyCatalog');
+    await importAgentCatalog(AGENCY_CATALOG);
+  }
+  const presets = await listTeamPresets();
+  if (presets.length === 0) {
+    for (const preset of AGENCY_TEAM_PRESETS) {
+      await createTeamPreset(preset.name, preset.agentSlugs).catch(() => {});
+    }
+  }
 }
 
 export async function listTasks(): Promise<Task[]> {
@@ -1541,14 +1624,41 @@ export type GitDiffFile = {
   hunkPreview: string;
 };
 
+export type QualityGateLevel = {
+  level: number;
+  name: string;
+  status: 'GREEN' | 'FAILED' | 'SKIPPED';
+  errors: string[];
+  durationMs: number;
+};
+
 export type QualityGateResult = {
   status: string;
   errors: string[];
+  levels: QualityGateLevel[];
 };
 
-export async function runQualityGate(projectPath: string): Promise<QualityGateResult> {
-  if (isTauri()) return invoke<QualityGateResult>('run_quality_gate', { path: projectPath });
-  return { status: 'GREEN', errors: [] };
+export async function runQualityGate(
+  projectPath: string,
+  dodPath?: string | null,
+): Promise<QualityGateResult> {
+  if (isTauri()) {
+    return invoke<QualityGateResult>('run_quality_gate', {
+      path: projectPath,
+      dodPath: dodPath ?? null,
+    });
+  }
+  return {
+    status: 'GREEN',
+    errors: [],
+    levels: [1, 2, 3, 4].map((level) => ({
+      level,
+      name: `L${level} browser fallback`,
+      status: 'GREEN',
+      errors: [],
+      durationMs: 0,
+    })),
+  };
 }
 
 export async function getProjectDiffTree(projectPath: string): Promise<GitDiffFile[]> {
@@ -1566,6 +1676,15 @@ export async function getFileHunkPatch(
   return { path: relativePath, status: 'clean', diff: '' };
 }
 
+export async function writeNote(
+  vaultPath: string,
+  fileName: string,
+  content: string,
+): Promise<string> {
+  if (isTauri()) return invoke<string>('write_note', { vaultPath, fileName, content });
+  return `${vaultPath.replace(/[\\/]+$/, '')}/${fileName}`;
+}
+
 export type AgentSpec = {
   id: string;
   name: string;
@@ -1573,6 +1692,8 @@ export type AgentSpec = {
   kpi: string;
   prompt: string;
   active: boolean;
+  emoji?: string;
+  color?: string;
 };
 
 export async function listAgentSpecs(projectPath: string): Promise<AgentSpec[]> {
@@ -1902,6 +2023,8 @@ export async function createProject(name: string, path: string): Promise<Project
     path: path || null,
     revenue: 0,
     status: 'active',
+    journeyStage: 'idea',
+    journeyDocPath: null,
     createdAt: now,
   };
   shape.projects.unshift(project);
@@ -1938,6 +2061,34 @@ export async function updateProjectMaterial(id: string, material: string): Promi
   const project = shape.projects.find((p) => p.id === id);
   if (!project) throw new Error('project not found');
   project.material = material;
+  writeLocal(shape);
+  return project;
+}
+
+const PROJECT_JOURNEY_STAGES: ProjectJourneyStage[] = [
+  'idea',
+  'discussing',
+  'ready',
+  'building',
+  'archived',
+];
+
+export async function updateProjectJourney(
+  id: string,
+  stage: ProjectJourneyStage,
+  journeyDocPath: string | null = null,
+): Promise<Project> {
+  if (!PROJECT_JOURNEY_STAGES.includes(stage)) {
+    throw new WorkbenchError('INVALID_INPUT', `update_project_journey:${stage}`);
+  }
+  if (isTauri()) {
+    return invoke<Project>('update_project_journey', { id, stage, journeyDocPath });
+  }
+  const shape = readLocal();
+  const project = shape.projects.find((p) => p.id === id);
+  if (!project) throw new Error('project not found');
+  project.journeyStage = stage;
+  if (journeyDocPath !== null) project.journeyDocPath = journeyDocPath;
   writeLocal(shape);
   return project;
 }
@@ -1984,7 +2135,7 @@ export async function createThought(
   tags: string,
   type: ThoughtType,
 ): Promise<Thought> {
-  if (isTauri()) return invoke<Thought>('create_thought', { content, tags, type });
+  if (isTauri()) return invoke<Thought>('create_thought', { content, tags, kind: type });
   const shape = readLocal();
   const thought: Thought = { id: makeId(), content, tags, type, createdAt: Date.now() };
   shape.thoughts.unshift(thought);
@@ -2033,7 +2184,7 @@ export async function updateThoughtContent(id: string, content: string): Promise
 }
 
 export async function updateThoughtType(id: string, type: ThoughtType): Promise<Thought> {
-  if (isTauri()) return invoke<Thought>('update_thought_type', { id, type });
+  if (isTauri()) return invoke<Thought>('update_thought_type', { id, kind: type });
   const shape = readLocal();
   const thought = shape.thoughts.find((t) => t.id === id);
   if (!thought) throw new Error('thought not found');
@@ -2618,6 +2769,141 @@ export async function restoreAgentPrompt(agentId: string, versionId: string): Pr
   return { ...agent };
 }
 
+export async function listAgentCatalog(): Promise<AgencyAgent[]> {
+  if (isTauri()) return invoke<AgencyAgent[]>('list_agent_catalog');
+  return readLocal().agentCatalog;
+}
+
+export async function importAgentCatalog(entries: AgencyAgentInput[]): Promise<AgencyAgent[]> {
+  if (isTauri()) return invoke<AgencyAgent[]>('import_agent_catalog', { entries });
+  const shape = readLocal();
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.slug.trim()) {
+      throw new WorkbenchError('INVALID_INPUT', `import_agent_catalog:${entry.slug}`);
+    }
+    const existing = shape.agentCatalog.find((agent) => agent.slug === entry.slug);
+    if (existing) {
+      Object.assign(existing, entry, { updatedAt: now });
+    } else {
+      shape.agentCatalog.push({ ...entry, id: makeId(), createdAt: now, updatedAt: now });
+    }
+  }
+  writeLocal(shape);
+  return shape.agentCatalog;
+}
+
+export async function listTeamPresets(): Promise<TeamPreset[]> {
+  if (isTauri()) return invoke<TeamPreset[]>('list_team_presets');
+  return readLocal().teamPresets;
+}
+
+export async function createTeamPreset(name: string, agentSlugs: string[]): Promise<TeamPreset> {
+  if (isTauri()) return invoke<TeamPreset>('create_team_preset', { name, agentSlugs });
+  if (!name.trim()) throw new WorkbenchError('INVALID_INPUT', 'create_team_preset:empty-name');
+  const shape = readLocal();
+  const now = Date.now();
+  const preset: TeamPreset = {
+    id: makeId(),
+    name,
+    agentSlugs,
+    createdAt: now,
+    updatedAt: now,
+  };
+  shape.teamPresets.push(preset);
+  writeLocal(shape);
+  return preset;
+}
+
+export async function updateTeamPreset(
+  id: string,
+  name: string,
+  agentSlugs: string[],
+): Promise<TeamPreset> {
+  if (isTauri()) return invoke<TeamPreset>('update_team_preset', { id, name, agentSlugs });
+  if (!name.trim()) throw new WorkbenchError('INVALID_INPUT', 'update_team_preset:empty-name');
+  const shape = readLocal();
+  const preset = shape.teamPresets.find((p) => p.id === id);
+  if (!preset) throw new Error('team preset not found');
+  preset.name = name;
+  preset.agentSlugs = agentSlugs;
+  preset.updatedAt = Date.now();
+  writeLocal(shape);
+  return { ...preset };
+}
+
+export async function deleteTeamPreset(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_team_preset', { id });
+    return;
+  }
+  const shape = readLocal();
+  shape.teamPresets = shape.teamPresets.filter((p) => p.id !== id);
+  writeLocal(shape);
+}
+
+export async function listCliTools(): Promise<CliToolDetection[]> {
+  if (isTauri()) return invoke<CliToolDetection[]>('list_cli_tools');
+  return readLocal().cliTools;
+}
+
+const KNOWN_CLI_TOOLS: { bin: string; label: string; defaultDetected: boolean }[] = [
+  { bin: 'claude', label: 'Claude Code', defaultDetected: true },
+  { bin: 'aider', label: 'Aider', defaultDetected: true },
+  { bin: 'codex', label: 'Codex CLI', defaultDetected: false },
+  { bin: 'gemini', label: 'Gemini CLI', defaultDetected: false },
+  { bin: 'opencode', label: 'OpenCode', defaultDetected: false },
+  { bin: 'qwen', label: 'Qwen Code', defaultDetected: false },
+  { bin: 'cursor', label: 'Cursor CLI', defaultDetected: false },
+  { bin: 'windsurf', label: 'Windsurf', defaultDetected: false },
+];
+
+export async function detectCliTools(): Promise<CliToolDetection[]> {
+  if (isTauri()) return invoke<CliToolDetection[]>('detect_cli_tools');
+  // Browser fallback cannot scan PATH; keep the flow usable with the two core CLIs
+  // and preserve any previously saved detections.
+  const cached = readLocal().cliTools;
+  const now = Date.now();
+  const merged: CliToolDetection[] = KNOWN_CLI_TOOLS.map((tool) => {
+    const saved = cached.find((entry) => entry.bin === tool.bin);
+    return {
+      bin: tool.bin,
+      label: tool.label,
+      detected: saved ? saved.detected || tool.defaultDetected : tool.defaultDetected,
+      lastCheckedAt: saved?.lastCheckedAt ?? now,
+    };
+  });
+  await saveCliToolDetections(merged);
+  return readLocal().cliTools;
+}
+
+export async function saveCliToolDetections(
+  tools: CliToolDetection[],
+): Promise<CliToolDetection[]> {
+  if (isTauri()) {
+    return invoke<CliToolDetection[]>('save_cli_tool_detections', { tools });
+  }
+  const shape = readLocal();
+  const now = Date.now();
+  for (const tool of tools) {
+    if (!tool.bin.trim()) {
+      throw new WorkbenchError('INVALID_INPUT', `save_cli_tool_detections:${tool.bin}`);
+    }
+    const existing = shape.cliTools.find((entry) => entry.bin === tool.bin);
+    const next = {
+      ...tool,
+      lastCheckedAt: tool.lastCheckedAt > 0 ? tool.lastCheckedAt : now,
+    };
+    if (existing) {
+      Object.assign(existing, next);
+    } else {
+      shape.cliTools.push(next);
+    }
+  }
+  writeLocal(shape);
+  return shape.cliTools;
+}
+
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
   if (isTauri()) return invoke<ProviderHealth>('check_provider_health', { providerId });
   if (isMockAgentsEnabled()) return mockProviderHealth(providerId);
@@ -2747,185 +3033,6 @@ export async function listSessions(): Promise<Session[]> {
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt);
 }
 
-type MatchMode = 'original' | 'full-pinyin' | 'initials-pinyin';
-
-function substringScore(haystack: string, query: string): number | null {
-  if (!haystack || !query) return null;
-  const index = haystack.indexOf(query);
-  return index >= 0 ? 120 - index : null;
-}
-
-function subsequenceScore(haystack: string, query: string): number | null {
-  if (!haystack || !query) return null;
-  let qi = 0;
-  let gaps = 0;
-  let last = -1;
-  for (let i = 0; i < haystack.length; i += 1) {
-    if (haystack[i] === query[qi]) {
-      if (last >= 0) gaps += i - last - 1;
-      last = i;
-      qi += 1;
-      if (qi === query.length) return Math.max(1, 80 - gaps);
-    }
-  }
-  return null;
-}
-
-function pinyinText(text: string, firstLetter: boolean): string {
-  const parts = pinyin(text, {
-    toneType: 'none',
-    type: 'array',
-    pattern: firstLetter ? 'first' : 'pinyin',
-  });
-  return parts
-    .map((part) => part.toLowerCase())
-    .filter((part) => /\S/.test(part))
-    .join('');
-}
-
-function textMatchScore(text: string, query: string): { score: number; mode: MatchMode } | null {
-  const originalQ = query.toLowerCase();
-  const lowerText = text.toLowerCase();
-  const originalSubstring = substringScore(lowerText, originalQ);
-  if (originalSubstring != null) return { score: originalSubstring, mode: 'original' };
-  const originalSubsequence = subsequenceScore(lowerText, originalQ);
-  if (originalSubsequence != null) return { score: originalSubsequence, mode: 'original' };
-
-  const compactQ = originalQ.replace(/\s+/g, '');
-  const full = pinyinText(text, false);
-  const fullSubstring = substringScore(full, compactQ);
-  if (fullSubstring != null) return { score: fullSubstring - 5, mode: 'full-pinyin' };
-  const fullSubsequence = subsequenceScore(full, compactQ);
-  if (fullSubsequence != null) return { score: fullSubsequence - 10, mode: 'full-pinyin' };
-
-  const initials = pinyinText(text, true);
-  const initialsSubstring = substringScore(initials, compactQ);
-  if (initialsSubstring != null) return { score: initialsSubstring - 15, mode: 'initials-pinyin' };
-  const initialsSubsequence = subsequenceScore(initials, compactQ);
-  if (initialsSubsequence != null)
-    return { score: initialsSubsequence - 20, mode: 'initials-pinyin' };
-  return null;
-}
-
-function sessionMatchType(
-  field: 'title' | 'model' | 'message',
-  mode: MatchMode,
-): SessionSearchHit['matchType'] {
-  return mode === 'original' ? field : `pinyin-${field}`;
-}
-
-function sessionSnippet(content: string): string {
-  const text = content.replace(/\s+/g, ' ').trim();
-  return text.length > 90 ? `${text.slice(0, 90)}...` : text;
-}
-
-export async function searchSessions(
-  query: string,
-  options: {
-    since?: number;
-    until?: number;
-    limit?: number;
-    includeMessages?: boolean;
-  } = {},
-): Promise<SessionSearchHit[]> {
-  const q = query.trim();
-  if (isTauri()) {
-    return invoke<SessionSearchHit[]>('search_sessions', {
-      query: q,
-      since: options.since ?? null,
-      until: options.until ?? null,
-      limit: options.limit ?? null,
-      includeMessages: options.includeMessages ?? true,
-    });
-  }
-  const shape = readLocal();
-  const sessions = shape.sessions
-    .map((s) => ({
-      ...s,
-      pinned: s.pinned ?? false,
-      archived: s.archived ?? false,
-      messageCount: (shape.chatMessages ?? []).filter((m) => m.sessionId === s.id).length,
-    }))
-    .filter((s) => !s.archived)
-    .filter((s) => options.since == null || s.createdAt >= options.since)
-    .filter((s) => options.until == null || s.createdAt <= options.until);
-  if (!q) {
-    return sessions.map((session) => ({
-      session,
-      matchType: 'all' as const,
-      snippet: '',
-      score: 0,
-      messageId: null,
-    }));
-  }
-  const hits: SessionSearchHit[] = [];
-  for (const session of sessions) {
-    let bestScore = 0;
-    let bestMatch: SessionSearchHit['matchType'] | null = null;
-    let bestSnippet = '';
-    let bestMessageId: string | null = null;
-    const consider = (
-      score: number,
-      matchType: SessionSearchHit['matchType'],
-      snippet: string,
-      messageId?: string | null,
-    ) => {
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = matchType;
-        bestSnippet = snippet;
-        bestMessageId = messageId ?? null;
-      }
-    };
-    const titleMatch = textMatchScore(session.title, q);
-    if (titleMatch)
-      consider(
-        titleMatch.score,
-        sessionMatchType('title', titleMatch.mode),
-        sessionSnippet(session.title),
-        null,
-      );
-    const modelMatch = textMatchScore(session.model, q);
-    if (modelMatch)
-      consider(
-        modelMatch.score,
-        sessionMatchType('model', modelMatch.mode),
-        sessionSnippet(session.model),
-        null,
-      );
-    if (options.includeMessages !== false) {
-      for (const message of (shape.chatMessages ?? []).filter((m) => m.sessionId === session.id)) {
-        const messageMatch = textMatchScore(message.content, q);
-        if (messageMatch) {
-          consider(
-            messageMatch.score,
-            sessionMatchType('message', messageMatch.mode),
-            sessionSnippet(message.content),
-            message.id,
-          );
-        }
-      }
-    }
-    if (bestMatch) {
-      hits.push({
-        session,
-        matchType: bestMatch,
-        snippet: bestSnippet,
-        score: bestScore + (session.pinned ? 10 : 0),
-        messageId: bestMessageId,
-      });
-    }
-  }
-  return hits
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        Number(b.session.pinned) - Number(a.session.pinned) ||
-        b.session.createdAt - a.session.createdAt,
-    )
-    .slice(0, Math.max(1, options.limit ?? 50));
-}
-
 export async function createSession(title: string, model: string): Promise<Session> {
   if (isTauri()) return invoke<Session>('create_session', { title, model });
   const shape = readLocal();
@@ -2942,273 +3049,6 @@ export async function createSession(title: string, model: string): Promise<Sessi
   shape.sessions.unshift(session);
   writeLocal(shape);
   return session;
-}
-
-export async function renameSession(id: string, title: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('rename_session', { id, title });
-    return;
-  }
-  const shape = readLocal();
-  const session = shape.sessions.find((s) => s.id === id);
-  if (session) session.title = title;
-  writeLocal(shape);
-}
-
-export async function setSessionPinned(id: string, pinned: boolean): Promise<void> {
-  if (isTauri()) {
-    await invoke('set_session_pinned', { id, pinned });
-    return;
-  }
-  const shape = readLocal();
-  const session = shape.sessions.find((s) => s.id === id);
-  if (session) session.pinned = pinned;
-  writeLocal(shape);
-}
-
-export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
-  if (isTauri()) return invoke<Session>('set_session_archived', { id, archived });
-  const shape = readLocal();
-  const session = shape.sessions.find((s) => s.id === id);
-  if (!session) throw new Error(`Session not found: ${id}`);
-  session.archived = archived;
-  writeLocal(shape);
-  return {
-    ...session,
-    messageCount: shape.chatMessages.filter((m) => m.sessionId === id).length,
-  };
-}
-
-export async function duplicateSession(id: string): Promise<Session> {
-  if (isTauri()) return invoke<Session>('duplicate_session', { id });
-  const shape = readLocal();
-  const source = shape.sessions.find((s) => s.id === id);
-  if (!source) throw new Error(`Session not found: ${id}`);
-  const now = Date.now();
-  const copy: Session = {
-    id: makeId(),
-    projectId: source.projectId,
-    title: `${source.title} (copy)`,
-    model: source.model,
-    pinned: false,
-    archived: false,
-    messageCount: shape.chatMessages.filter((m) => m.sessionId === id).length,
-    createdAt: now,
-  };
-  shape.sessions.unshift(copy);
-  const idMap = new Map<string, string>();
-  shape.chatMessages
-    .filter((m) => m.sessionId === id)
-    .forEach((m) => {
-      const newId = makeId();
-      idMap.set(m.id, newId);
-      shape.chatMessages.push({
-        id: newId,
-        sessionId: copy.id,
-        role: m.role,
-        content: m.content,
-        createdAt: m.createdAt,
-      });
-    });
-  shape.messageVersions = shape.messageVersions ?? [];
-  const oldVersions = shape.messageVersions.filter((v) => idMap.has(v.messageId));
-  const versionIdMap = new Map(oldVersions.map((v) => [v.id, makeId()]));
-  oldVersions.forEach((v) => {
-    shape.messageVersions.push({
-      ...v,
-      id: versionIdMap.get(v.id) as string,
-      messageId: idMap.get(v.messageId) as string,
-      parentVersionId: v.parentVersionId ? (versionIdMap.get(v.parentVersionId) ?? null) : null,
-    });
-  });
-  shape.messageAux = shape.messageAux ?? [];
-  shape.messageAux
-    .filter((a) => idMap.has(a.messageId))
-    .forEach((a) => {
-      shape.messageAux.push({
-        ...a,
-        messageId: idMap.get(a.messageId) as string,
-        updatedAt: now,
-      });
-    });
-  writeLocal(shape);
-  return copy;
-}
-
-const SESSION_SUMMARY_STOPWORDS = new Set([
-  '的',
-  '了',
-  '是',
-  '我',
-  '你',
-  '他',
-  '她',
-  '它',
-  '们',
-  '这',
-  '那',
-  '在',
-  '有',
-  '和',
-  '就',
-  '都',
-  '而',
-  '及',
-  '与',
-  '着',
-  '或',
-  '一个',
-  '没有',
-  '什么',
-  '怎么',
-  '如何',
-  '为什么',
-  '吗',
-  '呢',
-  '吧',
-  '啊',
-  'the',
-  'a',
-  'an',
-  'and',
-  'or',
-  'of',
-  'to',
-  'for',
-  'in',
-  'on',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'with',
-  'this',
-  'that',
-  'it',
-  'as',
-  'at',
-  'by',
-  'from',
-  'please',
-  'help',
-  'me',
-  'my',
-  'you',
-]);
-
-function sessionSummaryTokens(content: string): string[] {
-  const tokens: string[] = [];
-  const cjk = content.replace(/[^\u4e00-\u9fff]/g, ' ');
-  for (const chunk of cjk.split(/\s+/).filter(Boolean)) {
-    if (chunk.length >= 3) {
-      for (let i = 0; i < chunk.length - 2; i += 1) tokens.push(chunk.slice(i, i + 3));
-    }
-    for (let i = 0; i < chunk.length - 1; i += 1) tokens.push(chunk.slice(i, i + 2));
-  }
-  const english = content.replace(/[\u4e00-\u9fff]/g, ' ').toLowerCase();
-  for (const raw of english.split(/[^a-z0-9]+/)) {
-    if (raw.length > 1) tokens.push(raw);
-  }
-  return tokens.filter((token) => !SESSION_SUMMARY_STOPWORDS.has(token));
-}
-
-function sessionSummaryLine(content: string, max: number): string {
-  const line =
-    content
-      .split('\n')
-      .map((part) => part.trim())
-      .find(Boolean) ?? '';
-  return line.slice(0, max);
-}
-
-export function buildSessionSummary(messages: ChatMessage[], limit = 5): SessionSummary {
-  const userMessages = messages.filter((message) => message.role === 'user');
-  const counts = new Map<string, number>();
-  for (const message of messages) {
-    for (const token of sessionSummaryTokens(message.content)) {
-      counts.set(token, (counts.get(token) ?? 0) + 1);
-    }
-  }
-  const keywords = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 6)
-    .map(([token]) => token);
-  const points = userMessages.slice(0, limit).map((user) => {
-    const rest = messages.slice(messages.indexOf(user) + 1);
-    const answer = rest.find((message) => message.role === 'assistant');
-    return {
-      question: sessionSummaryLine(user.content, 40),
-      answer: answer ? sessionSummaryLine(answer.content, 90) : '',
-    };
-  });
-  return { questionCount: userMessages.length, keywords, points };
-}
-
-export function parseMessageAuxPayload(payload: string): {
-  rag?: RagSearchResult[];
-  trace?: MessageTrace | null;
-} {
-  try {
-    const parsed = JSON.parse(payload || '{}') as {
-      rag?: RagSearchResult[];
-      trace?: MessageTrace | null;
-    };
-    return {
-      rag: Array.isArray(parsed.rag) ? parsed.rag : undefined,
-      trace: parsed.trace && typeof parsed.trace === 'object' ? parsed.trace : null,
-    };
-  } catch {
-    return {};
-  }
-}
-
-export function buildSessionMarkdown(
-  session: Session,
-  messages: ChatMessage[],
-  auxByMessageId?: Map<string, MessageAux>,
-): string {
-  const lines: string[] = [
-    `# ${session.title}`,
-    '',
-    `> Model: ${session.model} · Created: ${new Date(session.createdAt).toLocaleString()}`,
-    '',
-  ];
-  const summary = buildSessionSummary(messages);
-  lines.push('## Summary', '', `- Questions: ${summary.questionCount}`);
-  lines.push(`- Keywords: ${summary.keywords.join(', ') || '-'}`, '');
-  for (const point of summary.points) {
-    lines.push(`- Q: ${point.question || '—'}`);
-    lines.push(`  A: ${point.answer || '—'}`);
-  }
-  lines.push('');
-  for (const message of messages) {
-    lines.push(`## ${message.role === 'user' ? 'User' : 'Assistant'}`, '', message.content, '');
-    if (message.role === 'user') {
-      const aux = auxByMessageId?.get(message.id);
-      const parsed = aux ? parseMessageAuxPayload(aux.payload) : {};
-      if (parsed.rag && parsed.rag.length > 0) {
-        lines.push('### RAG context', '');
-        parsed.rag.slice(0, 10).forEach((hit, index) => {
-          const source = hit.sourceFile
-            ? `${hit.sourceKind === 'file' ? 'file' : 'thought'}: ${hit.sourceFile}`
-            : hit.sourceKind === 'file'
-              ? 'file'
-              : 'thought';
-          lines.push(`${index + 1}. [${source}] ${hit.content.replace(/\s+/g, ' ').slice(0, 160)}`);
-        });
-        lines.push('');
-      }
-      if (parsed.trace) {
-        lines.push('### Inspector Trace', '', `**${parsed.trace.title}**`, '');
-        parsed.trace.sections.forEach((section) => {
-          lines.push(`- ${section.label}: ${section.value}`);
-        });
-        lines.push('');
-      }
-    }
-  }
-  return lines.join('\n').trimEnd() + '\n';
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -3253,247 +3093,6 @@ export async function listChatMessages(sessionId: string): Promise<ChatMessage[]
   return (readLocal().chatMessages ?? [])
     .filter((m) => m.sessionId === sessionId)
     .sort((a, b) => a.createdAt - b.createdAt);
-}
-
-export async function updateChatMessage(id: string, content: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('update_chat_message', { id, content });
-    return;
-  }
-  const shape = readLocal();
-  const message = shape.chatMessages.find((m) => m.id === id);
-  if (message && message.content !== content) {
-    shape.messageVersions = shape.messageVersions ?? [];
-    const parent =
-      shape.messageVersions
-        .filter((v) => v.messageId === id)
-        .sort((a, b) => b.createdAt - a.createdAt)[0]?.id ?? null;
-    shape.messageVersions.push({
-      id: makeId(),
-      messageId: id,
-      content: message.content,
-      createdAt: Date.now(),
-      parentVersionId: parent,
-    });
-    message.content = content;
-  }
-  writeLocal(shape);
-}
-
-export async function truncateChatMessages(
-  sessionId: string,
-  keepMessageId: string,
-): Promise<void> {
-  if (isTauri()) {
-    await invoke('truncate_chat_messages', { sessionId, keepMessageId });
-    return;
-  }
-  const shape = readLocal();
-  const keep = shape.chatMessages.find((m) => m.id === keepMessageId);
-  if (keep) {
-    shape.chatMessages = shape.chatMessages.filter(
-      (m) => m.sessionId !== sessionId || m.createdAt <= keep.createdAt || m.id === keepMessageId,
-    );
-    const remainingMessageIds = new Set(shape.chatMessages.map((m) => m.id));
-    shape.messageVersions = (shape.messageVersions ?? []).filter((v) =>
-      remainingMessageIds.has(v.messageId),
-    );
-    shape.messageAux = (shape.messageAux ?? []).filter((a) => remainingMessageIds.has(a.messageId));
-  }
-  writeLocal(shape);
-}
-
-export async function saveMessageVersion(
-  messageId: string,
-  content: string,
-): Promise<MessageVersion> {
-  if (isTauri()) return invoke<MessageVersion>('save_message_version', { messageId, content });
-  const shape = readLocal();
-  shape.messageVersions = shape.messageVersions ?? [];
-  const version: MessageVersion = {
-    id: makeId(),
-    messageId,
-    content,
-    createdAt: Date.now(),
-    parentVersionId: null,
-  };
-  shape.messageVersions.push(version);
-  writeLocal(shape);
-  return version;
-}
-
-export async function listMessageVersions(messageId: string): Promise<MessageVersion[]> {
-  if (isTauri()) return invoke<MessageVersion[]>('list_message_versions', { messageId });
-  return (readLocal().messageVersions ?? [])
-    .filter((v) => v.messageId === messageId)
-    .sort((a, b) => a.createdAt - b.createdAt);
-}
-
-export async function saveMessageAux(messageId: string, payload: string): Promise<MessageAux> {
-  if (isTauri()) return invoke<MessageAux>('save_message_aux', { messageId, payload });
-  const shape = readLocal();
-  shape.messageAux = shape.messageAux ?? [];
-  const aux: MessageAux = { messageId, payload, updatedAt: Date.now() };
-  const index = shape.messageAux.findIndex((a) => a.messageId === messageId);
-  if (index >= 0) shape.messageAux[index] = aux;
-  else shape.messageAux.push(aux);
-  writeLocal(shape);
-  return aux;
-}
-
-export async function listMessageAux(sessionId: string): Promise<MessageAux[]> {
-  if (isTauri()) return invoke<MessageAux[]>('list_message_aux', { sessionId });
-  const shape = readLocal();
-  const ids = new Set(shape.chatMessages.filter((m) => m.sessionId === sessionId).map((m) => m.id));
-  return (shape.messageAux ?? []).filter((a) => ids.has(a.messageId));
-}
-
-export async function restoreMessageVersion(messageId: string, versionId: string): Promise<string> {
-  if (isTauri()) return invoke<string>('restore_message_version', { messageId, versionId });
-  const shape = readLocal();
-  const version = (shape.messageVersions ?? []).find(
-    (v) => v.id === versionId && v.messageId === messageId,
-  );
-  if (!version) throw new Error('message version not found');
-  await updateChatMessage(messageId, version.content);
-  return version.content;
-}
-
-export async function diffMessageVersionWithCurrent(
-  messageId: string,
-  versionId: string,
-): Promise<MessageDiff> {
-  if (isTauri()) {
-    return invoke<MessageDiff>('diff_message_version_with_current', { messageId, versionId });
-  }
-  const shape = readLocal();
-  const version = (shape.messageVersions ?? []).find(
-    (v) => v.id === versionId && v.messageId === messageId,
-  );
-  const message = shape.chatMessages.find((m) => m.id === messageId);
-  if (!version || !message) throw new Error('message version not found');
-  return lineDiff(version.content, message.content);
-}
-
-function lineDiff(a: string, b: string): MessageDiff {
-  const aLines = a.split('\n');
-  const bLines = b.split('\n');
-  const width = bLines.length + 1;
-  const height = aLines.length + 1;
-  const dp = Array.from({ length: height }, () => new Int32Array(width));
-  for (let i = height - 2; i >= 0; i--) {
-    for (let j = width - 2; j >= 0; j--) {
-      dp[i][j] =
-        aLines[i] === bLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const added: string[] = [];
-  const removed: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < aLines.length && j < bLines.length) {
-    if (aLines[i] === bLines[j]) {
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      removed.push(aLines[i]);
-      i++;
-    } else {
-      added.push(bLines[j]);
-      j++;
-    }
-  }
-  while (i < aLines.length) {
-    removed.push(aLines[i]);
-    i++;
-  }
-  while (j < bLines.length) {
-    added.push(bLines[j]);
-    j++;
-  }
-  return { added, removed };
-}
-
-export async function listQuickPrompts(): Promise<QuickPrompt[]> {
-  if (isTauri()) return invoke<QuickPrompt[]>('list_quick_prompts');
-  return [...QUICK_PROMPTS, ...listCustomQuickPromptsLocal()];
-}
-
-export async function listCustomQuickPrompts(): Promise<CustomQuickPrompt[]> {
-  if (isTauri()) {
-    const prompts = await listQuickPrompts();
-    return prompts.filter((prompt) => prompt.custom === true) as CustomQuickPrompt[];
-  }
-  return listCustomQuickPromptsLocal();
-}
-
-export async function loadQuickPromptsByUsage(): Promise<QuickPrompt[]> {
-  const [usage, prompts] = await Promise.all([getQuickPromptUsage(), listQuickPrompts()]);
-  const byId = new Map<string, QuickPrompt>();
-  for (const prompt of prompts) byId.set(prompt.id, prompt);
-  for (const builtin of QUICK_PROMPTS) {
-    if (!byId.has(builtin.id)) byId.set(builtin.id, builtin);
-  }
-  return [...byId.values()]
-    .map((prompt, index) => ({ prompt, index, count: usage[prompt.id] ?? 0 }))
-    .sort((a, b) => b.count - a.count || (a.prompt.order ?? a.index) - (b.prompt.order ?? b.index))
-    .map((entry) => entry.prompt);
-}
-
-export async function getQuickPromptUsage(): Promise<Record<string, number>> {
-  if (isTauri()) {
-    const entries = await invoke<QuickPromptUsageEntry[]>('list_quick_prompt_usage');
-    return Object.fromEntries(entries.map((entry) => [entry.id, entry.count]));
-  }
-  return getQuickPromptUsageLocal();
-}
-
-export async function recordQuickPromptUsage(id: string): Promise<number> {
-  if (isTauri()) return invoke<number>('record_quick_prompt_usage', { id });
-  return recordQuickPromptUsageLocal(id);
-}
-
-export async function addCustomQuickPrompt(
-  label: string,
-  category: string,
-  text: string,
-): Promise<CustomQuickPrompt> {
-  if (isTauri()) {
-    return invoke<CustomQuickPrompt>('add_custom_quick_prompt', { label, category, text });
-  }
-  return addCustomQuickPromptLocal(label, category as 'life' | 'work', text);
-}
-
-export async function updateCustomQuickPrompt(
-  id: string,
-  label: string,
-  category: string,
-  text: string,
-): Promise<CustomQuickPrompt> {
-  if (isTauri()) {
-    return invoke<CustomQuickPrompt>('update_custom_quick_prompt', {
-      id,
-      label,
-      category,
-      text,
-    });
-  }
-  return updateCustomQuickPromptLocal(id, label, category, text);
-}
-
-export async function reorderCustomQuickPrompts(ids: string[]): Promise<number> {
-  if (isTauri()) {
-    return invoke<number>('reorder_custom_quick_prompts', { ids });
-  }
-  return reorderCustomQuickPromptsLocal(ids);
-}
-
-export async function deleteCustomQuickPrompt(id: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('delete_custom_quick_prompt', { id });
-    return;
-  }
-  deleteCustomQuickPromptLocal(id);
 }
 
 export async function listClipboard(): Promise<ClipboardItem[]> {
@@ -5042,313 +4641,6 @@ function readVaultFiles(): VaultFileRecord[] {
   }
 }
 
-function writeVaultFiles(files: VaultFileRecord[]) {
-  lockedStorageWrite(() => localStorage.setItem(VAULT_LS_KEY, JSON.stringify(files)));
-}
-
-function sampleVaultFiles(vaultPath: string): VaultFileRecord[] {
-  return [
-    {
-      path: `${vaultPath}\\Obsidian Roadmap.md`,
-      title: 'Obsidian Roadmap',
-      tags: '#work,#vault',
-      content:
-        '# Obsidian Roadmap\n\n## Vault sync\n\n- 把本地 Markdown 纳入 RAG\n- 支持 frontmatter 标题与标签',
-    },
-    {
-      path: `${vaultPath}\\Daily Notes\\2026-08-05.md`,
-      title: 'Daily Note',
-      tags: '#life',
-      content: '# 每日闪念\n\n- vault 索引让 AI 能引用本地文件',
-    },
-  ];
-}
-
-type VaultWatchRecord = {
-  watching: boolean;
-  path: string | null;
-  updatedAt: number;
-  ignorePatterns: string[];
-};
-
-function readVaultWatchTargets(): VaultWatchTarget[] {
-  try {
-    const raw = localStorage.getItem(VAULT_WATCH_TARGETS_LS_KEY);
-    if (raw) {
-      return (JSON.parse(raw) as VaultWatchTarget[]).map((target) => ({
-        ...target,
-        lastEventAt: target.lastEventAt ?? 0,
-        eventCount: target.eventCount ?? 0,
-        createdEvents: target.createdEvents ?? 0,
-        modifiedEvents: target.modifiedEvents ?? 0,
-        removedEvents: target.removedEvents ?? 0,
-      }));
-    }
-  } catch {
-    // fall through to legacy migration
-  }
-  const legacy = readVaultWatch();
-  if (legacy.path) {
-    return [
-      {
-        path: legacy.path,
-        ignorePatterns: legacy.ignorePatterns ?? [],
-        enabled: legacy.watching,
-        updatedAt: legacy.updatedAt,
-        lastEventAt: 0,
-        eventCount: 0,
-        createdEvents: 0,
-        modifiedEvents: 0,
-        removedEvents: 0,
-      },
-    ];
-  }
-  return [];
-}
-
-function writeVaultWatchTargets(targets: VaultWatchTarget[]): VaultWatchTarget[] {
-  lockedStorageWrite(() => {
-    localStorage.setItem(VAULT_WATCH_TARGETS_LS_KEY, JSON.stringify(targets));
-    const first = targets[0];
-    const record: VaultWatchRecord = {
-      watching: first?.enabled ?? false,
-      path: first?.path ?? null,
-      updatedAt: first?.updatedAt ?? Date.now(),
-      ignorePatterns: first?.ignorePatterns ?? [],
-    };
-    localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record));
-  });
-  return targets;
-}
-
-function readVaultWatch(): VaultWatchRecord {
-  try {
-    const record = JSON.parse(
-      localStorage.getItem(VAULT_WATCH_LS_KEY) ?? 'null',
-    ) as VaultWatchRecord | null;
-    return record ?? { watching: false, path: null, updatedAt: 0, ignorePatterns: [] };
-  } catch {
-    return { watching: false, path: null, updatedAt: 0, ignorePatterns: [] };
-  }
-}
-
-function readVaultWatchConfig(): VaultWatchConfig {
-  const record = readVaultWatch();
-  return {
-    path: record.path ?? '',
-    ignorePatterns: record.ignorePatterns ?? [],
-    enabled: record.watching,
-    updatedAt: record.updatedAt,
-  };
-}
-
-function writeVaultWatchConfig(config: VaultWatchConfig): VaultWatchConfig {
-  const record: VaultWatchRecord = {
-    watching: config.enabled,
-    path: config.path,
-    updatedAt: config.updatedAt || Date.now(),
-    ignorePatterns: config.ignorePatterns,
-  };
-  lockedStorageWrite(() => localStorage.setItem(VAULT_WATCH_LS_KEY, JSON.stringify(record)));
-  return { ...config, updatedAt: record.updatedAt };
-}
-
-export async function getVaultWatchConfig(): Promise<VaultWatchConfig> {
-  if (isTauri()) return invoke<VaultWatchConfig>('get_vault_watch_config');
-  return readVaultWatchConfig();
-}
-
-export async function setVaultWatchConfig(config: VaultWatchConfig): Promise<VaultWatchConfig> {
-  if (isTauri()) {
-    return invoke<VaultWatchConfig>('set_vault_watch_config', { config });
-  }
-  return writeVaultWatchConfig(config);
-}
-
-export async function listVaultWatchTargets(): Promise<VaultWatchTarget[]> {
-  if (isTauri()) return invoke<VaultWatchTarget[]>('list_vault_watch_targets');
-  return readVaultWatchTargets();
-}
-
-export async function upsertVaultWatchTarget(target: VaultWatchTarget): Promise<VaultWatchTarget> {
-  if (isTauri()) {
-    return invoke<VaultWatchTarget>('upsert_vault_watch_target', { target });
-  }
-  const targets = readVaultWatchTargets();
-  const index = targets.findIndex((item) => item.path === target.path);
-  const next: VaultWatchTarget = {
-    ...target,
-    updatedAt: target.updatedAt || Date.now(),
-    lastEventAt: target.lastEventAt ?? 0,
-    eventCount: target.eventCount ?? 0,
-    createdEvents: target.createdEvents ?? 0,
-    modifiedEvents: target.modifiedEvents ?? 0,
-    removedEvents: target.removedEvents ?? 0,
-  };
-  if (index >= 0) {
-    targets[index] = next;
-  } else {
-    targets.push(next);
-  }
-  writeVaultWatchTargets(targets);
-  return next;
-}
-
-export async function deleteVaultWatchTarget(vaultPath: string): Promise<boolean> {
-  if (isTauri()) {
-    return invoke<boolean>('delete_vault_watch_target', { vaultPath });
-  }
-  const targets = readVaultWatchTargets();
-  const next = targets.filter((target) => target.path !== vaultPath);
-  writeVaultWatchTargets(next);
-  await clearVaultWatchEvents(vaultPath);
-  return next.length !== targets.length;
-}
-
-function readVaultWatchEvents(): VaultWatchEvent[] {
-  try {
-    return JSON.parse(localStorage.getItem(VAULT_WATCH_EVENTS_LS_KEY) ?? '[]') as VaultWatchEvent[];
-  } catch {
-    return [];
-  }
-}
-
-function writeVaultWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
-  const next = events.slice(0, 500);
-  lockedStorageWrite(() => localStorage.setItem(VAULT_WATCH_EVENTS_LS_KEY, JSON.stringify(next)));
-  return next;
-}
-
-function recordVaultWatchEvent(vaultPath: string, filePath: string, eventKind: string): void {
-  if (!['created', 'modified', 'removed'].includes(eventKind)) return;
-  const events = readVaultWatchEvents();
-  events.unshift({
-    id: Date.now() + Math.floor(Math.random() * 1000),
-    vaultPath,
-    filePath,
-    eventKind,
-    createdAt: Date.now(),
-  });
-  writeVaultWatchEvents(events);
-}
-
-export async function listVaultWatchEvents(
-  vaultPath?: string,
-  limit = 20,
-): Promise<VaultWatchEvent[]> {
-  if (isTauri()) {
-    return invoke<VaultWatchEvent[]>('list_vault_watch_events', {
-      vaultPath: vaultPath ?? null,
-      limit,
-    });
-  }
-  return readVaultWatchEvents()
-    .filter((event) => !vaultPath || event.vaultPath === vaultPath)
-    .slice(0, Math.max(1, Math.min(200, limit)));
-}
-
-export async function clearVaultWatchEvents(vaultPath?: string): Promise<number> {
-  if (isTauri()) {
-    return invoke<number>('clear_vault_watch_events', {
-      vaultPath: vaultPath ?? null,
-    });
-  }
-  const events = readVaultWatchEvents();
-  const next = vaultPath ? events.filter((event) => event.vaultPath !== vaultPath) : [];
-  writeVaultWatchEvents(next);
-  return events.length - next.length;
-}
-
-export async function listVaultTargetStats(): Promise<VaultTargetStats[]> {
-  if (isTauri()) return invoke<VaultTargetStats[]>('list_vault_target_stats');
-  const targets = readVaultWatchTargets();
-  const files = readVaultFiles();
-  return targets.map((target) => ({
-    path: target.path,
-    files: files.filter(
-      (file) => file.path === target.path || file.path.startsWith(`${target.path}\\`),
-    ).length,
-    lastIndexedAt: 0,
-    lastEventAt: target.lastEventAt ?? 0,
-    eventCount: target.eventCount ?? 0,
-    createdEvents: target.createdEvents ?? 0,
-    modifiedEvents: target.modifiedEvents ?? 0,
-    removedEvents: target.removedEvents ?? 0,
-  }));
-}
-
-export async function listKnowledgeFiles(
-  vaultPath?: string,
-  limit = 50,
-): Promise<KnowledgeFileRecord[]> {
-  if (isTauri()) {
-    return invoke<KnowledgeFileRecord[]>('list_knowledge_files', {
-      vaultPath: vaultPath ?? null,
-      limit,
-    });
-  }
-  const targets = readVaultWatchTargets();
-  const inferVault = (path: string) =>
-    targets.find((target) => path === target.path || path.startsWith(`${target.path}\\`))?.path ??
-    '';
-  return readVaultFiles()
-    .filter((file) => !vaultPath || inferVault(file.path) === vaultPath)
-    .sort((a, b) => (b.indexedAt ?? 0) - (a.indexedAt ?? 0))
-    .slice(0, Math.max(1, Math.min(200, limit)))
-    .map((file) => ({
-      id: file.path,
-      path: file.path,
-      title: file.title,
-      tags: file.tags,
-      vaultPath: inferVault(file.path),
-      indexedAt: file.indexedAt ?? 0,
-      exists: file.exists ?? true,
-      stale: file.stale ?? false,
-    }));
-}
-
-export async function cleanupKnowledgeFiles(vaultPath?: string): Promise<KnowledgeCleanupResult> {
-  if (isTauri()) {
-    return invoke<KnowledgeCleanupResult>('cleanup_knowledge_files', {
-      vaultPath: vaultPath ?? null,
-    });
-  }
-  const targets = readVaultWatchTargets();
-  const inferVault = (path: string) =>
-    targets.find((target) => path === target.path || path.startsWith(`${target.path}\\`))?.path ??
-    '';
-  const files = readVaultFiles();
-  const removed: VaultFileRecord[] = [];
-  const reindexed: VaultFileRecord[] = [];
-  const kept: VaultFileRecord[] = [];
-  for (const file of files) {
-    const vault = inferVault(file.path);
-    if (vaultPath && vault !== vaultPath) {
-      kept.push(file);
-      continue;
-    }
-    if (file.exists === false) {
-      removed.push(file);
-    } else if (file.stale === true) {
-      reindexed.push({
-        ...file,
-        stale: false,
-        exists: true,
-        indexedAt: Date.now(),
-      });
-      kept.push(reindexed[reindexed.length - 1]);
-    } else {
-      kept.push(file);
-    }
-  }
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(kept));
-  return {
-    removed: removed.length,
-    reindexed: reindexed.length,
-    failed: 0,
-  };
-}
-
 function readEmbeddingConfig(): EmbeddingConfig {
   try {
     const raw = localStorage.getItem(EMBEDDING_CONFIG_LS_KEY);
@@ -5386,10 +4678,6 @@ function readEmbeddingConfig(): EmbeddingConfig {
   };
 }
 
-function embeddingModelKey(config: EmbeddingConfig): string {
-  return config.mode === 'local' ? 'local' : `${config.mode}:${config.model}`;
-}
-
 function readVectorShards(): VectorShardRecord[] {
   try {
     const raw = localStorage.getItem(VECTOR_SHARDS_LS_KEY);
@@ -5397,1012 +4685,6 @@ function readVectorShards(): VectorShardRecord[] {
   } catch {
     return [];
   }
-}
-
-function writeVectorShards(shards: VectorShardRecord[]) {
-  lockedStorageWrite(() => localStorage.setItem(VECTOR_SHARDS_LS_KEY, JSON.stringify(shards)));
-}
-
-function seedVectorShards(shardCount: number, model: string, dimension: number) {
-  const count = Math.min(64, Math.max(1, Math.round(shardCount) || 8));
-  const now = Date.now();
-  const byId = new Map(readVectorShards().map((shard) => [shard.shardId, shard]));
-  for (let index = 0; index < count; index += 1) {
-    const shardId = String(index);
-    const existing = byId.get(shardId);
-    byId.set(
-      shardId,
-      existing
-        ? { ...existing, model, dimension }
-        : {
-            shardId,
-            model,
-            dimension,
-            documents: 0,
-            status: 'idle',
-            centroid: '',
-            updatedAt: now,
-            createdAt: now,
-          },
-    );
-  }
-  writeVectorShards(
-    [...byId.values()]
-      .filter((shard) => Number(shard.shardId) < count)
-      .sort((a, b) => Number(a.shardId) - Number(b.shardId)),
-  );
-}
-
-function refreshVectorShardStats() {
-  const counts = new Map<string, number>();
-  const vectors = new Map<string, number[][]>();
-  for (const file of readVaultFiles()) {
-    if (file.embeddingStatus === 'indexed') {
-      const shardId = file.shardId ?? '0';
-      counts.set(shardId, (counts.get(shardId) ?? 0) + 1);
-      if (file.embedding) {
-        try {
-          const vector = JSON.parse(file.embedding) as number[];
-          if (vector.length > 0) {
-            const list = vectors.get(shardId) ?? [];
-            list.push(vector);
-            vectors.set(shardId, list);
-          }
-        } catch {
-          // skip malformed embeddings
-        }
-      }
-    }
-  }
-  const now = Date.now();
-  writeVectorShards(
-    readVectorShards().map((shard) => {
-      const documents = counts.get(shard.shardId) ?? 0;
-      const vectorsInShard = vectors.get(shard.shardId) ?? [];
-      let centroid = '';
-      if (vectorsInShard.length > 0) {
-        const dimension = vectorsInShard[0].length;
-        const sum = new Array<number>(dimension).fill(0);
-        for (const vector of vectorsInShard) {
-          for (let index = 0; index < dimension; index += 1) {
-            sum[index] += vector[index] ?? 0;
-          }
-        }
-        const norm = Math.sqrt(sum.reduce((acc, value) => acc + value * value, 0));
-        if (norm > 0) {
-          centroid = JSON.stringify(sum.map((value) => value / norm));
-        }
-      }
-      return {
-        ...shard,
-        documents,
-        status: documents > 0 && centroid ? 'ready' : documents > 0 ? 'partial' : 'idle',
-        centroid,
-        updatedAt: now,
-      };
-    }),
-  );
-}
-
-export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
-  if (isTauri()) return invoke<EmbeddingConfig>('get_embedding_config');
-  return readEmbeddingConfig();
-}
-
-export async function setEmbeddingConfig(input: {
-  mode: string;
-  providerId: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  dimension: number;
-  shardCount: number;
-  autoRebuild: boolean;
-  annEnabled: boolean;
-  probeCount: number;
-}): Promise<EmbeddingConfig> {
-  if (isTauri()) {
-    return invoke<EmbeddingConfig>('set_embedding_config', { request: input });
-  }
-  const shardCount = Math.min(64, Math.max(1, Math.round(input.shardCount) || 8));
-  const config: EmbeddingConfig = {
-    mode: input.mode === 'openai' || input.mode === 'ollama' ? input.mode : 'local',
-    providerId: input.providerId.trim(),
-    baseUrl: input.baseUrl.trim(),
-    apiKey: input.apiKey.trim(),
-    model: input.model.trim(),
-    dimension: Math.min(4096, Math.max(64, Math.round(input.dimension) || 256)),
-    shardCount,
-    autoRebuild: input.autoRebuild,
-    annEnabled: input.annEnabled,
-    probeCount: Math.min(shardCount, Math.max(1, Math.round(input.probeCount) || 2)),
-    updatedAt: Date.now(),
-  };
-  localStorage.setItem(EMBEDDING_CONFIG_LS_KEY, JSON.stringify(config));
-  seedVectorShards(shardCount, embeddingModelKey(config), config.dimension);
-  refreshVectorShardStats();
-  return config;
-}
-
-export async function getVectorIndexStatus(): Promise<VectorIndexStatus> {
-  if (isTauri()) return invoke<VectorIndexStatus>('get_vector_index_status');
-  const config = readEmbeddingConfig();
-  const target = embeddingModelKey(config);
-  const files = readVaultFiles();
-  let indexed = 0;
-  let failed = 0;
-  let pending = 0;
-  for (const file of files) {
-    if (file.embeddingStatus === 'failed') {
-      failed += 1;
-    } else if (
-      file.embeddingStatus === 'indexed' &&
-      file.embedding &&
-      file.embeddingModel === target
-    ) {
-      indexed += 1;
-    } else {
-      pending += 1;
-    }
-  }
-  return {
-    total: files.length,
-    pending,
-    failed,
-    indexed,
-    model: target,
-    autoRebuild: config.autoRebuild,
-    annEnabled: config.annEnabled,
-    probeCount: config.probeCount,
-    centroidsReady: readVectorShards().every(
-      (shard) => shard.documents === 0 || shard.centroid.length > 0,
-    ),
-    shards: readVectorShards(),
-  };
-}
-
-export async function rebuildVectorIndex(force = false): Promise<VectorRebuildResult> {
-  if (isTauri()) {
-    return invoke<VectorRebuildResult>('rebuild_vector_index', { force });
-  }
-  const config = readEmbeddingConfig();
-  const target = embeddingModelKey(config);
-  const files = readVaultFiles();
-  const targets = files.filter(
-    (file) =>
-      force ||
-      file.embeddingStatus !== 'indexed' ||
-      !file.embedding ||
-      file.embeddingModel !== target,
-  );
-  let rebuilt = 0;
-  let failedCount = 0;
-  for (const file of targets.slice(0, 25)) {
-    try {
-      const vector =
-        config.mode === 'local'
-          ? embedText(file.content)
-          : await embedTextRemote(
-              config.mode,
-              config.baseUrl,
-              config.apiKey,
-              config.model,
-              file.content,
-            );
-      file.embedding = JSON.stringify(vector);
-      file.embeddingModel = target;
-      file.embeddingDim = vector.length;
-      file.embeddingStatus = 'indexed';
-      file.embeddingError = '';
-      file.shardId = shardFor(file.path, config.shardCount);
-      rebuilt += 1;
-    } catch (err) {
-      file.embedding = JSON.stringify(embedText(file.content));
-      file.embeddingStatus = 'failed';
-      file.embeddingError = err instanceof Error ? err.message : String(err);
-      file.shardId = shardFor(file.path, config.shardCount);
-      failedCount += 1;
-    }
-  }
-  writeVaultFiles(files);
-  refreshVectorShardStats();
-  return {
-    total: files.length,
-    rebuilt,
-    failed: failedCount,
-    skipped: files.length - rebuilt - failedCount,
-    model: target,
-    shards: readVectorShards(),
-  };
-}
-
-function readKnowledgeClusterConfig(): {
-  clusterThreshold: number;
-  dedupThreshold: number;
-  lastRecomputedAt: number;
-} {
-  try {
-    const raw = localStorage.getItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<{
-        clusterThreshold: number;
-        dedupThreshold: number;
-        lastRecomputedAt: number;
-      }>;
-      return {
-        clusterThreshold: Math.min(1, Math.max(0, parsed.clusterThreshold ?? 0.62)),
-        dedupThreshold: Math.min(1, Math.max(0, parsed.dedupThreshold ?? 0.92)),
-        lastRecomputedAt: parsed.lastRecomputedAt ?? 0,
-      };
-    }
-  } catch {
-    // fall through to defaults
-  }
-  return { clusterThreshold: 0.62, dedupThreshold: 0.92, lastRecomputedAt: 0 };
-}
-
-function writeKnowledgeClusterConfig(config: {
-  clusterThreshold: number;
-  dedupThreshold: number;
-  lastRecomputedAt: number;
-}) {
-  lockedStorageWrite(() =>
-    localStorage.setItem(KNOWLEDGE_CLUSTER_CONFIG_LS_KEY, JSON.stringify(config)),
-  );
-}
-
-type ClusterDoc = {
-  id: string;
-  path: string;
-  title: string;
-  content: string;
-  embedding: number[];
-};
-
-function readClusterDocs(): ClusterDoc[] {
-  return readVaultFiles()
-    .filter((file) => file.embeddingStatus === 'indexed')
-    .map((file) => {
-      let embedding: number[];
-      try {
-        embedding = file.embedding ? (JSON.parse(file.embedding) as number[]) : [];
-      } catch {
-        embedding = [];
-      }
-      if (embedding.length === 0) embedding = embedText(file.content);
-      return {
-        id: file.path,
-        path: file.path,
-        title: file.title,
-        content: file.content,
-        embedding,
-      };
-    })
-    .sort((a, b) => a.path.localeCompare(b.path));
-}
-
-function readKnowledgeClusters(): KnowledgeClusterRecord[] {
-  try {
-    return JSON.parse(
-      localStorage.getItem(KNOWLEDGE_CLUSTERS_LS_KEY) ?? '[]',
-    ) as KnowledgeClusterRecord[];
-  } catch {
-    return [];
-  }
-}
-
-function writeKnowledgeClusters(clusters: KnowledgeClusterRecord[]) {
-  lockedStorageWrite(() =>
-    localStorage.setItem(KNOWLEDGE_CLUSTERS_LS_KEY, JSON.stringify(clusters)),
-  );
-}
-
-function readKnowledgeDedup(): KnowledgeDedupCandidate[] {
-  try {
-    return JSON.parse(
-      localStorage.getItem(KNOWLEDGE_DEDUP_LS_KEY) ?? '[]',
-    ) as KnowledgeDedupCandidate[];
-  } catch {
-    return [];
-  }
-}
-
-function writeKnowledgeDedup(candidates: KnowledgeDedupCandidate[]) {
-  lockedStorageWrite(() =>
-    localStorage.setItem(KNOWLEDGE_DEDUP_LS_KEY, JSON.stringify(candidates)),
-  );
-}
-
-function normalizeVector(vector: number[]): number[] {
-  const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-  return norm > 0 ? vector.map((value) => value / norm) : vector;
-}
-
-export async function getKnowledgeClusterStatus(): Promise<KnowledgeClusterStatus> {
-  if (isTauri()) return invoke<KnowledgeClusterStatus>('get_knowledge_cluster_status');
-  const config = readKnowledgeClusterConfig();
-  const model = embeddingModelKey(readEmbeddingConfig());
-  return {
-    clusters: readKnowledgeClusters(),
-    dedup: readKnowledgeDedup().sort((a, b) => {
-      const order = { open: 0, dismissed: 1, merged: 2 } as const;
-      return order[a.status] - order[b.status] || b.similarity - a.similarity;
-    }),
-    clusterThreshold: config.clusterThreshold,
-    dedupThreshold: config.dedupThreshold,
-    lastRecomputedAt: config.lastRecomputedAt,
-    model,
-  };
-}
-
-export async function recomputeKnowledgeClusters(
-  clusterThreshold?: number,
-  dedupThreshold?: number,
-): Promise<KnowledgeClusterStatus> {
-  if (isTauri()) {
-    return invoke<KnowledgeClusterStatus>('recompute_knowledge_clusters', {
-      clusterThreshold: clusterThreshold ?? null,
-      dedupThreshold: dedupThreshold ?? null,
-    });
-  }
-  const docs = readClusterDocs();
-  const threshold = Math.min(1, Math.max(0, clusterThreshold ?? 0.62));
-  const dedupThresholdValue = Math.min(1, Math.max(0, dedupThreshold ?? 0.92));
-  const clusters: {
-    members: { id: string; similarity: number }[];
-    representative: string;
-    centroid: number[];
-  }[] = [];
-  for (const doc of docs) {
-    const best = clusters.reduce<{ index: number; score: number } | null>(
-      (current, cluster, index) => {
-        if (cluster.members.some((member) => member.id === doc.id)) return current;
-        const score = cosineSimilarity(doc.embedding, cluster.centroid);
-        if (score < threshold) return current;
-        if (!current || score > current.score) return { index, score };
-        return current;
-      },
-      null,
-    );
-    if (best) {
-      const cluster = clusters[best.index];
-      const score = cosineSimilarity(doc.embedding, cluster.centroid);
-      cluster.members.push({ id: doc.id, similarity: score });
-      if (doc.content.length > cluster.representative.length) {
-        cluster.representative = doc.content;
-      }
-      cluster.centroid = normalizeVector(
-        cluster.centroid.map((value, index) => value + doc.embedding[index]),
-      );
-    } else {
-      clusters.push({
-        members: [{ id: doc.id, similarity: 1 }],
-        representative: doc.content,
-        centroid: normalizeVector(doc.embedding),
-      });
-    }
-  }
-  const model = embeddingModelKey(readEmbeddingConfig());
-  const records: KnowledgeClusterRecord[] = clusters
-    .map((cluster, index) => ({
-      id: `cluster-${index + 1}-${cluster.members[0]?.id.slice(0, 6) ?? 'x'}`,
-      documents: cluster.members.length,
-      representative: cluster.representative.slice(0, 500).trim(),
-      model,
-      members: cluster.members.map((member) => {
-        const doc = docs.find((d) => d.id === member.id);
-        return {
-          id: member.id,
-          path: doc?.path ?? member.id,
-          title: doc?.title ?? 'Untitled',
-          similarity: member.similarity,
-        };
-      }),
-    }))
-    .sort((a, b) => b.documents - a.documents);
-  writeKnowledgeClusters(records);
-
-  const existing = new Set(
-    readKnowledgeDedup()
-      .filter((candidate) => candidate.status !== 'open')
-      .map((candidate) => `${candidate.docA}\u0000${candidate.docB}`),
-  );
-  const dedup = readKnowledgeDedup();
-  for (let a = 0; a < docs.length; a += 1) {
-    for (let b = a + 1; b < docs.length; b += 1) {
-      const similarity = cosineSimilarity(docs[a].embedding, docs[b].embedding);
-      if (similarity < dedupThresholdValue) continue;
-      const [left, right] = docs[a].id < docs[b].id ? [docs[a], docs[b]] : [docs[b], docs[a]];
-      const key = `${left.id}\u0000${right.id}`;
-      if (
-        existing.has(key) ||
-        dedup.some((candidate) => candidate.docA === left.id && candidate.docB === right.id)
-      ) {
-        continue;
-      }
-      dedup.push({
-        id: `dup-${Date.now()}-${dedup.length}`,
-        docA: left.id,
-        docB: right.id,
-        titleA: left.title,
-        titleB: right.title,
-        similarity,
-        status: 'open',
-      });
-    }
-  }
-  for (const candidate of dedup) {
-    if (
-      candidate.status === 'open' &&
-      (!docs.some((doc) => doc.id === candidate.docA) ||
-        !docs.some((doc) => doc.id === candidate.docB))
-    ) {
-      candidate.status = 'merged';
-    }
-  }
-  writeKnowledgeDedup(dedup);
-  const config = readKnowledgeClusterConfig();
-  config.clusterThreshold = threshold;
-  config.dedupThreshold = dedupThresholdValue;
-  config.lastRecomputedAt = Date.now();
-  writeKnowledgeClusterConfig(config);
-  return getKnowledgeClusterStatus();
-}
-
-export async function dismissKnowledgeDuplicate(id: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('dismiss_knowledge_duplicate', { id });
-    return;
-  }
-  const dedup = readKnowledgeDedup();
-  const candidate = dedup.find((item) => item.id === id);
-  if (candidate) candidate.status = 'dismissed';
-  writeKnowledgeDedup(dedup);
-}
-
-export async function mergeKnowledgeDuplicate(id: string): Promise<void> {
-  if (isTauri()) {
-    await invoke('merge_knowledge_duplicate', { id });
-    return;
-  }
-  const dedup = readKnowledgeDedup();
-  const candidate = dedup.find((item) => item.id === id);
-  if (!candidate) return;
-  const files = readVaultFiles();
-  writeVaultFiles(files.filter((file) => file.path !== candidate.docB));
-  candidate.status = 'merged';
-  writeKnowledgeDedup(dedup);
-  refreshVectorShardStats();
-}
-
-export async function getDocHealthAutoConfig(): Promise<DocHealthAutoConfig> {
-  try {
-    const raw = localStorage.getItem(DOC_HEALTH_AUTO_LS_KEY);
-    if (raw) return JSON.parse(raw) as DocHealthAutoConfig;
-  } catch {
-    // fall through to defaults
-  }
-  return {
-    enabled: false,
-    intervalMs: 60 * 60 * 1000,
-    lastRunAt: 0,
-    lastResult: null,
-  };
-}
-
-export async function setDocHealthAutoConfig(
-  config: DocHealthAutoConfig,
-): Promise<DocHealthAutoConfig> {
-  localStorage.setItem(DOC_HEALTH_AUTO_LS_KEY, JSON.stringify(config));
-  return config;
-}
-
-export async function getDocHealthRunHistory(): Promise<DocHealthRunRecord[]> {
-  try {
-    const raw = localStorage.getItem(DOC_HEALTH_HISTORY_LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as DocHealthRunRecord[];
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {
-    // fall through to empty history
-  }
-  return [];
-}
-
-export async function appendDocHealthRun(
-  record: Omit<DocHealthRunRecord, 'id'>,
-): Promise<DocHealthRunRecord[]> {
-  const history = await getDocHealthRunHistory();
-  const next = [{ ...record, id: makeId() }, ...history].slice(0, 50);
-  localStorage.setItem(DOC_HEALTH_HISTORY_LS_KEY, JSON.stringify(next));
-  return next;
-}
-
-export async function getDocHealthAlertDismissedAt(): Promise<number> {
-  return Number(localStorage.getItem(DOC_HEALTH_ALERT_DISMISSED_LS_KEY) ?? 0) || 0;
-}
-
-export async function setDocHealthAlertDismissedAt(timestamp: number): Promise<void> {
-  localStorage.setItem(DOC_HEALTH_ALERT_DISMISSED_LS_KEY, String(timestamp));
-}
-
-export async function indexVault(
-  vaultPath: string,
-  ignorePatterns: string[] = [],
-  concurrency = 4,
-): Promise<IndexResult> {
-  let result: IndexResult;
-  if (isTauri()) {
-    result = await invoke<IndexResult>('index_vault_ex', {
-      vaultPath,
-      ignorePatterns,
-      concurrency,
-    });
-  } else {
-    const existing = readVaultFiles();
-    const sample = sampleVaultFiles(vaultPath);
-    const merged = existing.length > 0 ? existing : sample;
-    const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
-    const filtered = merged.filter(
-      (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
-    );
-    const config = readEmbeddingConfig();
-    const target = embeddingModelKey(config);
-    const enriched = filtered.map((file) => ({
-      ...file,
-      shardId: shardFor(file.path, config.shardCount),
-      embedding: file.embedding ?? JSON.stringify(embedText(file.content)),
-      embeddingModel: file.embeddingModel ?? 'local',
-      embeddingDim: file.embeddingDim ?? 256,
-      embeddingStatus: file.embeddingStatus ?? (config.mode === 'local' ? 'indexed' : 'pending'),
-      embeddingError: file.embeddingError ?? '',
-    }));
-    localStorage.setItem(VAULT_LS_KEY, JSON.stringify(enriched));
-    seedVectorShards(config.shardCount, target, config.dimension);
-    refreshVectorShardStats();
-    const cores = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
-    const concurrencyUsed = Math.min(
-      filtered.length || 1,
-      filtered.length <= 32 ? 1 : Math.min(4, cores),
-    );
-    result = {
-      files: filtered.length,
-      ignored: merged.length - filtered.length,
-      concurrencyUsed,
-    };
-  }
-  void emitWorkbenchEvent('knowledge.indexed', {
-    path: vaultPath,
-    files: result.files,
-    ignored: result.ignored,
-  });
-  return result;
-}
-
-const vaultIndexProgressHandlers: ((progress: IndexProgress) => void)[] = [];
-const vaultIndexCancelled = new Set<string>();
-const vaultIndexQueue: IndexQueueRequest[] = [];
-const vaultIndexQueueHandlers: ((status: VaultIndexQueueStatus) => void)[] = [];
-let vaultIndexActive: IndexQueueRequest | null = null;
-const VAULT_INDEX_QUEUE_LS_KEY = 'ai-workbench:vault-index-queue:v1';
-let vaultIndexQueueRestored = false;
-
-type IndexQueueRequest = {
-  runId: string;
-  path: string;
-  ignorePatterns: string[];
-  concurrency: number;
-  priority: number;
-  attempts: number;
-  lastError: string;
-};
-
-type PersistedIndexQueueRecord = IndexQueueRequest & {
-  status: 'queued' | 'running';
-};
-
-const VAULT_INDEX_MAX_ATTEMPTS = 3;
-const VAULT_INDEX_RETRY_BASE_MS = 500;
-const VAULT_INDEX_RETRY_MAX_MS = 4000;
-
-function indexRetryDelayMs(attempts: number): number {
-  if (attempts <= 0) return 0;
-  const exponent = Math.min(3, Math.max(0, attempts - 1));
-  return Math.min(VAULT_INDEX_RETRY_MAX_MS, VAULT_INDEX_RETRY_BASE_MS * 2 ** exponent);
-}
-
-function enqueueIndexRequest(request: IndexQueueRequest) {
-  const index = vaultIndexQueue.findIndex((queued) => queued.priority < request.priority);
-  if (index === -1) vaultIndexQueue.push(request);
-  else vaultIndexQueue.splice(index, 0, request);
-}
-
-function currentVaultIndexQueueStatus(): VaultIndexQueueStatus {
-  return {
-    active: vaultIndexActive
-      ? {
-          runId: vaultIndexActive.runId,
-          path: vaultIndexActive.path,
-          status: 'running',
-          position: 1,
-          priority: vaultIndexActive.priority,
-          attempts: vaultIndexActive.attempts,
-          lastError: vaultIndexActive.lastError,
-          retryDelayMs: indexRetryDelayMs(vaultIndexActive.attempts),
-        }
-      : null,
-    queue: vaultIndexQueue.map((request, index) => ({
-      runId: request.runId,
-      path: request.path,
-      status: 'queued',
-      position: index + 1,
-      priority: request.priority,
-      attempts: request.attempts,
-      lastError: request.lastError,
-      retryDelayMs: indexRetryDelayMs(request.attempts),
-    })),
-  };
-}
-
-function writePersistedVaultIndexQueue() {
-  const records: PersistedIndexQueueRecord[] = [
-    ...(vaultIndexActive ? [{ ...vaultIndexActive, status: 'running' as const }] : []),
-    ...vaultIndexQueue.map((request) => ({
-      ...request,
-      status: 'queued' as const,
-    })),
-  ];
-  lockedStorageWrite(() => localStorage.setItem(VAULT_INDEX_QUEUE_LS_KEY, JSON.stringify(records)));
-}
-
-function restoreVaultIndexQueueIfNeeded() {
-  if (vaultIndexQueueRestored) return;
-  vaultIndexQueueRestored = true;
-  try {
-    const records = JSON.parse(
-      localStorage.getItem(VAULT_INDEX_QUEUE_LS_KEY) ?? '[]',
-    ) as PersistedIndexQueueRecord[];
-    for (const record of records) {
-      if (record.status === 'queued' || record.status === 'running') {
-        enqueueIndexRequest({
-          runId: record.runId,
-          path: record.path,
-          ignorePatterns: Array.isArray(record.ignorePatterns) ? record.ignorePatterns : [],
-          concurrency: Number(record.concurrency) || 4,
-          priority: Number(record.priority) || 0,
-          attempts: Number(record.attempts) || 0,
-          lastError: typeof record.lastError === 'string' ? record.lastError : '',
-        });
-      }
-    }
-  } catch {
-    /* fall back to empty restored queue */
-  }
-  writePersistedVaultIndexQueue();
-}
-
-function emitVaultIndexQueue() {
-  const status = currentVaultIndexQueueStatus();
-  for (const handler of [...vaultIndexQueueHandlers]) handler(status);
-}
-
-function emitIndexProgress(progress: IndexProgress) {
-  for (const handler of [...vaultIndexProgressHandlers]) handler(progress);
-}
-
-function pumpVaultIndexQueue() {
-  if (vaultIndexActive) {
-    emitVaultIndexQueue();
-    return;
-  }
-  const request = vaultIndexQueue.shift();
-  if (!request) {
-    emitVaultIndexQueue();
-    return;
-  }
-  vaultIndexActive = request;
-  writePersistedVaultIndexQueue();
-  emitVaultIndexQueue();
-  void runMockVaultIndex(request);
-}
-
-async function runMockVaultIndex(request: IndexQueueRequest) {
-  const { runId, path, ignorePatterns, concurrency } = request;
-  const retryable = path.toLowerCase().includes('retry');
-  const result = retryable ? null : await indexVault(path, ignorePatterns, concurrency);
-  let step = 0;
-  const failAttempt = () => {
-    if (vaultIndexCancelled.has(runId)) {
-      emitIndexProgress({
-        runId,
-        path,
-        done: 0,
-        total: 0,
-        files: 0,
-        ignored: 0,
-        concurrencyUsed: 0,
-        status: 'cancelled',
-      });
-      vaultIndexCancelled.delete(runId);
-      vaultIndexActive = null;
-      writePersistedVaultIndexQueue();
-      emitVaultIndexQueue();
-      pumpVaultIndexQueue();
-      return;
-    }
-    const active = vaultIndexActive;
-    if (!active) return;
-    const attempts = active.attempts + 1;
-    emitIndexProgress({
-      runId,
-      path,
-      done: 0,
-      total: 0,
-      files: 0,
-      ignored: 0,
-      concurrencyUsed: 0,
-      status: 'error: simulated failure',
-    });
-    if (attempts >= VAULT_INDEX_MAX_ATTEMPTS) {
-      vaultIndexActive = null;
-      writePersistedVaultIndexQueue();
-      emitVaultIndexQueue();
-      pumpVaultIndexQueue();
-      return;
-    }
-    active.attempts = attempts;
-    active.lastError = 'simulated failure';
-    vaultIndexActive = null;
-    enqueueIndexRequest(active);
-    writePersistedVaultIndexQueue();
-    emitVaultIndexQueue();
-    setTimeout(() => pumpVaultIndexQueue(), indexRetryDelayMs(active.attempts));
-  };
-  const tick = () => {
-    step += 1;
-    if (vaultIndexCancelled.has(runId)) {
-      emitIndexProgress({
-        runId,
-        path,
-        done: 0,
-        total: 0,
-        files: 0,
-        ignored: 0,
-        concurrencyUsed: 0,
-        status: 'cancelled',
-      });
-      vaultIndexCancelled.delete(runId);
-      vaultIndexActive = null;
-      writePersistedVaultIndexQueue();
-      emitVaultIndexQueue();
-      pumpVaultIndexQueue();
-      return;
-    }
-    if (!result) return;
-    emitIndexProgress({
-      runId,
-      path,
-      done: Math.min(result.files, Math.ceil((result.files * step) / 6)),
-      total: result.files,
-      files: result.files,
-      ignored: result.ignored,
-      concurrencyUsed: result.concurrencyUsed,
-      status: step >= 6 ? 'done' : 'running',
-    });
-    if (step >= 6) {
-      vaultIndexActive = null;
-      writePersistedVaultIndexQueue();
-      emitVaultIndexQueue();
-      pumpVaultIndexQueue();
-      return;
-    }
-    setTimeout(tick, 120);
-  };
-  if (retryable) {
-    setTimeout(failAttempt, request.attempts === 0 ? 1200 : 30);
-    return;
-  }
-  setTimeout(tick, 30);
-}
-
-export async function startVaultIndex(
-  vaultPath: string,
-  ignorePatterns: string[] = [],
-  concurrency = 4,
-  priority = 0,
-): Promise<string> {
-  if (isTauri()) {
-    return invoke<string>('start_vault_index', {
-      vaultPath,
-      ignorePatterns,
-      concurrency,
-      priority,
-    });
-  }
-  restoreVaultIndexQueueIfNeeded();
-  const runId = makeId();
-  enqueueIndexRequest({
-    runId,
-    path: vaultPath,
-    ignorePatterns,
-    concurrency,
-    priority,
-    attempts: 0,
-    lastError: '',
-  });
-  writePersistedVaultIndexQueue();
-  emitIndexProgress({
-    runId,
-    path: vaultPath,
-    done: 0,
-    total: 0,
-    files: 0,
-    ignored: 0,
-    concurrencyUsed: 0,
-    status: vaultIndexActive ? 'queued' : 'running',
-  });
-  emitVaultIndexQueue();
-  pumpVaultIndexQueue();
-  return runId;
-}
-
-export async function cancelVaultIndex(runId: string): Promise<boolean> {
-  if (isTauri()) return invoke<boolean>('cancel_vault_index', { runId });
-  if (vaultIndexActive?.runId === runId) {
-    vaultIndexCancelled.add(runId);
-    return true;
-  }
-  const index = vaultIndexQueue.findIndex((request) => request.runId === runId);
-  if (index >= 0) {
-    const [request] = vaultIndexQueue.splice(index, 1);
-    writePersistedVaultIndexQueue();
-    emitIndexProgress({
-      runId: request.runId,
-      path: request.path,
-      done: 0,
-      total: 0,
-      files: 0,
-      ignored: 0,
-      concurrencyUsed: 0,
-      status: 'cancelled',
-    });
-  }
-  emitVaultIndexQueue();
-  pumpVaultIndexQueue();
-  return true;
-}
-
-export async function getVaultIndexQueueStatus(): Promise<VaultIndexQueueStatus> {
-  if (isTauri()) return invoke<VaultIndexQueueStatus>('get_vault_index_queue_status');
-  restoreVaultIndexQueueIfNeeded();
-  pumpVaultIndexQueue();
-  return currentVaultIndexQueueStatus();
-}
-
-export async function listenVaultIndexQueue(
-  handler: (status: VaultIndexQueueStatus) => void,
-): Promise<() => void> {
-  if (isTauri()) {
-    const { listen } = await import('@tauri-apps/api/event');
-    return listen<VaultIndexQueueStatus>('vault-index-queue', (event) => handler(event.payload));
-  }
-  vaultIndexQueueHandlers.push(handler);
-  return () => {
-    const index = vaultIndexQueueHandlers.indexOf(handler);
-    if (index >= 0) vaultIndexQueueHandlers.splice(index, 1);
-  };
-}
-
-export async function listenVaultIndexProgress(
-  handler: (progress: IndexProgress) => void,
-): Promise<() => void> {
-  if (isTauri()) {
-    const { listen } = await import('@tauri-apps/api/event');
-    return listen<IndexProgress>('vault-index-progress', (event) => handler(event.payload));
-  }
-  vaultIndexProgressHandlers.push(handler);
-  return () => {
-    const index = vaultIndexProgressHandlers.indexOf(handler);
-    if (index >= 0) vaultIndexProgressHandlers.splice(index, 1);
-  };
-}
-
-export async function getKnowledgeIndexStatus(): Promise<KnowledgeIndexStatus> {
-  if (isTauri()) return invoke<KnowledgeIndexStatus>('get_knowledge_index_status');
-  const files = readVaultFiles();
-  return { files: files.length, indexedAt: files.length ? Date.now() : 0 };
-}
-
-export async function recommendIndexConcurrency(): Promise<RecommendedConcurrency> {
-  if (isTauri()) return invoke<RecommendedConcurrency>('recommend_index_concurrency');
-  const cores = navigator.hardwareConcurrency || 4;
-  return { recommended: Math.max(1, Math.min(16, cores)), cores };
-}
-
-export async function startVaultWatch(
-  vaultPath: string,
-  ignorePatterns: string[] = [],
-): Promise<VaultWatchStatus> {
-  if (isTauri()) {
-    return invoke<VaultWatchStatus>('start_vault_watch_ex', { vaultPath, ignorePatterns });
-  }
-  const existing = readVaultFiles();
-  const merged = existing.length > 0 ? existing : sampleVaultFiles(vaultPath);
-  const segments = ignorePatterns.map((p) => p.trim().toLowerCase()).filter(Boolean);
-  const filtered = merged.filter(
-    (file) => !segments.some((segment) => file.path.toLowerCase().includes(segment)),
-  );
-  const syncPath = `${vaultPath}\\Watch Sync Note.md`;
-  if (!filtered.some((file) => file.path === syncPath)) {
-    filtered.push({
-      path: syncPath,
-      title: 'Watch Sync Note',
-      tags: '#work,#vault',
-      content: '# Watch Sync Note\n\n- 文件监听会自动把新 Markdown 纳入 RAG',
-    });
-  }
-  localStorage.setItem(VAULT_LS_KEY, JSON.stringify(filtered));
-  await upsertVaultWatchTarget({
-    path: vaultPath,
-    ignorePatterns,
-    enabled: true,
-    updatedAt: Date.now(),
-    lastEventAt: 0,
-    eventCount: 0,
-    createdEvents: 0,
-    modifiedEvents: 0,
-    removedEvents: 0,
-  });
-  const targets = readVaultWatchTargets().map((target) =>
-    target.path === vaultPath
-      ? {
-          ...target,
-          lastEventAt: Date.now(),
-          eventCount: target.eventCount + 1,
-          createdEvents: target.createdEvents + 1,
-        }
-      : target,
-  );
-  writeVaultWatchTargets(targets);
-  recordVaultWatchEvent(vaultPath, syncPath, 'created');
-  return getVaultWatchStatus();
-}
-
-export async function stopVaultWatch(vaultPath?: string): Promise<VaultWatchStatus> {
-  if (isTauri()) {
-    return invoke<VaultWatchStatus>('stop_vault_watch', vaultPath ? { vaultPath } : {});
-  }
-  const targets = readVaultWatchTargets().map((target) =>
-    !vaultPath || target.path === vaultPath
-      ? { ...target, enabled: false, updatedAt: Date.now() }
-      : target,
-  );
-  writeVaultWatchTargets(targets);
-  return getVaultWatchStatus();
-}
-
-export async function getVaultWatchStatus(): Promise<VaultWatchStatus> {
-  if (isTauri()) return invoke<VaultWatchStatus>('get_vault_watch_status');
-  const targets = readVaultWatchTargets();
-  const watchingTargets = targets.filter((target) => target.enabled);
-  return {
-    watching: watchingTargets.length > 0,
-    path: watchingTargets[0]?.path ?? null,
-    paths: watchingTargets.map((target) => target.path),
-    files: readVaultFiles().length,
-    updatedAt: Math.max(0, ...targets.map((target) => target.updatedAt)),
-  };
-}
-
-export async function listenVaultWatchUpdated(
-  handler: (status: VaultWatchStatus) => void,
-): Promise<() => void> {
-  if (isTauri()) {
-    const { listen } = await import('@tauri-apps/api/event');
-    return listen<VaultWatchStatus>('vault-watch-update', (event) => handler(event.payload));
-  }
-  return () => {};
 }
 
 export async function searchThoughts(
@@ -6545,19 +4827,6 @@ export async function searchThoughts(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
   return scored;
-}
-
-export async function getRagIndexStatus(): Promise<RagIndexStatus> {
-  if (isTauri()) return invoke<RagIndexStatus>('get_rag_index_status');
-  const shape = readLocal();
-  const vaultFiles = readVaultFiles();
-  const total = shape.thoughts.length + vaultFiles.length;
-  return {
-    documents: total,
-    indexed: total > 0,
-    lastIndexedAt: shape.thoughts[0]?.createdAt ?? (vaultFiles.length ? Date.now() : 0),
-    vectorIndexed: total > 0,
-  };
 }
 
 export async function sendAiMessage(args: {
@@ -7610,1278 +5879,6 @@ export async function resolveRebaseConflicts(
   };
 }
 
-export async function deliverWebhook(
-  url: string,
-  payload: string,
-  method?: string,
-  token?: string,
-  secret?: string,
-  retries = 1,
-): Promise<WebhookDeliveryResult> {
-  if (isTauri()) {
-    return invoke<WebhookDeliveryResult>('deliver_webhook', {
-      url,
-      payload: payload.trim() ? payload.trim() : '{}',
-      method: method?.trim() ? method.trim().toUpperCase() : null,
-      token: token?.trim() ? token.trim() : null,
-      secret: secret?.trim() ? secret.trim() : null,
-      retries,
-    });
-  }
-  return {
-    ok: true,
-    status: 200,
-    durationMs: 12,
-    attempts: Math.max(1, retries + 1),
-    signed: !!secret?.trim(),
-    message: `HTTP 200 delivered (${Math.max(1, retries + 1)} attempt(s))`,
-  };
-}
-
-function readWebhookRules(): WebhookRule[] {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_RULES_LS_KEY);
-    const rules: WebhookRule[] = raw ? (JSON.parse(raw) as WebhookRule[]) : [];
-    return rules.map((rule) => ({
-      ...rule,
-      cooldownSeconds: rule.cooldownSeconds ?? 0,
-      consecutiveFailures: rule.consecutiveFailures ?? 0,
-      autoDisableAfter: rule.autoDisableAfter ?? 3,
-      templateVersion: rule.templateVersion ?? 1,
-      triggerCondition: rule.triggerCondition ?? '',
-      channels: Array.isArray(rule.channels)
-        ? rule.channels.filter(
-            (channel) => channel === 'http' || channel === 'email' || channel === 'notification',
-          )
-        : ['http'],
-      recoveryBackoffSeconds: rule.recoveryBackoffSeconds ?? 300,
-      circuitOpenedAt: rule.circuitOpenedAt ?? 0,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function writeWebhookRules(rules: WebhookRule[]) {
-  lockedStorageWrite(() => localStorage.setItem(WEBHOOK_RULES_LS_KEY, JSON.stringify(rules)));
-}
-
-function readWebhookRuleRuns(): WebhookRuleRun[] {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_RULE_RUNS_LS_KEY);
-    return raw ? (JSON.parse(raw) as WebhookRuleRun[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeWebhookRuleRuns(runs: WebhookRuleRun[]) {
-  lockedStorageWrite(() => localStorage.setItem(WEBHOOK_RULE_RUNS_LS_KEY, JSON.stringify(runs)));
-}
-
-function pruneWebhookRuleRuns(runs: WebhookRuleRun[], keep = 50): WebhookRuleRun[] {
-  const byRule = new Map<string, WebhookRuleRun[]>();
-  for (const run of runs) {
-    const list = byRule.get(run.ruleId) ?? [];
-    list.push(run);
-    byRule.set(run.ruleId, list);
-  }
-  const pruned: WebhookRuleRun[] = [];
-  for (const list of byRule.values()) {
-    list.sort((a, b) => b.createdAt - a.createdAt);
-    pruned.push(...list.slice(0, keep));
-  }
-  return pruned.sort((a, b) => b.createdAt - a.createdAt);
-}
-
-function appendWebhookRuleRun(
-  ruleId: string,
-  kind: WebhookRuleRun['kind'],
-  status: WebhookRuleRun['status'],
-  httpStatus: number,
-  attempts: number,
-  message: string,
-): void {
-  const run: WebhookRuleRun = {
-    id: makeId(),
-    ruleId,
-    kind,
-    status,
-    httpStatus,
-    attempts: Math.max(1, attempts),
-    message,
-    createdAt: Date.now(),
-  };
-  writeWebhookRuleRuns(pruneWebhookRuleRuns([run, ...readWebhookRuleRuns()]));
-}
-
-export async function listWebhookRuleRuns(ruleId?: string, limit = 50): Promise<WebhookRuleRun[]> {
-  if (isTauri()) {
-    return invoke<WebhookRuleRun[]>('list_webhook_rule_runs', {
-      ruleId: ruleId?.trim() ? ruleId.trim() : null,
-      limit,
-    });
-  }
-  const all = pruneWebhookRuleRuns(readWebhookRuleRuns());
-  const filtered = ruleId?.trim() ? all.filter((run) => run.ruleId === ruleId.trim()) : all;
-  return filtered.slice(0, Math.min(Math.max(1, limit), 200));
-}
-
-export async function listWebhookRules(): Promise<WebhookRule[]> {
-  if (isTauri()) return invoke<WebhookRule[]>('list_webhook_rules');
-  return readWebhookRules();
-}
-
-export async function createWebhookRule(
-  name: string,
-  url: string,
-  payload: string,
-  method?: string,
-  token?: string,
-  intervalSeconds = 60,
-  secret?: string,
-  retries = 1,
-  cooldownSeconds = 0,
-  triggerEvent = '',
-  autoDisableAfter = 3,
-  triggerCondition = '',
-  channels: WebhookChannelName[] = ['http'],
-  recoveryBackoffSeconds = 300,
-): Promise<WebhookRule> {
-  const conditionError = validateWebhookCondition(triggerCondition);
-  if (conditionError) throw new Error(`Invalid trigger condition: ${conditionError}`);
-  const normalizedChannels: WebhookChannelName[] = channels.filter(
-    (channel) => channel === 'http' || channel === 'email' || channel === 'notification',
-  );
-  const finalChannels: WebhookChannelName[] =
-    normalizedChannels.length > 0 ? normalizedChannels : ['http'];
-  if (isTauri()) {
-    return invoke<WebhookRule>('create_webhook_rule', {
-      request: {
-        name,
-        url,
-        payload,
-        method: method?.trim() ? method.trim().toUpperCase() : null,
-        token: token?.trim() ? token.trim() : null,
-        secret: secret?.trim() ? secret.trim() : null,
-        retries,
-        cooldownSeconds: Math.max(0, cooldownSeconds),
-        intervalSeconds: Math.max(5, intervalSeconds),
-        triggerEvent: triggerEvent.trim(),
-        autoDisableAfter: Math.max(0, autoDisableAfter),
-        triggerCondition: triggerCondition.trim(),
-        channels: finalChannels,
-        recoveryBackoffSeconds: Math.max(0, recoveryBackoffSeconds),
-      },
-    });
-  }
-  const now = Date.now();
-  const rule: WebhookRule = {
-    id: makeId(),
-    name,
-    url,
-    payload: payload.trim() ? payload.trim() : '{}',
-    method: method?.trim().toUpperCase() || 'POST',
-    token: token?.trim() || '',
-    secret: secret?.trim() || '',
-    retries: Math.max(0, retries),
-    cooldownSeconds: Math.max(0, cooldownSeconds),
-    intervalSeconds: Math.max(5, intervalSeconds),
-    triggerEvent: triggerEvent.trim(),
-    triggerCondition: triggerCondition.trim(),
-    channels: finalChannels,
-    recoveryBackoffSeconds: Math.max(0, recoveryBackoffSeconds),
-    circuitOpenedAt: 0,
-    enabled: true,
-    lastRunAt: 0,
-    lastStatus: 0,
-    lastMessage: '',
-    createdAt: now,
-    updatedAt: now,
-    consecutiveFailures: 0,
-    autoDisableAfter: Math.max(0, autoDisableAfter),
-    templateVersion: 1,
-  };
-  writeWebhookRules([...readWebhookRules(), rule]);
-  writeWebhookTemplateVersions({
-    ...readWebhookTemplateVersions(),
-    [rule.id]: [
-      {
-        id: makeId(),
-        ruleId: rule.id,
-        version: 1,
-        payload: rule.payload,
-        note: '',
-        createdAt: now,
-      },
-    ],
-  });
-  return rule;
-}
-
-export async function setWebhookRuleEnabled(id: string, enabled: boolean): Promise<WebhookRule> {
-  if (isTauri()) {
-    return invoke<WebhookRule>('set_webhook_rule_enabled', { id, enabled });
-  }
-  const rules = readWebhookRules();
-  const rule = rules.find((r) => r.id === id);
-  if (!rule) throw new Error('Webhook rule not found');
-  rule.enabled = enabled;
-  if (enabled) {
-    rule.consecutiveFailures = 0;
-    rule.circuitOpenedAt = 0;
-  }
-  rule.updatedAt = Date.now();
-  writeWebhookRules(rules);
-  return rule;
-}
-
-export async function deleteWebhookRule(id: string): Promise<string> {
-  if (isTauri()) return invoke<string>('delete_webhook_rule', { id });
-  const rules = readWebhookRules();
-  const next = rules.filter((r) => r.id !== id);
-  if (next.length === rules.length) throw new Error('Webhook rule not found');
-  writeWebhookRules(next);
-  return `Deleted webhook rule ${id.slice(0, 8)}`;
-}
-
-export async function runWebhookRule(id: string): Promise<WebhookDeliveryResult> {
-  if (isTauri()) return invoke<WebhookDeliveryResult>('run_webhook_rule', { id });
-  const rules = readWebhookRules();
-  const rule = rules.find((r) => r.id === id);
-  if (!rule) throw new Error('Webhook rule not found');
-  const simulatedFailure =
-    /\/fail|\/broken/i.test(rule.url) || rule.payload.includes('"fail":true');
-  const result: WebhookDeliveryResult = {
-    ok: !simulatedFailure,
-    status: simulatedFailure ? 500 : 200,
-    durationMs: 12,
-    attempts: Math.max(1, rule.retries + 1),
-    signed: !!rule.secret,
-    message: simulatedFailure ? 'HTTP 500 simulated failure' : 'HTTP 200 delivered',
-  };
-  rule.lastRunAt = Date.now();
-  rule.lastStatus = result.status;
-  rule.lastMessage = result.message;
-  const failed = result.status >= 400 || result.status === 0;
-  rule.consecutiveFailures = failed ? (rule.consecutiveFailures ?? 0) + 1 : 0;
-  if (
-    failed &&
-    (rule.autoDisableAfter ?? 3) > 0 &&
-    rule.consecutiveFailures >= (rule.autoDisableAfter ?? 3)
-  ) {
-    rule.enabled = false;
-    rule.circuitOpenedAt = Date.now();
-    rule.lastMessage = `Auto-disabled after ${rule.consecutiveFailures} consecutive failures`;
-  } else if (!failed) {
-    rule.circuitOpenedAt = 0;
-  }
-  rule.updatedAt = Date.now();
-  writeWebhookRules(rules);
-  appendWebhookRuleRun(
-    rule.id,
-    'manual',
-    result.ok ? 'success' : 'failed',
-    result.status,
-    result.attempts,
-    rule.lastMessage,
-  );
-  return result;
-}
-
-function readWebhookDeliveries(): WebhookDelivery[] {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_DELIVERIES_LS_KEY);
-    const deliveries: WebhookDelivery[] = raw ? (JSON.parse(raw) as WebhookDelivery[]) : [];
-    return deliveries.map((delivery) => ({
-      ...delivery,
-      channel:
-        delivery.channel === 'email' || delivery.channel === 'notification'
-          ? delivery.channel
-          : 'http',
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function writeWebhookDeliveries(deliveries: WebhookDelivery[]) {
-  lockedStorageWrite(() =>
-    localStorage.setItem(WEBHOOK_DELIVERIES_LS_KEY, JSON.stringify(deliveries)),
-  );
-}
-
-export async function listWebhookDeliveries(
-  status?: string,
-  limit = 50,
-): Promise<WebhookDelivery[]> {
-  if (isTauri()) {
-    return invoke<WebhookDelivery[]>('list_webhook_deliveries', {
-      status: status?.trim() ? status.trim() : null,
-      limit,
-    });
-  }
-  const all = readWebhookDeliveries();
-  const filtered = status?.trim() ? all.filter((d) => d.status === status.trim()) : all;
-  return filtered.slice(0, limit);
-}
-
-type WebhookTemplateScope = {
-  event: string;
-  context: Record<string, unknown>;
-  now: number;
-  current: unknown;
-  index: number;
-  count: number;
-};
-
-function templateGetPath(value: unknown, path: string): unknown {
-  let current: unknown = value;
-  for (const segment of path.split('.')) {
-    if (current === null || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-function templateStringify(value: unknown): string {
-  if (value === undefined || value === null) return 'null';
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return JSON.stringify(value);
-}
-
-function templateResolve(
-  path: string,
-  scope: WebhookTemplateScope,
-): { value: unknown; known: boolean } {
-  const trimmed = path.trim();
-  if (trimmed === 'this') return { value: scope.current, known: true };
-  if (trimmed === '@index') return { value: scope.index, known: true };
-  if (trimmed === '@first') return { value: scope.index === 0, known: true };
-  if (trimmed === '@last') return { value: scope.index + 1 === scope.count, known: true };
-  if (trimmed.startsWith('this.')) {
-    return { value: templateGetPath(scope.current, trimmed.slice(5)), known: true };
-  }
-  if (trimmed === 'event') return { value: scope.event, known: true };
-  if (trimmed === 'ts') return { value: String(scope.now), known: true };
-  if (trimmed.startsWith('context.')) {
-    return {
-      value: templateGetPath(scope.context, trimmed.slice('context.'.length)),
-      known: true,
-    };
-  }
-  return { value: undefined, known: false };
-}
-
-function templateFindMatchingClose(
-  segment: string,
-  openPrefix: string,
-  closeTag: string,
-): [number, number] | null {
-  let depth = 0;
-  let cursor = 0;
-  while (cursor < segment.length) {
-    const start = segment.indexOf('{{', cursor);
-    if (start < 0) break;
-    const after = segment.slice(start + 2);
-    const relEnd = after.indexOf('}}');
-    if (relEnd < 0) break;
-    const inner = after.slice(0, relEnd).trim();
-    const end = start + 2 + relEnd + 2;
-    if (inner.startsWith(openPrefix)) {
-      if (depth === 0) depth = 1;
-      else depth += 1;
-    } else if (inner === closeTag) {
-      if (depth === 1) return [start, end];
-      depth -= 1;
-    }
-    cursor = end;
-  }
-  return null;
-}
-
-function templateFindTopLevelElse(body: string, closeStart: number): number {
-  let depth = 0;
-  let cursor = 0;
-  while (cursor < closeStart) {
-    const start = body.indexOf('{{', cursor);
-    if (start < 0 || start >= closeStart) break;
-    const after = body.slice(start + 2);
-    const relEnd = after.indexOf('}}');
-    if (relEnd < 0) break;
-    const inner = after.slice(0, relEnd).trim();
-    const end = start + 2 + relEnd + 2;
-    if (inner.startsWith('#if') || inner.startsWith('#each')) depth += 1;
-    else if (inner === '/if' || inner === '/each') depth -= 1;
-    else if (inner === '#else' && depth === 0) return start;
-    cursor = end;
-  }
-  return -1;
-}
-
-function templateParseLiteral(raw: string): unknown {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
-    return trimmed.slice(1, -1);
-  }
-  if (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) {
-    return trimmed.slice(1, -1);
-  }
-  if (trimmed === 'true') return true;
-  if (trimmed === 'false') return false;
-  if (trimmed === 'null') return null;
-  if (trimmed !== '' && !Number.isNaN(Number(trimmed))) return Number(trimmed);
-  return trimmed;
-}
-
-function templateCompare(left: unknown, right: unknown, op: string): boolean {
-  switch (op) {
-    case '==':
-      return left === right;
-    case '!=':
-      return left !== right;
-    case '>':
-      return Number(left) > Number(right);
-    case '>=':
-      return Number(left) >= Number(right);
-    case '<':
-      return Number(left) < Number(right);
-    case '<=':
-      return Number(left) <= Number(right);
-    default:
-      return false;
-  }
-}
-
-function templateIsTruthy(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === 'object') return Object.keys(value).length > 0;
-  return false;
-}
-
-function templateEvalIf(expr: string, scope: WebhookTemplateScope): boolean {
-  const trimmed = expr.trim();
-  for (const op of ['==', '!=', '>=', '<=', '>', '<']) {
-    const pos = trimmed.indexOf(op);
-    if (pos > 0) {
-      const left = trimmed.slice(0, pos).trim();
-      const right = trimmed.slice(pos + op.length).trim();
-      if (left && right) {
-        return templateCompare(templateResolve(left, scope).value, templateParseLiteral(right), op);
-      }
-    }
-  }
-  return templateIsTruthy(templateResolve(trimmed, scope).value);
-}
-
-function templateExpand(segment: string, scope: WebhookTemplateScope, errors: string[]): string {
-  let out = '';
-  let rest = segment;
-  while (rest.length > 0) {
-    const start = rest.indexOf('{{');
-    if (start < 0) {
-      out += rest;
-      break;
-    }
-    out += rest.slice(0, start);
-    const after = rest.slice(start + 2);
-    const relEnd = after.indexOf('}}');
-    if (relEnd < 0) {
-      out += rest.slice(start);
-      break;
-    }
-    const inner = after.slice(0, relEnd).trim();
-    const end = start + 2 + relEnd + 2;
-    if (inner.startsWith('#if')) {
-      const close = templateFindMatchingClose(rest, '#if', '/if');
-      if (!close) {
-        errors.push(`Unclosed #if block at ${inner}`);
-        out += rest.slice(start);
-        break;
-      }
-      const [closeStart, closeEnd] = close;
-      const body = rest.slice(end, closeStart);
-      const elseAt = templateFindTopLevelElse(body, body.length);
-      const trueBody = elseAt === -1 ? body : body.slice(0, elseAt);
-      const falseBody = elseAt === -1 ? '' : body.slice(elseAt + 9);
-      if (templateEvalIf(inner.slice(3).trim(), scope)) {
-        out += templateExpand(trueBody, scope, errors);
-      } else {
-        out += templateExpand(falseBody, scope, errors);
-      }
-      rest = rest.slice(closeEnd);
-      continue;
-    }
-    if (inner.startsWith('#each')) {
-      const close = templateFindMatchingClose(rest, '#each', '/each');
-      if (!close) {
-        errors.push(`Unclosed #each block at ${inner}`);
-        out += rest.slice(start);
-        break;
-      }
-      const [closeStart, closeEnd] = close;
-      const body = rest.slice(end, closeStart);
-      const items = templateResolve(inner.slice(5).trim(), scope).value;
-      if (Array.isArray(items)) {
-        for (let index = 0; index < items.length; index += 1) {
-          out += templateExpand(
-            body,
-            { ...scope, current: items[index], index, count: items.length },
-            errors,
-          );
-        }
-      }
-      rest = rest.slice(closeEnd);
-      continue;
-    }
-    if (inner === '#else' || inner === '/if' || inner === '/each') {
-      errors.push(`Unexpected template tag: ${inner}`);
-    } else {
-      const { value, known } = templateResolve(inner, scope);
-      if (value === undefined && !known) out += `{{${inner}}}`;
-      else out += templateStringify(value);
-    }
-    rest = rest.slice(end);
-  }
-  return out;
-}
-
-export function renderWebhookPayload(
-  template: string,
-  event: string,
-  context: Record<string, unknown> = {},
-  now = Date.now(),
-): string {
-  const errors: string[] = [];
-  const rendered = templateExpand(
-    template,
-    { event, context, now, current: undefined, index: 0, count: 1 },
-    errors,
-  );
-  return errors.length > 0 ? template : rendered;
-}
-
-function templateCollectMeta(
-  segment: string,
-  variables: string[],
-  blocks: string[],
-  errors: string[],
-): void {
-  let rest = segment;
-  while (rest.length > 0) {
-    const start = rest.indexOf('{{');
-    if (start < 0) break;
-    const after = rest.slice(start + 2);
-    const relEnd = after.indexOf('}}');
-    if (relEnd < 0) break;
-    const inner = after.slice(0, relEnd).trim();
-    const end = start + 2 + relEnd + 2;
-    if (inner.startsWith('#if')) {
-      const close = templateFindMatchingClose(rest, '#if', '/if');
-      if (!close) {
-        errors.push(`Unclosed #if block at ${inner}`);
-        return;
-      }
-      const [closeStart, closeEnd] = close;
-      blocks.push(`#if ${inner.slice(3).trim()}`);
-      const body = rest.slice(end, closeStart);
-      const elseAt = templateFindTopLevelElse(body, body.length);
-      if (elseAt === -1) {
-        templateCollectMeta(body, variables, blocks, errors);
-      } else {
-        templateCollectMeta(body.slice(0, elseAt), variables, blocks, errors);
-        templateCollectMeta(body.slice(elseAt + 9), variables, blocks, errors);
-      }
-      rest = rest.slice(closeEnd);
-      continue;
-    }
-    if (inner.startsWith('#each')) {
-      const close = templateFindMatchingClose(rest, '#each', '/each');
-      if (!close) {
-        errors.push(`Unclosed #each block at ${inner}`);
-        return;
-      }
-      const [closeStart, closeEnd] = close;
-      blocks.push(`#each ${inner.slice(5).trim()}`);
-      templateCollectMeta(rest.slice(end, closeStart), variables, blocks, errors);
-      rest = rest.slice(closeEnd);
-      continue;
-    }
-    if (inner === '#else' || inner === '/if' || inner === '/each') {
-      errors.push(`Unexpected template tag: ${inner}`);
-    } else if (!inner.startsWith('#')) {
-      if (!variables.includes(inner)) variables.push(inner);
-    }
-    rest = rest.slice(end);
-  }
-}
-
-export async function validateWebhookPayloadTemplate(
-  template: string,
-  contextJson = '',
-): Promise<WebhookTemplateValidation> {
-  if (isTauri()) {
-    return invoke<WebhookTemplateValidation>('validate_webhook_payload_template', {
-      template,
-      contextJson: contextJson.trim() ? contextJson.trim() : null,
-    });
-  }
-  let context: Record<string, unknown> = {};
-  const trimmedContext = contextJson.trim();
-  if (trimmedContext) {
-    try {
-      context = JSON.parse(trimmedContext) as Record<string, unknown>;
-    } catch {
-      return {
-        ok: false,
-        errors: ['Event context JSON is invalid'],
-        variables: [],
-        blocks: [],
-        rendered: '',
-        renderedJsonOk: false,
-      };
-    }
-  }
-  const variables: string[] = [];
-  const blocks: string[] = [];
-  const errors: string[] = [];
-  templateCollectMeta(template, variables, blocks, errors);
-  const rendered = templateExpand(
-    template,
-    {
-      event: 'sync.completed',
-      context,
-      now: Date.now(),
-      current: undefined,
-      index: 0,
-      count: 1,
-    },
-    errors,
-  );
-  let renderedJsonOk = true;
-  const trimmedRendered = rendered.trim();
-  if (trimmedRendered) {
-    try {
-      JSON.parse(trimmedRendered);
-    } catch {
-      renderedJsonOk = false;
-    }
-  }
-  return {
-    ok: errors.length === 0,
-    errors,
-    variables,
-    blocks,
-    rendered,
-    renderedJsonOk,
-  };
-}
-
-function readWebhookTemplateVersions(): Record<string, WebhookTemplateVersion[]> {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, WebhookTemplateVersion[]>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeWebhookTemplateVersions(versions: Record<string, WebhookTemplateVersion[]>) {
-  lockedStorageWrite(() =>
-    localStorage.setItem(WEBHOOK_TEMPLATE_VERSIONS_LS_KEY, JSON.stringify(versions)),
-  );
-}
-
-export async function listWebhookTemplateVersions(
-  ruleId: string,
-): Promise<WebhookTemplateVersion[]> {
-  if (isTauri()) {
-    return invoke<WebhookTemplateVersion[]>('list_webhook_template_versions', { ruleId });
-  }
-  const versions = readWebhookTemplateVersions()[ruleId] ?? [];
-  return [...versions].sort((a, b) => b.version - a.version);
-}
-
-export async function saveWebhookTemplateVersion(
-  ruleId: string,
-  payload: string,
-  note = '',
-): Promise<WebhookTemplateVersion> {
-  if (isTauri()) {
-    return invoke<WebhookTemplateVersion>('save_webhook_template_version', {
-      ruleId,
-      payload,
-      note,
-    });
-  }
-  const rules = readWebhookRules();
-  const rule = rules.find((r) => r.id === ruleId);
-  if (!rule) throw new Error('Webhook rule not found');
-  const versionsByRule = readWebhookTemplateVersions();
-  const ruleVersions = [...(versionsByRule[ruleId] ?? [])].sort((a, b) => b.version - a.version);
-  const version: WebhookTemplateVersion = {
-    id: makeId(),
-    ruleId,
-    version: (ruleVersions[0]?.version ?? 0) + 1,
-    payload,
-    note,
-    createdAt: Date.now(),
-  };
-  versionsByRule[ruleId] = [version, ...ruleVersions];
-  writeWebhookTemplateVersions(versionsByRule);
-  rule.payload = payload;
-  rule.templateVersion = version.version;
-  rule.updatedAt = Date.now();
-  writeWebhookRules(rules);
-  return version;
-}
-
-export async function restoreWebhookTemplateVersion(
-  ruleId: string,
-  version: number,
-): Promise<WebhookRule> {
-  if (isTauri()) {
-    return invoke<WebhookRule>('restore_webhook_template_version', { ruleId, version });
-  }
-  const rules = readWebhookRules();
-  const rule = rules.find((r) => r.id === ruleId);
-  if (!rule) throw new Error('Webhook rule not found');
-  const target = (readWebhookTemplateVersions()[ruleId] ?? []).find(
-    (item) => item.version === version,
-  );
-  if (!target) throw new Error('Webhook template version not found');
-  rule.payload = target.payload;
-  rule.templateVersion = target.version;
-  rule.updatedAt = Date.now();
-  writeWebhookRules(rules);
-  return rule;
-}
-
-type WebhookConditionToken =
-  | { type: 'atom'; value: string }
-  | { type: 'str'; value: string }
-  | { type: 'op'; value: '==' | '!=' | '>' | '>=' | '<' | '<=' }
-  | { type: 'paren'; value: '(' | ')' };
-
-type WebhookConditionExpr =
-  | { kind: 'and'; left: WebhookConditionExpr; right: WebhookConditionExpr }
-  | { kind: 'or'; left: WebhookConditionExpr; right: WebhookConditionExpr }
-  | { kind: 'not'; inner: WebhookConditionExpr }
-  | { kind: 'compare'; path: string; op: string; value: unknown }
-  | { kind: 'event'; value: string }
-  | { kind: 'cron'; expr: string }
-  | { kind: 'bool'; value: boolean };
-
-function tokenizeWebhookCondition(input: string): WebhookConditionToken[] {
-  const tokens: WebhookConditionToken[] = [];
-  let i = 0;
-  while (i < input.length) {
-    const char = input[i];
-    if (/\s/.test(char)) {
-      i += 1;
-      continue;
-    }
-    if (char === '(' || char === ')') {
-      tokens.push({ type: 'paren', value: char });
-      i += 1;
-      continue;
-    }
-    const pair = input.slice(i, i + 2);
-    if (pair === '==' || pair === '!=' || pair === '>=' || pair === '<=') {
-      tokens.push({ type: 'op', value: pair });
-      i += 2;
-      continue;
-    }
-    if (char === '>' || char === '<') {
-      tokens.push({ type: 'op', value: char });
-      i += 1;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      const quote = char;
-      let value = '';
-      let j = i + 1;
-      let closed = false;
-      while (j < input.length) {
-        const ch = input[j];
-        if (ch === '\\' && j + 1 < input.length) {
-          value += input[j + 1];
-          j += 2;
-          continue;
-        }
-        if (ch === quote) {
-          closed = true;
-          break;
-        }
-        value += ch;
-        j += 1;
-      }
-      if (!closed) throw new Error('Unterminated string literal');
-      tokens.push({ type: 'str', value });
-      i = j + 1;
-      continue;
-    }
-    const start = i;
-    while (
-      i < input.length &&
-      !/\s/.test(input[i]) &&
-      !'()"\''.includes(input[i]) &&
-      !'=!<>'.includes(input[i])
-    ) {
-      i += 1;
-    }
-    if (i === start) throw new Error(`Unexpected character '${char}'`);
-    tokens.push({ type: 'atom', value: input.slice(start, i) });
-  }
-  return tokens;
-}
-
-class WebhookConditionParser {
-  private pos = 0;
-
-  constructor(private readonly tokens: WebhookConditionToken[]) {}
-
-  private peek(): WebhookConditionToken | undefined {
-    return this.tokens[this.pos];
-  }
-
-  private next(): WebhookConditionToken | undefined {
-    const token = this.tokens[this.pos];
-    if (token) this.pos += 1;
-    return token;
-  }
-
-  private isKeyword(keyword: string): boolean {
-    const token = this.peek();
-    return token?.type === 'atom' && token.value === keyword;
-  }
-
-  parseCondition(): WebhookConditionExpr {
-    const expr = this.parseOr();
-    if (this.pos !== this.tokens.length) throw new Error('Unexpected token at end of condition');
-    return expr;
-  }
-
-  private parseOr(): WebhookConditionExpr {
-    let left = this.parseAnd();
-    while (this.isKeyword('or')) {
-      this.next();
-      const right = this.parseAnd();
-      left = { kind: 'or', left, right };
-    }
-    return left;
-  }
-
-  private parseAnd(): WebhookConditionExpr {
-    let left = this.parseNot();
-    while (this.isKeyword('and')) {
-      this.next();
-      const right = this.parseNot();
-      left = { kind: 'and', left, right };
-    }
-    return left;
-  }
-
-  private parseNot(): WebhookConditionExpr {
-    if (this.isKeyword('not')) {
-      this.next();
-      return { kind: 'not', inner: this.parseNot() };
-    }
-    return this.parsePrimary();
-  }
-
-  private parsePrimary(): WebhookConditionExpr {
-    const token = this.next();
-    if (!token) throw new Error('Expected condition');
-    if (token.type === 'paren' && token.value === '(') {
-      const inner = this.parseOr();
-      const closing = this.next();
-      if (closing?.type !== 'paren' || closing.value !== ')') {
-        throw new Error("Expected ')'");
-      }
-      return inner;
-    }
-    if (token.type === 'str') {
-      throw new Error(`Unexpected string literal '${token.value}'`);
-    }
-    if (token.type !== 'atom') throw new Error('Expected condition');
-    if (token.value === 'true') return { kind: 'bool', value: true };
-    if (token.value === 'false') return { kind: 'bool', value: false };
-    if (token.value === 'cron') {
-      const open = this.next();
-      if (open?.type !== 'paren' || open.value !== '(') {
-        throw new Error("Expected '(' after cron");
-      }
-      const fields: string[] = [];
-      while (true) {
-        const field = this.next();
-        if (field?.type === 'paren' && field.value === ')') break;
-        if (field?.type !== 'atom') throw new Error("Expected cron fields or ')'");
-        fields.push(field.value);
-      }
-      const expr = fields.join(' ');
-      if (!expr.trim() || !isValidCron(expr)) {
-        throw new Error(`Invalid cron expression '${expr}'`);
-      }
-      return { kind: 'cron', expr };
-    }
-    return this.parseAtomExpr(token.value);
-  }
-
-  private parseAtomExpr(path: string): WebhookConditionExpr {
-    const op = this.peek();
-    if (op?.type !== 'op') return { kind: 'event', value: path };
-    this.next();
-    const valueToken = this.next();
-    let value: unknown;
-    if (valueToken?.type === 'str') {
-      value = valueToken.value;
-    } else if (valueToken?.type === 'atom') {
-      value = parseWebhookLiteral(valueToken.value);
-    } else {
-      throw new Error(`Expected comparison value after '${path}'`);
-    }
-    return { kind: 'compare', path, op: op.value, value };
-  }
-}
-
-function parseWebhookCondition(condition: string): WebhookConditionExpr {
-  return new WebhookConditionParser(tokenizeWebhookCondition(condition)).parseCondition();
-}
-
-function parseWebhookLiteral(atom: string): unknown {
-  if (atom === 'true') return true;
-  if (atom === 'false') return false;
-  if (atom === 'null') return null;
-  if (atom.trim() !== '' && Number.isFinite(Number(atom))) return Number(atom);
-  return atom;
-}
-
-function resolveWebhookValue(
-  path: string,
-  event: string,
-  context: Record<string, unknown>,
-): unknown {
-  if (path === 'event') return event;
-  if (path === 'context') return context;
-  if (!path.startsWith('context.')) return null;
-  let current: unknown = context;
-  for (const part of path.slice('context.'.length).split('.')) {
-    if (current && typeof current === 'object') {
-      current = (current as Record<string, unknown>)[part];
-    } else {
-      current = null;
-      break;
-    }
-  }
-  return current ?? null;
-}
-
-function webhookValuesEqual(left: unknown, right: unknown): boolean {
-  if (typeof left === 'number' && typeof right === 'number') return left === right;
-  if (typeof left === 'string' && typeof right === 'string') return left === right;
-  if (typeof left === 'boolean' && typeof right === 'boolean') return left === right;
-  if (left === null && right === null) return true;
-  return false;
-}
-
-function webhookNumericValue(value: unknown): number | null {
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value.trim()))) {
-    return Number(value.trim());
-  }
-  return null;
-}
-
-function evaluateWebhookCompare(
-  path: string,
-  op: string,
-  expected: unknown,
-  event: string,
-  context: Record<string, unknown>,
-): boolean {
-  const actual = resolveWebhookValue(path, event, context);
-  if (op === '==') return webhookValuesEqual(actual, expected);
-  if (op === '!=') return !webhookValuesEqual(actual, expected);
-  const a = webhookNumericValue(actual);
-  const b = webhookNumericValue(expected);
-  if (a === null || b === null) return false;
-  if (op === '>') return a > b;
-  if (op === '>=') return a >= b;
-  if (op === '<') return a < b;
-  return a <= b;
-}
-
-function evaluateWebhookCondition(
-  expr: WebhookConditionExpr,
-  event: string,
-  context: Record<string, unknown>,
-  now: Date,
-): boolean {
-  switch (expr.kind) {
-    case 'and':
-      return (
-        evaluateWebhookCondition(expr.left, event, context, now) &&
-        evaluateWebhookCondition(expr.right, event, context, now)
-      );
-    case 'or':
-      return (
-        evaluateWebhookCondition(expr.left, event, context, now) ||
-        evaluateWebhookCondition(expr.right, event, context, now)
-      );
-    case 'not':
-      return !evaluateWebhookCondition(expr.inner, event, context, now);
-    case 'bool':
-      return expr.value;
-    case 'event':
-      return event === expr.value;
-    case 'cron':
-      return matchesCron(expr.expr, now);
-    case 'compare':
-      return evaluateWebhookCompare(expr.path, expr.op, expr.value, event, context);
-  }
-}
-
-function cronFieldMatches(spec: string, value: number, min: number, max: number): boolean {
-  return spec.split(',').some((part) => {
-    const trimmed = part.trim();
-    if (!trimmed) return false;
-    const [rangePart, stepPart] = trimmed.split('/');
-    if (stepPart !== undefined && stepPart.trim() === '') return false;
-    const step = stepPart === undefined ? 1 : Math.max(1, Number(stepPart) || 1);
-    let start: number;
-    let end: number;
-    if (rangePart === '*') {
-      start = min;
-      end = max;
-    } else if (rangePart.includes('-')) {
-      const [s, e] = rangePart.split('-').map((v) => Number(v));
-      if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
-      start = s;
-      end = e;
-    } else {
-      const single = Number(rangePart);
-      if (!Number.isFinite(single)) return false;
-      if (step > 1) {
-        start = single;
-        end = max;
-      } else {
-        start = single;
-        end = single;
-      }
-    }
-    start = Math.max(start, min);
-    end = Math.min(end, max);
-    if (end < start) return false;
-    return value >= start && value <= end && (value - start) % step === 0;
-  });
-}
-
-function isValidCron(expr: string): boolean {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return false;
-  const bounds: Array<[string, number, number]> = [
-    [fields[0], 0, 59],
-    [fields[1], 0, 23],
-    [fields[2], 1, 31],
-    [fields[3], 1, 12],
-    [fields[4], 0, 7],
-  ];
-  return bounds.every(([field, min, max]) =>
-    field.split(',').every((part) => {
-      const trimmed = part.trim();
-      const [rangePart, stepPart] = trimmed.split('/');
-      if (
-        stepPart !== undefined &&
-        (stepPart.trim() === '' || !Number.isFinite(Number(stepPart)))
-      ) {
-        return false;
-      }
-      if (rangePart === '*') return true;
-      if (rangePart.includes('-')) {
-        const [s, e] = rangePart.split('-').map((v) => Number(v));
-        return (
-          Number.isFinite(s) &&
-          Number.isFinite(e) &&
-          s >= min &&
-          s <= max &&
-          e >= min &&
-          e <= max &&
-          s <= e
-        );
-      }
-      const single = Number(rangePart);
-      return Number.isFinite(single) && single >= min && single <= max;
-    }),
-  );
-}
-
-export function matchesCron(expr: string, now = new Date()): boolean {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5 || !isValidCron(expr)) return false;
-  const minute = now.getMinutes();
-  const hour = now.getHours();
-  const day = now.getDate();
-  const month = now.getMonth() + 1;
-  const dow = now.getDay() === 7 ? 0 : now.getDay();
-  const dowSpec = fields[4] === '7' ? '0' : fields[4];
-  const domMatches = cronFieldMatches(fields[2], day, 1, 31);
-  const dowMatches = cronFieldMatches(dowSpec, dow, 0, 7);
-  const dayOk =
-    fields[2] !== '*' && fields[4] !== '*' ? domMatches || dowMatches : domMatches && dowMatches;
-  return (
-    cronFieldMatches(fields[0], minute, 0, 59) &&
-    cronFieldMatches(fields[1], hour, 0, 23) &&
-    dayOk &&
-    cronFieldMatches(fields[3], month, 1, 12)
-  );
-}
-
-export function validateWebhookCondition(condition: string): string | null {
-  const trimmed = condition.trim();
-  if (!trimmed) return null;
-  try {
-    parseWebhookCondition(trimmed);
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  }
-}
-
-export function matchesWebhookCondition(
-  condition: string,
-  event: string,
-  context: Record<string, unknown> = {},
-  now = new Date(),
-): boolean {
-  const trimmed = condition.trim();
-  if (!trimmed) return true;
-  try {
-    return evaluateWebhookCondition(parseWebhookCondition(trimmed), event, context, now);
-  } catch {
-    return false;
-  }
-}
-
-async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const bytes = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
-  return Array.from(new Uint8Array(bytes))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-export async function verifyWebhookSignature(
-  secret: string,
-  payload: string,
-  signature: string,
-): Promise<WebhookSignatureVerifyResult> {
-  if (isTauri()) {
-    return invoke<WebhookSignatureVerifyResult>('verify_webhook_signature', {
-      secret,
-      payload,
-      signature,
-    });
-  }
-  const expected = await hmacSha256Hex(secret, payload);
-  const provided = signature.trim();
-  const normalized = provided.startsWith('sha256=')
-    ? provided.slice('sha256='.length)
-    : provided.startsWith('SHA256=')
-      ? provided.slice('SHA256='.length)
-      : provided;
-  return {
-    valid: provided.length > 0 && normalized.trim().toLowerCase() === expected,
-    expected,
-    algorithm: 'HMAC-SHA256',
-  };
-}
-
-export async function triggerWebhookEvent(
-  event: string,
-  context?: Record<string, unknown>,
-): Promise<number> {
-  if (isTauri()) {
-    return invoke<number>('trigger_webhook_event', { event, context: context ?? null });
-  }
-  const now = Date.now();
-  const mockNote = isMockAgentsEnabled() ? mockWebhookDelivery(event) : null;
-  const rules = readWebhookRules().filter(
-    (r) =>
-      r.enabled &&
-      (r.triggerEvent || '') === event &&
-      matchesWebhookCondition(r.triggerCondition ?? '', event, context ?? {}) &&
-      (r.lastRunAt === 0 || now - r.lastRunAt >= (r.cooldownSeconds || 0) * 1000),
-  );
-  const deliveries: WebhookDelivery[] = rules.flatMap((rule) => {
-    const channels: WebhookChannelName[] =
-      rule.channels && rule.channels.length > 0 ? rule.channels : ['http'];
-    const payload = renderWebhookPayload(rule.payload, event, context ?? {}, now);
-    return channels.map((channel) => ({
-      id: makeId(),
-      ruleId: rule.id,
-      channel,
-      event,
-      payload,
-      method: rule.method,
-      url: rule.url,
-      token: rule.token,
-      secret: rule.secret,
-      retries: rule.retries,
-      attempts: 1,
-      status: mockNote?.status ?? 'success',
-      lastStatus: mockNote?.lastStatus ?? 200,
-      lastMessage:
-        mockNote?.lastMessage ??
-        (channel === 'email'
-          ? `Email queued (event: ${event})`
-          : channel === 'notification'
-            ? `Notification delivered (event: ${event})`
-            : `HTTP 200 delivered (event: ${event})`),
-      nextAttemptAt: now,
-      createdAt: now,
-      updatedAt: now,
-    }));
-  });
-  if (rules.length > 0) {
-    const storedRules = readWebhookRules();
-    const fired = new Set(rules.map((rule) => rule.id));
-    for (const rule of storedRules) {
-      if (fired.has(rule.id)) rule.lastRunAt = now;
-    }
-    writeWebhookRules(storedRules);
-    for (const rule of rules) {
-      appendWebhookRuleRun(
-        rule.id,
-        'event',
-        'success',
-        mockNote?.lastStatus ?? 200,
-        1,
-        mockNote?.lastMessage ?? `HTTP 200 delivered (event: ${event})`,
-      );
-    }
-  }
-  let next = [...readWebhookDeliveries(), ...deliveries];
-  const retention = readWebhookRetentionConfig();
-  if (retention.autoCleanup) {
-    next = applyWebhookRetention(next, retention).deliveries;
-  }
-  writeWebhookDeliveries(next);
-  return deliveries.length;
-}
-
 export async function emitWorkbenchEvent(
   event: string,
   context?: Record<string, unknown>,
@@ -8894,335 +5891,6 @@ export async function emitWorkbenchEvent(
   } catch {
     return 0;
   }
-}
-
-export async function retryWebhookDelivery(id: string): Promise<WebhookDelivery> {
-  if (isTauri()) return invoke<WebhookDelivery>('retry_webhook_delivery', { id });
-  const deliveries = readWebhookDeliveries();
-  const delivery = deliveries.find((d) => d.id === id);
-  if (!delivery) throw new Error('Webhook delivery not found');
-  delivery.attempts = 0;
-  delivery.status = 'queued';
-  delivery.lastMessage = '';
-  delivery.nextAttemptAt = Date.now();
-  delivery.updatedAt = Date.now();
-  writeWebhookDeliveries(deliveries);
-  return delivery;
-}
-
-export async function deleteWebhookDelivery(id: string): Promise<string> {
-  if (isTauri()) return invoke<string>('delete_webhook_delivery', { id });
-  const deliveries = readWebhookDeliveries();
-  const next = deliveries.filter((d) => d.id !== id);
-  if (next.length === deliveries.length) throw new Error('Webhook delivery not found');
-  writeWebhookDeliveries(next);
-  return `Deleted webhook delivery ${id.slice(0, 8)}`;
-}
-
-export async function clearWebhookDeliveries(status?: string): Promise<number> {
-  if (isTauri()) {
-    return invoke<number>('clear_webhook_deliveries', {
-      status: status?.trim() ? status.trim() : null,
-    });
-  }
-  const deliveries = readWebhookDeliveries();
-  const next = status?.trim() ? deliveries.filter((d) => d.status !== status.trim()) : [];
-  writeWebhookDeliveries(next);
-  return deliveries.length - next.length;
-}
-
-function clampRetention(days: number, maxRecords: number): { days: number; maxRecords: number } {
-  return {
-    days: Math.min(3650, Math.max(1, Math.round(days) || 1)),
-    maxRecords: Math.min(100000, Math.max(1, Math.round(maxRecords) || 1)),
-  };
-}
-
-function readWebhookRetentionConfig(): WebhookRetentionConfig {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_RETENTION_LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as WebhookRetentionConfig;
-      return {
-        retentionDays: parsed.retentionDays,
-        maxRecords: parsed.maxRecords,
-        autoCleanup: parsed.autoCleanup !== false,
-        updatedAt: parsed.updatedAt ?? 0,
-      };
-    }
-  } catch {
-    // fall through to defaults
-  }
-  return { retentionDays: 30, maxRecords: 200, autoCleanup: true, updatedAt: 0 };
-}
-
-function applyWebhookRetention(
-  deliveries: WebhookDelivery[],
-  config: WebhookRetentionConfig,
-): { deliveries: WebhookDelivery[]; removedByAge: number; removedByCount: number } {
-  const now = Date.now();
-  const cutoff = now - config.retentionDays * 86_400_000;
-  const terminal = (d: WebhookDelivery) => d.status === 'success' || d.status === 'dead';
-  let removedByAge = 0;
-  let removedByCount = 0;
-  let kept: WebhookDelivery[] = [];
-  for (const delivery of deliveries) {
-    if (terminal(delivery) && delivery.createdAt < cutoff) {
-      removedByAge += 1;
-    } else {
-      kept.push(delivery);
-    }
-  }
-  const terminalKept = kept.filter(terminal);
-  const excess = Math.max(0, terminalKept.length - config.maxRecords);
-  if (excess > 0) {
-    const ids = new Set(
-      terminalKept
-        .slice()
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .slice(0, excess)
-        .map((d) => d.id),
-    );
-    kept = kept.filter((d) => !ids.has(d.id));
-    removedByCount = excess;
-  }
-  return { deliveries: kept, removedByAge, removedByCount };
-}
-
-export async function getWebhookRetentionConfig(): Promise<WebhookRetentionConfig> {
-  if (isTauri()) {
-    return invoke<WebhookRetentionConfig>('get_webhook_retention_config');
-  }
-  return readWebhookRetentionConfig();
-}
-
-export async function setWebhookRetentionConfig(
-  retentionDays: number,
-  maxRecords: number,
-  autoCleanup: boolean,
-): Promise<WebhookRetentionConfig> {
-  if (isTauri()) {
-    return invoke<WebhookRetentionConfig>('set_webhook_retention_config', {
-      retentionDays,
-      maxRecords,
-      autoCleanup,
-    });
-  }
-  const clamped = clampRetention(retentionDays, maxRecords);
-  const config: WebhookRetentionConfig = {
-    retentionDays: clamped.days,
-    maxRecords: clamped.maxRecords,
-    autoCleanup,
-    updatedAt: Date.now(),
-  };
-  localStorage.setItem(WEBHOOK_RETENTION_LS_KEY, JSON.stringify(config));
-  return config;
-}
-
-export async function pruneWebhookDeliveries(): Promise<WebhookPruneResult> {
-  if (isTauri()) {
-    return invoke<WebhookPruneResult>('prune_webhook_deliveries');
-  }
-  const config = readWebhookRetentionConfig();
-  const result = applyWebhookRetention(readWebhookDeliveries(), config);
-  writeWebhookDeliveries(result.deliveries);
-  return {
-    removedByAge: result.removedByAge,
-    removedByCount: result.removedByCount,
-    totalRemoved: result.removedByAge + result.removedByCount,
-  };
-}
-
-export async function getWebhookDeliveryStats(): Promise<WebhookDeliveryStats> {
-  if (isTauri()) {
-    return invoke<WebhookDeliveryStats>('get_webhook_delivery_stats');
-  }
-  const stats: WebhookDeliveryStats = {
-    total: 0,
-    queued: 0,
-    delivering: 0,
-    success: 0,
-    dead: 0,
-    failed: 0,
-  };
-  for (const delivery of readWebhookDeliveries()) {
-    stats.total += 1;
-    if (delivery.status === 'queued') stats.queued += 1;
-    else if (delivery.status === 'delivering') stats.delivering += 1;
-    else if (delivery.status === 'success') stats.success += 1;
-    else if (delivery.status === 'dead') stats.dead += 1;
-    else stats.failed += 1;
-  }
-  return stats;
-}
-
-function readWebhookChannelConfig(): WebhookChannelConfig {
-  try {
-    const raw = localStorage.getItem(WEBHOOK_CHANNEL_CONFIG_LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as WebhookChannelConfig;
-      return {
-        emailEnabled: parsed.emailEnabled ?? false,
-        emailFrom: parsed.emailFrom ?? '',
-        emailTo: parsed.emailTo ?? '',
-        smtpHost: parsed.smtpHost ?? '',
-        smtpPort: parsed.smtpPort ?? 587,
-        smtpUser: parsed.smtpUser ?? '',
-        smtpPassword: parsed.smtpPassword ?? '',
-        notificationEnabled: parsed.notificationEnabled ?? false,
-        notificationTitle: parsed.notificationTitle || 'AI Workbench webhook',
-        updatedAt: parsed.updatedAt ?? 0,
-      };
-    }
-  } catch {
-    // fall through to defaults
-  }
-  return {
-    emailEnabled: false,
-    emailFrom: '',
-    emailTo: '',
-    smtpHost: '',
-    smtpPort: 587,
-    smtpUser: '',
-    smtpPassword: '',
-    notificationEnabled: false,
-    notificationTitle: 'AI Workbench webhook',
-    updatedAt: 0,
-  };
-}
-
-export async function getWebhookChannelConfig(): Promise<WebhookChannelConfig> {
-  if (isTauri()) {
-    return invoke<WebhookChannelConfig>('get_webhook_channel_config');
-  }
-  return readWebhookChannelConfig();
-}
-
-export async function setWebhookChannelConfig(
-  emailEnabled: boolean,
-  emailFrom: string,
-  emailTo: string,
-  smtpHost: string,
-  smtpPort: number,
-  smtpUser: string,
-  smtpPassword: string,
-  notificationEnabled: boolean,
-  notificationTitle: string,
-): Promise<WebhookChannelConfig> {
-  if (isTauri()) {
-    return invoke<WebhookChannelConfig>('set_webhook_channel_config', {
-      request: {
-        emailEnabled,
-        emailFrom,
-        emailTo,
-        smtpHost,
-        smtpPort,
-        smtpUser,
-        smtpPassword,
-        notificationEnabled,
-        notificationTitle,
-      },
-    });
-  }
-  const config: WebhookChannelConfig = {
-    emailEnabled,
-    emailFrom: emailFrom.trim(),
-    emailTo: emailTo.trim(),
-    smtpHost: smtpHost.trim(),
-    smtpPort: Math.min(65_535, Math.max(1, Math.round(smtpPort) || 587)),
-    smtpUser: smtpUser.trim(),
-    smtpPassword,
-    notificationEnabled,
-    notificationTitle: notificationTitle.trim() || 'AI Workbench webhook',
-    updatedAt: Date.now(),
-  };
-  localStorage.setItem(WEBHOOK_CHANNEL_CONFIG_LS_KEY, JSON.stringify(config));
-  return config;
-}
-
-export async function testWebhookNotification(): Promise<string> {
-  if (isTauri()) {
-    return invoke<string>('test_webhook_notification');
-  }
-  const config = readWebhookChannelConfig();
-  const title = config.notificationTitle.trim() || 'AI Workbench webhook';
-  window.dispatchEvent(
-    new CustomEvent('webhook-notification', {
-      detail: {
-        title,
-        body: 'Webhook notification channel test',
-        ruleId: 'test',
-        event: 'notification.test',
-        channel: 'notification',
-      },
-    }),
-  );
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    new Notification(title, { body: 'Webhook notification channel test' });
-  }
-  return 'Notification channel test sent';
-}
-
-export async function testWebhookEmail(): Promise<string> {
-  if (isTauri()) {
-    return invoke<string>('test_webhook_email');
-  }
-  const config = readWebhookChannelConfig();
-  if (!config.emailEnabled) {
-    throw new Error('Email channel is not enabled');
-  }
-  if (!config.emailFrom.trim() || !config.emailTo.trim() || !config.smtpHost.trim()) {
-    throw new Error('Email from/to addresses and SMTP host are required');
-  }
-  return 'Email channel test sent (Email queued via SMTP)';
-}
-
-export async function probeWebhookRecovery(): Promise<WebhookRecoveryResult> {
-  if (isTauri()) {
-    return invoke<WebhookRecoveryResult>('probe_webhook_recovery');
-  }
-  const now = Date.now();
-  const rules = readWebhookRules();
-  const result: WebhookRecoveryResult = { probed: 0, recovered: 0, failed: 0 };
-  for (const rule of rules) {
-    const base = Math.max(5, rule.recoveryBackoffSeconds ?? 300) * 1000;
-    const exponent = Math.max(
-      0,
-      (rule.consecutiveFailures ?? 0) - Math.max(1, rule.autoDisableAfter ?? 3),
-    );
-    const backoffMs = Math.min(86_400_000, base * 2 ** Math.min(30, exponent));
-    if (
-      !rule.enabled &&
-      (rule.circuitOpenedAt ?? 0) > 0 &&
-      now - rule.circuitOpenedAt >= backoffMs
-    ) {
-      result.probed += 1;
-      const recovered = !/\/fail|\/broken/i.test(rule.url) && !rule.payload.includes('"fail":true');
-      rule.consecutiveFailures = recovered ? 0 : (rule.consecutiveFailures ?? 0) + 1;
-      rule.lastStatus = recovered ? 200 : 500;
-      rule.updatedAt = now;
-      if (recovered) {
-        rule.enabled = true;
-        rule.circuitOpenedAt = 0;
-        rule.lastMessage = 'Recovery probe succeeded: HTTP 200 delivered';
-        result.recovered += 1;
-      } else {
-        rule.circuitOpenedAt = now;
-        rule.lastMessage = 'Recovery probe failed: HTTP 500 simulated failure';
-        result.failed += 1;
-      }
-      appendWebhookRuleRun(
-        rule.id,
-        'scheduled',
-        recovered ? 'success' : 'failed',
-        rule.lastStatus,
-        1,
-        rule.lastMessage,
-      );
-    }
-  }
-  writeWebhookRules(rules);
-  return result;
 }
 
 function readEventLogs(): EventLogRecord[] {
@@ -9407,14 +6075,13 @@ export async function emitEventBusEvent(
     writeEventForwards([forward, ...readEventForwards()]);
     forwarded = 1;
   }
-  const webhookDeliveries = await triggerWebhookEvent(event, contextObj);
   return {
     event,
     recorded: true,
     validated,
     rejectedReason: reason ?? '',
     forwarded,
-    webhookDeliveries,
+    webhookDeliveries: 0,
   };
 }
 

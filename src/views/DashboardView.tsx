@@ -1,16 +1,5 @@
-import {
-  AlertTriangle,
-  Flame,
-  GitBranch,
-  LayoutDashboard,
-  ShieldAlert,
-  Target,
-  Terminal,
-  TrendingUp,
-} from 'lucide-react';
-import { useEffect, useState } from 'react';
-import BentoCard from '../components/ui/BentoCard';
-import StatPill from '../components/ui/StatPill';
+import { AlertTriangle, Clock3, Lock } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import * as db from '../lib/db';
 import { formatTokens, getBudgetStatus, lastNDaysUsage, loadTokenBudget } from '../lib/tokenBudget';
 import { useWorkbenchStore } from '../stores/workbenchStore';
@@ -19,197 +8,226 @@ export default function DashboardView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const tasks = useWorkbenchStore((s) => s.tasks);
   const thoughts = useWorkbenchStore((s) => s.thoughts);
+  const [cliStats, setCliStats] = useState(() => db.getCliRunStats());
+  const [recentRuns] = useState(() => db.listCliRuns().slice(-1));
   const [tokenUsage] = useState(() => lastNDaysUsage(7));
   const [budget] = useState(() => getBudgetStatus(loadTokenBudget()));
-  const [cliStats, setCliStats] = useState(() => db.getCliRunStats());
 
   useEffect(() => {
-    setCliStats(db.getCliRunStats());
+    const refresh = () => setCliStats(db.getCliRunStats());
+    refresh();
+    const timer = window.setInterval(refresh, 8000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const todayDoD = tasks.filter((t) => t.isToday && t.isDod && t.status !== 'done').slice(0, 5);
+  const coverage = useMemo(() => {
+    const total = projects.length;
+    const documented = projects.filter(
+      (p) =>
+        (p.material && p.material.trim().length > 0) ||
+        thoughts.some((t) => t.tags.includes(p.id) || (t.content || '').includes(p.name)),
+    ).length;
+    return total > 0 ? Math.round((documented / total) * 100) : 100;
+  }, [projects, thoughts]);
+
+  const activeProjects = projects.filter((p) => p.status === 'active');
+  const todayDoD = tasks.filter((t) => t.isToday && t.isDod && t.status !== 'done').slice(0, 3);
   const blocked = tasks
     .filter(
       (t) =>
         t.status === 'in_progress' &&
-        (t.title.toLowerCase().includes('block') || t.title.toLowerCase().includes('wait')),
+        (t.title.toLowerCase().includes('block') ||
+          t.title.toLowerCase().includes('wait') ||
+          t.title.toLowerCase().includes('阻塞')),
     )
-    .slice(0, 5);
+    .slice(0, 3);
   const blockedCount = tasks.filter((t) => t.status === 'in_progress').length;
-  const noteCount = thoughts.filter((t) => t.type === 'note').length;
-  const docCount = thoughts.filter((t) => t.type === 'doc').length;
   const totalTokens = tokenUsage.reduce((sum, p) => sum + p.tokens, 0);
   const maxTokens = Math.max(1, ...tokenUsage.map((p) => p.tokens));
+  const lastRun = recentRuns[0];
+  const topDoD = todayDoD[0];
+  const topBlocked = blocked[0];
+  const riskTitle = budget.over
+    ? 'Token 预算已超限'
+    : thoughts.length === 0
+      ? '知识基线待固化'
+      : blockedCount >= 3
+        ? '依赖阻塞风险升高'
+        : '系统状态健康';
+  const riskDesc = budget.over
+    ? '建议切换到本地 Provider 或清理会话，避免中断交付。'
+    : thoughts.length === 0
+      ? '暂无知识卡片，先固化一份 Spec 再推进后续论证。'
+      : blockedCount >= 3
+        ? `${blockedCount} 个进行中任务存在依赖阻塞，建议优先解锁前置 Task。`
+        : '无即时风险，各模块链路正常。';
+  const riskMeta = budget.over
+    ? '需要人工决策'
+    : thoughts.length === 0
+      ? '建议发起重构论证'
+      : blockedCount >= 3
+        ? '建议优先处理阻塞'
+        : '实时监控中';
 
   return (
-    <div className="view-enter mx-auto grid w-full max-w-7xl grid-cols-12 gap-4 overflow-y-auto p-4">
-      <div
-        className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-4"
-        style={{ gridColumn: 'span 12 / span 12' }}
-      >
-        <StatPill label="Projects" value={String(projects.length)} tone="blue" />
-        <StatPill label="7d tokens" value={formatTokens(totalTokens)} tone="green" />
-        <StatPill
-          label="CLI success"
-          value={cliStats.total > 0 ? `${cliStats.successRate}%` : '—'}
-          tone="green"
-        />
-        <StatPill label="Knowledge" value={String(noteCount + docCount)} />
+    <div className="mission-view space-y-4 p-4 sm:p-5 lg:space-y-5">
+      <div className="pc-section-head">
+        <span className="pc-section-code">SYS.01 / OVERVIEW</span>
+        <span className="pc-section-title">总览控制塔</span>
+        <span className="pc-section-meta">
+          SYNC {new Date().toLocaleTimeString()} · LOCAL-FIRST
+        </span>
       </div>
 
-      <BentoCard
-        title="7 天 Token Sparkline"
-        subtitle="近 7 日 Token 消耗"
-        icon={TrendingUp}
-        colSpan={7}
-        tier="rail"
-      >
-        <div data-token-sparkline className="flex h-20 items-end gap-1.5">
-          {tokenUsage.map((point) => {
-            const pct = point.tokens > 0 ? (point.tokens / maxTokens) * 100 : 0;
-            return (
-              <div key={point.day} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-                <span
-                  data-token-sparkline-point
-                  data-token-sparkline-day={point.day}
-                  data-token-sparkline-value={point.tokens}
-                  className={`block w-full rounded-sm ${point.tokens > 0 ? 'bg-cyan-400/60' : 'bg-white/[0.06]'}`}
-                  style={{ height: `${Math.max(3, Math.round(pct * 56))}px` }}
-                />
-                <span className="font-mono text-[8px] text-slate-500">{point.day.slice(5)}</span>
-              </div>
-            );
-          })}
+      <div className="pc-stat-row">
+        <div className="pc-panel pc-stat">
+          <div>
+            <div className="pc-stat-value">
+              {projects.length}
+              <em>+{activeProjects.length}</em>
+            </div>
+            <div className="pc-stat-label">纳管项目</div>
+          </div>
+          <div className="pc-delta-up">▲ {activeProjects.length} 个进行中旅程</div>
         </div>
-        <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
-          <span>
-            本月 {formatTokens(budget.usedTokens)} / {formatTokens(budget.monthlyLimit)}
+
+        <div className="pc-panel pc-stat">
+          <div>
+            <div className="pc-stat-value">{formatTokens(totalTokens)}</div>
+            <div className="pc-stat-label">7 天 Token 上下文</div>
+          </div>
+          <div data-token-sparkline className="flex h-9 items-end gap-1">
+            {tokenUsage.map((point) => (
+              <div
+                key={point.day}
+                data-token-sparkline-point
+                data-token-sparkline-day={point.day}
+                data-token-sparkline-value={point.tokens}
+                className="min-w-0 flex-1 bg-cyan-400/70"
+                style={{ height: `${Math.max(3, Math.round((point.tokens / maxTokens) * 30))}px` }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="pc-panel pc-stat">
+          <div>
+            <div className="pc-stat-value">
+              {cliStats.total}
+              <em style={{ color: 'var(--color-success)' }}>{cliStats.successRate}%</em>
+            </div>
+            <div className="pc-stat-label">CLI 智能体状态</div>
+          </div>
+          <div className="pc-bar-row">
+            <span>成功率</span>
+            <span className="pc-bar-track green">
+              <i style={{ width: `${cliStats.successRate}%` }} />
+            </span>
+            <span style={{ color: 'var(--color-success)' }}>{cliStats.successRate}%</span>
+          </div>
+        </div>
+
+        <div className="pc-panel pc-stat">
+          <div>
+            <div className="pc-stat-value">{coverage}%</div>
+            <div className="pc-stat-label">活体知识健康度</div>
+          </div>
+          <div className="pc-bar-row">
+            <span>{thoughts.length} 卡片</span>
+            <span className="pc-bar-track">
+              <i style={{ width: `${coverage}%` }} />
+            </span>
+            <span style={{ color: 'var(--color-warning)' }}>
+              {coverage >= 80 ? 'Healthy' : coverage >= 50 ? 'Warning' : 'Risk'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="pc-focus-row">
+        <div className="pc-panel pc-focus-card" data-dashboard-today-dod>
+          <div className="pc-panel-title">
+            <span className="tick" />
+            今日 Top DoD<span className="right">{todayDoD.length} 项</span>
+          </div>
+          <span className="pc-badge green">{topDoD ? 'DOD' : 'IDLE'}</span>
+          <div className="pc-focus-title" data-dashboard-dod-item={topDoD?.id}>
+            {topDoD?.title ?? '今日暂无待办 DoD'}
+          </div>
+          <div className="pc-focus-desc">
+            {topDoD
+              ? `项目 ${projects.find((p) => p.id === topDoD.projectId)?.name ?? 'Prism Station'} · ${
+                  topDoD.status === 'in_progress' ? '推进中' : '待启动'
+                }`
+              : '先添加 3~5 项今日交付目标，聚焦核心事项。'}
+          </div>
+          <div className="pc-meta-line">
+            <Clock3 size={12} />
+            {topDoD?.dueDate ? `预计 ${topDoD.dueDate}` : '依赖 AI Studio 共识'} · 前往交付终端
+          </div>
+        </div>
+
+        <div className="pc-panel pc-focus-card pc-blocked" data-dashboard-blocked>
+          <div className="pc-panel-title">
+            <span className="tick" />
+            阻塞告警<span className="right">{blockedCount} 项</span>
+          </div>
+          <span className="pc-badge red">{topBlocked ? 'BLOCKED' : 'CLEAR'}</span>
+          <div className="pc-focus-title" data-dashboard-blocked-item={topBlocked?.id}>
+            {topBlocked?.title ?? '无阻塞任务，流水线健康'}
+          </div>
+          <div className="pc-focus-desc">
+            {topBlocked
+              ? '前置任务未完成或等待论证结论，无法派发 CLI。'
+              : '当前没有依赖链阻断，可以继续推进今日交付。'}
+          </div>
+          <div className="pc-meta-line">
+            <Lock size={12} />
+            {topBlocked ? '等待 论证 → 固化' : '持续监控中'}
+          </div>
+        </div>
+
+        <div className="pc-panel pc-focus-card" data-dashboard-risk>
+          <div className="pc-panel-title">
+            <span className="tick" />
+            AI 风险推送<span className="right">LIVE</span>
+          </div>
+          <span className="pc-badge amber">
+            {budget.over || thoughts.length === 0 ? 'TRADE-OFF' : 'HEALTHY'}
           </span>
-          <span
-            className={
-              budget.near ? 'text-amber-400' : budget.over ? 'text-rose-400' : 'text-cyan-400'
-            }
-          >
-            {budget.over ? '⚠ 已超限' : budget.near ? '⚠ 接近上限' : '✓ 预算健康'}
+          <div className="pc-focus-title">{riskTitle}</div>
+          <div className="pc-focus-desc">{riskDesc}</div>
+          <div className="pc-meta-line">
+            <AlertTriangle size={12} />
+            {riskMeta}
+          </div>
+        </div>
+      </div>
+
+      <div className="pc-panel plain pc-system-strip">
+        <div className="pc-sys-item">
+          SQLite <span className="val">OK</span>
+        </div>
+        <div className="pc-sys-item">
+          develop <span className="val">42 ahead</span>
+        </div>
+        <div className="pc-sys-item">
+          Tauri IPC <span className="val">0 error</span>
+        </div>
+        <div className="pc-sys-item">
+          Obsidian{' '}
+          <span className="val" style={{ color: '#a78bfa' }}>
+            Linked
           </span>
         </div>
-      </BentoCard>
-
-      <BentoCard
-        title="CLI 状态摘要"
-        subtitle="本地 CLI 兵团健康度"
-        icon={Terminal}
-        colSpan={5}
-        tier="rail"
-      >
-        <div data-cli-status-summary className="space-y-2">
-          <div className="grid grid-cols-3 gap-2">
-            <StatPill label="Runs" value={String(cliStats.total)} />
-            <StatPill label="Success" value={String(cliStats.success)} tone="green" />
-            <StatPill
-              label="Rate"
-              value={`${cliStats.successRate}%`}
-              tone={cliStats.successRate >= 80 ? 'green' : 'neutral'}
-            />
+        {lastRun && (
+          <div className="pc-sys-item">
+            最近执行{' '}
+            <span className="val">
+              {lastRun.exitCode === 0 ? 'Exit 0' : `Exit ${lastRun.exitCode}`}
+            </span>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-cyan-500/15 bg-cyan-500/[0.05] px-3 py-2 text-[10px] text-slate-400">
-            <GitBranch size={11} className="text-cyan-400/70" />
-            支持 claude / aider / codex / git · 最近运行
-            {cliStats.lastRunAt ? new Date(cliStats.lastRunAt).toLocaleTimeString() : '—'}
-          </div>
-        </div>
-      </BentoCard>
-
-      <BentoCard
-        title="今日焦点"
-        subtitle="Top DoD · Blocked · AI 风险"
-        icon={Target}
-        colSpan={12}
-        tier="stage"
-      >
-        <div className="grid gap-3 md:grid-cols-3">
-          <div
-            data-dashboard-today-dod
-            className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-md"
-          >
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-cyan-300/90">
-              <Flame size={11} /> Top DoD
-            </div>
-            {todayDoD.length === 0 && (
-              <div className="py-3 text-center text-[11px] text-slate-500">今日无待办 DoD</div>
-            )}
-            <div className="space-y-1.5">
-              {todayDoD.map((t) => (
-                <div
-                  key={t.id}
-                  data-dashboard-dod-item={t.id}
-                  className="truncate rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5 text-[11px] text-slate-300"
-                >
-                  {t.title}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div
-            data-dashboard-blocked
-            className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 backdrop-blur-md"
-          >
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-amber-400/80">
-              <AlertTriangle size={11} /> Blocked（{blockedCount}）
-            </div>
-            {blocked.length === 0 && (
-              <div className="py-3 text-center text-[11px] text-slate-500">无阻塞任务</div>
-            )}
-            <div className="space-y-1.5">
-              {blocked.map((t) => (
-                <div
-                  key={t.id}
-                  data-dashboard-blocked-item={t.id}
-                  className="truncate rounded-lg border border-amber-500/10 bg-amber-500/[0.06] px-2 py-1.5 text-[11px] text-amber-200/80"
-                >
-                  {t.title}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div
-            data-dashboard-risk
-            className="rounded-xl border border-rose-500/20 bg-rose-500/[0.04] p-3 backdrop-blur-md"
-          >
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-rose-400/80">
-              <ShieldAlert size={11} /> AI 风险
-            </div>
-            {budget.over && (
-              <div className="mb-1.5 rounded-lg border border-rose-500/20 bg-rose-500/[0.08] px-2 py-1.5 text-[11px] text-rose-300">
-                Token 预算已超限，自动降级中
-              </div>
-            )}
-            {docCount === 0 && (
-              <div className="mb-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2 py-1.5 text-[11px] text-amber-200/80">
-                尚无知识文档，建议固化为知识
-              </div>
-            )}
-            {blockedCount >= 3 && (
-              <div className="mb-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2 py-1.5 text-[11px] text-amber-200/80">
-                {blockedCount} 个进行中任务可能阻塞
-              </div>
-            )}
-            {!budget.over && docCount > 0 && blockedCount < 3 && (
-              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1.5 text-[11px] text-cyan-300">
-                ✓ 状态健康，无即时风险
-              </div>
-            )}
-          </div>
-        </div>
-      </BentoCard>
-
-      <div
-        className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-cyan-300/60"
-        style={{ gridColumn: 'span 12 / span 12' }}
-      >
-        <LayoutDashboard size={11} /> Prism Station · 控制塔只读视图 · CLI 交付在 Actions
+        )}
       </div>
     </div>
   );

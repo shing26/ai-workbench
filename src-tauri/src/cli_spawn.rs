@@ -4,6 +4,8 @@ use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncBufReadExt;
 
+use crate::db;
+
 #[derive(Clone, Serialize)]
 pub struct CliSpawnResult {
     pub run_id: String,
@@ -25,10 +27,28 @@ pub struct CliExited {
 const ALLOWED_COMMANDS: &[&str] = &[
     "claude",
     "claude.exe",
+    "claude.cmd",
     "aider",
     "aider.exe",
+    "aider.cmd",
     "codex",
     "codex.exe",
+    "codex.cmd",
+    "gemini",
+    "gemini.exe",
+    "gemini.cmd",
+    "opencode",
+    "opencode.exe",
+    "opencode.cmd",
+    "qwen",
+    "qwen.exe",
+    "qwen.cmd",
+    "cursor",
+    "cursor.exe",
+    "cursor.cmd",
+    "windsurf",
+    "windsurf.exe",
+    "windsurf.cmd",
     "git",
     "git.exe",
     "npx",
@@ -48,27 +68,67 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "node.exe",
 ];
 
+const CLI_CANDIDATES: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("aider", "Aider"),
+    ("codex", "Codex CLI"),
+    ("gemini", "Gemini CLI"),
+    ("opencode", "OpenCode"),
+    ("qwen", "Qwen Code"),
+    ("cursor", "Cursor CLI"),
+    ("windsurf", "Windsurf"),
+];
+
+fn executable_names(bin: &str) -> Vec<String> {
+    let mut names = vec![bin.to_string()];
+    #[cfg(windows)]
+    {
+        names.push(format!("{bin}.exe"));
+        names.push(format!("{bin}.cmd"));
+        names.push(format!("{bin}.bat"));
+    }
+    names
+}
+
+fn find_on_path(bin: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for name in executable_names(bin) {
+            let candidate = dir.join(&name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+pub fn detect_cli_tools() -> Vec<db::CliToolDetection> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    CLI_CANDIDATES
+        .iter()
+        .map(|(bin, label)| db::CliToolDetection {
+            bin: (*bin).to_string(),
+            label: (*label).to_string(),
+            detected: find_on_path(bin).is_some(),
+            last_checked_at: now,
+        })
+        .collect()
+}
+
 fn blocked_shell_chars(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, ';' | '&' | '|' | '$' | '`' | '>' | '<'))
+    s.chars()
+        .any(|c| matches!(c, ';' | '&' | '|' | '$' | '`' | '>' | '<'))
 }
 
 fn is_destructive_command(command: &str) -> bool {
     let lower = command.to_lowercase();
     let fragments = [
-        "rm -rf",
-        "rm -fr",
-        "rmdir /s",
-        "rmdir /q",
-        "rd /s",
-        "del /f",
-        "del /q",
-        "format ",
-        "mkfs",
-        "dd ",
-        "shutdown",
-        "chkdsk",
-        "sfc ",
-        "diskpart",
+        "rm -rf", "rm -fr", "rmdir /s", "rmdir /q", "rd /s", "del /f", "del /q", "format ", "mkfs",
+        "dd ", "shutdown", "chkdsk", "sfc ", "diskpart",
     ];
     fragments.iter().any(|f| lower.contains(f))
 }
@@ -81,7 +141,11 @@ fn is_within(base: &Path, candidate: &Path) -> bool {
     candidate.starts_with(&base)
 }
 
-fn validate_spawn_request(project_path: &str, command: &str, cwd: Option<&str>) -> Result<(), String> {
+fn validate_spawn_request(
+    project_path: &str,
+    command: &str,
+    cwd: Option<&str>,
+) -> Result<(), String> {
     let project = PathBuf::from(project_path);
     if project_path.trim().is_empty() {
         return Err("Empty project path".into());
@@ -98,7 +162,10 @@ fn validate_spawn_request(project_path: &str, command: &str, cwd: Option<&str>) 
         return Err(format!("Command not allowed: {}", command));
     }
     if blocked_shell_chars(command) {
-        return Err(format!("Command contains blocked shell characters: {}", command));
+        return Err(format!(
+            "Command contains blocked shell characters: {}",
+            command
+        ));
     }
     if is_destructive_command(command) {
         return Err(format!("Command blocked as destructive: {}", command));
@@ -138,14 +205,7 @@ pub async fn spawn_cli_process(
     let spawn_run_id = run_id.clone();
 
     tauri::async_runtime::spawn(async move {
-        let _ = spawn_inner(
-            &spawn_app,
-            &spawn_run_id,
-            &command,
-            &args,
-            &working_dir,
-        )
-        .await;
+        let _ = spawn_inner(&spawn_app, &spawn_run_id, &command, &args, &working_dir).await;
     });
 
     Ok(CliSpawnResult { run_id })
@@ -229,7 +289,10 @@ async fn spawn_inner(
         }
     });
 
-    let status = child.wait().await.map_err(|e| format!("wait failed: {}", e))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("wait failed: {}", e))?;
     let exit_code = status.code().unwrap_or(-1);
 
     let _ = stdout_task.await;
@@ -281,7 +344,10 @@ mod tests {
 
     #[test]
     fn is_within_scope() {
-        assert!(is_within(Path::new("/work/app"), Path::new("/work/app/src")));
+        assert!(is_within(
+            Path::new("/work/app"),
+            Path::new("/work/app/src")
+        ));
         assert!(is_within(Path::new("/work/app"), Path::new("/work/app")));
         assert!(!is_within(Path::new("/work/app"), Path::new("/work")));
         assert!(!is_within(Path::new("/work/app"), Path::new("/etc")));
@@ -291,6 +357,8 @@ mod tests {
     fn allowed_command_passes_validation() {
         assert!(validate_spawn_request("/work/app", "claude", None).is_ok());
         assert!(validate_spawn_request("/work/app", "git", None).is_ok());
+        assert!(validate_spawn_request("/work/app", "gemini", None).is_ok());
+        assert!(validate_spawn_request("/work/app", "windsurf", None).is_ok());
     }
 
     #[test]
@@ -307,5 +375,14 @@ mod tests {
         assert!(res.is_err());
         let res = validate_spawn_request("/work/app", "claude", Some("/work/app/sub"));
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn detection_covers_known_candidates() {
+        let tools = detect_cli_tools();
+        assert!(tools.iter().any(|t| t.bin == "claude"));
+        assert!(tools.iter().any(|t| t.bin == "codex"));
+        assert!(tools.iter().any(|t| t.bin == "windsurf"));
+        assert!(tools.iter().all(|t| !t.label.is_empty()));
     }
 }

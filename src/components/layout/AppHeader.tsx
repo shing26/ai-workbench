@@ -1,107 +1,121 @@
-import { Search } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
-import CommandPalette from '../CommandPalette';
-import ThemeSwitcher from '../ui/ThemeSwitcher';
-import { emitEvent, TOPICS } from '../../stores/events';
-import { t } from '../../lib/i18n';
+import { usePrismModals } from '../modals/prismModalsStore';
+import * as db from '../../lib/db';
 
-const TITLES: Record<ViewId, string> = {
-  dashboard: 'view.dashboard',
-  'ai-studio': 'view.aiStudio',
-  projects: 'view.projects',
-  knowledge: 'view.knowledge',
-  actions: 'view.actions',
-  system: 'view.system',
+const CLI_LABELS: Record<string, string> = {
+  claude: '⚡ Claude Code',
+  aider: '🧊 Aider Local',
+  codex: '🟦 Codex CLI',
+  gemini: '✨ Gemini CLI',
+  opencode: '🧩 OpenCode',
+  qwen: '🌐 Qwen Code',
+  cursor: '🖱️ Cursor CLI',
+  windsurf: '🏄 Windsurf',
 };
+
+const JOURNEY_STAGES: { id: ViewId; code: string; label: string }[] = [
+  { id: 'dashboard', code: 'SYS.00', label: '总览' },
+  { id: 'projects', code: 'SYS.01', label: '构想' },
+  { id: 'ai-studio', code: 'SYS.02', label: '论证' },
+  { id: 'actions', code: 'SYS.03', label: '落地' },
+  { id: 'knowledge', code: 'SYS.04', label: '归档' },
+];
 
 export default function AppHeader() {
   const activeView = useWorkbenchStore((s) => s.activeView);
-  const qualityGate = useWorkbenchStore((s) => s.qualityGate);
-  const refreshQualityGate = useWorkbenchStore((s) => s.refreshQualityGate);
+  const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const vibePath = useWorkbenchStore((s) => s.vibeContext?.path ?? null);
-  const [gateOpen, setGateOpen] = useState(false);
+  const openSearch = usePrismModals((s) => s.openSearch);
+  const cliKind = usePrismModals((s) => s.cliKind);
+  const setCliKind = usePrismModals((s) => s.setCliKind);
+  const detectedCliTools = usePrismModals((s) => s.detectedCliTools);
+  const refreshCliTools = usePrismModals((s) => s.refreshCliTools);
 
   useEffect(() => {
-    if (vibePath && !qualityGate) void refreshQualityGate();
-  }, [vibePath, qualityGate, refreshQualityGate]);
+    void refreshCliTools();
+  }, [refreshCliTools]);
+
+  const detected = detectedCliTools.filter((tool) => tool.detected);
+
+  const openVault = () => {
+    void db.openObsidian(vibePath || 'D:\\ai-workbench', 'docs').catch(() => {});
+  };
 
   return (
-    <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-white/[0.06] bg-slate-950/40 px-4 backdrop-blur-2xl">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="truncate text-sm font-semibold text-slate-100">
-          {t(TITLES[activeView])}
-        </span>
-        <span className="hidden truncate text-[10px] font-mono uppercase tracking-widest text-cyan-300/70 md:inline">
-          PRISM ENGINE · {t('app.subtitle')}
+    <header className="z-10 flex h-14 shrink-0 items-center gap-3 border-b border-white/[0.06] bg-[#0a0e15]/85 px-4 shadow-[inset_0_-1px_0_rgba(34,211,238,0.1)] backdrop-blur-xl">
+      <div className="hidden min-w-0 items-center gap-2 font-mono text-[10px] text-slate-500 xl:flex">
+        <span className="prism-breathing-emblem" aria-hidden="true" />
+        <span className="font-semibold text-cyan-200/80">PRISM STATION</span>
+        <span className="rounded border border-cyan-500/20 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] text-cyan-300">
+          v1.0.0
         </span>
       </div>
-      <div className="flex min-w-0 items-center gap-2">
-        {qualityGate && (
-          <div className="relative">
+
+      <nav className="journey flex-1" aria-label="Product journey stages">
+        {JOURNEY_STAGES.map((stage, index) => (
+          <span key={stage.id} className="contents">
+            {index > 0 && (
+              <span className="stage-arrow" aria-hidden="true">
+                <ChevronRight size={13} />
+              </span>
+            )}
             <button
               type="button"
-              data-quality-gate
-              data-quality-status={qualityGate.status}
-              onClick={() => {
-                setGateOpen((v) => !v);
-                if (qualityGate.status === 'GREEN') void refreshQualityGate();
-              }}
-              title="Quality gate（点击刷新）"
-              className={`flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[10px] transition-colors ${
-                qualityGate.status === 'GREEN'
-                  ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
-                  : 'border-rose-500/30 bg-rose-500/10 text-rose-300'
-              }`}
+              className={`stage ${activeView === stage.id ? 'active' : ''}`}
+              onClick={() => setActiveView(stage.id)}
+              aria-current={activeView === stage.id ? 'page' : undefined}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {qualityGate.status === 'GREEN' ? t('app.allGreen') : t('app.checkFailed')}
+              <span className="stage-dot" aria-hidden="true" />
+              <span className="stage-num">{stage.code}</span>
+              <span>{stage.label}</span>
             </button>
-            {gateOpen && qualityGate.status !== 'GREEN' && (
-              <div
-                data-quality-gate-errors
-                className="prism-glass-surface absolute right-0 top-11 z-50 w-80 rounded-xl p-2 shadow-2xl"
-              >
-                <div className="mb-1 px-1 text-[10px] font-semibold text-rose-300">
-                  Quality Gate · {qualityGate.projectPath.split(/[\\/]/).pop()}
-                </div>
-                <div className="max-h-56 space-y-1 overflow-y-auto">
-                  {qualityGate.errors.length === 0 && (
-                    <div className="px-1 py-2 text-[10px] text-slate-400">
-                      无错误（或命令不可用）
-                    </div>
-                  )}
-                  {qualityGate.errors.slice(0, 30).map((err, idx) => (
-                    <div
-                      key={idx}
-                      className="truncate rounded bg-rose-500/[0.06] px-1.5 py-1 font-mono text-[9px] text-rose-300/90"
-                      title={err}
-                    >
-                      {err}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-        <ThemeSwitcher />
+          </span>
+        ))}
+      </nav>
+
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          data-header-obsidian
+          onClick={openVault}
+          className="flex h-8 items-center gap-1.5 rounded border border-purple-500/30 bg-purple-500/10 px-2.5 font-mono text-[10px] text-purple-300 transition-colors hover:bg-purple-500/20"
+          title="Obsidian 直达"
+        >
+          <span className="text-purple-400">🔮</span>
+          <span className="hidden xl:inline">Obsidian 直达</span>
+        </button>
+
+        <div className="flex h-8 items-center gap-2 rounded border border-white/10 bg-white/[0.04] px-2.5 font-mono text-[10px]">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+          <span className="hidden text-slate-400 lg:inline">当前本地 CLI:</span>
+          <select
+            data-cli-selector
+            value={cliKind}
+            onChange={(e) => setCliKind(e.target.value)}
+            className="max-w-28 cursor-pointer bg-transparent font-mono text-xs font-medium text-cyan-200 outline-none"
+            aria-label="Current CLI tool"
+          >
+            {detected.map((tool) => (
+              <option key={tool.bin} value={tool.bin}>
+                {CLI_LABELS[tool.bin] ?? tool.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <button
           type="button"
           data-command-trigger
           aria-label="Search commands"
-          aria-haspopup="dialog"
-          onClick={() => emitEvent(TOPICS.COMMAND_PALETTE_TOGGLE)}
-          className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-300 transition-colors hover:border-cyan-500/30 hover:text-cyan-200"
+          onClick={openSearch}
+          className="hidden h-8 items-center justify-between gap-2 rounded border border-white/10 bg-white/[0.04] px-3 font-mono text-[10px] text-slate-400 transition-colors hover:border-cyan-500/30 hover:text-cyan-200 xl:flex"
         >
-          <Search size={14} />
-          <span className="hidden md:inline">Search</span>
-          <kbd className="rounded-md border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">
-            Ctrl K
-          </kbd>
+          <span>🔍 全局搜索</span>
+          <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] text-slate-300">⌘K</kbd>
         </button>
       </div>
-      <CommandPalette />
     </header>
   );
 }

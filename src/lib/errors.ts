@@ -1,4 +1,5 @@
-export type WorkbenchErrorCode = 'REQUIRES_CONFIRMATION' | 'PERMISSION_DENIED' | 'GENERIC';
+export type WorkbenchErrorCode =
+  'REQUIRES_CONFIRMATION' | 'PERMISSION_DENIED' | 'INVALID_INPUT' | 'GENERIC';
 
 export class WorkbenchError extends Error {
   code: WorkbenchErrorCode;

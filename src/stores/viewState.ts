@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
 
-export type ViewId = 'ai-studio' | 'projects' | 'knowledge' | 'actions' | 'system';
+export type ViewId = 'ai-studio' | 'dashboard' | 'projects' | 'knowledge' | 'actions';
 
 export type ViewStateMap = Record<ViewId, Record<string, unknown>>;
 
@@ -14,10 +14,10 @@ type ViewStateStore = {
 export const useViewStateStore = create<ViewStateStore>((set) => ({
   viewState: {
     'ai-studio': {},
+    dashboard: {},
     projects: {},
     knowledge: {},
     actions: {},
-    system: {},
   },
   setViewState: (view, key, value) =>
     set((state) => ({

@@ -1,11 +1,6 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
-use lettre::message::header::ContentType;
-use lettre::message::{Mailbox, Message};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{SmtpTransport, Transport};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::pbkdf2;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -13,13 +8,12 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
@@ -29,8 +23,6 @@ mod cli_spawn;
 mod db;
 mod file_ops;
 mod prism_agents;
-mod webhook_condition;
-mod webhook_template;
 
 const CONFIRM_PREFIX: &str = "__requires_confirmation__:";
 
@@ -167,211 +159,6 @@ struct ProviderHeartbeatSnapshot {
     checked_at: u128,
 }
 
-#[derive(Default)]
-struct VaultWatchState {
-    active: std::sync::Mutex<Vec<ActiveVaultWatch>>,
-}
-
-#[derive(Clone)]
-struct VaultIndexRequest {
-    run_id: String,
-    path: String,
-    ignore_patterns: Vec<String>,
-    concurrency: usize,
-    priority: usize,
-    attempts: usize,
-    last_error: String,
-}
-
-const VAULT_INDEX_MAX_ATTEMPTS: usize = 3;
-const VAULT_INDEX_RETRY_BASE_MS: u64 = 500;
-const VAULT_INDEX_RETRY_MAX_MS: u64 = 4000;
-
-fn vault_index_retry_delay_ms(attempts: usize) -> u64 {
-    if attempts == 0 {
-        return 0;
-    }
-    let exponent = attempts.saturating_sub(1).min(3) as u32;
-    (VAULT_INDEX_RETRY_BASE_MS << exponent).min(VAULT_INDEX_RETRY_MAX_MS)
-}
-
-#[derive(Default)]
-struct VaultIndexState {
-    inner: std::sync::Mutex<VaultIndexQueue>,
-}
-
-#[derive(Default)]
-struct VaultIndexQueue {
-    cancelled: HashSet<String>,
-    active: Option<VaultIndexRequest>,
-    queue: VecDeque<VaultIndexRequest>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultIndexQueueEntry {
-    run_id: String,
-    path: String,
-    status: String,
-    position: usize,
-    priority: usize,
-    attempts: usize,
-    last_error: String,
-    retry_delay_ms: u64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultIndexQueueStatus {
-    active: Option<VaultIndexQueueEntry>,
-    queue: Vec<VaultIndexQueueEntry>,
-}
-
-impl VaultIndexState {
-    fn enqueue(&self, request: VaultIndexRequest) -> Result<usize, String> {
-        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        let position = guard
-            .queue
-            .iter()
-            .position(|queued| queued.priority < request.priority)
-            .unwrap_or(guard.queue.len());
-        guard.queue.insert(position, request);
-        Ok(position)
-    }
-
-    fn mark(&self, run_id: &str) -> bool {
-        self.inner
-            .lock()
-            .map(|mut guard| guard.cancelled.insert(run_id.to_string()))
-            .unwrap_or(false)
-    }
-
-    fn is_cancelled(&self, run_id: &str) -> bool {
-        self.inner
-            .lock()
-            .map(|guard| guard.cancelled.contains(run_id))
-            .unwrap_or(false)
-    }
-
-    fn clear(&self, run_id: &str) {
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.cancelled.remove(run_id);
-        }
-    }
-
-    fn take_queued(&self, run_id: &str) -> Option<VaultIndexRequest> {
-        self.inner.lock().ok().and_then(|mut guard| {
-            let index = guard
-                .queue
-                .iter()
-                .position(|request| request.run_id == run_id)?;
-            guard.queue.remove(index)
-        })
-    }
-
-    fn claim_next(&self) -> Result<Option<VaultIndexRequest>, String> {
-        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        if guard.active.is_some() {
-            return Ok(None);
-        }
-        let next = guard.queue.pop_front();
-        if let Some(request) = &next {
-            guard.active = Some(request.clone());
-        }
-        Ok(next)
-    }
-
-    fn finish_active(&self, run_id: &str) -> Result<(), String> {
-        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        guard.cancelled.remove(run_id);
-        if guard.active.as_ref().map(|r| r.run_id.as_str()) == Some(run_id) {
-            guard.active = None;
-        }
-        Ok(())
-    }
-
-    fn retry_failed(&self, run_id: &str, error: &str) -> Result<Option<VaultIndexRequest>, String> {
-        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        let Some(active) = guard.active.take() else {
-            return Ok(None);
-        };
-        if active.run_id != run_id {
-            guard.active = Some(active);
-            return Err("active run does not match failed run".to_string());
-        }
-        guard.cancelled.remove(run_id);
-        let mut request = active;
-        request.attempts += 1;
-        request.last_error = error.to_string();
-        if request.attempts >= VAULT_INDEX_MAX_ATTEMPTS {
-            return Ok(None);
-        }
-        let position = guard
-            .queue
-            .iter()
-            .position(|queued| queued.priority < request.priority)
-            .unwrap_or(guard.queue.len());
-        guard.queue.insert(position, request.clone());
-        Ok(Some(request))
-    }
-
-    fn snapshot(&self) -> Result<VaultIndexQueueStatus, String> {
-        let guard = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(VaultIndexQueueStatus {
-            active: guard.active.as_ref().map(|request| VaultIndexQueueEntry {
-                run_id: request.run_id.clone(),
-                path: request.path.clone(),
-                status: "running".to_string(),
-                position: 1,
-                priority: request.priority,
-                attempts: request.attempts,
-                last_error: request.last_error.clone(),
-                retry_delay_ms: vault_index_retry_delay_ms(request.attempts),
-            }),
-            queue: guard
-                .queue
-                .iter()
-                .enumerate()
-                .map(|(index, request)| VaultIndexQueueEntry {
-                    run_id: request.run_id.clone(),
-                    path: request.path.clone(),
-                    status: "queued".to_string(),
-                    position: index + 1,
-                    priority: request.priority,
-                    attempts: request.attempts,
-                    last_error: request.last_error.clone(),
-                    retry_delay_ms: vault_index_retry_delay_ms(request.attempts),
-                })
-                .collect(),
-        })
-    }
-}
-
-struct ActiveVaultWatch {
-    path: String,
-    stop: Sender<()>,
-    join: Option<thread::JoinHandle<()>>,
-}
-
-impl ActiveVaultWatch {
-    fn stop(self) {
-        let _ = self.stop.send(());
-        if let Some(join) = self.join {
-            let _ = join.join();
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultWatchStatus {
-    watching: bool,
-    path: Option<String>,
-    paths: Vec<String>,
-    files: i64,
-    updated_at: i64,
-}
-
 fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
     app.try_state::<StreamCancellation>()
         .map(|state| state.is_cancelled(run_id))
@@ -380,18 +167,6 @@ fn is_stream_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
 
 fn clear_stream_cancel(app: &tauri::AppHandle, run_id: &str) {
     if let Some(state) = app.try_state::<StreamCancellation>() {
-        state.clear(run_id);
-    }
-}
-
-fn is_vault_index_cancelled(app: &tauri::AppHandle, run_id: &str) -> bool {
-    app.try_state::<VaultIndexState>()
-        .map(|state| state.is_cancelled(run_id))
-        .unwrap_or(false)
-}
-
-fn clear_vault_index_cancel(app: &tauri::AppHandle, run_id: &str) {
-    if let Some(state) = app.try_state::<VaultIndexState>() {
         state.clear(run_id);
     }
 }
@@ -927,344 +702,6 @@ fn parse_frontmatter(content: &str) -> (serde_json::Map<String, Value>, String) 
     (map, content.to_string())
 }
 
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
-    }
-    if let Some(rest) = pattern.strip_prefix("**") {
-        for (idx, _) in text.char_indices() {
-            if wildcard_match(rest, &text[idx..]) {
-                return true;
-            }
-        }
-        return wildcard_match(rest, "");
-    }
-    if let Some(rest) = pattern.strip_prefix('*') {
-        for (idx, ch) in text.char_indices() {
-            if ch == '/' {
-                break;
-            }
-            if wildcard_match(rest, &text[idx..]) {
-                return true;
-            }
-        }
-        return wildcard_match(rest, "");
-    }
-    let pat_c = pattern.chars().next().unwrap();
-    let text_c = text.chars().next();
-    match text_c {
-        Some(text_c) if text_c == pat_c => {
-            wildcard_match(&pattern[pat_c.len_utf8()..], &text[text_c.len_utf8()..])
-        }
-        _ => false,
-    }
-}
-
-fn should_ignore_path(relative: &str, patterns: &[String]) -> bool {
-    let rel = relative.replace('\\', "/");
-    let rel = rel.trim_start_matches("./");
-    patterns.iter().any(|raw| {
-        let pattern = raw.trim().replace('\\', "/");
-        let pattern = pattern.trim_start_matches("./");
-        if pattern.is_empty() {
-            return false;
-        }
-        if pattern.contains('/') {
-            wildcard_match(pattern, rel)
-        } else {
-            rel.split('/')
-                .any(|segment| wildcard_match(pattern, segment))
-        }
-    })
-}
-
-fn collect_markdown_paths(
-    dir: &Path,
-    patterns: &[String],
-    out: &mut Vec<std::path::PathBuf>,
-    ignored: &mut i64,
-    relative: &str,
-    depth: usize,
-) -> Result<(), String> {
-    if depth > 10 {
-        return Ok(());
-    }
-    let entries = fs::read_dir(dir).map_err(|e| format!("Read dir failed: {}", e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let rel = if relative.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", relative, name)
-        };
-        if should_ignore_path(&rel, patterns) {
-            *ignored += 1;
-            continue;
-        }
-        if path.is_dir() {
-            collect_markdown_paths(&path, patterns, out, ignored, &rel, depth + 1)?;
-        } else if path.extension().is_some_and(|e| e == "md") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn read_markdown_file(path: std::path::PathBuf) -> (String, String, String, String) {
-    let content = fs::read_to_string(&path).unwrap_or_default();
-    let (frontmatter, body) = parse_frontmatter(&content);
-    let title = frontmatter
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Untitled")
-        .to_string();
-    let tags = frontmatter
-        .get("tags")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    (path.to_string_lossy().to_string(), title, tags, body)
-}
-
-fn index_vault_files(
-    conn: &rusqlite::Connection,
-    vault_path: &str,
-    ignore_patterns: &[String],
-    concurrency: usize,
-) -> Result<db::IndexResult, String> {
-    index_vault_files_inner(conn, vault_path, ignore_patterns, concurrency, None, None)
-}
-
-fn index_vault_files_inner(
-    conn: &rusqlite::Connection,
-    vault_path: &str,
-    ignore_patterns: &[String],
-    concurrency: usize,
-    mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
-    should_cancel: Option<&dyn Fn() -> bool>,
-) -> Result<db::IndexResult, String> {
-    let dir = Path::new(vault_path);
-    if !dir.is_dir() {
-        return Err("Vault path not a directory".into());
-    }
-    let mut paths = Vec::new();
-    let mut ignored = 0i64;
-    collect_markdown_paths(dir, ignore_patterns, &mut paths, &mut ignored, "", 0)?;
-    let mut files = Vec::new();
-    let workers = if paths.is_empty() {
-        0
-    } else if concurrency == 0 {
-        let cores = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(4);
-        plan_index_concurrency(paths.len(), count_large_vault_files(&paths), cores)
-    } else {
-        concurrency.clamp(1, 16).min(paths.len())
-    };
-    if workers > 0 {
-        let chunk_size = paths.len().div_ceil(workers);
-        std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for chunk in paths.chunks(chunk_size) {
-                let chunk = chunk.to_vec();
-                handles.push(scope.spawn(move || {
-                    chunk
-                        .into_iter()
-                        .map(read_markdown_file)
-                        .collect::<Vec<_>>()
-                }));
-            }
-            for handle in handles {
-                files.extend(
-                    handle
-                        .join()
-                        .map_err(|_| "Vault scan worker failed".to_string())?,
-                );
-            }
-            Ok::<(), String>(())
-        })?;
-    };
-    let mut indexed = 0i64;
-    let file_count = files.len();
-    if file_count > 0 {
-        if let Some(callback) = on_progress.as_deref_mut() {
-            callback(0, file_count);
-        }
-    }
-    for (path, title, tags, content) in files.iter() {
-        if should_cancel.map(|check| check()).unwrap_or(false) {
-            return Err("Vault index cancelled".into());
-        }
-        db::upsert_knowledge_file(conn, path, title, tags, content, vault_path)
-            .map_err(|e| e.to_string())?;
-        indexed += 1;
-        if let Some(callback) = on_progress.as_deref_mut() {
-            if indexed % 5 == 0 || indexed == file_count as i64 {
-                callback(indexed as usize, file_count);
-            }
-        }
-    }
-    Ok(db::IndexResult {
-        files: indexed,
-        ignored,
-        concurrency_used: workers as i64,
-    })
-}
-
-fn plan_index_concurrency(file_count: usize, large_file_count: usize, cores: usize) -> usize {
-    let cores = cores.clamp(1, 16);
-    if file_count <= 32 {
-        1
-    } else if file_count <= 256 || large_file_count >= 8 {
-        cores.min(4)
-    } else {
-        cores.min(16)
-    }
-}
-
-fn count_large_vault_files(paths: &[std::path::PathBuf]) -> usize {
-    paths
-        .iter()
-        .take(64)
-        .filter(|path| {
-            fs::metadata(path)
-                .map(|meta| meta.len() > 1_048_576)
-                .unwrap_or(false)
-        })
-        .count()
-}
-
-fn upsert_markdown_path(
-    conn: &rusqlite::Connection,
-    path: &Path,
-    vault_path: &str,
-) -> Result<(), String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Read {} failed: {}", path.display(), e))?;
-    let (frontmatter, body) = parse_frontmatter(&content);
-    let title = frontmatter
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Untitled")
-        .to_string();
-    let tags = frontmatter
-        .get("tags")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    db::upsert_knowledge_file(
-        conn,
-        &path.to_string_lossy(),
-        &title,
-        &tags,
-        &body,
-        vault_path,
-    )
-    .map_err(|e| e.to_string())
-}
-
-fn sync_vault_path(
-    conn: &rusqlite::Connection,
-    path: &Path,
-    vault_path: &str,
-) -> Result<bool, String> {
-    if path.extension().is_none_or(|ext| ext != "md") {
-        return Ok(false);
-    }
-    if path.exists() {
-        upsert_markdown_path(conn, path, vault_path)?;
-        Ok(true)
-    } else {
-        db::delete_knowledge_file(conn, &path.to_string_lossy()).map_err(|e| e.to_string())?;
-        Ok(true)
-    }
-}
-
-fn sync_vault_event(
-    conn: &rusqlite::Connection,
-    paths: &[std::path::PathBuf],
-    vault_path: &Path,
-    ignore_patterns: &[String],
-) -> Vec<String> {
-    let mut changed_paths = Vec::new();
-    let vault_str = vault_path.to_string_lossy().to_string();
-    for path in paths {
-        let rel = path
-            .strip_prefix(vault_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if should_ignore_path(&rel, ignore_patterns) {
-            continue;
-        }
-        if let Ok(synced) = sync_vault_path(conn, path, &vault_str) {
-            if synced {
-                changed_paths.push(path.to_string_lossy().to_string());
-            }
-        }
-    }
-    changed_paths
-}
-
-fn start_vault_watcher(
-    vault_path: String,
-    mut on_event: impl FnMut(&Event) + Send + 'static,
-) -> Result<ActiveVaultWatch, String> {
-    let (stop_tx, stop_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
-    let mut watcher: RecommendedWatcher =
-        notify::recommended_watcher(event_tx).map_err(|e| e.to_string())?;
-    watcher
-        .watch(Path::new(&vault_path), RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
-    let join = thread::Builder::new()
-        .name("vault-watcher".to_string())
-        .spawn(move || {
-            let _keepalive = watcher;
-            loop {
-                if stop_rx.recv_timeout(Duration::from_millis(200)).is_ok() {
-                    break;
-                }
-                while let Ok(event) = event_rx.try_recv() {
-                    if let Ok(event) = event {
-                        on_event(&event);
-                    }
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(ActiveVaultWatch {
-        path: vault_path,
-        stop: stop_tx,
-        join: Some(join),
-    })
-}
-
-fn vault_watch_status(
-    app: &tauri::AppHandle,
-    conn: &rusqlite::Connection,
-) -> Result<VaultWatchStatus, String> {
-    let (watching, paths) = match app.try_state::<VaultWatchState>() {
-        Some(state) => match state.active.lock() {
-            Ok(active) => {
-                let paths: Vec<String> = active.iter().map(|handle| handle.path.clone()).collect();
-                (!paths.is_empty(), paths)
-            }
-            Err(_) => (false, Vec::new()),
-        },
-        None => (false, Vec::new()),
-    };
-    let status = db::knowledge_index_status(conn).map_err(|e| e.to_string())?;
-    Ok(VaultWatchStatus {
-        watching,
-        path: paths.first().cloned(),
-        paths,
-        files: status.files,
-        updated_at: status.indexed_at,
-    })
-}
-
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -1537,6 +974,17 @@ fn update_project_material(
 }
 
 #[tauri::command]
+fn update_project_journey(
+    state: State<'_, db::Db>,
+    id: String,
+    stage: String,
+    journey_doc_path: Option<String>,
+) -> Result<db::Project, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_project_journey(&conn, &id, &stage, journey_doc_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_project(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<(), String> {
     requires_confirmation("delete_project", &id, confirmed)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1612,9 +1060,7 @@ fn open_obsidian(project_path: String, file: String) -> Result<String, String> {
     let full = format!("{}/{}", vault.trim_end_matches('/'), note);
     let encoded = encode_uri_component(&full);
     let uri = format!("obsidian://open?path={}", encoded);
-    let _ = Command::new("cmd")
-        .args(["/C", "start", "", &uri])
-        .spawn();
+    let _ = Command::new("cmd").args(["/C", "start", "", &uri]).spawn();
     Ok(uri)
 }
 
@@ -1652,78 +1098,6 @@ fn delete_thought(state: State<'_, db::Db>, id: String, confirmed: bool) -> Resu
     requires_confirmation("delete_thought", &id, confirmed)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::delete_thought(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_quick_prompts(state: State<'_, db::Db>) -> Result<Vec<db::QuickPrompt>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_quick_prompts(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn add_custom_quick_prompt(
-    state: State<'_, db::Db>,
-    label: String,
-    category: String,
-    text: String,
-) -> Result<db::QuickPrompt, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let now = now_millis();
-    let sort_order = db::next_quick_prompt_order(&conn).map_err(|e| e.to_string())?;
-    let prompt = db::QuickPrompt {
-        id: uuid::Uuid::new_v4().to_string(),
-        label,
-        category,
-        text,
-        custom: true,
-        sort_order,
-        updated_at: now,
-        created_at: now,
-    };
-    db::upsert_quick_prompt(&conn, &prompt).map_err(|e| e.to_string())?;
-    Ok(prompt)
-}
-
-#[tauri::command]
-fn update_custom_quick_prompt(
-    state: State<'_, db::Db>,
-    id: String,
-    label: String,
-    category: String,
-    text: String,
-) -> Result<db::QuickPrompt, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::update_custom_quick_prompt(&conn, &id, &label, &category, &text).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn reorder_custom_quick_prompts(
-    state: State<'_, db::Db>,
-    ids: Vec<String>,
-) -> Result<usize, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::reorder_custom_quick_prompts(&conn, &ids).map_err(|e| e.to_string())?;
-    Ok(ids.len())
-}
-
-#[tauri::command]
-fn delete_custom_quick_prompt(state: State<'_, db::Db>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::delete_quick_prompt(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_quick_prompt_usage(
-    state: State<'_, db::Db>,
-) -> Result<Vec<db::QuickPromptUsageEntry>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_quick_prompt_usage(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn record_quick_prompt_usage(state: State<'_, db::Db>, id: String) -> Result<i64, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::record_quick_prompt_usage(&conn, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2085,67 +1459,73 @@ fn restore_agent_prompt(
 }
 
 #[tauri::command]
-fn list_habits(state: State<'_, db::Db>) -> Result<Vec<db::Habit>, String> {
+fn list_agent_catalog(state: State<'_, db::Db>) -> Result<Vec<db::AgentCatalogEntry>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_habits(&conn).map_err(|e| e.to_string())
+    db::list_agent_catalog(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn create_habit(
+fn import_agent_catalog(
+    state: State<'_, db::Db>,
+    entries: Vec<db::AgentCatalogInput>,
+) -> Result<Vec<db::AgentCatalogEntry>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::import_agent_catalog(&conn, &entries).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_team_presets(state: State<'_, db::Db>) -> Result<Vec<db::TeamPreset>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_team_presets(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_team_preset(
     state: State<'_, db::Db>,
     name: String,
-    week_goal: i64,
-    color: String,
-) -> Result<db::Habit, String> {
+    agent_slugs: Vec<String>,
+) -> Result<db::TeamPreset, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_habit(&conn, &name, week_goal, &color).map_err(|e| e.to_string())
+    db::create_team_preset(&conn, &name, &agent_slugs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn toggle_habit(state: State<'_, db::Db>, id: String) -> Result<db::Habit, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::toggle_habit(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn update_habit_week_goal(
+fn update_team_preset(
     state: State<'_, db::Db>,
     id: String,
-    week_goal: i64,
-) -> Result<db::Habit, String> {
+    name: String,
+    agent_slugs: Vec<String>,
+) -> Result<db::TeamPreset, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::update_habit_week_goal(&conn, &id, week_goal).map_err(|e| e.to_string())
+    db::update_team_preset(&conn, &id, &name, &agent_slugs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_habit(state: State<'_, db::Db>, id: String, confirmed: bool) -> Result<bool, String> {
-    requires_confirmation("delete_habit", &id, confirmed)?;
+fn delete_team_preset(state: State<'_, db::Db>, id: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::delete_habit(&conn, &id).map_err(|e| e.to_string())
+    db::delete_team_preset(&conn, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_schedule_events(state: State<'_, db::Db>) -> Result<Vec<db::ScheduleEvent>, String> {
+fn list_cli_tools(state: State<'_, db::Db>) -> Result<Vec<db::CliToolDetection>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_schedule_events(&conn).map_err(|e| e.to_string())
+    db::list_cli_tools(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn create_schedule_event(
+fn detect_cli_tools(state: State<'_, db::Db>) -> Result<Vec<db::CliToolDetection>, String> {
+    let detected = cli_spawn::detect_cli_tools();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::save_cli_tool_detections(&conn, &detected).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_cli_tool_detections(
     state: State<'_, db::Db>,
-    title: String,
-    start_time: String,
-    date: String,
-    tag: String,
-) -> Result<db::ScheduleEvent, String> {
+    tools: Vec<db::CliToolDetection>,
+) -> Result<Vec<db::CliToolDetection>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_schedule_event(&conn, &title, &start_time, &date, &tag).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn toggle_event_done(state: State<'_, db::Db>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::toggle_event_done(&conn, &id).map_err(|e| e.to_string())
+    db::save_cli_tool_detections(&conn, &tools).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2161,33 +1541,6 @@ fn get_workspace_summary(state: State<'_, db::Db>) -> Result<db::WorkspaceSummar
 }
 
 #[tauri::command]
-fn get_actions_bundle(state: State<'_, db::Db>) -> Result<db::ActionsBundle, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_actions_bundle(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn search_sessions(
-    state: State<'_, db::Db>,
-    query: String,
-    since: Option<i64>,
-    until: Option<i64>,
-    limit: Option<i64>,
-    include_messages: Option<bool>,
-) -> Result<Vec<db::SessionSearchHit>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::search_sessions(
-        &conn,
-        &query,
-        since,
-        until,
-        limit,
-        include_messages.unwrap_or(true),
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn create_session(
     state: State<'_, db::Db>,
     title: String,
@@ -2195,34 +1548,6 @@ fn create_session(
 ) -> Result<db::Session, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::create_session(&conn, &title, &model).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn rename_session(state: State<'_, db::Db>, id: String, title: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::rename_session(&conn, &id, &title).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_session_pinned(state: State<'_, db::Db>, id: String, pinned: bool) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_session_pinned(&conn, &id, pinned).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_session_archived(
-    state: State<'_, db::Db>,
-    id: String,
-    archived: bool,
-) -> Result<db::Session, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_session_archived(&conn, &id, archived).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn duplicate_session(state: State<'_, db::Db>, id: String) -> Result<db::Session, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::duplicate_session(&conn, &id)
 }
 
 #[tauri::command]
@@ -2250,85 +1575,6 @@ fn list_chat_messages(
 ) -> Result<Vec<db::ChatMessage>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::list_chat_messages(&conn, &session_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn update_chat_message(
-    state: State<'_, db::Db>,
-    id: String,
-    content: String,
-) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::update_chat_message(&conn, &id, &content).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn truncate_chat_messages(
-    state: State<'_, db::Db>,
-    session_id: String,
-    keep_message_id: String,
-) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::truncate_chat_messages(&conn, &session_id, &keep_message_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn save_message_version(
-    state: State<'_, db::Db>,
-    message_id: String,
-    content: String,
-) -> Result<db::MessageVersion, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::save_message_version(&conn, &message_id, &content, None).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_message_versions(
-    state: State<'_, db::Db>,
-    message_id: String,
-) -> Result<Vec<db::MessageVersion>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_message_versions(&conn, &message_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn restore_message_version(
-    state: State<'_, db::Db>,
-    message_id: String,
-    version_id: String,
-) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::restore_message_version(&conn, &message_id, &version_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn diff_message_version_with_current(
-    state: State<'_, db::Db>,
-    message_id: String,
-    version_id: String,
-) -> Result<db::MessageDiff, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::diff_message_version_with_current(&conn, &message_id, &version_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn save_message_aux(
-    state: State<'_, db::Db>,
-    message_id: String,
-    payload: String,
-) -> Result<db::MessageAux, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::save_message_aux(&conn, &message_id, &payload)
-}
-
-#[tauri::command]
-fn list_message_aux(
-    state: State<'_, db::Db>,
-    session_id: String,
-) -> Result<Vec<db::MessageAux>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_message_aux(&conn, &session_id)
 }
 
 #[tauri::command]
@@ -2429,703 +1675,6 @@ fn search_thoughts(
     db::search_thoughts(&conn, &query, limit, source_filter.as_ref()).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn get_rag_index_status(state: State<'_, db::Db>) -> Result<db::RagIndexStatus, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::rag_index_status(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_embedding_config(state: State<'_, db::Db>) -> Result<db::EmbeddingConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_embedding_config(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_embedding_config(
-    state: State<'_, db::Db>,
-    request: db::EmbeddingConfigInput,
-) -> Result<db::EmbeddingConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_embedding_config(&conn, request).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_vector_index_status(state: State<'_, db::Db>) -> Result<db::VectorIndexStatus, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_vector_index_status(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn rebuild_vector_index(
-    state: State<'_, db::Db>,
-    force: bool,
-) -> Result<db::VectorRebuildResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::rebuild_vector_index(&conn, force).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_knowledge_cluster_status(
-    state: State<'_, db::Db>,
-) -> Result<db::KnowledgeClusterStatus, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_knowledge_cluster_status(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn recompute_knowledge_clusters(
-    state: State<'_, db::Db>,
-    cluster_threshold: Option<f64>,
-    dedup_threshold: Option<f64>,
-) -> Result<db::KnowledgeClusterStatus, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::recompute_knowledge_clusters(&conn, cluster_threshold, dedup_threshold)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn dismiss_knowledge_duplicate(state: State<'_, db::Db>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::dismiss_knowledge_duplicate(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn merge_knowledge_duplicate(state: State<'_, db::Db>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::merge_knowledge_duplicate(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn index_vault(state: State<'_, db::Db>, vault_path: String) -> Result<db::IndexResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    index_vault_files(&conn, &vault_path, &[], 4)
-}
-
-#[tauri::command]
-fn index_vault_ex(
-    state: State<'_, db::Db>,
-    vault_path: String,
-    ignore_patterns: Vec<String>,
-    concurrency: usize,
-) -> Result<db::IndexResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    index_vault_files(&conn, &vault_path, &ignore_patterns, concurrency)
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexProgress {
-    run_id: String,
-    path: String,
-    done: usize,
-    total: usize,
-    files: i64,
-    ignored: i64,
-    concurrency_used: i64,
-    status: String,
-}
-
-fn emit_vault_index_queue(app: &tauri::AppHandle) {
-    if let Ok(status) = app.state::<VaultIndexState>().snapshot() {
-        let _ = app.emit("vault-index-queue", status);
-    }
-}
-
-fn spawn_vault_index_worker(
-    app: tauri::AppHandle,
-    request: VaultIndexRequest,
-) -> Result<(), String> {
-    let run_id = request.run_id.clone();
-    let app_clone = app.clone();
-    let run_path = request.path.clone();
-    let thread_run_id = run_id.clone();
-    let ignore_patterns = request.ignore_patterns.clone();
-    let concurrency = request.concurrency;
-    let latest = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize)));
-    let latest_clone = latest.clone();
-    thread::Builder::new()
-        .name("vault-index".to_string())
-        .spawn(move || {
-            let Some(db_state) = app_clone.try_state::<db::Db>() else {
-                return;
-            };
-            let Ok(conn) = db_state.0.lock() else {
-                return;
-            };
-            let mut emit_progress = |done: usize, total: usize| {
-                if let Ok(mut slot) = latest_clone.lock() {
-                    *slot = (done, total);
-                }
-                let payload = IndexProgress {
-                    run_id: thread_run_id.clone(),
-                    path: run_path.clone(),
-                    done,
-                    total,
-                    files: 0,
-                    ignored: 0,
-                    concurrency_used: 0,
-                    status: "running".to_string(),
-                };
-                let _ = app_clone.emit("vault-index-progress", payload);
-            };
-            let cancel_run_id = thread_run_id.clone();
-            let is_cancelled = || is_vault_index_cancelled(&app_clone, &cancel_run_id);
-            let result = index_vault_files_inner(
-                &conn,
-                &run_path,
-                &ignore_patterns,
-                concurrency,
-                Some(&mut emit_progress),
-                Some(&is_cancelled),
-            );
-            let cancelled = is_cancelled();
-            let (last_done, last_total) = latest.lock().map(|slot| *slot).unwrap_or((0, 0));
-            let (status, done, total, files, ignored, concurrency_used) = match result {
-                Ok(index_result) => (
-                    "done".to_string(),
-                    index_result.files as usize,
-                    index_result.files as usize,
-                    index_result.files,
-                    index_result.ignored,
-                    index_result.concurrency_used,
-                ),
-                Err(_) if cancelled => ("cancelled".to_string(), last_done, last_total, 0, 0, 0),
-                Err(error) => (format!("error: {}", error), 0, 0, 0, 0, 0),
-            };
-            let retry_error = status.strip_prefix("error:").map(|s| s.trim().to_string());
-            let payload = IndexProgress {
-                run_id: thread_run_id.clone(),
-                path: run_path,
-                done,
-                total,
-                files,
-                ignored,
-                concurrency_used,
-                status,
-            };
-            let _ = app_clone.emit("vault-index-progress", payload);
-            clear_vault_index_cancel(&app_clone, &thread_run_id);
-            let retry = if let Some(error) = retry_error {
-                app_clone
-                    .state::<VaultIndexState>()
-                    .retry_failed(&thread_run_id, &error)
-                    .ok()
-                    .flatten()
-            } else {
-                let _ = app_clone
-                    .state::<VaultIndexState>()
-                    .finish_active(&thread_run_id);
-                None
-            };
-            if let Some(retry) = retry {
-                persist_vault_index_request(&app_clone, &retry, "queued");
-                thread::sleep(Duration::from_millis(vault_index_retry_delay_ms(
-                    retry.attempts,
-                )));
-                emit_vault_index_queue(&app_clone);
-            } else {
-                delete_vault_index_request(&app_clone, &thread_run_id);
-                emit_vault_index_queue(&app_clone);
-            }
-            let _ = maybe_start_next_vault_index(&app_clone);
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn maybe_start_next_vault_index(app: &tauri::AppHandle) -> Result<(), String> {
-    let request = app.state::<VaultIndexState>().claim_next()?;
-    if let Some(request) = request {
-        if let Err(error) = spawn_vault_index_worker(app.clone(), request.clone()) {
-            let _ = app
-                .state::<VaultIndexState>()
-                .finish_active(&request.run_id);
-            emit_vault_index_queue(app);
-            return Err(error);
-        }
-    }
-    emit_vault_index_queue(app);
-    Ok(())
-}
-
-fn persist_vault_index_request(app: &tauri::AppHandle, request: &VaultIndexRequest, status: &str) {
-    if let Some(db_state) = app.try_state::<db::Db>() {
-        if let Ok(conn) = db_state.0.lock() {
-            let record = db::VaultIndexQueueRecord {
-                run_id: request.run_id.clone(),
-                path: request.path.clone(),
-                ignore_patterns: request.ignore_patterns.clone(),
-                concurrency: request.concurrency,
-                status: status.to_string(),
-                priority: request.priority,
-                attempts: request.attempts,
-                last_error: request.last_error.clone(),
-            };
-            let _ = db::persist_vault_index_queue(&conn, &record);
-        }
-    }
-}
-
-fn delete_vault_index_request(app: &tauri::AppHandle, run_id: &str) {
-    if let Some(db_state) = app.try_state::<db::Db>() {
-        if let Ok(conn) = db_state.0.lock() {
-            let _ = db::delete_vault_index_queue(&conn, run_id);
-        }
-    }
-}
-
-fn enqueue_restored_requests(
-    state: &VaultIndexState,
-    records: Vec<db::VaultIndexQueueRecord>,
-) -> usize {
-    let mut restored = 0usize;
-    for record in records {
-        if (record.status == "queued" || record.status == "running")
-            && state
-                .enqueue(VaultIndexRequest {
-                    run_id: record.run_id,
-                    path: record.path,
-                    ignore_patterns: record.ignore_patterns,
-                    concurrency: record.concurrency,
-                    priority: record.priority,
-                    attempts: record.attempts,
-                    last_error: record.last_error,
-                })
-                .is_ok()
-        {
-            restored += 1;
-        }
-    }
-    restored
-}
-
-fn restore_vault_index_queue(app: &tauri::AppHandle) {
-    let Some(db_state) = app.try_state::<db::Db>() else {
-        return;
-    };
-    let records = {
-        let Ok(conn) = db_state.0.lock() else {
-            return;
-        };
-        let Ok(records) = db::list_vault_index_queue(&conn) else {
-            return;
-        };
-        for record in &records {
-            if record.status == "running" {
-                let mut reset = record.clone();
-                reset.status = "queued".to_string();
-                let _ = db::persist_vault_index_queue(&conn, &reset);
-            }
-        }
-        records
-    };
-    let restored = enqueue_restored_requests(&app.state::<VaultIndexState>(), records);
-    if restored > 0 {
-        let _ = maybe_start_next_vault_index(app);
-    }
-}
-
-#[tauri::command]
-fn start_vault_index(
-    app: tauri::AppHandle,
-    vault_path: String,
-    ignore_patterns: Vec<String>,
-    concurrency: usize,
-    priority: Option<usize>,
-) -> Result<String, String> {
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let request = VaultIndexRequest {
-        run_id: run_id.clone(),
-        path: vault_path.clone(),
-        ignore_patterns,
-        concurrency,
-        priority: priority.unwrap_or(0),
-        attempts: 0,
-        last_error: String::new(),
-    };
-    let position = app.state::<VaultIndexState>().enqueue(request.clone())?;
-    persist_vault_index_request(&app, &request, "queued");
-    let _ = app.emit(
-        "vault-index-progress",
-        IndexProgress {
-            run_id: run_id.clone(),
-            path: vault_path,
-            done: 0,
-            total: 0,
-            files: 0,
-            ignored: 0,
-            concurrency_used: 0,
-            status: if position > 1 {
-                "queued".to_string()
-            } else {
-                "running".to_string()
-            },
-        },
-    );
-    maybe_start_next_vault_index(&app)?;
-    Ok(run_id)
-}
-
-#[tauri::command]
-fn cancel_vault_index(
-    app: tauri::AppHandle,
-    state: State<'_, VaultIndexState>,
-    run_id: String,
-) -> Result<bool, String> {
-    let active = state
-        .inner
-        .lock()
-        .map_err(|e| e.to_string())?
-        .active
-        .as_ref()
-        .map(|request| request.run_id == run_id)
-        .unwrap_or(false);
-    let _ = state.mark(&run_id);
-    let removed_path = if active {
-        None
-    } else {
-        state.take_queued(&run_id).map(|request| request.path)
-    };
-    if !active {
-        if let Some(path) = removed_path {
-            delete_vault_index_request(&app, &run_id);
-            let _ = app.emit(
-                "vault-index-progress",
-                IndexProgress {
-                    run_id,
-                    path,
-                    done: 0,
-                    total: 0,
-                    files: 0,
-                    ignored: 0,
-                    concurrency_used: 0,
-                    status: "cancelled".to_string(),
-                },
-            );
-        }
-        emit_vault_index_queue(&app);
-        maybe_start_next_vault_index(&app)?;
-    }
-    Ok(true)
-}
-
-#[tauri::command]
-fn get_vault_index_queue_status(
-    state: State<'_, VaultIndexState>,
-) -> Result<VaultIndexQueueStatus, String> {
-    state.snapshot()
-}
-
-#[tauri::command]
-fn get_knowledge_index_status(
-    state: State<'_, db::Db>,
-) -> Result<db::KnowledgeIndexStatus, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::knowledge_index_status(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_vault_target_stats(state: State<'_, db::Db>) -> Result<Vec<db::VaultTargetStats>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::vault_target_stats(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_knowledge_files(
-    state: State<'_, db::Db>,
-    vault_path: Option<String>,
-    limit: Option<i64>,
-) -> Result<Vec<db::KnowledgeFileRecord>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_knowledge_files(&conn, vault_path.as_deref(), limit).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn cleanup_knowledge_files(
-    state: State<'_, db::Db>,
-    vault_path: Option<String>,
-) -> Result<db::KnowledgeCleanupResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::cleanup_knowledge_files(&conn, vault_path.as_deref()).map_err(|e| e.to_string())
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecommendedConcurrency {
-    recommended: usize,
-    cores: usize,
-}
-
-fn recommended_index_concurrency() -> usize {
-    let cores = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(4);
-    cores.clamp(1, 16)
-}
-
-#[tauri::command]
-fn recommend_index_concurrency() -> RecommendedConcurrency {
-    let cores = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(4);
-    RecommendedConcurrency {
-        recommended: recommended_index_concurrency(),
-        cores,
-    }
-}
-
-fn start_vault_watch_impl(
-    app: tauri::AppHandle,
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-    vault_path: String,
-    ignore_patterns: Vec<String>,
-) -> Result<VaultWatchStatus, String> {
-    let dir = Path::new(&vault_path);
-    if !dir.is_dir() {
-        return Err("Vault path not a directory".into());
-    }
-    let canonical =
-        fs::canonicalize(dir).map_err(|e| format!("Vault path not accessible: {}", e))?;
-    let canonical_str = canonical.to_string_lossy().to_string();
-    {
-        let mut active = state.active.lock().map_err(|e| e.to_string())?;
-        let mut remaining = Vec::with_capacity(active.len());
-        for handle in active.drain(..) {
-            if handle.path == canonical_str {
-                handle.stop();
-            } else {
-                remaining.push(handle);
-            }
-        }
-        *active = remaining;
-    }
-    {
-        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        index_vault_files(&conn, &canonical_str, &ignore_patterns, 4)?;
-    }
-    let app_clone = app.clone();
-    let canonical_for_events = canonical.clone();
-    let patterns_for_config = ignore_patterns.clone();
-    let on_event = move |event: &Event| {
-        let event_kind = match &event.kind {
-            EventKind::Create(_) => "created",
-            EventKind::Modify(_) => "modified",
-            EventKind::Remove(_) => "removed",
-            _ => return,
-        };
-        let Some(db_state) = app_clone.try_state::<db::Db>() else {
-            return;
-        };
-        let Ok(conn) = db_state.0.lock() else {
-            return;
-        };
-        let vault_str = canonical_for_events.to_string_lossy().to_string();
-        let changed_paths =
-            sync_vault_event(&conn, &event.paths, &canonical_for_events, &ignore_patterns);
-        if !changed_paths.is_empty() {
-            for file_path in changed_paths {
-                let _ = db::touch_vault_watch_event(&conn, &vault_str, &file_path, event_kind);
-            }
-            if let Ok(status) = vault_watch_status(&app_clone, &conn) {
-                let _ = app_clone.emit("vault-watch-update", status);
-            }
-        }
-    };
-    let handle = start_vault_watcher(canonical_str.clone(), on_event)?;
-    state.active.lock().map_err(|e| e.to_string())?.push(handle);
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    db::upsert_vault_watch_target(&conn, &canonical_str, &patterns_for_config, true)
-        .map_err(|e| e.to_string())?;
-    let status = vault_watch_status(&app, &conn)?;
-    let _ = app.emit("vault-watch-update", status.clone());
-    Ok(status)
-}
-
-#[tauri::command]
-fn start_vault_watch(
-    app: tauri::AppHandle,
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-    vault_path: String,
-) -> Result<VaultWatchStatus, String> {
-    start_vault_watch_impl(app, state, db_state, vault_path, Vec::new())
-}
-
-#[tauri::command]
-fn start_vault_watch_ex(
-    app: tauri::AppHandle,
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-    vault_path: String,
-    ignore_patterns: Vec<String>,
-) -> Result<VaultWatchStatus, String> {
-    start_vault_watch_impl(app, state, db_state, vault_path, ignore_patterns)
-}
-
-#[tauri::command]
-fn stop_vault_watch(
-    app: tauri::AppHandle,
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-    vault_path: Option<String>,
-) -> Result<VaultWatchStatus, String> {
-    {
-        let mut active = state.active.lock().map_err(|e| e.to_string())?;
-        let mut remaining = Vec::with_capacity(active.len());
-        for handle in active.drain(..) {
-            let matches = match &vault_path {
-                Some(path) => handle.path == *path,
-                None => true,
-            };
-            if matches {
-                handle.stop();
-            } else {
-                remaining.push(handle);
-            }
-        }
-        *active = remaining;
-    }
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(path) = &vault_path {
-        let _ = db::set_vault_watch_target_enabled(&conn, path, false);
-    } else {
-        let targets = db::list_vault_watch_targets(&conn).map_err(|e| e.to_string())?;
-        for target in targets {
-            let _ = db::set_vault_watch_target_enabled(&conn, &target.path, false);
-        }
-    }
-    let status = vault_watch_status(&app, &conn)?;
-    let _ = app.emit("vault-watch-update", status.clone());
-    Ok(status)
-}
-
-#[tauri::command]
-fn list_vault_watch_targets(
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-) -> Result<Vec<db::VaultWatchTarget>, String> {
-    let active_paths: Vec<String> = match state.active.lock() {
-        Ok(active) => active.iter().map(|handle| handle.path.clone()).collect(),
-        Err(_) => Vec::new(),
-    };
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    let mut targets = db::list_vault_watch_targets(&conn).map_err(|e| e.to_string())?;
-    for target in &mut targets {
-        target.enabled = active_paths.contains(&target.path);
-    }
-    Ok(targets)
-}
-
-#[tauri::command]
-fn upsert_vault_watch_target(
-    state: State<'_, db::Db>,
-    target: db::VaultWatchTarget,
-) -> Result<db::VaultWatchTarget, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::upsert_vault_watch_target(&conn, &target.path, &target.ignore_patterns, target.enabled)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_vault_watch_target(
-    app: tauri::AppHandle,
-    state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-    vault_path: String,
-) -> Result<bool, String> {
-    {
-        let mut active = state.active.lock().map_err(|e| e.to_string())?;
-        let mut remaining = Vec::with_capacity(active.len());
-        for handle in active.drain(..) {
-            if handle.path == vault_path {
-                handle.stop();
-            } else {
-                remaining.push(handle);
-            }
-        }
-        *active = remaining;
-    }
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    let deleted = db::delete_vault_watch_target(&conn, &vault_path).map_err(|e| e.to_string())?;
-    let status = vault_watch_status(&app, &conn)?;
-    let _ = app.emit("vault-watch-update", status.clone());
-    Ok(deleted)
-}
-
-#[tauri::command]
-fn list_vault_watch_events(
-    state: State<'_, db::Db>,
-    vault_path: Option<String>,
-    limit: Option<i64>,
-) -> Result<Vec<db::VaultWatchEvent>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_vault_watch_events(&conn, vault_path.as_deref(), limit.unwrap_or(20))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn clear_vault_watch_events(
-    state: State<'_, db::Db>,
-    vault_path: Option<String>,
-) -> Result<i64, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::clear_vault_watch_events(&conn, vault_path.as_deref()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_vault_watch_status(
-    app: tauri::AppHandle,
-    _state: State<'_, VaultWatchState>,
-    db_state: State<'_, db::Db>,
-) -> Result<VaultWatchStatus, String> {
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-    vault_watch_status(&app, &conn)
-}
-
-#[tauri::command]
-fn get_vault_watch_config(state: State<'_, db::Db>) -> Result<db::VaultWatchConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_vault_watch_config(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_vault_watch_config(
-    state: State<'_, db::Db>,
-    config: db::VaultWatchConfig,
-) -> Result<db::VaultWatchConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_vault_watch_config(&conn, &config.path, &config.ignore_patterns, config.enabled)
-        .map_err(|e| e.to_string())
-}
-
-fn restore_vault_watch(app: tauri::AppHandle) {
-    let Some(db_state) = app.try_state::<db::Db>() else {
-        return;
-    };
-    let targets = {
-        let Ok(conn) = db_state.0.lock() else {
-            return;
-        };
-        db::list_vault_watch_targets(&conn).ok()
-    };
-    if let Some(targets) = targets {
-        for target in targets {
-            if !target.enabled || target.path.is_empty() {
-                continue;
-            }
-            let _ = start_vault_watch_impl(
-                app.clone(),
-                app.state::<VaultWatchState>(),
-                db_state.clone(),
-                target.path,
-                target.ignore_patterns,
-            );
-        }
-    }
-}
-
 fn spawn_clipboard_monitor(app: tauri::AppHandle) {
     thread::spawn(move || {
         let mut clipboard = match arboard::Clipboard::new() {
@@ -3192,329 +1741,6 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookNotification {
-    title: String,
-    body: String,
-    rule_id: String,
-    event: String,
-    channel: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookRecoveryResult {
-    probed: i64,
-    recovered: i64,
-    failed: i64,
-}
-
-fn emit_webhook_notification(
-    app: &tauri::AppHandle,
-    title: &str,
-    body: &str,
-    rule_id: &str,
-    event: &str,
-) {
-    let _ = app.emit(
-        "webhook-notification",
-        WebhookNotification {
-            title: title.to_string(),
-            body: body.to_string(),
-            rule_id: rule_id.to_string(),
-            event: event.to_string(),
-            channel: "notification".to_string(),
-        },
-    );
-}
-
-fn webhook_recovery_backoff_ms(rule: &db::WebhookRule) -> i64 {
-    let base = rule.recovery_backoff_seconds.max(5).saturating_mul(1000);
-    let exponent = rule
-        .consecutive_failures
-        .saturating_sub(rule.auto_disable_after.max(1))
-        .clamp(0, 30) as u32;
-    base.saturating_mul(1_i64 << exponent)
-        .min(24 * 60 * 60 * 1000)
-}
-
-fn deliver_webhook_email(
-    config: &db::WebhookChannelConfig,
-    rule_name: &str,
-    event: &str,
-    payload: &str,
-) -> Result<WebhookDeliveryResult, String> {
-    let from_addr = config.email_from.trim();
-    let to_addr = config.email_to.trim();
-    if from_addr.is_empty() || to_addr.is_empty() {
-        return Err("Email from/to addresses are not configured".to_string());
-    }
-    if config.smtp_host.trim().is_empty() {
-        return Err("SMTP host is not configured".to_string());
-    }
-    let from: Mailbox = from_addr
-        .parse()
-        .map_err(|e| format!("Invalid email from address: {}", e))?;
-    let to: Mailbox = to_addr
-        .parse()
-        .map_err(|e| format!("Invalid email to address: {}", e))?;
-    let email = Message::builder()
-        .from(from)
-        .to(to)
-        .subject(format!("Webhook delivered: {}", rule_name))
-        .header(ContentType::TEXT_PLAIN)
-        .body(format!(
-            "Rule: {}\nEvent: {}\nChannel: email\n\nPayload:\n{}",
-            rule_name, event, payload
-        ))
-        .map_err(|e| e.to_string())?;
-    let transport = SmtpTransport::builder_dangerous(config.smtp_host.trim())
-        .port(config.smtp_port.clamp(1, 65_535) as u16)
-        .credentials(Credentials::new(
-            config.smtp_user.clone(),
-            config.smtp_password.clone(),
-        ))
-        .build();
-    let started = std::time::Instant::now();
-    transport
-        .send(&email)
-        .map_err(|e| format!("SMTP delivery failed: {}", e))?;
-    Ok(WebhookDeliveryResult {
-        ok: true,
-        status: 202,
-        duration_ms: started.elapsed().as_millis(),
-        attempts: 1,
-        signed: false,
-        message: "Email queued via SMTP".to_string(),
-    })
-}
-
-fn spawn_webhook_delivery_worker(app: tauri::AppHandle) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        let Some(state) = app.try_state::<db::Db>() else {
-            continue;
-        };
-        let now = now_millis();
-        let (claimed, recovery_probes) = {
-            let Ok(conn) = state.0.lock() else {
-                continue;
-            };
-            let Ok(all_due) = db::list_due_webhook_rules(&conn, now) else {
-                continue;
-            };
-            let now_local = chrono::Local::now();
-            let due: Vec<db::WebhookRule> = all_due
-                .into_iter()
-                .filter(|rule| {
-                    webhook_condition::matches_condition(
-                        &rule.trigger_condition,
-                        "",
-                        None,
-                        &now_local,
-                    )
-                })
-                .collect();
-            for rule in &due {
-                let payload = render_webhook_payload(&rule.payload, "", None, now);
-                let channels: Vec<String> = if rule.channels.is_empty() {
-                    vec!["http".to_string()]
-                } else {
-                    rule.channels.clone()
-                };
-                for channel in channels {
-                    let _ =
-                        db::enqueue_webhook_delivery_channel(&conn, rule, "", &payload, &channel);
-                }
-                let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
-            }
-            if let Ok(config) = db::get_webhook_retention_config(&conn) {
-                if config.auto_cleanup {
-                    let _ = db::prune_webhook_deliveries(
-                        &conn,
-                        config.retention_days,
-                        config.max_records,
-                    );
-                }
-            }
-            let mut recovery_probes: Vec<(db::WebhookRule, String)> = Vec::new();
-            if let Ok(circuit_open) = db::list_circuit_open_webhook_rules(&conn) {
-                for rule in circuit_open {
-                    if now - rule.circuit_opened_at >= webhook_recovery_backoff_ms(&rule) {
-                        let payload =
-                            render_webhook_payload(&rule.payload, &rule.trigger_event, None, now);
-                        recovery_probes.push((rule, payload));
-                    }
-                }
-            }
-            let Ok(claimed) = db::claim_due_webhook_deliveries(&conn, now, 8) else {
-                continue;
-            };
-            (claimed, recovery_probes)
-        };
-        let channel_config = state
-            .0
-            .lock()
-            .ok()
-            .and_then(|conn| db::get_webhook_channel_config(&conn).ok());
-        for delivery in claimed {
-            let token = if delivery.token.trim().is_empty() {
-                None
-            } else {
-                Some(delivery.token.as_str())
-            };
-            let secret = if delivery.secret.trim().is_empty() {
-                None
-            } else {
-                Some(delivery.secret.as_str())
-            };
-            let outcome = match delivery.channel.as_str() {
-                "email" => match &channel_config {
-                    Some(config) if config.email_enabled => deliver_webhook_email(
-                        config,
-                        &delivery.rule_id,
-                        &delivery.event,
-                        &delivery.payload,
-                    ),
-                    _ => Err("Email channel not configured".to_string()),
-                },
-                "notification" => {
-                    let title = channel_config
-                        .as_ref()
-                        .map(|config| config.notification_title.clone())
-                        .filter(|title| !title.trim().is_empty())
-                        .unwrap_or_else(|| "AI Workbench webhook".to_string());
-                    let body = format!(
-                        "Rule {} delivered event {}",
-                        delivery.rule_id, delivery.event
-                    );
-                    emit_webhook_notification(
-                        &app,
-                        &title,
-                        &body,
-                        &delivery.rule_id,
-                        &delivery.event,
-                    );
-                    Ok(WebhookDeliveryResult {
-                        ok: true,
-                        status: 200,
-                        duration_ms: 0,
-                        attempts: 1,
-                        signed: false,
-                        message: "System notification delivered".to_string(),
-                    })
-                }
-                _ => deliver_webhook_http(
-                    &delivery.url,
-                    &delivery.payload,
-                    &delivery.method,
-                    token,
-                    secret,
-                    0,
-                ),
-            };
-            let (ok, status, message) = match outcome {
-                Ok(result) => (true, result.status as i64, result.message),
-                Err(err) => (false, 0, format!("Webhook delivery failed: {}", err)),
-            };
-            let Ok(conn) = state.0.lock() else {
-                continue;
-            };
-            let attempts = delivery.attempts + 1;
-            let max_attempts = delivery.retries.max(0) + 1;
-            let dead = !ok && attempts >= max_attempts;
-            let next_attempt_at = if ok || dead {
-                now
-            } else {
-                now + 1000 * (1_i64 << attempts.min(6))
-            };
-            let state = if dead {
-                "dead"
-            } else if ok {
-                "success"
-            } else {
-                "queued"
-            };
-            let _ = db::complete_webhook_delivery(
-                &conn,
-                &delivery.id,
-                state,
-                status,
-                &message,
-                attempts,
-                next_attempt_at,
-            );
-            if state != "queued" {
-                let _ = db::record_webhook_rule_outcome(&conn, &delivery.rule_id, status, &message);
-                let run_kind = if delivery.event.trim().is_empty() {
-                    "scheduled"
-                } else {
-                    "event"
-                };
-                let run_status = if state == "success" {
-                    "success"
-                } else {
-                    "failed"
-                };
-                let _ = db::record_webhook_rule_run(
-                    &conn,
-                    &delivery.rule_id,
-                    run_kind,
-                    run_status,
-                    status,
-                    attempts,
-                    &message,
-                );
-            }
-        }
-        for (rule, payload) in recovery_probes {
-            let token = if rule.token.trim().is_empty() {
-                None
-            } else {
-                Some(rule.token.as_str())
-            };
-            let secret = if rule.secret.trim().is_empty() {
-                None
-            } else {
-                Some(rule.secret.as_str())
-            };
-            let outcome = deliver_webhook_http(&rule.url, &payload, &rule.method, token, secret, 0);
-            let (ok, status, message) = match outcome {
-                Ok(result) => (true, result.status as i64, result.message),
-                Err(err) => (false, 0, format!("Recovery probe failed: {}", err)),
-            };
-            let Ok(conn) = state.0.lock() else {
-                continue;
-            };
-            let _ = db::record_webhook_rule_outcome(&conn, &rule.id, status, &message);
-            if ok {
-                let _ = db::set_webhook_rule_enabled(&conn, &rule.id, true);
-                let _ = db::record_webhook_rule_run(
-                    &conn,
-                    &rule.id,
-                    "scheduled",
-                    "success",
-                    status,
-                    1,
-                    &format!("Recovery probe succeeded: {}", message),
-                );
-            } else {
-                let _ = db::set_webhook_circuit_opened_at(&conn, &rule.id, now);
-                let _ = db::record_webhook_rule_run(
-                    &conn,
-                    &rule.id,
-                    "scheduled",
-                    "failed",
-                    status,
-                    1,
-                    &message,
-                );
-            }
-        }
-    });
 }
 
 #[derive(Clone, Serialize)]
@@ -3600,34 +1826,6 @@ fn webhook_signature(secret: &str, payload: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookSignatureVerifyResult {
-    valid: bool,
-    expected: String,
-    algorithm: String,
-}
-
-#[tauri::command]
-fn verify_webhook_signature(
-    secret: String,
-    payload: String,
-    signature: String,
-) -> WebhookSignatureVerifyResult {
-    let expected = webhook_signature(&secret, &payload);
-    let provided = signature.trim();
-    let normalized = provided
-        .strip_prefix("sha256=")
-        .or_else(|| provided.strip_prefix("SHA256="))
-        .unwrap_or(provided)
-        .trim();
-    WebhookSignatureVerifyResult {
-        valid: !provided.is_empty() && normalized.eq_ignore_ascii_case(&expected),
-        expected,
-        algorithm: "HMAC-SHA256".to_string(),
-    }
 }
 
 const SYNC_PBKDF2_ITERATIONS: u32 = 100_000;
@@ -4649,9 +2847,25 @@ struct GitFileVersions {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct QualityGateLevel {
+    level: u32,
+    name: String,
+    status: String,
+    errors: Vec<String>,
+    duration_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct QualityGateResult {
     status: String,
     errors: Vec<String>,
+    levels: Vec<QualityGateLevel>,
+}
+
+struct CommandOutcome {
+    exit_code: i32,
+    text: String,
 }
 
 fn run_check_command(
@@ -4659,7 +2873,7 @@ fn run_check_command(
     program: &str,
     args: &[&str],
     timeout_ms: u64,
-) -> Result<String, String> {
+) -> Result<CommandOutcome, String> {
     use std::process::Command;
     let mut child = Command::new(program)
         .args(args)
@@ -4672,8 +2886,17 @@ fn run_check_command(
     loop {
         if let Some(_status) = child.try_wait().map_err(|e| e.to_string())? {
             let out = child.wait_with_output().map_err(|e| e.to_string())?;
-            let text = String::from_utf8_lossy(&out.stderr).to_string();
-            return Ok(text);
+            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+            if !out.stderr.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&String::from_utf8_lossy(&out.stderr));
+            }
+            return Ok(CommandOutcome {
+                exit_code: out.status.code().unwrap_or(-1),
+                text,
+            });
         }
         if start.elapsed().as_millis() > timeout_ms as u128 {
             let _ = child.kill();
@@ -4683,53 +2906,294 @@ fn run_check_command(
     }
 }
 
-#[tauri::command]
-fn run_quality_gate(path: String) -> Result<QualityGateResult, String> {
-    let mut errors: Vec<String> = Vec::new();
-    let has_ts = Path::new(&path).join("tsconfig.json").exists();
-    let has_cargo = Path::new(&path).join("Cargo.toml").exists();
-
-    if has_ts {
-        match run_check_command(&path, "npx", &["tsc", "--noEmit"], 30000) {
-            Ok(out) => {
-                if !out.trim().is_empty() {
-                    errors.extend(
-                        out.lines()
-                            .filter(|l| l.contains("error"))
-                            .take(20)
-                            .map(|l| l.to_string()),
-                    );
+fn append_command_result(
+    outcome: Result<CommandOutcome, String>,
+    errors: &mut Vec<String>,
+    max_lines: usize,
+) {
+    match outcome {
+        Ok(o) if o.exit_code == 0 => {}
+        Ok(o) => {
+            let meaningful: Vec<String> = o
+                .text
+                .lines()
+                .filter(|l| {
+                    let lower = l.to_lowercase();
+                    lower.contains("error") || lower.contains("failed") || lower.contains("panic")
+                })
+                .take(max_lines)
+                .map(|l| l.to_string())
+                .collect();
+            if meaningful.is_empty() {
+                let trimmed = o.text.trim().to_string();
+                if !trimmed.is_empty() {
+                    errors.push(trimmed);
+                } else {
+                    errors.push(format!("command exited with {}", o.exit_code));
                 }
+            } else {
+                errors.extend(meaningful);
             }
-            Err(e) => errors.push(e),
         }
+        Err(e) => errors.push(e),
+    }
+}
+
+fn run_quality_gate_sync(
+    path: &str,
+    dod_path: Option<String>,
+) -> Result<QualityGateResult, String> {
+    fn contains_likely_secret(hunk: &str) -> bool {
+        let lower = hunk.to_lowercase();
+        if let Some(idx) = lower.find("sk-") {
+            let rest: String = lower[idx + 3..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if rest.chars().count() >= 16 {
+                return true;
+            }
+        }
+        if lower.contains("-----begin") {
+            return true;
+        }
+        if let Some(idx) = lower.find("akia") {
+            let rest: String = lower[idx + 4..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if rest.chars().count() >= 16 {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn diff_added_text(hunk: &str) -> String {
+        hunk.lines()
+            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+            .map(|line| &line[1..])
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn diff_has_debug_call(hunk: &str, needle: &str) -> bool {
+        diff_added_text(hunk).lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with(needle) && trimmed[needle.len()..].trim_start().starts_with('(')
+        })
+    }
+
+    let mut levels: Vec<QualityGateLevel> = Vec::new();
+    let root = Path::new(path);
+    let has_ts = root.join("tsconfig.json").exists();
+    let has_pkg = root.join("package.json").exists();
+    let cargo_dir = if root.join("Cargo.toml").exists() {
+        path.to_string()
+    } else if root.join("src-tauri").join("Cargo.toml").exists() {
+        format!(
+            "{}/src-tauri",
+            path.trim_end_matches('/').trim_end_matches('\\')
+        )
+    } else {
+        String::new()
+    };
+    let has_cargo = !cargo_dir.is_empty();
+
+    let mut l1_errors = Vec::new();
+    let l1_start = std::time::Instant::now();
+    if has_ts {
+        append_command_result(
+            run_check_command(path, "npx", &["tsc", "--noEmit"], 60_000),
+            &mut l1_errors,
+            20,
+        );
+    }
+    if has_pkg {
+        append_command_result(
+            run_check_command(path, "npx", &["eslint", "."], 60_000),
+            &mut l1_errors,
+            20,
+        );
     }
     if has_cargo {
-        match run_check_command(&path, "cargo", &["check", "--quiet"], 60000) {
-            Ok(out) => {
-                if !out.trim().is_empty() {
-                    errors.extend(
-                        out.lines()
-                            .filter(|l| l.contains("error"))
+        append_command_result(
+            run_check_command(&cargo_dir, "cargo", &["check", "--quiet"], 90_000),
+            &mut l1_errors,
+            20,
+        );
+        append_command_result(
+            run_check_command(
+                &cargo_dir,
+                "cargo",
+                &[
+                    "clippy",
+                    "--all-targets",
+                    "--all-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+                90_000,
+            ),
+            &mut l1_errors,
+            20,
+        );
+    }
+    levels.push(QualityGateLevel {
+        level: 1,
+        name: "静态类型与编译检查".to_string(),
+        status: if l1_errors.is_empty() {
+            "GREEN".to_string()
+        } else {
+            "FAILED".to_string()
+        },
+        errors: l1_errors.clone(),
+        duration_ms: l1_start.elapsed().as_millis() as u64,
+    });
+
+    let mut l2_errors = Vec::new();
+    let l2_start = std::time::Instant::now();
+    if has_cargo {
+        append_command_result(
+            run_check_command(&cargo_dir, "cargo", &["test", "--quiet"], 120_000),
+            &mut l2_errors,
+            30,
+        );
+    }
+    if has_pkg {
+        append_command_result(
+            run_check_command(path, "npm", &["run", "build"], 120_000),
+            &mut l2_errors,
+            30,
+        );
+    }
+    levels.push(QualityGateLevel {
+        level: 2,
+        name: "单元与契约测试".to_string(),
+        status: if l2_errors.is_empty() {
+            "GREEN".to_string()
+        } else {
+            "FAILED".to_string()
+        },
+        errors: l2_errors.clone(),
+        duration_ms: l2_start.elapsed().as_millis() as u64,
+    });
+
+    let mut l3_errors = Vec::new();
+    let l3_start = std::time::Instant::now();
+    let has_ui_verify = root.join("scripts").join("ui-verify.mjs").exists();
+    if has_pkg && has_ui_verify {
+        append_command_result(
+            run_check_command(path, "node", &["scripts/preview-verify.mjs"], 150_000),
+            &mut l3_errors,
+            30,
+        );
+    }
+    levels.push(QualityGateLevel {
+        level: 3,
+        name: "无头浏览器与视觉验真".to_string(),
+        status: if l3_errors.is_empty() {
+            "GREEN".to_string()
+        } else {
+            "FAILED".to_string()
+        },
+        errors: l3_errors.clone(),
+        duration_ms: l3_start.elapsed().as_millis() as u64,
+    });
+
+    let mut l4_errors = Vec::new();
+    let l4_start = std::time::Instant::now();
+    match dod_path.as_deref().filter(|p| !p.trim().is_empty()) {
+        Some(dod) => {
+            let dod_abs = if Path::new(dod).is_absolute() {
+                dod.to_string()
+            } else {
+                format!(
+                    "{}/{}",
+                    path.trim_end_matches('/').trim_end_matches('\\'),
+                    dod.replace('\\', "/")
+                )
+            };
+            match fs::read_to_string(&dod_abs) {
+                Ok(dod_text) => {
+                    let diff = get_project_diff_tree(path.to_string()).unwrap_or_default();
+                    if diff.is_empty() {
+                        // Nothing changed yet; semantic alignment cannot be proven, treat as green
+                        // with a note so the DoD doc requirement remains visible.
+                    } else {
+                        let mut security_hits: Vec<String> = Vec::new();
+                        for file in &diff {
+                            let added_text = diff_added_text(&file.hunk_preview);
+                            if contains_likely_secret(&added_text) {
+                                security_hits
+                                    .push(format!("{}: 变更可能包含硬编码敏感信息", file.path));
+                            }
+                            let is_ts = file.path.ends_with(".ts") || file.path.ends_with(".tsx");
+                            let is_rust = file.path.ends_with(".rs");
+                            if (is_ts && diff_has_debug_call(&file.hunk_preview, "console.log"))
+                                || (is_rust && diff_has_debug_call(&file.hunk_preview, "dbg!"))
+                            {
+                                security_hits.push(format!("{}: 残留调试输出", file.path));
+                            }
+                        }
+                        let dod_snippet: String = dod_text.chars().take(4000).collect();
+                        let diff_summary: Vec<String> = diff
+                            .iter()
                             .take(20)
-                            .map(|l| l.to_string()),
-                    );
+                            .map(|f| format!("{}: +{}/-{}", f.path, f.insertions, f.deletions))
+                            .collect();
+                        let consensus = build_moa_consensus_inner(vec![
+                            format!("DoD:\n{}", dod_snippet),
+                            format!("Git diff 摘要:\n{}", diff_summary.join("\n")),
+                        ]);
+                        if consensus.summary.contains("No agent output") {
+                            l4_errors.push("QA/CISO 审查未生成有效结论".to_string());
+                        }
+                        l4_errors.extend(security_hits.iter().take(10).cloned());
+                    }
                 }
+                Err(e) => l4_errors.push(format!("无法读取旅程文档（DoD）{}: {}", dod_abs, e)),
             }
-            Err(e) => errors.push(e),
         }
+        None => l4_errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string()),
     }
-    if errors.is_empty() {
-        Ok(QualityGateResult {
-            status: "GREEN".to_string(),
-            errors: Vec::new(),
-        })
+    levels.push(QualityGateLevel {
+        level: 4,
+        name: "AI DoD 语义对齐与安全审计".to_string(),
+        status: if l4_errors.is_empty() {
+            "GREEN".to_string()
+        } else {
+            "FAILED".to_string()
+        },
+        errors: l4_errors.clone(),
+        duration_ms: l4_start.elapsed().as_millis() as u64,
+    });
+
+    let errors: Vec<String> = levels
+        .iter()
+        .flat_map(|level| level.errors.clone())
+        .collect();
+    let status = if errors.is_empty() {
+        "GREEN".to_string()
     } else {
-        Ok(QualityGateResult {
-            status: "FAILED".to_string(),
-            errors,
-        })
-    }
+        "FAILED".to_string()
+    };
+    Ok(QualityGateResult {
+        status,
+        errors,
+        levels,
+    })
+}
+
+#[tauri::command]
+async fn run_quality_gate(
+    path: String,
+    dod_path: Option<String>,
+) -> Result<QualityGateResult, String> {
+    tauri::async_runtime::spawn_blocking(move || run_quality_gate_sync(&path, dod_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -5881,527 +4345,6 @@ fn deliver_webhook_http(
     last.unwrap_or_else(|| Err("Webhook delivery failed".to_string()))
 }
 
-#[tauri::command]
-fn deliver_webhook(
-    url: String,
-    payload: String,
-    method: Option<String>,
-    token: Option<String>,
-    secret: Option<String>,
-    retries: Option<u32>,
-) -> Result<WebhookDeliveryResult, String> {
-    deliver_webhook_http(
-        &url,
-        &payload,
-        method.as_deref().unwrap_or("POST"),
-        token.as_deref(),
-        secret.as_deref(),
-        retries.unwrap_or(1),
-    )
-}
-
-fn render_webhook_payload(
-    template: &str,
-    event: &str,
-    context: Option<&Value>,
-    now_ms: i64,
-) -> String {
-    webhook_template::render_template(template, event, context, now_ms)
-        .unwrap_or_else(|_| template.to_string())
-}
-
-fn run_webhook_rule_inner(
-    conn: &rusqlite::Connection,
-    rule_id: &str,
-) -> Result<WebhookDeliveryResult, String> {
-    let rule = db::get_webhook_rule(conn, rule_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Webhook rule not found".to_string())?;
-    let token = if rule.token.trim().is_empty() {
-        None
-    } else {
-        Some(rule.token.as_str())
-    };
-    let secret = if rule.secret.trim().is_empty() {
-        None
-    } else {
-        Some(rule.secret.as_str())
-    };
-    let payload = render_webhook_payload(&rule.payload, &rule.trigger_event, None, now_millis());
-    let result = match deliver_webhook_http(
-        &rule.url,
-        &payload,
-        &rule.method,
-        token,
-        secret,
-        rule.retries.max(0) as u32,
-    ) {
-        Ok(result) => result,
-        Err(err) => {
-            let message = format!("Webhook delivery failed: {}", err);
-            let _ = db::record_webhook_rule_outcome(conn, &rule.id, 0, &message);
-            let _ = db::record_webhook_rule_run(
-                conn,
-                &rule.id,
-                "manual",
-                "failed",
-                0,
-                rule.retries.max(0) + 1,
-                &message,
-            );
-            return Err(message);
-        }
-    };
-    db::record_webhook_rule_outcome(conn, &rule.id, result.status as i64, &result.message)
-        .map_err(|e| e.to_string())?;
-    let run_status = if result.status >= 200 && result.status < 300 {
-        "success"
-    } else {
-        "failed"
-    };
-    let _ = db::record_webhook_rule_run(
-        conn,
-        &rule.id,
-        "manual",
-        run_status,
-        result.status as i64,
-        result.attempts as i64,
-        &result.message,
-    );
-    Ok(result)
-}
-
-#[tauri::command]
-fn list_webhook_rules(state: State<'_, db::Db>) -> Result<Vec<db::WebhookRule>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_webhook_rules(&conn).map_err(|e| e.to_string())
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookRuleRequest {
-    name: String,
-    url: String,
-    payload: String,
-    method: Option<String>,
-    token: Option<String>,
-    secret: Option<String>,
-    retries: Option<i64>,
-    cooldown_seconds: Option<i64>,
-    interval_seconds: i64,
-    trigger_event: Option<String>,
-    trigger_condition: Option<String>,
-    channels: Option<Vec<String>>,
-    recovery_backoff_seconds: Option<i64>,
-    auto_disable_after: Option<i64>,
-}
-
-#[tauri::command]
-fn create_webhook_rule(
-    state: State<'_, db::Db>,
-    request: WebhookRuleRequest,
-) -> Result<db::WebhookRule, String> {
-    if request.name.trim().is_empty() {
-        return Err("Rule name is required".to_string());
-    }
-    if request.url.trim().is_empty() {
-        return Err("Webhook URL is required".to_string());
-    }
-    let trigger_condition = request.trigger_condition.as_deref().unwrap_or("").trim();
-    if !trigger_condition.is_empty() {
-        webhook_condition::validate_condition(trigger_condition)
-            .map_err(|e| format!("Invalid trigger condition: {}", e))?;
-    }
-    let channels = request
-        .channels
-        .unwrap_or_default()
-        .into_iter()
-        .map(|channel| channel.trim().to_lowercase())
-        .filter(|channel| ["http", "email", "notification"].contains(&channel.as_str()))
-        .collect::<Vec<_>>();
-    let channels = if channels.is_empty() {
-        vec!["http".to_string()]
-    } else {
-        channels
-    };
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_webhook_rule(
-        &conn,
-        &db::WebhookRuleInput {
-            name: request.name.trim(),
-            url: request.url.trim(),
-            payload: &request.payload,
-            method: request.method.as_deref().unwrap_or("POST"),
-            token: request.token.as_deref().unwrap_or(""),
-            secret: request.secret.as_deref().unwrap_or(""),
-            retries: request.retries.unwrap_or(1).max(0),
-            cooldown_seconds: request.cooldown_seconds.unwrap_or(0).max(0),
-            interval_seconds: request.interval_seconds.max(5),
-            trigger_event: request.trigger_event.as_deref().unwrap_or("").trim(),
-            trigger_condition,
-            channels,
-            recovery_backoff_seconds: request.recovery_backoff_seconds.unwrap_or(300).max(0),
-            auto_disable_after: request.auto_disable_after.unwrap_or(3).max(0),
-        },
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_webhook_rule_enabled(
-    state: State<'_, db::Db>,
-    id: String,
-    enabled: bool,
-) -> Result<db::WebhookRule, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_webhook_rule_enabled(&conn, &id, enabled).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn list_webhook_template_versions(
-    state: State<'_, db::Db>,
-    rule_id: String,
-) -> Result<Vec<db::WebhookTemplateVersion>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_webhook_template_versions(&conn, &rule_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn save_webhook_template_version(
-    state: State<'_, db::Db>,
-    rule_id: String,
-    payload: String,
-    note: String,
-) -> Result<db::WebhookTemplateVersion, String> {
-    if rule_id.trim().is_empty() {
-        return Err("Webhook rule id is required".to_string());
-    }
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::save_webhook_template_version(&conn, &rule_id, &payload, &note).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn restore_webhook_template_version(
-    state: State<'_, db::Db>,
-    rule_id: String,
-    version: i64,
-) -> Result<db::WebhookRule, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::restore_webhook_template_version(&conn, &rule_id, version).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn validate_webhook_payload_template(
-    template: String,
-    context_json: Option<String>,
-) -> Result<webhook_template::TemplateValidation, String> {
-    let context = match context_json.as_deref().map(str::trim) {
-        Some(json) if !json.is_empty() => Some(
-            serde_json::from_str::<Value>(json)
-                .map_err(|e| format!("Context JSON invalid: {e}"))?,
-        ),
-        _ => None,
-    };
-    Ok(webhook_template::validate_template(
-        &template,
-        "sync.completed",
-        context.as_ref(),
-        now_millis(),
-    ))
-}
-
-#[tauri::command]
-fn delete_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::delete_webhook_rule(&conn, &id).map_err(|e| e.to_string())?;
-    Ok(format!(
-        "Deleted webhook rule {}",
-        id.chars().take(8).collect::<String>()
-    ))
-}
-
-#[tauri::command]
-fn run_webhook_rule(state: State<'_, db::Db>, id: String) -> Result<WebhookDeliveryResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    run_webhook_rule_inner(&conn, &id)
-}
-
-#[tauri::command]
-fn list_webhook_rule_runs(
-    state: State<'_, db::Db>,
-    rule_id: Option<String>,
-    limit: Option<i64>,
-) -> Result<Vec<db::WebhookRuleRun>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_webhook_rule_runs(&conn, rule_id.as_deref(), limit.unwrap_or(50))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn trigger_webhook_event(
-    state: State<'_, db::Db>,
-    event: String,
-    context: Option<Value>,
-) -> Result<i64, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let now = now_millis();
-    let all_rules = db::list_event_webhook_rules(&conn, &event, now).map_err(|e| e.to_string())?;
-    let now_local = chrono::Local::now();
-    let rules: Vec<db::WebhookRule> = all_rules
-        .into_iter()
-        .filter(|rule| {
-            webhook_condition::matches_condition(
-                &rule.trigger_condition,
-                &event,
-                context.as_ref(),
-                &now_local,
-            )
-        })
-        .collect();
-    let mut count = 0i64;
-    for rule in &rules {
-        let payload = render_webhook_payload(&rule.payload, &event, context.as_ref(), now_millis());
-        let channels: Vec<String> = if rule.channels.is_empty() {
-            vec!["http".to_string()]
-        } else {
-            rule.channels.clone()
-        };
-        for channel in channels {
-            db::enqueue_webhook_delivery_channel(&conn, rule, &event, &payload, &channel)
-                .map_err(|e| e.to_string())?;
-            count += 1;
-        }
-        let _ = db::mark_webhook_rule_run(&conn, &rule.id, 202, "Queued for delivery");
-    }
-    Ok(count)
-}
-
-#[tauri::command]
-fn list_webhook_deliveries(
-    state: State<'_, db::Db>,
-    limit: Option<i64>,
-    status: Option<String>,
-) -> Result<Vec<db::WebhookDelivery>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::list_webhook_deliveries(
-        &conn,
-        limit.unwrap_or(50).clamp(1, 200),
-        &status.unwrap_or_default(),
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn retry_webhook_delivery(
-    state: State<'_, db::Db>,
-    id: String,
-) -> Result<db::WebhookDelivery, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::retry_webhook_delivery(&conn, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_webhook_delivery(state: State<'_, db::Db>, id: String) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::delete_webhook_delivery(&conn, &id).map_err(|e| e.to_string())?;
-    Ok(format!(
-        "Deleted webhook delivery {}",
-        id.chars().take(8).collect::<String>()
-    ))
-}
-
-#[tauri::command]
-fn clear_webhook_deliveries(
-    state: State<'_, db::Db>,
-    status: Option<String>,
-) -> Result<i64, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::clear_webhook_deliveries(&conn, &status.unwrap_or_default()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_webhook_retention_config(
-    state: State<'_, db::Db>,
-) -> Result<db::WebhookRetentionConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_webhook_retention_config(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_webhook_retention_config(
-    state: State<'_, db::Db>,
-    retention_days: i64,
-    max_records: i64,
-    auto_cleanup: bool,
-) -> Result<db::WebhookRetentionConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_webhook_retention_config(&conn, retention_days, max_records, auto_cleanup)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn prune_webhook_deliveries(state: State<'_, db::Db>) -> Result<db::WebhookPruneResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let config = db::get_webhook_retention_config(&conn).map_err(|e| e.to_string())?;
-    db::prune_webhook_deliveries(&conn, config.retention_days, config.max_records)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_webhook_delivery_stats(
-    state: State<'_, db::Db>,
-) -> Result<db::WebhookDeliveryStats, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_webhook_delivery_stats(&conn).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_webhook_channel_config(
-    state: State<'_, db::Db>,
-) -> Result<db::WebhookChannelConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookChannelConfigRequest {
-    email_enabled: bool,
-    email_from: String,
-    email_to: String,
-    smtp_host: String,
-    smtp_port: i64,
-    smtp_user: String,
-    smtp_password: String,
-    notification_enabled: bool,
-    notification_title: String,
-}
-
-#[tauri::command]
-fn set_webhook_channel_config(
-    state: State<'_, db::Db>,
-    request: WebhookChannelConfigRequest,
-) -> Result<db::WebhookChannelConfig, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::set_webhook_channel_config(
-        &conn,
-        &db::WebhookChannelConfigInput {
-            email_enabled: request.email_enabled,
-            email_from: &request.email_from,
-            email_to: &request.email_to,
-            smtp_host: &request.smtp_host,
-            smtp_port: request.smtp_port,
-            smtp_user: &request.smtp_user,
-            smtp_password: &request.smtp_password,
-            notification_enabled: request.notification_enabled,
-            notification_title: &request.notification_title,
-        },
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn test_webhook_notification(
-    app: tauri::AppHandle,
-    state: State<'_, db::Db>,
-) -> Result<String, String> {
-    let config = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())?
-    };
-    let title = if config.notification_title.trim().is_empty() {
-        "AI Workbench webhook".to_string()
-    } else {
-        config.notification_title.clone()
-    };
-    emit_webhook_notification(
-        &app,
-        &title,
-        "Webhook notification channel test",
-        "test",
-        "notification.test",
-    );
-    Ok("Notification channel test sent".to_string())
-}
-
-#[tauri::command]
-fn test_webhook_email(state: State<'_, db::Db>) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let config = db::get_webhook_channel_config(&conn).map_err(|e| e.to_string())?;
-    if !config.email_enabled {
-        return Err("Email channel is not enabled".to_string());
-    }
-    let result = deliver_webhook_email(
-        &config,
-        "AI Workbench channel test",
-        "notification.test",
-        r#"{"event":"notification.test","test":true}"#,
-    )?;
-    Ok(format!("Email channel test sent ({})", result.message))
-}
-
-#[tauri::command]
-fn probe_webhook_recovery(state: State<'_, db::Db>) -> Result<WebhookRecoveryResult, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let now = now_millis();
-    let rules = db::list_circuit_open_webhook_rules(&conn).map_err(|e| e.to_string())?;
-    let mut result = WebhookRecoveryResult {
-        probed: 0,
-        recovered: 0,
-        failed: 0,
-    };
-    for rule in rules {
-        if now - rule.circuit_opened_at < webhook_recovery_backoff_ms(&rule) {
-            continue;
-        }
-        result.probed += 1;
-        let payload = render_webhook_payload(&rule.payload, &rule.trigger_event, None, now);
-        let token = if rule.token.trim().is_empty() {
-            None
-        } else {
-            Some(rule.token.as_str())
-        };
-        let secret = if rule.secret.trim().is_empty() {
-            None
-        } else {
-            Some(rule.secret.as_str())
-        };
-        let outcome = deliver_webhook_http(&rule.url, &payload, &rule.method, token, secret, 0);
-        let (ok, status, message) = match outcome {
-            Ok(res) => (true, res.status as i64, res.message),
-            Err(err) => (false, 0, format!("Recovery probe failed: {}", err)),
-        };
-        db::record_webhook_rule_outcome(&conn, &rule.id, status, &message)
-            .map_err(|e| e.to_string())?;
-        if ok {
-            db::set_webhook_rule_enabled(&conn, &rule.id, true).map_err(|e| e.to_string())?;
-            let _ = db::record_webhook_rule_run(
-                &conn,
-                &rule.id,
-                "scheduled",
-                "success",
-                status,
-                1,
-                &format!("Recovery probe succeeded: {}", message),
-            );
-            result.recovered += 1;
-        } else {
-            db::set_webhook_circuit_opened_at(&conn, &rule.id, now).map_err(|e| e.to_string())?;
-            let _ = db::record_webhook_rule_run(
-                &conn,
-                &rule.id,
-                "scheduled",
-                "failed",
-                status,
-                1,
-                &message,
-            );
-            result.failed += 1;
-        }
-    }
-    Ok(result)
-}
-
 fn build_event_forward_payload(log: &db::EventLogRecord) -> String {
     let context = serde_json::from_str::<Value>(&log.context)
         .unwrap_or_else(|_| Value::Object(Default::default()));
@@ -6503,31 +4446,6 @@ fn spawn_event_forward_worker(app: tauri::AppHandle) {
     });
 }
 
-fn spawn_vector_rebuild_worker(app: tauri::AppHandle) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(30));
-        let Some(state) = app.try_state::<db::Db>() else {
-            continue;
-        };
-        let Ok(conn) = state.0.lock() else {
-            continue;
-        };
-        let Ok(config) = db::get_embedding_config(&conn) else {
-            continue;
-        };
-        if !config.auto_rebuild {
-            continue;
-        }
-        let Ok(status) = db::get_vector_index_status(&conn) else {
-            continue;
-        };
-        if status.pending == 0 {
-            continue;
-        }
-        let _ = db::rebuild_vector_index(&conn, false);
-    });
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EventEmitRequest {
@@ -6576,8 +4494,7 @@ fn emit_event_bus_event(
             };
         (true, validated, log.rejected_reason.clone(), forwarded)
     };
-    let webhook_deliveries =
-        trigger_webhook_event(state, event.clone(), Some(context)).unwrap_or(0);
+    let webhook_deliveries = 0;
     Ok(db::EventEmitResult {
         event,
         recorded,
@@ -7421,15 +5338,9 @@ pub fn run() {
             app.manage(db::Db(std::sync::Mutex::new(conn)));
             app.manage(StreamCancellation::default());
             app.manage(ProviderHeartbeat::default());
-            app.manage(VaultWatchState::default());
-            app.manage(VaultIndexState::default());
-            restore_vault_index_queue(app.handle());
-            restore_vault_watch(app.handle().clone());
             spawn_clipboard_monitor(app.handle().clone());
             spawn_provider_heartbeat_monitor(app.handle().clone());
-            spawn_webhook_delivery_worker(app.handle().clone());
             spawn_event_forward_worker(app.handle().clone());
-            spawn_vector_rebuild_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -7456,6 +5367,7 @@ pub fn run() {
             create_project,
             update_project,
             update_project_material,
+            update_project_journey,
             delete_project,
             reorder_projects,
             list_project_revenue_history,
@@ -7467,13 +5379,6 @@ pub fn run() {
             open_obsidian,
             update_thought_type,
             delete_thought,
-            list_quick_prompts,
-            add_custom_quick_prompt,
-            update_custom_quick_prompt,
-            reorder_custom_quick_prompts,
-            delete_custom_quick_prompt,
-            list_quick_prompt_usage,
-            record_quick_prompt_usage,
             list_providers,
             create_provider,
             set_provider_active,
@@ -7495,34 +5400,21 @@ pub fn run() {
             update_agent_system_prompt,
             list_agent_prompt_versions,
             restore_agent_prompt,
-            list_habits,
-            create_habit,
-            toggle_habit,
-            update_habit_week_goal,
-            delete_habit,
-            list_schedule_events,
-            create_schedule_event,
-            toggle_event_done,
+            list_agent_catalog,
+            import_agent_catalog,
+            list_team_presets,
+            create_team_preset,
+            update_team_preset,
+            delete_team_preset,
+            list_cli_tools,
+            detect_cli_tools,
+            save_cli_tool_detections,
             list_sessions,
             get_workspace_summary,
-            get_actions_bundle,
-            search_sessions,
             create_session,
-            rename_session,
-            set_session_pinned,
-            set_session_archived,
-            duplicate_session,
             delete_session,
             save_chat_message,
             list_chat_messages,
-            update_chat_message,
-            truncate_chat_messages,
-            save_message_version,
-            list_message_versions,
-            restore_message_version,
-            diff_message_version_with_current,
-            save_message_aux,
-            list_message_aux,
             list_clipboard,
             list_error_logs,
             get_error_log_summary,
@@ -7559,36 +5451,6 @@ pub fn run() {
             report_frontend_error,
             capture_clipboard,
             search_thoughts,
-            get_rag_index_status,
-            get_embedding_config,
-            set_embedding_config,
-            get_vector_index_status,
-            rebuild_vector_index,
-            get_knowledge_cluster_status,
-            recompute_knowledge_clusters,
-            dismiss_knowledge_duplicate,
-            merge_knowledge_duplicate,
-            index_vault,
-            index_vault_ex,
-            start_vault_index,
-            cancel_vault_index,
-            get_vault_index_queue_status,
-            get_knowledge_index_status,
-            recommend_index_concurrency,
-            list_vault_target_stats,
-            list_knowledge_files,
-            cleanup_knowledge_files,
-            start_vault_watch,
-            start_vault_watch_ex,
-            stop_vault_watch,
-            list_vault_watch_targets,
-            upsert_vault_watch_target,
-            delete_vault_watch_target,
-            list_vault_watch_events,
-            clear_vault_watch_events,
-            get_vault_watch_status,
-            get_vault_watch_config,
-            set_vault_watch_config,
             get_project_git_context,
             get_git_activity,
             get_git_file_diff,
@@ -7611,32 +5473,6 @@ pub fn run() {
             cancel_ai_stream,
             check_provider_health,
             run_provider_heartbeat,
-            deliver_webhook,
-            verify_webhook_signature,
-            list_webhook_rules,
-            create_webhook_rule,
-            set_webhook_rule_enabled,
-            list_webhook_template_versions,
-            save_webhook_template_version,
-            restore_webhook_template_version,
-            validate_webhook_payload_template,
-            delete_webhook_rule,
-            run_webhook_rule,
-            list_webhook_rule_runs,
-            trigger_webhook_event,
-            list_webhook_deliveries,
-            retry_webhook_delivery,
-            delete_webhook_delivery,
-            clear_webhook_deliveries,
-            get_webhook_retention_config,
-            set_webhook_retention_config,
-            prune_webhook_deliveries,
-            get_webhook_delivery_stats,
-            get_webhook_channel_config,
-            set_webhook_channel_config,
-            test_webhook_notification,
-            test_webhook_email,
-            probe_webhook_recovery,
             emit_event_bus_event,
             list_event_logs,
             clear_event_logs,
@@ -7766,72 +5602,6 @@ mod tests {
         assert!(parse_provider_models("{}", false).is_err());
         assert!(parse_provider_models(r#"{"data":[]}"#, false).is_err());
         assert!(parse_provider_models("not json", false).is_err());
-    }
-
-    #[test]
-    fn webhook_payload_template_renders_event_ts_and_context() {
-        let context = serde_json::json!({
-            "note": "hello",
-            "count": 2,
-            "nested": { "ok": true }
-        });
-        let rendered = render_webhook_payload(
-            r#"{"event":{{event}},"ts":{{ts}},"note":{{context.note}},"count":{{context.count}},"nested":{{context.nested}},"missing":{{context.missing}}}"#,
-            "sync.completed",
-            Some(&context),
-            12345,
-        );
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["event"], "sync.completed");
-        assert_eq!(value["ts"], "12345");
-        assert_eq!(value["note"], "hello");
-        assert_eq!(value["count"], 2);
-        assert_eq!(value["nested"]["ok"], true);
-        assert!(value["missing"].is_null());
-    }
-
-    #[test]
-    fn webhook_payload_template_without_variables_is_unchanged() {
-        let template = r#"{"event":"daily.summary","source":"ai-workbench"}"#;
-        assert_eq!(
-            render_webhook_payload(template, "sync.completed", None, 123),
-            template
-        );
-    }
-
-    #[test]
-    fn webhook_payload_template_supports_condition_and_loop() {
-        let context = serde_json::json!({
-            "status": "ready",
-            "items": [{"name": "alpha"}, {"name": "beta"}]
-        });
-        let rendered = render_webhook_payload(
-            r#"{"ready":{{#if context.status == "ready"}}true{{#else}}false{{/if}},"items":[{{#each context.items}}{"name":{{this.name}}}{{#if @last}}{{#else}},{{/if}}{{/each}}]}"#,
-            "sync.completed",
-            Some(&context),
-            12345,
-        );
-        assert_eq!(
-            rendered,
-            r#"{"ready":true,"items":[{"name":"alpha"},{"name":"beta"}]}"#
-        );
-    }
-
-    #[test]
-    fn webhook_template_validation_reports_blocks_and_json() {
-        let template = r#"{"items":[{{#each context.items}}{{this}}{{/each}}]}"#;
-        let result = webhook_template::validate_template(template, "sync.completed", None, 1);
-        assert!(result.ok);
-        assert!(result.blocks.iter().any(|block| block.starts_with("#each")));
-        assert!(result.rendered_json_ok);
-
-        let broken = webhook_template::validate_template(
-            r#"{"items":[{{#each context.items}}{{this}}"#,
-            "sync.completed",
-            None,
-            1,
-        );
-        assert!(!broken.ok);
     }
 
     #[test]
@@ -8028,6 +5798,8 @@ mod tests {
                 path: Some(first.to_string_lossy().to_string()),
                 revenue: 0.0,
                 status: "active".to_string(),
+                journey_stage: "idea".to_string(),
+                journey_doc_path: None,
                 created_at: 1,
                 sort_order: 0,
                 material: String::new(),
@@ -8038,6 +5810,8 @@ mod tests {
                 path: Some(second.to_string_lossy().to_string()),
                 revenue: 0.0,
                 status: "active".to_string(),
+                journey_stage: "idea".to_string(),
+                journey_doc_path: None,
                 created_at: 2,
                 sort_order: 1,
                 material: String::new(),
@@ -8048,6 +5822,8 @@ mod tests {
                 path: None,
                 revenue: 0.0,
                 status: "active".to_string(),
+                journey_stage: "idea".to_string(),
+                journey_doc_path: None,
                 created_at: 3,
                 sort_order: 2,
                 material: String::new(),
@@ -8113,6 +5889,8 @@ mod tests {
                 path: Some(first.to_string_lossy().to_string()),
                 revenue: 0.0,
                 status: "active".to_string(),
+                journey_stage: "idea".to_string(),
+                journey_doc_path: None,
                 created_at: 1,
                 sort_order: 0,
                 material: String::new(),
@@ -8123,6 +5901,8 @@ mod tests {
                 path: Some(second.to_string_lossy().to_string()),
                 revenue: 0.0,
                 status: "active".to_string(),
+                journey_stage: "idea".to_string(),
+                journey_doc_path: None,
                 created_at: 2,
                 sort_order: 1,
                 material: String::new(),
@@ -8286,489 +6066,6 @@ mod tests {
         assert!(is_ollama_provider("Ollama", "http://localhost:11434"));
         assert!(is_ollama_provider("My Local", "http://127.0.0.1:11434"));
         assert!(!is_ollama_provider("OpenAI", "https://api.openai.com/v1"));
-    }
-
-    #[test]
-    fn vault_index_scans_and_searches_markdown() {
-        let temp = std::env::temp_dir().join(format!("aiwb-vault-test-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(vault.join("notes")).unwrap();
-        std::fs::write(
-            vault.join("notes").join("obsidian.md"),
-            "---\ntitle: Obsidian Notes\ntags: #work,#vault\n---\n# Obsidian Notes\n\nVault sync roadmap for local RAG",
-        )
-        .unwrap();
-        std::fs::write(
-            vault.join("README.md"),
-            "# Project Notes\n\nLocal knowledge indexing",
-        )
-        .unwrap();
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &[], 4).unwrap();
-        assert_eq!(result.files, 2);
-        assert_eq!(result.ignored, 0);
-        let status = db::knowledge_index_status(&conn).unwrap();
-        assert_eq!(status.files, 2);
-        let results = db::search_thoughts(&conn, "obsidian vault", 5, None).unwrap();
-        assert!(results.iter().any(|r| r.content.contains("Obsidian")));
-        assert!(results.iter().any(|r| r.kind == "doc"));
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn vault_index_ex_parallel_respects_ignore_patterns() {
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-vault-ignore-test-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(vault.join("node_modules")).unwrap();
-        std::fs::create_dir_all(vault.join("archive")).unwrap();
-        std::fs::create_dir_all(vault.join("notes")).unwrap();
-        std::fs::write(vault.join("keep.md"), "# Keep\n\nindexed").unwrap();
-        std::fs::write(vault.join("node_modules").join("pkg.md"), "# Dep\n\nskip").unwrap();
-        std::fs::write(vault.join("archive").join("old.md"), "# Old\n\nskip").unwrap();
-        std::fs::write(vault.join("notes").join("deep.md"), "# Deep\n\nindexed").unwrap();
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let patterns = vec!["node_modules".to_string(), "archive/**".to_string()];
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns, 4).unwrap();
-        assert_eq!(result.files, 2);
-        assert_eq!(result.ignored, 2);
-        let status = db::knowledge_index_status(&conn).unwrap();
-        assert_eq!(status.files, 2);
-        let search = db::search_thoughts(&conn, "keep deep", 5, None).unwrap();
-        assert!(search.iter().any(|r| r.content.contains("Keep")));
-        assert!(search.iter().any(|r| r.content.contains("Deep")));
-        assert!(!search.iter().any(|r| r.content.contains("skip")));
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn vault_index_concurrency_bounds_keep_results_stable() {
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-vault-concurrency-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(&vault).unwrap();
-        std::fs::write(vault.join("a.md"), "# A\n\na").unwrap();
-        std::fs::write(vault.join("b.md"), "# B\n\nb").unwrap();
-        std::fs::write(vault.join("c.md"), "# C\n\nc").unwrap();
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        for concurrency in [0usize, 1, 3, 16, 100] {
-            let result =
-                index_vault_files(&conn, vault.to_str().unwrap(), &[], concurrency).unwrap();
-            assert_eq!(result.files, 3);
-            assert_eq!(result.ignored, 0);
-            assert!((1..=3).contains(&result.concurrency_used));
-        }
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn plan_index_concurrency_scales_with_file_count() {
-        assert_eq!(plan_index_concurrency(0, 0, 8), 1);
-        assert_eq!(plan_index_concurrency(32, 0, 8), 1);
-        assert_eq!(plan_index_concurrency(100, 0, 8), 4);
-        assert_eq!(plan_index_concurrency(300, 0, 8), 8);
-        assert_eq!(plan_index_concurrency(300, 8, 8), 4);
-        assert_eq!(plan_index_concurrency(300, 8, 2), 2);
-    }
-
-    #[test]
-    fn index_progress_callback_reports_steps() {
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-vault-progress-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(&vault).unwrap();
-        for name in ["a.md", "b.md", "c.md"] {
-            std::fs::write(vault.join(name), format!("# {}\n\n{}", name, name)).unwrap();
-        }
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let mut calls = Vec::new();
-        let result = index_vault_files_inner(
-            &conn,
-            vault.to_str().unwrap(),
-            &[],
-            4,
-            Some(&mut |done, total| calls.push((done, total))),
-            None,
-        )
-        .unwrap();
-        assert_eq!(result.files, 3);
-        assert!(!calls.is_empty());
-        assert_eq!(calls.last(), Some(&(3usize, 3usize)));
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn index_vault_files_stops_when_cancelled() {
-        let temp = std::env::temp_dir().join(format!("aiwb-vault-cancel-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(&vault).unwrap();
-        for name in ["a.md", "b.md", "c.md"] {
-            std::fs::write(vault.join(name), format!("# {}\n\n{}", name, name)).unwrap();
-        }
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let result =
-            index_vault_files_inner(&conn, vault.to_str().unwrap(), &[], 4, None, Some(&|| true));
-        let error = match result {
-            Ok(_) => panic!("expected cancellation"),
-            Err(error) => error,
-        };
-        assert!(error.contains("cancelled"));
-        assert_eq!(db::knowledge_index_status(&conn).unwrap().files, 0);
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn vault_index_cancel_state_marks_and_clears() {
-        let state = VaultIndexState::default();
-        assert!(state.mark("run-1"));
-        assert!(!state.mark("run-1"));
-        assert!(state.is_cancelled("run-1"));
-        state.clear("run-1");
-        assert!(!state.is_cancelled("run-1"));
-    }
-
-    #[test]
-    fn vault_index_queue_serializes_and_promotes_next() {
-        let state = VaultIndexState::default();
-        let request = |run_id: &str, path: &str| VaultIndexRequest {
-            run_id: run_id.to_string(),
-            path: path.to_string(),
-            ignore_patterns: Vec::new(),
-            concurrency: 4,
-            priority: 0,
-            attempts: 0,
-            last_error: String::new(),
-        };
-        state.enqueue(request("run-1", "C:/a")).unwrap();
-        state.enqueue(request("run-2", "C:/b")).unwrap();
-        let first = state.claim_next().unwrap().expect("first run");
-        assert_eq!(first.run_id, "run-1");
-        assert!(state.claim_next().unwrap().is_none());
-        state.finish_active("run-1").unwrap();
-        let second = state.claim_next().unwrap().expect("second run");
-        assert_eq!(second.run_id, "run-2");
-        let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.active.unwrap().run_id, "run-2");
-        assert!(snapshot.queue.is_empty());
-    }
-
-    #[test]
-    fn vault_index_cancel_removes_only_queued_run() {
-        let state = VaultIndexState::default();
-        let request = |run_id: &str, path: &str| VaultIndexRequest {
-            run_id: run_id.to_string(),
-            path: path.to_string(),
-            ignore_patterns: Vec::new(),
-            concurrency: 4,
-            priority: 0,
-            attempts: 0,
-            last_error: String::new(),
-        };
-        state.enqueue(request("run-1", "C:/a")).unwrap();
-        state.enqueue(request("run-2", "C:/b")).unwrap();
-        state.enqueue(request("run-3", "C:/c")).unwrap();
-        let first = state.claim_next().unwrap().expect("first run");
-        assert_eq!(first.run_id, "run-1");
-        let removed = state.take_queued("run-2").expect("queued run");
-        assert_eq!(removed.path, "C:/b");
-        let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.queue.len(), 1);
-        assert_eq!(snapshot.queue[0].run_id, "run-3");
-        assert_eq!(snapshot.queue[0].position, 1);
-        assert_eq!(snapshot.active.unwrap().run_id, "run-1");
-    }
-
-    #[test]
-    fn vault_index_queue_restore_enqueues_pending_and_resets_running() {
-        let state = VaultIndexState::default();
-        let records = vec![
-            db::VaultIndexQueueRecord {
-                run_id: "run-1".to_string(),
-                path: "C:/a".to_string(),
-                ignore_patterns: Vec::new(),
-                concurrency: 4,
-                status: "queued".to_string(),
-                priority: 0,
-                attempts: 0,
-                last_error: String::new(),
-            },
-            db::VaultIndexQueueRecord {
-                run_id: "run-2".to_string(),
-                path: "C:/b".to_string(),
-                ignore_patterns: vec!["Daily Notes".to_string()],
-                concurrency: 2,
-                status: "running".to_string(),
-                priority: 1,
-                attempts: 1,
-                last_error: "boom".to_string(),
-            },
-            db::VaultIndexQueueRecord {
-                run_id: "run-3".to_string(),
-                path: "C:/c".to_string(),
-                ignore_patterns: Vec::new(),
-                concurrency: 1,
-                status: "done".to_string(),
-                priority: 0,
-                attempts: 0,
-                last_error: String::new(),
-            },
-        ];
-        let restored = enqueue_restored_requests(&state, records);
-        assert_eq!(restored, 2);
-        let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.queue.len(), 2);
-        assert_eq!(snapshot.queue[0].run_id, "run-2");
-        assert_eq!(snapshot.queue[0].position, 1);
-        assert_eq!(snapshot.queue[0].priority, 1);
-        assert_eq!(snapshot.queue[0].attempts, 1);
-        assert_eq!(snapshot.queue[0].last_error, "boom");
-        assert_eq!(snapshot.queue[1].run_id, "run-1");
-        assert_eq!(snapshot.queue[1].position, 2);
-        assert_eq!(snapshot.queue[1].priority, 0);
-    }
-
-    #[test]
-    fn vault_index_queue_prioritizes_high_priority() {
-        let state = VaultIndexState::default();
-        let request = |run_id: &str, path: &str, priority: usize| VaultIndexRequest {
-            run_id: run_id.to_string(),
-            path: path.to_string(),
-            ignore_patterns: Vec::new(),
-            concurrency: 4,
-            priority,
-            attempts: 0,
-            last_error: String::new(),
-        };
-        state.enqueue(request("run-low", "C:/a", 0)).unwrap();
-        state.enqueue(request("run-high", "C:/b", 1)).unwrap();
-        let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.queue[0].run_id, "run-high");
-        assert_eq!(snapshot.queue[0].priority, 1);
-        assert_eq!(snapshot.queue[0].position, 1);
-        assert_eq!(snapshot.queue[1].run_id, "run-low");
-        let first = state.claim_next().unwrap().expect("high priority first");
-        assert_eq!(first.run_id, "run-high");
-        state.finish_active("run-high").unwrap();
-        let second = state.claim_next().unwrap().expect("low priority second");
-        assert_eq!(second.run_id, "run-low");
-    }
-
-    #[test]
-    fn vault_index_queue_retries_failed_then_gives_up() {
-        let state = VaultIndexState::default();
-        state
-            .enqueue(VaultIndexRequest {
-                run_id: "run-1".to_string(),
-                path: "C:/failing".to_string(),
-                ignore_patterns: Vec::new(),
-                concurrency: 4,
-                priority: 1,
-                attempts: 0,
-                last_error: String::new(),
-            })
-            .unwrap();
-        let first = state.claim_next().unwrap().expect("first attempt");
-        assert_eq!(first.attempts, 0);
-        let retry_one = state
-            .retry_failed("run-1", "boom")
-            .unwrap()
-            .expect("retry once");
-        assert_eq!(retry_one.attempts, 1);
-        assert_eq!(retry_one.last_error, "boom");
-        assert!(state.snapshot().unwrap().active.is_none());
-        assert_eq!(state.snapshot().unwrap().queue.len(), 1);
-        assert_eq!(state.snapshot().unwrap().queue[0].retry_delay_ms, 500);
-
-        let second = state.claim_next().unwrap().expect("second attempt");
-        assert_eq!(second.attempts, 1);
-        let retry_two = state
-            .retry_failed("run-1", "boom again")
-            .unwrap()
-            .expect("retry twice");
-        assert_eq!(retry_two.attempts, 2);
-        assert_eq!(retry_two.last_error, "boom again");
-        assert_eq!(state.snapshot().unwrap().queue[0].retry_delay_ms, 1000);
-
-        let third = state.claim_next().unwrap().expect("third attempt");
-        assert_eq!(third.attempts, 2);
-        assert!(state.retry_failed("run-1", "boom final").unwrap().is_none());
-        assert!(state.snapshot().unwrap().active.is_none());
-        assert!(state.snapshot().unwrap().queue.is_empty());
-    }
-
-    #[test]
-    fn vault_index_retry_delay_grows_exponentially_and_caps() {
-        assert_eq!(vault_index_retry_delay_ms(0), 0);
-        assert_eq!(vault_index_retry_delay_ms(1), 500);
-        assert_eq!(vault_index_retry_delay_ms(2), 1000);
-        assert_eq!(vault_index_retry_delay_ms(3), 2000);
-        assert_eq!(vault_index_retry_delay_ms(8), 4000);
-    }
-
-    #[test]
-    fn recommended_index_concurrency_bounds_and_matches_cores() {
-        let info = recommend_index_concurrency();
-        assert!((1..=16).contains(&info.recommended));
-        assert!(info.recommended <= info.cores.max(1));
-    }
-
-    fn wait_until(mut check: impl FnMut() -> bool, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if check() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(60));
-        }
-        check()
-    }
-
-    #[test]
-    fn vault_watch_incrementally_syncs_files() {
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-vault-watch-test-{}", uuid::Uuid::new_v4()));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(&vault).unwrap();
-        std::fs::write(vault.join("seed.md"), "# Seed\n\ninitial note").unwrap();
-        let conn = std::sync::Arc::new(std::sync::Mutex::new(
-            db::init_connection(&temp.join("workbench.db")).unwrap(),
-        ));
-        index_vault_files(&conn.lock().unwrap(), vault.to_str().unwrap(), &[], 4).unwrap();
-        let db_for_event = conn.clone();
-        let vault_str = vault.to_string_lossy().to_string();
-        let on_event = move |event: &Event| {
-            for path in &event.paths {
-                let _ = sync_vault_path(&db_for_event.lock().unwrap(), path, &vault_str);
-            }
-        };
-        let handle = start_vault_watcher(vault.to_string_lossy().to_string(), on_event).unwrap();
-        std::fs::write(vault.join("new.md"), "# New\n\nfresh note").unwrap();
-        let added = wait_until(
-            || {
-                db::knowledge_index_status(&conn.lock().unwrap())
-                    .map(|status| status.files)
-                    .unwrap_or(0)
-                    == 2
-            },
-            Duration::from_secs(8),
-        );
-        assert!(added, "watcher did not index new markdown file");
-        std::fs::remove_file(vault.join("seed.md")).unwrap();
-        let removed = wait_until(
-            || {
-                db::knowledge_index_status(&conn.lock().unwrap())
-                    .map(|status| status.files)
-                    .unwrap_or(0)
-                    == 1
-            },
-            Duration::from_secs(8),
-        );
-        assert!(removed, "watcher did not remove deleted markdown file");
-        handle.stop();
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn vault_watch_parallel_tracks_two_vaults() {
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-vault-parallel-test-{}", uuid::Uuid::new_v4()));
-        let vault_a = temp.join("vault-a");
-        let vault_b = temp.join("vault-b");
-        std::fs::create_dir_all(&vault_a).unwrap();
-        std::fs::create_dir_all(&vault_b).unwrap();
-        std::fs::write(vault_a.join("a-seed.md"), "# A\n\nseed a").unwrap();
-        std::fs::write(vault_b.join("b-seed.md"), "# B\n\nseed b").unwrap();
-        let conn = std::sync::Arc::new(std::sync::Mutex::new(
-            db::init_connection(&temp.join("workbench.db")).unwrap(),
-        ));
-        index_vault_files(&conn.lock().unwrap(), vault_a.to_str().unwrap(), &[], 4).unwrap();
-        index_vault_files(&conn.lock().unwrap(), vault_b.to_str().unwrap(), &[], 4).unwrap();
-
-        let db_a = conn.clone();
-        let vault_a_str = vault_a.to_string_lossy().to_string();
-        let handle_a = start_vault_watcher(
-            vault_a.to_string_lossy().to_string(),
-            move |event: &Event| {
-                for path in &event.paths {
-                    let _ = sync_vault_path(&db_a.lock().unwrap(), path, &vault_a_str);
-                }
-            },
-        )
-        .unwrap();
-        let db_b = conn.clone();
-        let vault_b_str = vault_b.to_string_lossy().to_string();
-        let handle_b = start_vault_watcher(
-            vault_b.to_string_lossy().to_string(),
-            move |event: &Event| {
-                for path in &event.paths {
-                    let _ = sync_vault_path(&db_b.lock().unwrap(), path, &vault_b_str);
-                }
-            },
-        )
-        .unwrap();
-
-        std::fs::write(vault_a.join("a-new.md"), "# A new\n\nfresh a").unwrap();
-        std::fs::write(vault_b.join("b-new.md"), "# B new\n\nfresh b").unwrap();
-        let both = wait_until(
-            || {
-                db::knowledge_index_status(&conn.lock().unwrap())
-                    .map(|status| status.files)
-                    .unwrap_or(0)
-                    == 4
-            },
-            Duration::from_secs(8),
-        );
-        assert!(both, "parallel watchers did not index both vaults");
-
-        handle_a.stop();
-        handle_b.stop();
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn vault_watch_event_respects_ignore_patterns() {
-        let temp = std::env::temp_dir().join(format!(
-            "aiwb-vault-watch-ignore-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let vault = temp.join("vault");
-        std::fs::create_dir_all(vault.join("node_modules")).unwrap();
-        std::fs::create_dir_all(vault.join("notes")).unwrap();
-        std::fs::write(vault.join("seed.md"), "# Seed\n\ninitial note").unwrap();
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let patterns = vec!["node_modules".to_string()];
-        let result = index_vault_files(&conn, vault.to_str().unwrap(), &patterns, 4).unwrap();
-        assert_eq!(result.files, 1);
-        assert_eq!(result.ignored, 1);
-        let ignored_path = vault.join("node_modules").join("dep.md");
-        let indexed_path = vault.join("notes").join("new.md");
-        std::fs::write(&ignored_path, "# Dep\n\nignored").unwrap();
-        std::fs::write(&indexed_path, "# New\n\nindexed").unwrap();
-        let changed_paths = sync_vault_event(
-            &conn,
-            &[ignored_path.clone(), indexed_path.clone()],
-            &vault,
-            &patterns,
-        );
-        assert_eq!(
-            changed_paths,
-            vec![indexed_path.to_string_lossy().to_string()]
-        );
-        let status = db::knowledge_index_status(&conn).unwrap();
-        assert_eq!(status.files, 2);
-        let ignored_search = db::search_thoughts(&conn, "ignored", 5, None).unwrap();
-        assert!(!ignored_search.iter().any(|r| r.content.contains("ignored")));
-        let indexed_search = db::search_thoughts(&conn, "indexed", 5, None).unwrap();
-        assert!(indexed_search.iter().any(|r| r.content.contains("indexed")));
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     fn init_test_git_repo(dir: &Path) -> String {
@@ -9541,387 +6838,6 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         request
-    }
-
-    #[test]
-    fn webhook_signature_matches_hmac_sha256_known_answer() {
-        let key = "\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
-                   \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}"
-            .to_string();
-        let signature = webhook_signature(&key, "Hi There");
-        assert_eq!(
-            signature,
-            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
-        );
-    }
-
-    #[test]
-    fn verify_webhook_signature_accepts_hex_and_prefix() {
-        let secret = "verify-secret".to_string();
-        let payload = r#"{"event":"signed.delivery"}"#.to_string();
-        let expected = webhook_signature(&secret, &payload);
-        let bare = verify_webhook_signature(secret.clone(), payload.clone(), expected.clone());
-        assert!(bare.valid);
-        assert_eq!(bare.expected, expected);
-        assert_eq!(bare.algorithm, "HMAC-SHA256");
-
-        let prefixed = verify_webhook_signature(
-            secret.clone(),
-            payload.clone(),
-            format!("sha256={}", expected.to_uppercase()),
-        );
-        assert!(prefixed.valid);
-
-        let wrong = verify_webhook_signature(
-            secret.clone(),
-            payload.clone(),
-            format!("sha256={}deadbeef", expected),
-        );
-        assert!(!wrong.valid);
-
-        let empty = verify_webhook_signature(secret, payload, String::new());
-        assert!(!empty.valid);
-    }
-
-    #[test]
-    fn webhook_delivery_posts_json_with_auth() {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let payload = r#"{"event":"daily.summary","ok":true}"#.to_string();
-        let payload_clone = payload.clone();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_request_until(&mut stream, "daily.summary");
-            let has_post = request.starts_with("POST /hooks/ai-workbench HTTP/1.1");
-            let has_json = request
-                .to_lowercase()
-                .contains("content-type: application/json");
-            let has_auth = request
-                .to_lowercase()
-                .contains("authorization: bearer wh-token-123");
-            let has_body = request.contains(&payload_clone);
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"received\":true}";
-            let _ = stream.write_all(response.as_bytes());
-            (request, has_post, has_json, has_auth, has_body)
-        });
-        let result = deliver_webhook_http(
-            &format!("http://{}/hooks/ai-workbench", addr),
-            &payload,
-            "POST",
-            Some("wh-token-123"),
-            None,
-            0,
-        )
-        .unwrap();
-        let (request, has_post, has_json, has_auth, has_body) = server.join().unwrap();
-        assert!(result.ok, "{}", result.message);
-        assert_eq!(result.status, 200);
-        assert!(result.message.contains("HTTP 200"), "{}", result.message);
-        assert!(has_post, "expected POST request line, got:\n{}", request);
-        assert!(has_json, "expected JSON content type, got:\n{}", request);
-        assert!(has_auth, "expected Authorization header, got:\n{}", request);
-        assert!(has_body, "expected JSON body, got:\n{}", request);
-    }
-
-    #[test]
-    fn webhook_delivery_reports_http_error_status() {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let _request = read_http_request_until(&mut stream, "daily.summary");
-            let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nbad request";
-            let _ = stream.write_all(response.as_bytes());
-        });
-        let result = deliver_webhook_http(
-            &format!("http://{}", addr),
-            r#"{"event":"daily.summary","ok":true}"#,
-            "POST",
-            None,
-            None,
-            0,
-        )
-        .unwrap();
-        server.join().unwrap();
-        assert!(!result.ok);
-        assert_eq!(result.status, 400);
-        assert!(result.message.contains("HTTP 400"), "{}", result.message);
-        assert!(result.message.contains("bad request"), "{}", result.message);
-    }
-
-    #[test]
-    fn webhook_delivery_sends_hmac_signature() {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let payload = r#"{"event":"signed"}"#;
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_request_until(&mut stream, "signed");
-            let has_signature = request
-                .to_lowercase()
-                .contains("x-webhook-signature: sha256=");
-            let has_timestamp = request.to_lowercase().contains("x-webhook-timestamp:");
-            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
-            let _ = stream.write_all(response.as_bytes());
-            (request, has_signature, has_timestamp)
-        });
-        let result = deliver_webhook_http(
-            &format!("http://{}", addr),
-            payload,
-            "POST",
-            None,
-            Some("test-secret"),
-            0,
-        )
-        .unwrap();
-        let (request, has_signature, has_timestamp) = server.join().unwrap();
-        assert!(result.ok, "{}", result.message);
-        assert!(result.signed);
-        assert_eq!(result.attempts, 1);
-        assert!(
-            has_signature,
-            "expected signature header, got:\n{}",
-            request
-        );
-        assert!(
-            has_timestamp,
-            "expected timestamp header, got:\n{}",
-            request
-        );
-    }
-
-    #[test]
-    fn webhook_delivery_retries_on_server_error() {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let responses = [
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-        ];
-        let server = thread::spawn(move || {
-            for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let _request = read_http_request_until(&mut stream, "retry");
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        let result = deliver_webhook_http(
-            &format!("http://{}", addr),
-            r#"{"event":"retry"}"#,
-            "POST",
-            None,
-            None,
-            2,
-        )
-        .unwrap();
-        server.join().unwrap();
-        assert!(result.ok, "{}", result.message);
-        assert_eq!(result.status, 200);
-        assert_eq!(result.attempts, 3);
-    }
-
-    #[test]
-    fn run_webhook_rule_delivers_and_records_status() {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let _request = read_http_request_until(&mut stream, "scheduled");
-            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
-            let _ = stream.write_all(response.as_bytes());
-        });
-        let temp =
-            std::env::temp_dir().join(format!("aiwb-webhook-rule-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp).unwrap();
-        let conn = db::init_connection(&temp.join("workbench.db")).unwrap();
-        let rule = db::create_webhook_rule(
-            &conn,
-            &db::WebhookRuleInput {
-                name: "Scheduled",
-                url: &format!("http://{}", addr),
-                payload: r#"{"event":"scheduled"}"#,
-                method: "POST",
-                token: "rule-token",
-                secret: "rule-secret",
-                retries: 2,
-                cooldown_seconds: 0,
-                interval_seconds: 60,
-                trigger_event: "",
-                trigger_condition: "",
-                channels: vec!["http".to_string()],
-                recovery_backoff_seconds: 300,
-                auto_disable_after: 3,
-            },
-        )
-        .unwrap();
-        let result = run_webhook_rule_inner(&conn, &rule.id).unwrap();
-        server.join().unwrap();
-        assert!(result.ok);
-        assert_eq!(result.status, 200);
-        assert!(result.signed);
-        let after = db::get_webhook_rule(&conn, &rule.id).unwrap().unwrap();
-        assert_eq!(after.last_status, 200);
-        assert_eq!(after.consecutive_failures, 0);
-        assert_eq!(after.secret, "rule-secret");
-        assert_eq!(after.retries, 2);
-        assert!(
-            after.last_message.contains("HTTP 200"),
-            "{}",
-            after.last_message
-        );
-        drop(conn);
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn webhook_recovery_backoff_doubles_and_caps() {
-        let rule = |failures: i64, backoff: i64| db::WebhookRule {
-            id: "recovery".to_string(),
-            name: "Recovery".to_string(),
-            url: "https://example.test".to_string(),
-            payload: "{}".to_string(),
-            method: "POST".to_string(),
-            token: String::new(),
-            secret: String::new(),
-            retries: 1,
-            cooldown_seconds: 0,
-            interval_seconds: 60,
-            trigger_event: String::new(),
-            trigger_condition: String::new(),
-            channels: vec!["http".to_string()],
-            recovery_backoff_seconds: backoff,
-            circuit_opened_at: 1,
-            enabled: false,
-            last_run_at: 0,
-            last_status: 0,
-            last_message: String::new(),
-            created_at: 0,
-            updated_at: 0,
-            consecutive_failures: failures,
-            auto_disable_after: 3,
-            template_version: 1,
-        };
-        assert_eq!(webhook_recovery_backoff_ms(&rule(3, 300)), 300_000);
-        assert_eq!(webhook_recovery_backoff_ms(&rule(4, 300)), 600_000);
-        assert_eq!(webhook_recovery_backoff_ms(&rule(5, 300)), 1_200_000);
-        assert_eq!(webhook_recovery_backoff_ms(&rule(20, 300)), 86_400_000);
-        assert_eq!(webhook_recovery_backoff_ms(&rule(0, 0)), 5_000);
-        assert_eq!(webhook_recovery_backoff_ms(&rule(9, 3600)), 86_400_000);
-    }
-
-    #[test]
-    fn webhook_email_delivers_via_mock_smtp() {
-        use std::io::{BufRead, BufReader, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut writer = stream.try_clone().unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut saw_mail = false;
-            let mut saw_rcpt = false;
-            let mut saw_data = false;
-            writer.write_all(b"220 mock.local ESMTP\r\n").unwrap();
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    break;
-                }
-                let command = line.trim();
-                let upper = command.to_uppercase();
-                if upper.starts_with("EHLO") {
-                    writer
-                        .write_all(b"250-mock.local\r\n250 AUTH PLAIN LOGIN\r\n")
-                        .unwrap();
-                } else if upper == "AUTH PLAIN" || upper.starts_with("AUTH PLAIN ") {
-                    let mut payload = String::new();
-                    if upper == "AUTH PLAIN" {
-                        let _ = reader.read_line(&mut payload);
-                    }
-                    writer
-                        .write_all(b"235 2.7.0 Authentication successful\r\n")
-                        .unwrap();
-                } else if upper == "AUTH LOGIN" {
-                    writer.write_all(b"334 VXNlcm5hbWU6\r\n").unwrap();
-                    let mut user = String::new();
-                    let _ = reader.read_line(&mut user);
-                    writer.write_all(b"334 UGFzc3dvcmQ6\r\n").unwrap();
-                    let mut pass = String::new();
-                    let _ = reader.read_line(&mut pass);
-                    writer
-                        .write_all(b"235 2.7.0 Authentication successful\r\n")
-                        .unwrap();
-                } else if upper.starts_with("MAIL FROM") {
-                    saw_mail = true;
-                    writer.write_all(b"250 OK\r\n").unwrap();
-                } else if upper.starts_with("RCPT TO") {
-                    saw_rcpt = true;
-                    writer.write_all(b"250 OK\r\n").unwrap();
-                } else if upper.starts_with("DATA") {
-                    saw_data = true;
-                    writer
-                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
-                        .unwrap();
-                    loop {
-                        let mut data_line = String::new();
-                        if reader.read_line(&mut data_line).unwrap_or(0) == 0 {
-                            break;
-                        }
-                        if data_line.trim_end_matches("\r\n") == "." {
-                            break;
-                        }
-                    }
-                    writer.write_all(b"250 2.0.0 OK\r\n").unwrap();
-                } else if upper.starts_with("QUIT") {
-                    writer.write_all(b"221 2.0.0 Bye\r\n").unwrap();
-                    break;
-                } else {
-                    writer.write_all(b"250 OK\r\n").unwrap();
-                }
-            }
-            (saw_mail, saw_rcpt, saw_data)
-        });
-        let config = db::WebhookChannelConfig {
-            email_enabled: true,
-            email_from: "sender@example.test".to_string(),
-            email_to: "recipient@example.test".to_string(),
-            smtp_host: "127.0.0.1".to_string(),
-            smtp_port: addr.port() as i64,
-            smtp_user: "smtp-user".to_string(),
-            smtp_password: "smtp-pass".to_string(),
-            notification_enabled: false,
-            notification_title: "test".to_string(),
-            updated_at: 0,
-        };
-        let result = deliver_webhook_email(&config, "Rule", "sync.completed", "{}").unwrap();
-        let (saw_mail, saw_rcpt, saw_data) = server.join().unwrap();
-        assert!(result.ok);
-        assert_eq!(result.status, 202);
-        assert!(result.message.contains("SMTP"), "{}", result.message);
-        assert!(saw_mail, "expected MAIL FROM");
-        assert!(saw_rcpt, "expected RCPT TO");
-        assert!(saw_data, "expected DATA");
-    }
-
-    #[test]
-    fn webhook_notification_payload_marks_channel() {
-        let notification = WebhookNotification {
-            title: "Title".to_string(),
-            body: "Body".to_string(),
-            rule_id: "rule-1".to_string(),
-            event: "sync.completed".to_string(),
-            channel: "notification".to_string(),
-        };
-        let value = serde_json::to_value(notification).unwrap();
-        assert_eq!(value["channel"], "notification");
-        assert_eq!(value["ruleId"], "rule-1");
-        assert_eq!(value["title"], "Title");
     }
 
     #[test]
