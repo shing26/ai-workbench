@@ -292,6 +292,16 @@ mod tests {
     }
 
     #[test]
+    fn semantic_audit_blocks_non_code_changes_with_pending_tasks() {
+        let dod = "## tasks\n- [ ] update config\n";
+        let result = run_semantic_audit(Some(dod), &[("verify.matrix.json".to_string(), 8)]);
+        assert_eq!(result.status, "FAIL");
+        assert!(result.evidence.other_files == 1);
+        assert!(result.evidence.code_files == 0);
+        assert!(result.errors.iter().any(|error| error.contains("DoD")));
+    }
+
+    #[test]
     fn semantic_audit_passes_code_changes_with_pending_tasks() {
         let dod = "## 交付任务清单\n- [ ] 实现认证\n";
         let result = run_semantic_audit(

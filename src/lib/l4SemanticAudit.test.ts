@@ -36,6 +36,18 @@ describe('l4SemanticAudit', () => {
     });
   });
 
+  it('fails non-code changes while DoD tasks remain pending', () => {
+    const dod = '## 交付任务清单\n- [ ] 更新验证配置\n';
+    const result = runSemanticAudit(dod, [{ path: 'verify.matrix.json', insertions: 8 }]);
+    expect(result.status).toBe('FAIL');
+    expect(result.errors[0]).toContain('DoD');
+    expect(result.evidence).toMatchObject({
+      otherFiles: 1,
+      codeFiles: 0,
+      pendingTasks: 1,
+    });
+  });
+
   it('passes code changes even when DoD tasks remain pending', () => {
     const dod = '## 交付任务清单\n- [ ] 实现认证\n';
     const result = runSemanticAudit(dod, [

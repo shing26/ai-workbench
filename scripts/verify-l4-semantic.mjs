@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runSemanticAudit } from '../src/lib/l4SemanticAudit.ts';
+import { runSemanticAudit } from '../src/lib/l4SemanticAuditCore.mjs';
 
 function git(args, cwd) {
   return spawnSync('git', args, {
