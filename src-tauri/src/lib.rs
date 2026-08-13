@@ -23,6 +23,7 @@ mod cli_spawn;
 mod db;
 mod file_ops;
 mod prism_agents;
+mod verify_matrix;
 
 const CONFIRM_PREFIX: &str = "__requires_confirmation__:";
 
@@ -2875,7 +2876,8 @@ fn run_check_command(
     timeout_ms: u64,
 ) -> Result<CommandOutcome, String> {
     use std::process::Command;
-    let mut child = Command::new(program)
+    let resolved = verify_matrix::platform_program(program);
+    let mut child = Command::new(&resolved)
         .args(args)
         .current_dir(dir)
         .stdout(std::process::Stdio::piped())
@@ -2908,6 +2910,7 @@ fn run_check_command(
 
 fn append_command_result(
     outcome: Result<CommandOutcome, String>,
+    label: &str,
     errors: &mut Vec<String>,
     max_lines: usize,
 ) {
@@ -2922,20 +2925,20 @@ fn append_command_result(
                     lower.contains("error") || lower.contains("failed") || lower.contains("panic")
                 })
                 .take(max_lines)
-                .map(|l| l.to_string())
+                .map(|l| format!("{label}: {l}"))
                 .collect();
             if meaningful.is_empty() {
                 let trimmed = o.text.trim().to_string();
                 if !trimmed.is_empty() {
-                    errors.push(trimmed);
+                    errors.push(format!("{label}: {trimmed}"));
                 } else {
-                    errors.push(format!("command exited with {}", o.exit_code));
+                    errors.push(format!("{label}: command exited with {}", o.exit_code));
                 }
             } else {
                 errors.extend(meaningful);
             }
         }
-        Err(e) => errors.push(e),
+        Err(e) => errors.push(format!("{label}: {e}")),
     }
 }
 
@@ -2943,32 +2946,6 @@ fn run_quality_gate_sync(
     path: &str,
     dod_path: Option<String>,
 ) -> Result<QualityGateResult, String> {
-    fn contains_likely_secret(hunk: &str) -> bool {
-        let lower = hunk.to_lowercase();
-        if let Some(idx) = lower.find("sk-") {
-            let rest: String = lower[idx + 3..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if rest.chars().count() >= 16 {
-                return true;
-            }
-        }
-        if lower.contains("-----begin") {
-            return true;
-        }
-        if let Some(idx) = lower.find("akia") {
-            let rest: String = lower[idx + 4..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if rest.chars().count() >= 16 {
-                return true;
-            }
-        }
-        false
-    }
-
     fn diff_added_text(hunk: &str) -> String {
         hunk.lines()
             .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
@@ -2977,194 +2954,160 @@ fn run_quality_gate_sync(
             .join("\n")
     }
 
-    fn diff_has_debug_call(hunk: &str, needle: &str) -> bool {
-        diff_added_text(hunk).lines().any(|line| {
-            let trimmed = line.trim_start();
-            trimmed.starts_with(needle) && trimmed[needle.len()..].trim_start().starts_with('(')
-        })
-    }
-
     let mut levels: Vec<QualityGateLevel> = Vec::new();
     let root = Path::new(path);
     let has_ts = root.join("tsconfig.json").exists();
     let has_pkg = root.join("package.json").exists();
     let cargo_dir = if root.join("Cargo.toml").exists() {
-        path.to_string()
+        Some(path.to_string())
     } else if root.join("src-tauri").join("Cargo.toml").exists() {
-        format!(
+        Some(format!(
             "{}/src-tauri",
             path.trim_end_matches('/').trim_end_matches('\\')
-        )
+        ))
     } else {
-        String::new()
+        None
     };
-    let has_cargo = !cargo_dir.is_empty();
-
-    let mut l1_errors = Vec::new();
-    let l1_start = std::time::Instant::now();
-    if has_ts {
-        append_command_result(
-            run_check_command(path, "npx", &["tsc", "--noEmit"], 60_000),
-            &mut l1_errors,
-            20,
-        );
-    }
-    if has_pkg {
-        append_command_result(
-            run_check_command(path, "npx", &["eslint", "."], 60_000),
-            &mut l1_errors,
-            20,
-        );
-    }
-    if has_cargo {
-        append_command_result(
-            run_check_command(&cargo_dir, "cargo", &["check", "--quiet"], 90_000),
-            &mut l1_errors,
-            20,
-        );
-        append_command_result(
-            run_check_command(
-                &cargo_dir,
-                "cargo",
-                &[
-                    "clippy",
-                    "--all-targets",
-                    "--all-features",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-                90_000,
-            ),
-            &mut l1_errors,
-            20,
-        );
-    }
-    levels.push(QualityGateLevel {
-        level: 1,
-        name: "静态类型与编译检查".to_string(),
-        status: if l1_errors.is_empty() {
-            "GREEN".to_string()
-        } else {
-            "FAILED".to_string()
-        },
-        errors: l1_errors.clone(),
-        duration_ms: l1_start.elapsed().as_millis() as u64,
-    });
-
-    let mut l2_errors = Vec::new();
-    let l2_start = std::time::Instant::now();
-    if has_cargo {
-        append_command_result(
-            run_check_command(&cargo_dir, "cargo", &["test", "--quiet"], 120_000),
-            &mut l2_errors,
-            30,
-        );
-    }
-    if has_pkg {
-        append_command_result(
-            run_check_command(path, "npm", &["run", "build"], 120_000),
-            &mut l2_errors,
-            30,
-        );
-    }
-    levels.push(QualityGateLevel {
-        level: 2,
-        name: "单元与契约测试".to_string(),
-        status: if l2_errors.is_empty() {
-            "GREEN".to_string()
-        } else {
-            "FAILED".to_string()
-        },
-        errors: l2_errors.clone(),
-        duration_ms: l2_start.elapsed().as_millis() as u64,
-    });
-
-    let mut l3_errors = Vec::new();
-    let l3_start = std::time::Instant::now();
     let has_ui_verify = root.join("scripts").join("ui-verify.mjs").exists();
-    if has_pkg && has_ui_verify {
-        append_command_result(
-            run_check_command(path, "node", &["scripts/preview-verify.mjs"], 150_000),
-            &mut l3_errors,
-            30,
-        );
+    let has_cargo = cargo_dir.is_some();
+    let manifest = verify_matrix::load_manifest()?;
+    if manifest.version < 1 {
+        return Err("verify.matrix.json: unsupported manifest version".to_string());
     }
-    levels.push(QualityGateLevel {
-        level: 3,
-        name: "无头浏览器与视觉验真".to_string(),
-        status: if l3_errors.is_empty() {
-            "GREEN".to_string()
-        } else {
-            "FAILED".to_string()
-        },
-        errors: l3_errors.clone(),
-        duration_ms: l3_start.elapsed().as_millis() as u64,
-    });
+
+    fn requirement_met(
+        requires: &str,
+        has_ts: bool,
+        has_pkg: bool,
+        has_cargo: bool,
+        has_ui_verify: bool,
+    ) -> bool {
+        match requires {
+            "ts" => has_ts,
+            "pkg" => has_pkg,
+            "cargo" => has_cargo,
+            "ui" => has_pkg && has_ui_verify,
+            _ => true,
+        }
+    }
+
+    for level_meta in &manifest.levels {
+        if level_meta.level > 3 {
+            continue;
+        }
+        let start = std::time::Instant::now();
+        let mut errors: Vec<String> = Vec::new();
+        for check in &level_meta.checks {
+            if check.program == "internal" {
+                continue;
+            }
+            if !requirement_met(&check.requires, has_ts, has_pkg, has_cargo, has_ui_verify) {
+                continue;
+            }
+            let dir = match check.cwd.as_str() {
+                "src-tauri" => match &cargo_dir {
+                    Some(dir) => dir.clone(),
+                    None => continue,
+                },
+                _ => path.to_string(),
+            };
+            let args: Vec<&str> = check.args.iter().map(String::as_str).collect();
+            append_command_result(
+                run_check_command(&dir, &check.program, &args, check.timeout_ms),
+                &check.name,
+                &mut errors,
+                20,
+            );
+        }
+        levels.push(QualityGateLevel {
+            level: level_meta.level,
+            name: level_meta.name.clone(),
+            status: if errors.is_empty() {
+                "GREEN".to_string()
+            } else {
+                "FAILED".to_string()
+            },
+            errors: errors.clone(),
+            duration_ms: start.elapsed().as_millis() as u64,
+        });
+        if !errors.is_empty() && manifest.fail_fast == "level" {
+            break;
+        }
+    }
 
     let mut l4_errors = Vec::new();
     let l4_start = std::time::Instant::now();
-    match dod_path.as_deref().filter(|p| !p.trim().is_empty()) {
-        Some(dod) => {
-            let dod_abs = if Path::new(dod).is_absolute() {
-                dod.to_string()
-            } else {
-                format!(
-                    "{}/{}",
-                    path.trim_end_matches('/').trim_end_matches('\\'),
-                    dod.replace('\\', "/")
-                )
-            };
-            match fs::read_to_string(&dod_abs) {
-                Ok(dod_text) => {
-                    let diff = get_project_diff_tree(path.to_string()).unwrap_or_default();
-                    if diff.is_empty() {
-                        // Nothing changed yet; semantic alignment cannot be proven, treat as green
-                        // with a note so the DoD doc requirement remains visible.
-                    } else {
-                        let mut security_hits: Vec<String> = Vec::new();
-                        for file in &diff {
-                            let added_text = diff_added_text(&file.hunk_preview);
-                            if contains_likely_secret(&added_text) {
-                                security_hits
-                                    .push(format!("{}: 变更可能包含硬编码敏感信息", file.path));
+    let l4_meta = manifest.levels.iter().find(|level| level.level == 4);
+    let ai_mode = l4_meta
+        .and_then(|level| level.ai_audit.as_ref())
+        .map(|audit| audit.mode.as_str())
+        .unwrap_or("in-app");
+    if levels.iter().all(|level| level.status == "GREEN") {
+        match dod_path.as_deref().filter(|p| !p.trim().is_empty()) {
+            Some(dod) => {
+                let dod_abs = if Path::new(dod).is_absolute() {
+                    dod.to_string()
+                } else {
+                    format!(
+                        "{}/{}",
+                        path.trim_end_matches('/').trim_end_matches('\\'),
+                        dod.replace('\\', "/")
+                    )
+                };
+                match fs::read_to_string(&dod_abs) {
+                    Ok(dod_text) => {
+                        let diff = get_project_diff_tree(path.to_string()).unwrap_or_default();
+                        if diff.is_empty() {
+                            // Nothing changed yet; semantic alignment cannot be proven, treat as green
+                            // with a note so the DoD doc requirement remains visible.
+                        } else {
+                            let mut security_hits: Vec<String> = Vec::new();
+                            for file in &diff {
+                                let added_text = diff_added_text(&file.hunk_preview);
+                                security_hits.extend(verify_matrix::scan_security_hits(
+                                    &file.path,
+                                    &added_text,
+                                    &manifest.security_rules,
+                                ));
                             }
-                            let is_ts = file.path.ends_with(".ts") || file.path.ends_with(".tsx");
-                            let is_rust = file.path.ends_with(".rs");
-                            if (is_ts && diff_has_debug_call(&file.hunk_preview, "console.log"))
-                                || (is_rust && diff_has_debug_call(&file.hunk_preview, "dbg!"))
-                            {
-                                security_hits.push(format!("{}: 残留调试输出", file.path));
+                            if ai_mode == "in-app" {
+                                let dod_snippet: String = dod_text.chars().take(4000).collect();
+                                let diff_summary: Vec<String> = diff
+                                    .iter()
+                                    .take(20)
+                                    .map(|f| {
+                                        format!("{}: +{}/-{}", f.path, f.insertions, f.deletions)
+                                    })
+                                    .collect();
+                                let consensus = build_moa_consensus_inner(vec![
+                                    format!("DoD:\n{}", dod_snippet),
+                                    format!("Git diff 摘要:\n{}", diff_summary.join("\n")),
+                                ]);
+                                if consensus.summary.contains("No agent output") {
+                                    l4_errors.push("QA/CISO 审查未生成有效结论".to_string());
+                                }
                             }
+                            l4_errors.extend(security_hits.iter().take(10).cloned());
                         }
-                        let dod_snippet: String = dod_text.chars().take(4000).collect();
-                        let diff_summary: Vec<String> = diff
-                            .iter()
-                            .take(20)
-                            .map(|f| format!("{}: +{}/-{}", f.path, f.insertions, f.deletions))
-                            .collect();
-                        let consensus = build_moa_consensus_inner(vec![
-                            format!("DoD:\n{}", dod_snippet),
-                            format!("Git diff 摘要:\n{}", diff_summary.join("\n")),
-                        ]);
-                        if consensus.summary.contains("No agent output") {
-                            l4_errors.push("QA/CISO 审查未生成有效结论".to_string());
-                        }
-                        l4_errors.extend(security_hits.iter().take(10).cloned());
                     }
+                    Err(e) => l4_errors.push(format!("无法读取旅程文档（DoD）{}: {}", dod_abs, e)),
                 }
-                Err(e) => l4_errors.push(format!("无法读取旅程文档（DoD）{}: {}", dod_abs, e)),
             }
+            None if ai_mode != "in-app" => {}
+            None => l4_errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string()),
         }
-        None => l4_errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string()),
     }
     levels.push(QualityGateLevel {
         level: 4,
-        name: "AI DoD 语义对齐与安全审计".to_string(),
-        status: if l4_errors.is_empty() {
-            "GREEN".to_string()
-        } else {
+        name: l4_meta
+            .map(|level| level.name.clone())
+            .unwrap_or_else(|| "AI DoD 语义对齐与安全审计".to_string()),
+        status: if !l4_errors.is_empty() {
             "FAILED".to_string()
+        } else if ai_mode != "in-app" {
+            "SKIPPED".to_string()
+        } else {
+            "GREEN".to_string()
         },
         errors: l4_errors.clone(),
         duration_ms: l4_start.elapsed().as_millis() as u64,

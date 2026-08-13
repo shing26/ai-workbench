@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const root = process.cwd();
 const srcTauri = path.join(root, 'src-tauri');
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'verify.matrix.json'), 'utf8'));
 const results = [];
 
 function platformCommand(command) {
@@ -11,6 +12,31 @@ function platformCommand(command) {
     return `${command}.cmd`;
   }
   return command;
+}
+
+function resolveCwd(cwd) {
+  return cwd === 'src-tauri' ? srcTauri : root;
+}
+
+function requirementMet(requires) {
+  switch (requires) {
+    case 'ts':
+      return fs.existsSync(path.join(root, 'tsconfig.json'));
+    case 'cargo':
+      return (
+        fs.existsSync(path.join(root, 'Cargo.toml')) ||
+        fs.existsSync(path.join(srcTauri, 'Cargo.toml'))
+      );
+    case 'pkg':
+      return fs.existsSync(path.join(root, 'package.json'));
+    case 'ui':
+      return (
+        fs.existsSync(path.join(root, 'package.json')) &&
+        fs.existsSync(path.join(root, 'scripts', 'ui-verify.mjs'))
+      );
+    default:
+      return true;
+  }
 }
 
 function runCommand(name, level, cwd, command, args, timeoutMs = 120000) {
@@ -117,7 +143,27 @@ function gitDiffAdded(file) {
   });
 }
 
-async function runL4Mock() {
+function secretRuleHit(text, rule) {
+  if (rule.contains) {
+    return text.toLowerCase().includes(rule.contains.toLowerCase());
+  }
+  if (rule.prefix) {
+    const lower = text.toLowerCase();
+    const prefix = rule.prefix.toLowerCase();
+    const idx = lower.indexOf(prefix);
+    if (idx < 0) return false;
+    const rest = (text.slice(idx + rule.prefix.length).match(/^[A-Za-z0-9_-]*/) || [''])[0];
+    return rest.length >= (rule.minLength ?? 16);
+  }
+  return false;
+}
+
+function debugCallHit(line, needle) {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith(needle) && trimmed.slice(needle.length).trimStart().startsWith('(');
+}
+
+async function runSecurityScan() {
   const startedAt = Date.now();
   const errors = [];
   const porcelain = await gitPorcelain();
@@ -125,65 +171,74 @@ async function runL4Mock() {
     .split(/\r?\n/)
     .map((line) => line.slice(3).trim())
     .filter(Boolean);
-  const secretPatterns = [
-    /\bsk-[A-Za-z0-9_-]{16,}\b/,
-    /-----BEGIN [A-Z ]+PRIVATE KEY-----/,
-    /\bAKIA[0-9A-Z]{16}\b/,
-  ];
+  const rules = manifest.securityRules;
   for (const file of changed) {
+    if (
+      (rules.ignorePaths || []).some((pattern) => {
+        const normalized = pattern.replace(/[\\/]+$/, '');
+        return file === normalized || file.startsWith(`${normalized}/`);
+      })
+    ) {
+      continue;
+    }
     const full = path.join(root, file);
     const exists = fs.existsSync(full);
     if (exists && !fs.statSync(full).isFile()) continue;
     const added = exists ? await gitDiffAdded(file) : '';
     const addedOrAll = added || (exists ? fs.readFileSync(full, 'utf8') : '');
-    for (const pattern of secretPatterns) {
-      if (pattern.test(addedOrAll)) {
-        errors.push(`${file}: 变更可能包含硬编码敏感信息`);
-        break;
-      }
+    const hitRule = rules.secrets.find((rule) => secretRuleHit(addedOrAll, rule));
+    if (hitRule) {
+      errors.push(`${file}: 变更可能包含硬编码敏感信息（${hitRule.id}）`);
     }
     const normalized = file.replaceAll('\\', '/');
-    const isFrontend = /^src\/.*\.(ts|tsx)$/.test(normalized);
-    const isRust = /^src-tauri\/src\/.*\.rs$/.test(normalized);
-    if (isFrontend && /^\s*console\.log\s*\(/m.test(addedOrAll)) {
-      errors.push(`${file}: 前端残留调试输出`);
-    }
-    if (isRust && /^\s*dbg!\s*\(/m.test(addedOrAll)) {
-      errors.push(`${file}: Rust 残留调试输出`);
+    const lang = /^src\/.*\.(ts|tsx)$/.test(normalized)
+      ? 'ts'
+      : /^src-tauri\/src\/.*\.rs$/.test(normalized)
+        ? 'rs'
+        : null;
+    if (lang) {
+      const needles = rules.debugCalls[lang] || [];
+      const debugHit = addedOrAll
+        .split(/\r?\n/)
+        .some((line) => needles.some((needle) => debugCallHit(line, needle)));
+      if (debugHit) {
+        errors.push(`${file}: 残留调试输出`);
+      }
     }
   }
-  results.push({
-    level: 4,
-    name: 'AI DoD 语义对齐与安全审计（MOCK 降级）',
-    status: errors.length ? 'FAILED' : 'GREEN',
-    durationMs: Date.now() - startedAt,
-    errors,
-    note: 'MOCK 模式：完整 L4 由应用内 run_quality_gate 调用 Agency QA/CISO 审查。',
-  });
-  return errors.length === 0;
+  return { errors, durationMs: Date.now() - startedAt };
 }
 
 async function main() {
-  const l1Checks = [
-    ['npx', ['tsc', '--noEmit'], root, 'L1 tsc'],
-    ['npx', ['eslint', '.'], root, 'L1 eslint'],
-    ['cargo', ['fmt', '--check'], srcTauri, 'L1 cargo fmt'],
-    [
-      'cargo',
-      ['clippy', '--all-targets', '--all-features', '--', '-D', 'warnings'],
-      srcTauri,
-      'L1 clippy',
-    ],
-  ];
-  for (const [command, args, cwd, name] of l1Checks) {
-    await runCommand(name, 1, cwd, command, args, 120000);
+  const failFast = manifest.failFast ?? 'level';
+  for (const level of manifest.levels) {
+    if (level.level > 3) continue;
+    let levelFailed = false;
+    for (const check of level.checks) {
+      if (check.program === 'internal') continue;
+      if (check.requires && !requirementMet(check.requires)) continue;
+      const ok = await runCommand(
+        check.name,
+        level.level,
+        resolveCwd(check.cwd),
+        check.program,
+        check.args,
+        check.timeoutMs ?? 120000,
+      );
+      if (!ok) levelFailed = true;
+    }
+    if (failFast === 'level' && levelFailed) break;
   }
 
-  await runCommand('L2 cargo test', 2, srcTauri, 'cargo', ['test', '--quiet'], 180000);
-  await runCommand('L2 vitest', 2, root, 'npm', ['run', 'test:unit'], 120000);
-  await runCommand('L2 build', 2, root, 'npm', ['run', 'build'], 180000);
-  await runCommand('L3 preview verify', 3, root, 'node', ['scripts/preview-verify.mjs'], 240000);
-  await runL4Mock();
+  const l4Meta = manifest.levels.find((level) => level.level === 4);
+  const { errors: l4Errors, durationMs: l4Duration } = await runSecurityScan();
+  results.push({
+    level: 4,
+    name: `${l4Meta?.name ?? 'AI DoD 语义对齐与安全审计'}（安全扫描 · AI audit 需在 app 内执行）`,
+    status: l4Errors.length ? 'FAILED' : 'SKIPPED',
+    durationMs: l4Duration,
+    errors: l4Errors,
+  });
 
   const failed = results.filter((result) => result.status === 'FAILED');
   console.log(JSON.stringify(results, null, 2));

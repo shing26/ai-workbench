@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "failFast": "level",
+  "levels": [
+    {
+      "level": 1,
+      "name": "静态编译与类型检查",
+      "checks": [
+        {
+          "name": "tsc",
+          "program": "npx",
+          "args": ["tsc", "--noEmit"],
+          "cwd": "root",
+          "timeoutMs": 120000,
+          "requires": "ts"
+        },
+        {
+          "name": "eslint",
+          "program": "npx",
+          "args": ["eslint", "."],
+          "cwd": "root",
+          "timeoutMs": 120000,
+          "requires": "pkg"
+        },
+        {
+          "name": "cargo check",
+          "program": "cargo",
+          "args": ["check", "--quiet"],
+          "cwd": "src-tauri",
+          "timeoutMs": 120000,
+          "requires": "cargo"
+        },
+        {
+          "name": "cargo clippy",
+          "program": "cargo",
+          "args": ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+          "cwd": "src-tauri",
+          "timeoutMs": 120000,
+          "requires": "cargo"
+        }
+      ]
+    },
+    {
+      "level": 2,
+      "name": "单元与契约测试",
+      "checks": [
+        {
+          "name": "cargo test",
+          "program": "cargo",
+          "args": ["test", "--quiet"],
+          "cwd": "src-tauri",
+          "timeoutMs": 180000,
+          "requires": "cargo"
+        },
+        {
+          "name": "vitest",
+          "program": "npm",
+          "args": ["run", "test:unit"],
+          "cwd": "root",
+          "timeoutMs": 120000,
+          "requires": "pkg"
+        },
+        {
+          "name": "build",
+          "program": "npm",
+          "args": ["run", "build"],
+          "cwd": "root",
+          "timeoutMs": 180000,
+          "requires": "pkg"
+        }
+      ]
+    },
+    {
+      "level": 3,
+      "name": "CDP 无头浏览器 UI/E2E",
+      "checks": [
+        {
+          "name": "preview-verify",
+          "program": "node",
+          "args": ["scripts/preview-verify.mjs"],
+          "cwd": "root",
+          "timeoutMs": 240000,
+          "requires": "ui"
+        }
+      ]
+    },
+    {
+      "level": 4,
+      "name": "AI DoD 语义对齐与安全审计",
+      "checks": [
+        {
+          "name": "security scan",
+          "program": "internal",
+          "args": [],
+          "cwd": "root",
+          "timeoutMs": 30000
+        }
+      ],
+      "aiAudit": {
+        "mode": "in-app"
+      }
+    }
+  ],
+  "securityRules": {
+    "ignorePaths": ["verify.matrix.json"],
+    "secrets": [
+      {
+        "id": "sk-prefix",
+        "prefix": "sk-",
+        "minLength": 16
+      },
+      {
+        "id": "private-key",
+        "contains": "-----BEGIN"
+      },
+      {
+        "id": "akia-prefix",
+        "prefix": "AKIA",
+        "minLength": 16
+      }
+    ],
+    "debugCalls": {
+      "ts": ["console.log"],
+      "rs": ["dbg!"]
+    }
+  }
+}

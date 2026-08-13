@@ -1,8 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
-const root = path.resolve(import.meta.dirname, '..');
 const CLI_WHITELIST = [
   'claude',
   'aider',
@@ -13,29 +10,6 @@ const CLI_WHITELIST = [
   'cursor',
   'windsurf',
 ];
-
-function resolveCargo() {
-  if (process.env.CARGO) return process.env.CARGO;
-  if (process.platform === 'win32') {
-    const candidate = path.join(
-      process.env.RUSTUP_HOME || path.join(process.env.USERPROFILE || '', '.rustup'),
-      'toolchains',
-      'stable-x86_64-pc-windows-msvc',
-      'bin',
-      'cargo.exe',
-    );
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  const which = run(process.platform === 'win32' ? 'where.exe' : 'which', ['cargo'], 5000);
-  if (which.status === 0) {
-    const found = which.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean);
-    if (found && /\.exe$/i.test(found)) return found;
-  }
-  return 'cargo';
-}
 
 function run(command, args, timeoutMs = 8000) {
   return spawnSync(command, args, {
@@ -81,60 +55,8 @@ function checkObsidian() {
   };
 }
 
-function runCargoTest() {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    const child = spawn(resolveCargo(), ['test', '--quiet'], {
-      cwd: path.join(root, 'src-tauri'),
-      windowsHide: true,
-      env: { ...process.env, FORCE_COLOR: '0' },
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) child.kill();
-    }, 300000);
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ status: 'FAILED', durationMs: Date.now() - startedAt, errors: [err.message] });
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const text = `${stdout}\n${stderr}`;
-      const results = text
-        .split(/\r?\n/)
-        .filter((line) => line.includes('test result:'))
-        .map((line) => line.trim());
-      resolve({
-        status: code === 0 ? 'GREEN' : 'FAILED',
-        durationMs: Date.now() - startedAt,
-        summary: results,
-        errors:
-          code === 0
-            ? []
-            : text
-                .split(/\r?\n/)
-                .filter((line) => /error|failed|panic/i.test(line))
-                .slice(0, 20),
-      });
-    });
-  });
-}
-
 const cli = CLI_WHITELIST.map(detectCli);
 const obsidian = checkObsidian();
-const cargoTest = await runCargoTest();
 
 const degraded = [
   ...cli.filter((entry) => !entry.found).map((entry) => `CLI not found: ${entry.name}`),
@@ -146,7 +68,6 @@ console.log(
     {
       cli,
       obsidian,
-      cargoTest,
       degraded,
     },
     null,
@@ -154,8 +75,4 @@ console.log(
   ),
 );
 
-if (cargoTest.status !== 'GREEN') {
-  console.error('DESKTOP_SMOKE_FAILED: cargo test did not pass');
-  process.exit(1);
-}
 console.log('DESKTOP_SMOKE_EXIT=0');
