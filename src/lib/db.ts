@@ -1097,9 +1097,8 @@ function emptyShape(): LocalShape {
   };
 }
 
-function seedShape(): LocalShape {
+function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
   const now = Date.now();
-  const existing = readLocal();
   const designId = makeId();
   const productId = makeId();
   const backendId = makeId();
@@ -1466,7 +1465,13 @@ function seedShape(): LocalShape {
 
 function readLocal(): LocalShape {
   try {
-    const parsed = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as Partial<LocalShape>;
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw === null) {
+      const seeded = seedShape();
+      writeLocal(seeded);
+      return seeded;
+    }
+    const parsed = JSON.parse(raw) as Partial<LocalShape>;
     return {
       ...emptyShape(),
       ...parsed,
@@ -1537,8 +1542,25 @@ function writeLocal(shape: LocalShape) {
 export async function initDb(): Promise<void> {
   if (isTauri()) {
     await invoke('init_db');
-  } else if (!localStorage.getItem(LS_KEY)) {
-    writeLocal(seedShape());
+  } else {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) {
+      writeLocal(seedShape());
+    } else {
+      try {
+        const parsed = JSON.parse(raw) as Partial<LocalShape>;
+        if (
+          !parsed.tasks?.length &&
+          !parsed.projects?.length &&
+          !parsed.providers?.length &&
+          !parsed.agentCatalog?.length
+        ) {
+          writeLocal(seedShape(parsed));
+        }
+      } catch {
+        writeLocal(seedShape());
+      }
+    }
   }
   await seedAgencyIfEmpty();
 }
@@ -1633,25 +1655,36 @@ export type QualityGateLevel = {
   durationMs: number;
 };
 
+export type ProviderAuditProfile = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+};
+
 export type QualityGateResult = {
   status: string;
   errors: string[];
   levels: QualityGateLevel[];
+  providerProfile?: ProviderAuditProfile | null;
 };
 
 export async function runQualityGate(
   projectPath: string,
   dodPath?: string | null,
+  providerProfile?: ProviderAuditProfile | null,
 ): Promise<QualityGateResult> {
   if (isTauri()) {
     return invoke<QualityGateResult>('run_quality_gate', {
       path: projectPath,
       dodPath: dodPath ?? null,
+      providerProfile: providerProfile ?? null,
     });
   }
   return {
     status: 'GREEN',
     errors: [],
+    providerProfile: providerProfile ?? null,
     levels: [1, 2, 3, 4].map((level) => ({
       level,
       name: `L${level} browser fallback`,

@@ -2942,12 +2942,22 @@ struct QualityGateLevel {
     duration_ms: u64,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAuditProfile {
+    id: String,
+    name: String,
+    base_url: String,
+    model: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QualityGateResult {
     status: String,
     errors: Vec<String>,
     levels: Vec<QualityGateLevel>,
+    provider_profile: Option<ProviderAuditProfile>,
 }
 
 struct CommandOutcome {
@@ -3043,6 +3053,7 @@ fn semantic_evidence_summary(evidence: &verify_matrix::SemanticAuditEvidence) ->
 fn run_quality_gate_sync(
     path: &str,
     dod_path: Option<String>,
+    provider_profile: Option<ProviderAuditProfile>,
 ) -> Result<QualityGateResult, String> {
     fn diff_added_text(hunk: &str) -> String {
         hunk.lines()
@@ -3249,6 +3260,7 @@ fn run_quality_gate_sync(
         status,
         errors,
         levels,
+        provider_profile,
     })
 }
 
@@ -3256,10 +3268,13 @@ fn run_quality_gate_sync(
 async fn run_quality_gate(
     path: String,
     dod_path: Option<String>,
+    provider_profile: Option<ProviderAuditProfile>,
 ) -> Result<QualityGateResult, String> {
-    tauri::async_runtime::spawn_blocking(move || run_quality_gate_sync(&path, dod_path))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_quality_gate_sync(&path, dod_path, provider_profile)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

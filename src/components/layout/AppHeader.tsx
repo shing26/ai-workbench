@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 import { usePrismModals } from '../modals/prismModalsStore';
+import { useProviderControlSnapshot } from '../../hooks/useProviderControl';
 import * as db from '../../lib/db';
 
 const CLI_LABELS: Record<string, string> = {
@@ -28,10 +29,12 @@ export default function AppHeader() {
   const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const vibePath = useWorkbenchStore((s) => s.vibeContext?.path ?? null);
   const openSearch = usePrismModals((s) => s.openSearch);
+  const openProvider = usePrismModals((s) => s.openProvider);
   const cliKind = usePrismModals((s) => s.cliKind);
   const setCliKind = usePrismModals((s) => s.setCliKind);
   const detectedCliTools = usePrismModals((s) => s.detectedCliTools);
   const refreshCliTools = usePrismModals((s) => s.refreshCliTools);
+  const provider = useProviderControlSnapshot();
 
   useEffect(() => {
     void refreshCliTools();
@@ -76,6 +79,19 @@ export default function AppHeader() {
       </nav>
 
       <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          data-provider-open
+          aria-label="Provider Control"
+          onClick={openProvider}
+          className="flex h-8 items-center gap-1.5 rounded border border-cyan-500/30 bg-cyan-500/10 px-2.5 font-mono text-[10px] text-cyan-300 transition-colors hover:bg-cyan-500/20"
+          title="Provider Control"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          <span className="hidden max-w-36 truncate lg:inline">
+            {provider.selectedProvider?.name || 'Provider'}
+          </span>
+        </button>
         <button
           type="button"
           data-header-obsidian

@@ -1215,6 +1215,8 @@ html[data-accent='emerald'] {
   align-items: center;
   gap: 2px;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 .journey::-webkit-scrollbar {

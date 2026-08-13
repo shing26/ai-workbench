@@ -1,0 +1,221 @@
+import { describe, expect, it } from 'vitest';
+import type { Provider, ProviderModel, StreamSmokeResult } from './db';
+import {
+  ProviderControlOrchestrator,
+  type ProviderControlAdapters,
+  type ProviderControlSnapshot,
+  type ProviderDraft,
+} from './providerControl';
+
+function provider(partial: Partial<Provider>): Provider {
+  return {
+    id: 'p1',
+    name: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: 'sk-test',
+    model: 'gpt-4o-mini',
+    priority: 0,
+    isActive: true,
+    apiKeyEncrypted: false,
+    timeoutSecs: 30,
+    retryCount: 1,
+    retryDelaySecs: 1,
+    ...partial,
+  };
+}
+
+function createHarness(
+  options: {
+    providers?: Provider[];
+    savedSelection?: string | null;
+    health?: Record<string, { ok: boolean; latencyMs: number; message: string }>;
+  } = {},
+) {
+  let providers = [...(options.providers ?? [provider({})])];
+  let savedSelection = options.savedSelection ?? null;
+  const modelsByProvider: Record<string, ProviderModel[]> = {};
+  const health = options.health ?? {};
+  const snapshots: ProviderControlSnapshot[] = [];
+  const created: ProviderDraft[] = [];
+  const smokeCalls: string[] = [];
+  const healthCalls: string[] = [];
+  const refreshCalls: string[] = [];
+
+  const adapters: ProviderControlAdapters = {
+    listProviders: async () => providers,
+    createProvider: async (name, baseUrl, apiKey, model) => {
+      const draft = { name, baseUrl, apiKey, model };
+      created.push(draft);
+      const next: Provider = provider({
+        id: `p${providers.length + 1}`,
+        name,
+        baseUrl,
+        apiKey,
+        model,
+        isActive: false,
+      });
+      providers = [next, ...providers];
+      return next;
+    },
+    setProviderActive: async (id, isActive) => {
+      providers = providers.map((p) => (p.id === id ? { ...p, isActive } : p));
+    },
+    setProviderPriority: async (id, priority) => {
+      providers = providers.map((p) => (p.id === id ? { ...p, priority } : p));
+    },
+    updateProviderModel: async (id, model) => {
+      providers = providers.map((p) => (p.id === id ? { ...p, model } : p));
+    },
+    updateProviderStreamConfig: async (id, timeoutSecs, retryCount, retryDelaySecs) => {
+      providers = providers.map((p) =>
+        p.id === id ? { ...p, timeoutSecs, retryCount, retryDelaySecs } : p,
+      );
+    },
+    checkProviderHealth: async (id) => {
+      healthCalls.push(id);
+      return health[id] ?? { ok: true, latencyMs: 12, message: 'ok' };
+    },
+    runProviderStreamSmokeTest: async (id) => {
+      smokeCalls.push(id);
+      const result: StreamSmokeResult = { ok: true, chunks: 2, message: 'ok' };
+      return result;
+    },
+    listCachedProviderModels: async (id) => modelsByProvider[id] ?? [],
+    refreshProviderModels: async (id) => {
+      refreshCalls.push(id);
+      const models = [{ id: 'model-a', ownedBy: null }];
+      modelsByProvider[id] = models;
+      return models;
+    },
+    loadSelection: () => savedSelection,
+    saveSelection: (id) => {
+      savedSelection = id;
+    },
+  };
+
+  const orchestrator = new ProviderControlOrchestrator(adapters);
+  const unsubscribe = orchestrator.subscribe((snapshot) => snapshots.push(snapshot));
+  return {
+    orchestrator,
+    snapshots,
+    unsubscribe,
+    created,
+    smokeCalls,
+    healthCalls,
+    refreshCalls,
+    getProviders: () => providers,
+    getSavedSelection: () => savedSelection,
+  };
+}
+
+describe('ProviderControlOrchestrator', () => {
+  it('returns a stable snapshot reference until state changes', () => {
+    const harness = createHarness();
+
+    const first = harness.orchestrator.getSnapshot();
+    const second = harness.orchestrator.getSnapshot();
+
+    expect(first).toBe(second);
+  });
+
+  it('mounts providers and restores the saved selection', async () => {
+    const harness = createHarness({
+      providers: [
+        provider({ id: 'p1', isActive: true }),
+        provider({ id: 'p2', name: 'Ollama', isActive: false }),
+      ],
+      savedSelection: 'p2',
+    });
+
+    await harness.orchestrator.mount();
+
+    const snapshot = harness.orchestrator.getSnapshot();
+    expect(snapshot.providers).toHaveLength(2);
+    expect(snapshot.selectedProviderId).toBe('p2');
+    expect(snapshot.selectedProvider?.name).toBe('Ollama');
+  });
+
+  it('creates a provider and makes it the active selection', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.mount();
+
+    const result = await harness.orchestrator.addProvider({
+      name: 'Local',
+      baseUrl: 'http://localhost:11434',
+      apiKey: '',
+      model: 'qwen2.5:3b',
+    });
+
+    expect(result).not.toBeNull();
+    expect(harness.created[0]).toEqual({
+      name: 'Local',
+      baseUrl: 'http://localhost:11434',
+      apiKey: '',
+      model: 'qwen2.5:3b',
+    });
+    expect(harness.orchestrator.getSnapshot().selectedProvider?.name).toBe('Local');
+    expect(harness.getSavedSelection()).toBe(result?.id);
+  });
+
+  it('rejects an invalid provider draft without writing', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.mount();
+
+    const result = await harness.orchestrator.addProvider({
+      name: '',
+      baseUrl: 'not-a-url',
+      apiKey: '',
+      model: '',
+    });
+
+    expect(result).toBeNull();
+    expect(harness.created).toHaveLength(0);
+    expect(harness.orchestrator.getSnapshot().error).toContain('Provider name is required');
+  });
+
+  it('stores health and smoke results per provider', async () => {
+    const harness = createHarness({
+      health: { p1: { ok: false, latencyMs: 40, message: 'Connection failed' } },
+    });
+    await harness.orchestrator.mount();
+
+    const health = await harness.orchestrator.checkHealth('p1');
+    const smoke = await harness.orchestrator.runSmoke('p1');
+
+    expect(health?.status).toBe('error');
+    expect(health?.message).toContain('Connection failed');
+    expect(smoke?.status).toBe('ok');
+    expect(smoke?.chunks).toBe(2);
+    const snapshot = harness.orchestrator.getSnapshot();
+    expect(snapshot.healthByProvider.p1?.status).toBe('error');
+    expect(snapshot.smokeByProvider.p1?.status).toBe('ok');
+    expect(harness.healthCalls).toEqual(['p1']);
+    expect(harness.smokeCalls).toEqual(['p1']);
+  });
+
+  it('refreshes the model catalog for a provider', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.mount();
+
+    const models = await harness.orchestrator.refreshModels('p1');
+
+    expect(models).toEqual([{ id: 'model-a', ownedBy: null }]);
+    expect(harness.orchestrator.getSnapshot().modelsByProvider.p1?.[0]?.id).toBe('model-a');
+    expect(harness.refreshCalls).toEqual(['p1']);
+  });
+
+  it('activates a provider and selects it when no selection exists', async () => {
+    const harness = createHarness({
+      providers: [provider({ id: 'p1', isActive: false })],
+      savedSelection: null,
+    });
+    await harness.orchestrator.mount();
+    expect(harness.orchestrator.getSnapshot().selectedProviderId).toBe('p1');
+
+    await harness.orchestrator.selectProvider('p1');
+
+    expect(harness.orchestrator.getSnapshot().selectedProviderId).toBe('p1');
+    expect(harness.orchestrator.getSnapshot().selectedProvider?.id).toBe('p1');
+    expect(harness.getSavedSelection()).toBe('p1');
+  });
+});

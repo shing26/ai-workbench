@@ -22,6 +22,7 @@ export type PrismModal =
   | { kind: 'shortcuts' }
   | { kind: 'cli'; payload: CliModalPayload }
   | { kind: 'attach'; payload: AttachModalPayload }
+  | { kind: 'provider' }
   | null;
 
 type PrismModalsState = {
@@ -33,6 +34,7 @@ type PrismModalsState = {
   openShortcuts: () => void;
   openCli: (payload: CliModalPayload) => void;
   openAttach: (payload: AttachModalPayload) => void;
+  openProvider: () => void;
   closeModal: () => void;
   setCliKind: (kind: CliKind) => void;
   setAttachedPaths: (paths: string[]) => void;
@@ -48,6 +50,7 @@ export const usePrismModals = create<PrismModalsState>((set, get) => ({
   openShortcuts: () => set({ modal: { kind: 'shortcuts' } }),
   openCli: (payload) => set({ modal: { kind: 'cli', payload } }),
   openAttach: (payload) => set({ modal: { kind: 'attach', payload } }),
+  openProvider: () => set({ modal: { kind: 'provider' } }),
   closeModal: () => set({ modal: null }),
   setCliKind: (cliKind) => set({ cliKind }),
   setAttachedPaths: (attachedPaths) => set({ attachedPaths }),

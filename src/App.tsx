@@ -8,6 +8,7 @@ import { useTauriEvents } from './hooks/useTauriEvents';
 import { useActiveThrottle } from './hooks/useActiveThrottle';
 import * as db from './lib/db';
 import { deliveryOrchestrator } from './lib/delivery';
+import { providerControlOrchestrator } from './lib/providerControl';
 import { useThemeStore } from './stores/themeStore';
 import { useWorkbenchStore } from './stores/workbenchStore';
 
@@ -26,9 +27,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void restoreWorkspace().then((ok) => {
-      if (!ok) void init();
-    });
+    let disposed = false;
+    void (async () => {
+      const ok = await restoreWorkspace();
+      if (disposed) return;
+      if (!ok) await init();
+      if (disposed) return;
+      await providerControlOrchestrator.mount();
+    })();
+    return () => {
+      disposed = true;
+      providerControlOrchestrator.dispose();
+    };
   }, [restoreWorkspace, init]);
 
   useEffect(() => {

@@ -1,9 +1,15 @@
-import { Copy, Play, Search, X } from 'lucide-react';
+import { Activity, Copy, Play, Plus, RefreshCw, Save, Search, Server, X, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as db from '../../lib/db';
 import { useDeliverySnapshot } from '../../hooks/useDelivery';
+import { useProviderControlSnapshot } from '../../hooks/useProviderControl';
 import { deliveryOrchestrator } from '../../lib/delivery';
+import {
+  PROVIDER_PRESETS,
+  providerControlOrchestrator,
+  type ProviderDraft,
+} from '../../lib/providerControl';
 import { emitEvent, TOPICS } from '../../stores/events';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 import { usePrismModals } from './prismModalsStore';
@@ -461,6 +467,409 @@ function AttachModal() {
   );
 }
 
+function ProviderTestResult({ state }: { state: { status: string; message: string } | undefined }) {
+  if (!state || state.status === 'idle') {
+    return <span className="text-[9px] text-slate-600">not tested</span>;
+  }
+  if (state.status === 'running') {
+    return <span className="text-[9px] text-amber-300">running...</span>;
+  }
+  const ok = state.status === 'ok';
+  return (
+    <span className={ok ? 'text-emerald-300' : 'text-rose-300'}>
+      {ok ? 'ok' : 'failed'} - {state.message}
+    </span>
+  );
+}
+
+function ProviderModal() {
+  const closeModal = usePrismModals((s) => s.closeModal);
+  const snapshot = useProviderControlSnapshot();
+  const providers = snapshot.providers;
+  const [draft, setDraft] = useState<ProviderDraft>({
+    name: 'Ollama',
+    baseUrl: 'http://localhost:11434',
+    apiKey: '',
+    model: 'qwen2.5:3b',
+  });
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [priorityDrafts, setPriorityDrafts] = useState<Record<string, string>>({});
+  const [configDrafts, setConfigDrafts] = useState<
+    Record<string, { timeoutSecs: string; retryCount: string; retryDelaySecs: string }>
+  >({});
+
+  const applyPreset = (preset: (typeof PROVIDER_PRESETS)[number]) => {
+    setDraft({
+      name: preset.label,
+      baseUrl: preset.baseUrl,
+      apiKey: '',
+      model: preset.model,
+    });
+  };
+
+  const addProvider = async () => {
+    const created = await providerControlOrchestrator.addProvider(draft);
+    if (created) {
+      setDraft({ name: '', baseUrl: '', apiKey: '', model: '' });
+    }
+  };
+
+  const saveModel = async (providerId: string) => {
+    const model = (modelDrafts[providerId] ?? '').trim();
+    await providerControlOrchestrator.setProviderModel(providerId, model);
+  };
+
+  const savePriority = async (providerId: string) => {
+    const priority = Number(priorityDrafts[providerId] ?? 0);
+    if (Number.isFinite(priority)) {
+      await providerControlOrchestrator.setProviderPriority(
+        providerId,
+        Math.max(0, Math.round(priority)),
+      );
+    }
+  };
+
+  const saveStreamConfig = async (providerId: string) => {
+    const config = configDrafts[providerId];
+    if (!config) return;
+    await providerControlOrchestrator.setProviderStreamConfig(
+      providerId,
+      Number(config.timeoutSecs) || 30,
+      Number(config.retryCount) || 0,
+      Number(config.retryDelaySecs) || 0,
+    );
+  };
+
+  return (
+    <ModalShell title="Provider Control" onClose={closeModal}>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Server size={14} className="text-cyan-300" />
+        <span className="text-[10px] text-slate-400">
+          Providers shared by Studio, verification and delivery.
+        </span>
+        {snapshot.selectedProvider && (
+          <span
+            data-provider-selected-name
+            className="ml-auto rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 font-mono text-[10px] text-cyan-300"
+          >
+            {snapshot.selectedProvider.name} / {snapshot.selectedProvider.model || 'no model'}
+          </span>
+        )}
+      </div>
+
+      {snapshot.error && (
+        <div
+          data-provider-error
+          className="mb-3 rounded border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 font-mono text-[10px] text-rose-300"
+        >
+          {snapshot.error}
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {providers.map((provider) => {
+          const selected = snapshot.selectedProviderId === provider.id;
+          const busy = snapshot.busyProviderId === provider.id;
+          const health = snapshot.healthByProvider[provider.id];
+          const smoke = snapshot.smokeByProvider[provider.id];
+          const models = snapshot.modelsByProvider[provider.id] ?? [];
+          const modelDraft = modelDrafts[provider.id] ?? provider.model;
+          const priorityDraft = priorityDrafts[provider.id] ?? String(provider.priority ?? 0);
+          const config = configDrafts[provider.id] ?? {
+            timeoutSecs: String(provider.timeoutSecs ?? 30),
+            retryCount: String(provider.retryCount ?? 1),
+            retryDelaySecs: String(provider.retryDelaySecs ?? 1),
+          };
+          return (
+            <div
+              key={provider.id}
+              data-provider-card={provider.id}
+              className={`rounded-xl border p-3 ${selected ? 'border-cyan-500/40 bg-cyan-500/[0.06]' : 'border-white/10 bg-white/[0.03]'}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  data-provider-select={provider.id}
+                  onClick={() => void providerControlOrchestrator.selectProvider(provider.id)}
+                  className={`flex h-7 items-center gap-2 rounded-lg border px-2.5 text-[10px] ${
+                    selected
+                      ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                      : 'border-white/10 bg-white/[0.04] text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Zap size={11} />
+                  {selected ? 'Selected' : 'Select'}
+                </button>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold text-slate-200">
+                    {provider.name}
+                  </span>
+                  <span className="block truncate font-mono text-[9px] text-slate-500">
+                    {provider.baseUrl}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  data-provider-active={provider.id}
+                  onClick={() =>
+                    void providerControlOrchestrator.toggleProvider(provider.id, !provider.isActive)
+                  }
+                  className={`rounded-lg border px-2 py-1 text-[9px] ${
+                    provider.isActive
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                      : 'border-white/10 bg-white/[0.04] text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {provider.isActive ? 'enabled' : 'disabled'}
+                </button>
+              </div>
+
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[9px] text-slate-500">Model</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      data-provider-model-input={provider.id}
+                      value={modelDraft}
+                      onChange={(e) =>
+                        setModelDrafts((prev) => ({ ...prev, [provider.id]: e.target.value }))
+                      }
+                      className="h-8 min-w-0 flex-1 rounded-lg border border-white/10 bg-black/25 px-2 font-mono text-[10px] text-slate-200 outline-none focus:border-cyan-500/40"
+                    />
+                    <button
+                      type="button"
+                      data-provider-model-save={provider.id}
+                      onClick={() => void saveModel(provider.id)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-400 hover:text-cyan-300"
+                      aria-label="Save model"
+                    >
+                      <Save size={11} />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[9px] text-slate-500">Priority</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      data-provider-priority-input={provider.id}
+                      type="number"
+                      min={0}
+                      value={priorityDraft}
+                      onChange={(e) =>
+                        setPriorityDrafts((prev) => ({ ...prev, [provider.id]: e.target.value }))
+                      }
+                      className="h-8 min-w-0 flex-1 rounded-lg border border-white/10 bg-black/25 px-2 font-mono text-[10px] text-slate-200 outline-none focus:border-cyan-500/40"
+                    />
+                    <button
+                      type="button"
+                      data-provider-priority-save={provider.id}
+                      onClick={() => void savePriority(provider.id)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-400 hover:text-cyan-300"
+                      aria-label="Save priority"
+                    >
+                      <Save size={11} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  data-provider-health={provider.id}
+                  disabled={busy}
+                  onClick={() => void providerControlOrchestrator.checkHealth(provider.id)}
+                  className="pc-mini-btn disabled:opacity-50"
+                >
+                  <Activity size={10} />
+                  Health
+                </button>
+                <button
+                  type="button"
+                  data-provider-smoke={provider.id}
+                  disabled={busy}
+                  onClick={() => void providerControlOrchestrator.runSmoke(provider.id)}
+                  className="pc-mini-btn disabled:opacity-50"
+                >
+                  <Zap size={10} />
+                  Smoke
+                </button>
+                <button
+                  type="button"
+                  data-provider-model-refresh={provider.id}
+                  disabled={busy}
+                  onClick={() => void providerControlOrchestrator.refreshModels(provider.id)}
+                  className="pc-mini-btn disabled:opacity-50"
+                >
+                  <RefreshCw size={10} />
+                  Models
+                </button>
+              </div>
+
+              <div className="mt-2 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[9px] text-slate-500">Health:</span>
+                  <ProviderTestResult state={health} />
+                  <span className="text-[9px] text-slate-500">Smoke:</span>
+                  <ProviderTestResult state={smoke} />
+                </div>
+                {models.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {models.slice(0, 8).map((model) => (
+                      <button
+                        key={model.id}
+                        type="button"
+                        data-provider-model-option={model.id}
+                        onClick={() => {
+                          setModelDrafts((prev) => ({ ...prev, [provider.id]: model.id }));
+                          void providerControlOrchestrator.setProviderModel(provider.id, model.id);
+                        }}
+                        className={`rounded border px-1.5 py-0.5 text-[9px] ${
+                          provider.model === model.id
+                            ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                            : 'border-white/10 text-slate-500 hover:text-slate-300'
+                        }`}
+                      >
+                        {model.id}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Timeout s</span>
+                  <input
+                    data-provider-timeout={provider.id}
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={config.timeoutSecs}
+                    onChange={(e) =>
+                      setConfigDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...config, timeoutSecs: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 font-mono text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Retries</span>
+                  <input
+                    data-provider-retry={provider.id}
+                    type="number"
+                    min={0}
+                    max={5}
+                    value={config.retryCount}
+                    onChange={(e) =>
+                      setConfigDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...config, retryCount: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 font-mono text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Retry delay s</span>
+                  <input
+                    data-provider-retry-delay={provider.id}
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={config.retryDelaySecs}
+                    onChange={(e) =>
+                      setConfigDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...config, retryDelaySecs: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 font-mono text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <button
+                  type="button"
+                  data-provider-config-save={provider.id}
+                  onClick={() => void saveStreamConfig(provider.id)}
+                  className="sm:col-span-3 pc-mini-btn"
+                >
+                  <Save size={10} />
+                  Save stream config
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {providers.length === 0 && (
+          <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center text-[11px] text-slate-600">
+            No providers configured. Add one below.
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+        <div className="mb-2 text-[10px] font-semibold text-slate-300">Add provider</div>
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {PROVIDER_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              data-provider-preset={preset.id}
+              onClick={() => applyPreset(preset)}
+              className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 text-[9px] text-cyan-300 hover:bg-cyan-500/20"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            data-provider-name
+            value={draft.name}
+            onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
+            placeholder="Provider name"
+            className="pc-text-input"
+          />
+          <input
+            data-provider-url
+            value={draft.baseUrl}
+            onChange={(e) => setDraft((prev) => ({ ...prev, baseUrl: e.target.value }))}
+            placeholder="https://api.example.com/v1"
+            className="pc-text-input"
+          />
+          <input
+            data-provider-key
+            type="password"
+            value={draft.apiKey}
+            onChange={(e) => setDraft((prev) => ({ ...prev, apiKey: e.target.value }))}
+            placeholder="API key (optional for Ollama)"
+            className="pc-text-input"
+          />
+          <input
+            data-provider-model
+            value={draft.model}
+            onChange={(e) => setDraft((prev) => ({ ...prev, model: e.target.value }))}
+            placeholder="Model id"
+            className="pc-text-input"
+          />
+        </div>
+        <button
+          type="button"
+          data-provider-save
+          onClick={() => void addProvider()}
+          disabled={snapshot.busyProviderId !== null}
+          className="cool-btn-primary mt-2 flex h-8 items-center gap-1.5 rounded-lg px-3 text-[10px] font-semibold disabled:opacity-60"
+        >
+          <Plus size={12} />
+          Save and select
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 export default function PrismModals() {
   const modal = usePrismModals((s) => s.modal);
   const closeModal = usePrismModals((s) => s.closeModal);
@@ -485,5 +894,6 @@ export default function PrismModals() {
   if (modal.kind === 'shortcuts') return <ShortcutsModal />;
   if (modal.kind === 'cli') return <CliModal />;
   if (modal.kind === 'attach') return <AttachModal />;
+  if (modal.kind === 'provider') return <ProviderModal />;
   return null;
 }

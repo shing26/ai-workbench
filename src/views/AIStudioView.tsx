@@ -4,6 +4,9 @@ import * as db from '../lib/db';
 import { buildJourneyDoc, buildJourneyDocIndex, journeyDocFileName } from '../lib/journeyDoc';
 import { RoundtableOrchestrator, type RoundtableMessage } from '../lib/roundtable';
 import { toast } from '../lib/toast';
+import { useProviderControlSnapshot } from '../hooks/useProviderControl';
+import { providerControlOrchestrator } from '../lib/providerControl';
+import { usePrismModals } from '../components/modals/prismModalsStore';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
 
@@ -50,13 +53,14 @@ function seatTone(seat: db.AgentSpec | null): string {
 }
 
 export default function AIStudioView() {
-  const providers = useWorkbenchStore((s) => s.providers);
   const addThought = useWorkbenchStore((s) => s.addThought);
   const vibeContext = useWorkbenchStore((s) => s.vibeContext);
   const noteContext = useWorkbenchStore((s) => s.noteContext);
   const actionContext = useWorkbenchStore((s) => s.actionContext);
   const updateProjectJourney = useWorkbenchStore((s) => s.updateProjectJourney);
   const setProjects = useWorkbenchStore((s) => s.setProjects);
+  const openProvider = usePrismModals((s) => s.openProvider);
+  const providerControl = useProviderControlSnapshot();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -65,7 +69,6 @@ export default function AIStudioView() {
     },
   ]);
   const [input, setInput] = useViewState('ai-studio', 'input', '');
-  const [providerId, setProviderId] = useState('');
   const [prismSeats, setPrismSeats] = useState<db.AgentSpec[]>([]);
   const [selectedSeats, setSelectedSeats] = useState<Set<string>>(new Set());
   const [catalog, setCatalog] = useState<db.AgencyAgent[]>([]);
@@ -117,11 +120,7 @@ export default function AIStudioView() {
   const catalogRef = useRef<db.AgencyAgent[]>([]);
   const sessionIdRef = useRef<string | null>(null);
 
-  const activeProvider =
-    providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
-  const activeProviders = [...providers.filter((p) => p.isActive)].sort(
-    (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
-  );
+  const activeProvider = providerControl.selectedProvider;
 
   const selectedSeatList = useMemo(
     () => prismSeats.filter((s) => selectedSeats.has(s.id) && s.active),
@@ -277,8 +276,17 @@ export default function AIStudioView() {
       setStreamError('请至少勾选 2 位 Agent 席位');
       return;
     }
-    const providerBase = activeProvider?.id ?? '';
-    const providerIds = providerBase ? [providerBase] : activeProviders.map((p) => p.id);
+    if (!activeProvider) {
+      setBusy(false);
+      setStreamError('Please configure and select a Provider first');
+      return;
+    }
+    if (!activeProvider.model.trim()) {
+      setBusy(false);
+      setStreamError('Please set a model for the selected Provider');
+      return;
+    }
+    const providerIds = [activeProvider.id];
     const session = await ensureSession(text);
     let relatedJourneys: db.RagSearchResult[] = [];
     if (vibeContext) {
@@ -568,18 +576,30 @@ export default function AIStudioView() {
             </div>
 
             <select
-              value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
+              value={providerControl.selectedProviderId ?? ''}
+              onChange={(e) =>
+                void providerControlOrchestrator.selectProvider(e.target.value || null)
+              }
               aria-label="Provider"
               className="ml-auto h-8 rounded border border-white/10 bg-white/[0.04] px-2 font-mono text-[10px] text-slate-300 outline-none"
             >
               <option value="">默认活跃 Provider</option>
-              {providers.map((p) => (
+              {providerControl.providers.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
               ))}
             </select>
+
+            <button
+              type="button"
+              data-provider-open
+              aria-label="Provider Control"
+              onClick={openProvider}
+              className="pc-mini-btn"
+            >
+              Configure
+            </button>
 
             <button type="button" onClick={() => void newChat()} className="pc-mini-btn">
               <Plus size={12} />

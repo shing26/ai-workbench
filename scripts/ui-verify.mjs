@@ -221,8 +221,8 @@ async function main() {
   await click(`document.querySelector('button[aria-label="Projects"]')`);
   await waitFor(`document.querySelector('[data-project-add]') !== null`, 'project add');
   await evaluate(`(() => {
-    const name = document.querySelector('[data-project-name]');
-    const pathInput = document.querySelector('[data-project-path]');
+    const name = document.querySelector('input[data-project-name]');
+    const pathInput = document.querySelector('input[data-project-path]');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     if (name) {
       setter.call(name, 'Verify Project');
@@ -286,6 +286,16 @@ async function main() {
   await click(`document.querySelector('[data-agent-dropdown-toggle]')`);
   await waitFor(`document.querySelectorAll('[data-agent-seat]').length >= 2`, 'agent seats');
   await screenshot('studio-seats');
+  await click(`document.querySelector('[data-provider-open]')`);
+  await waitFor(`document.querySelector('[role="dialog"]') !== null`, 'provider modal');
+  for (const sel of ['[data-provider-save]', '[data-provider-health]', '[data-provider-smoke]']) {
+    const ok = await evaluate(`document.querySelector('${sel}') !== null`);
+    results.modals.push({ name: `provider-${sel}`, selectorOk: ok });
+    if (!ok) throw new Error(`missing provider selector ${sel}`);
+  }
+  await screenshot('provider-modal');
+  await evaluate(`document.querySelector('[role="dialog"] [aria-label="Close"]')?.click()`);
+  await delay(150);
 
   await click(`document.querySelector('button[aria-label="Actions"]')`);
   await waitFor(`document.querySelector('[data-task-fast-input]') !== null`, 'actions input');
@@ -359,9 +369,9 @@ export async function runUiVerify() {
         } catch { /* ignore */ }
         return {
           cards: document.querySelectorAll('[data-project-card]').length,
-          form: document.querySelector('[data-project-name]') !== null,
-          nameValue: document.querySelector('[data-project-name]')?.value ?? null,
-          pathValue: document.querySelector('[data-project-path]')?.value ?? null,
+          form: document.querySelector('input[data-project-name]') !== null,
+          nameValue: document.querySelector('input[data-project-name]')?.value ?? null,
+          pathValue: document.querySelector('input[data-project-path]')?.value ?? null,
           projects: projects.map((p) => ({ name: p.name, path: p.path, stage: p.journeyStage })),
           body: document.body.innerText.slice(0, 300),
         };

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
 import { usePrismModals } from '../components/modals/prismModalsStore';
 import { useDeliverySnapshot } from '../hooks/useDelivery';
+import { useProviderControlSnapshot } from '../hooks/useProviderControl';
 import { deliveryOrchestrator } from '../lib/delivery';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
@@ -26,6 +27,8 @@ export default function ActionsView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const openCli = usePrismModals((s) => s.openCli);
   const openAttach = usePrismModals((s) => s.openAttach);
+  const openProvider = usePrismModals((s) => s.openProvider);
+  const providerControl = useProviderControlSnapshot();
 
   const [title, setTitle] = useState('');
   const [todayOnly, setTodayOnly] = useState(false);
@@ -38,6 +41,8 @@ export default function ActionsView() {
   const delivery = useDeliverySnapshot();
   const { gateResult, gateRunning, gateError, fixRound: gateRound, recentRuns } = delivery;
   const recentCliRuns = recentRuns.filter((run) => run.exitCode !== null);
+  const recordedProfile = gateResult?.providerProfile;
+  const activeProfile = recordedProfile ?? providerControl.selectedProvider;
 
   const vibePath = vibeContext?.path ?? '';
   const activeProject = vibeContext
@@ -328,6 +333,27 @@ export default function ActionsView() {
                 {gateError}
               </div>
             )}
+
+            <div
+              data-provider-profile
+              className="mb-3 flex flex-wrap items-center gap-2 rounded border border-cyan-500/20 bg-cyan-500/[0.05] px-3 py-2"
+            >
+              <span className="text-[9px] text-slate-500">Provider Profile:</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-cyan-200">
+                {activeProfile
+                  ? `${activeProfile.name} / ${activeProfile.model || 'no model'} / ${activeProfile.baseUrl}`
+                  : 'not configured'}
+              </span>
+              <button
+                type="button"
+                data-provider-open
+                aria-label="Provider Control"
+                onClick={openProvider}
+                className="pc-mini-btn"
+              >
+                Configure
+              </button>
+            </div>
 
             <div className="pc-gate-list">
               {GATE_PRESETS.map((preset) => {
