@@ -231,11 +231,33 @@ async function main() {
   }
 
   const l4Meta = manifest.levels.find((level) => level.level === 4);
-  const { errors: l4Errors, durationMs: l4Duration } = await runSecurityScan();
+  const securityScan = await runSecurityScan();
+  const l4Errors = securityScan.errors;
+  let l4Duration = securityScan.durationMs;
+  const l4Checks = l4Meta?.checks ?? [];
+  for (const check of l4Checks) {
+    if (check.program === 'internal') continue;
+    if (check.requires && !requirementMet(check.requires)) continue;
+    const startedAt = Date.now();
+    const ok = await runCommand(
+      check.name,
+      4,
+      resolveCwd(check.cwd),
+      check.program,
+      check.args,
+      check.timeoutMs ?? 120000,
+    );
+    const checkResult = results.pop();
+    if (!ok) {
+      if (checkResult) l4Errors.push(...checkResult.errors);
+      l4Errors.push(`${check.name}: audit failed`);
+    }
+    l4Duration += Date.now() - startedAt;
+  }
   results.push({
     level: 4,
-    name: `${l4Meta?.name ?? 'AI DoD 语义对齐与安全审计'}（安全扫描 · AI audit 需在 app 内执行）`,
-    status: l4Errors.length ? 'FAILED' : 'SKIPPED',
+    name: `${l4Meta?.name ?? 'DoD 语义对齐与安全审计'}（安全扫描 + 语义对齐）`,
+    status: l4Errors.length ? 'FAILED' : 'GREEN',
     durationMs: l4Duration,
     errors: l4Errors,
   });

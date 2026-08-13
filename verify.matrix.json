@@ -86,7 +86,7 @@
     },
     {
       "level": 4,
-      "name": "AI DoD 语义对齐与安全审计",
+      "name": "DoD 语义对齐与安全审计",
       "checks": [
         {
           "name": "security scan",
@@ -94,10 +94,18 @@
           "args": [],
           "cwd": "root",
           "timeoutMs": 30000
+        },
+        {
+          "name": "semantic audit",
+          "program": "node",
+          "args": ["scripts/verify-l4-semantic.mjs", "--dod", "docs/journey/quality-gate.md"],
+          "cwd": "root",
+          "timeoutMs": 30000,
+          "requires": "pkg"
         }
       ],
       "aiAudit": {
-        "mode": "in-app"
+        "mode": "cli"
       }
     }
   ],

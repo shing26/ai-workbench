@@ -2,34 +2,12 @@ import { Check, ChevronDown, History, Plus, Save, Search, Send, Square } from 'l
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as db from '../lib/db';
 import { buildJourneyDoc, buildJourneyDocIndex, journeyDocFileName } from '../lib/journeyDoc';
+import { RoundtableOrchestrator, type RoundtableMessage } from '../lib/roundtable';
 import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
 
-type Message = { role: 'user' | 'assistant'; content: string; id?: string };
-type ApiMessage = { role: 'user' | 'assistant' | 'system'; content: string };
-
-function buildNoteSystemMessage(note: import('../stores/workbenchStore').NoteContext): string {
-  return (
-    `[知识笔记上下文] 当前挂载笔记：${note.title}\n` +
-    `标签: ${note.tags || '无'}\n` +
-    `类型: ${note.type}\n` +
-    `笔记正文:\n${note.content.slice(0, 6000)}` +
-    `\n请基于以上笔记内容执行用户的提问 / 扩展 / 重构指令，引用时注明来源笔记。`
-  );
-}
-
-function buildActionSystemMessage(
-  action: import('../stores/workbenchStore').ActionContext,
-): string {
-  return (
-    `[任务上下文] 当前挂载任务：${action.title}\n` +
-    `状态: ${action.status}\n` +
-    `截止: ${action.dueDate || '未设定'}\n` +
-    `今日焦点: ${action.isToday ? '是' : '否'}\n` +
-    `请帮我把该任务拆解为可执行的 Markdown 步骤清单，或给出解决方案 / 建议。`
-  );
-}
+type Message = RoundtableMessage;
 
 const SEAT_TONE: Record<string, string> = {
   cto: 'bg-cyan-950/40 border-cyan-500/30 text-cyan-300',
@@ -117,14 +95,27 @@ export default function AIStudioView() {
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
-  const runIdRef = useRef(0);
+  const orchestratorRef = useRef<RoundtableOrchestrator | null>(null);
+  if (!orchestratorRef.current) {
+    orchestratorRef.current = new RoundtableOrchestrator({
+      sendStream: async (args) => {
+        await db.sendAiMessageStream({
+          providerIds: args.providerIds,
+          messages: args.messages,
+          moa: args.moa ?? false,
+          runId: args.runId,
+        });
+      },
+      listenChunks: db.listenStreamChunks,
+      buildConsensus: (contents) => db.buildMoaConsensus(contents).catch(() => null),
+      saveMessage: (sessionId, role, content, id) =>
+        db.saveChatMessage(sessionId, role, content, id),
+    });
+    orchestratorRef.current.replaceMessages(messages);
+  }
+  const orchestrator = orchestratorRef.current;
   const catalogRef = useRef<db.AgencyAgent[]>([]);
   const sessionIdRef = useRef<string | null>(null);
-  const runsRef = useRef(new Map<string, { content: string; index: number }>());
-  const seatByIndexRef = useRef(new Map<number, db.AgentSpec>());
-  const roundtableRunIdsRef = useRef<string[]>([]);
-  const roundtableResultsRef = useRef(new Map<string, string>());
-  const pendingRoundtableRef = useRef(0);
 
   const activeProvider =
     providers.find((p) => p.id === providerId) ?? providers.find((p) => p.isActive);
@@ -151,6 +142,25 @@ export default function AIStudioView() {
           `${agent.name} ${agent.slug} ${agent.description}`.toLowerCase().includes(query)),
     );
   }, [catalog, divisionFilter, searchQuery]);
+
+  useEffect(() => {
+    let disposed = false;
+    void orchestrator.mount().catch(() => {});
+    const unsubscribe = orchestrator.subscribe((snapshot) => {
+      if (disposed) return;
+      setMessages(snapshot.messages);
+      setStreamStatus(snapshot.status);
+      setStreamError(snapshot.error);
+      setBusy(snapshot.busy);
+      setRoundtableOutputs(snapshot.outputs);
+      setLastConsensus(snapshot.consensus);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      orchestrator.dispose();
+    };
+  }, [orchestrator]);
 
   useEffect(() => {
     let disposed = false;
@@ -191,13 +201,13 @@ export default function AIStudioView() {
         void db.listChatMessages(first.id).then((stored) => {
           if (disposed) return;
           if (stored.length > 0) {
-            setMessages(
-              stored.map((m) => ({
-                id: m.id,
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-              })),
-            );
+            const storedMessages = stored.map((m) => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }));
+            setMessages(storedMessages);
+            orchestrator.replaceMessages(storedMessages);
           }
         });
       }
@@ -205,91 +215,7 @@ export default function AIStudioView() {
     return () => {
       disposed = true;
     };
-  }, [setActiveSessionId]);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten = () => {};
-    void db
-      .listenStreamChunks((chunk) => {
-        if (disposed) return;
-        const run = runsRef.current.get(chunk.id);
-        if (!run) return;
-        if (chunk.done) {
-          const isRoundtable =
-            pendingRoundtableRef.current > 0 && roundtableRunIdsRef.current.includes(chunk.id);
-          const finalContent = chunk.error
-            ? `请求失败: ${chunk.error}`
-            : chunk.cancelled && !run.content.endsWith('[stopped]')
-              ? `${run.content}${run.content ? ' ' : ''}[stopped]`
-              : run.content;
-          setMessages((prev) => {
-            const next = [...prev];
-            const idx = run.index;
-            if (idx < next.length && next[idx].role === 'assistant') {
-              next[idx] = { ...next[idx], content: finalContent };
-            }
-            return next;
-          });
-          if (isRoundtable && !chunk.error && !chunk.cancelled) {
-            roundtableResultsRef.current.set(chunk.id, run.content);
-          }
-          if (sessionIdRef.current && (run.content || chunk.error || chunk.cancelled)) {
-            void db
-              .saveChatMessage(sessionIdRef.current, 'assistant', finalContent)
-              .then((saved) => {
-                setMessages((prev) => {
-                  const next = [...prev];
-                  if (run.index < next.length && next[run.index].role === 'assistant') {
-                    next[run.index] = { ...next[run.index], id: saved.id };
-                  }
-                  return next;
-                });
-              });
-          }
-          runsRef.current.delete(chunk.id);
-          if (isRoundtable) {
-            pendingRoundtableRef.current -= 1;
-            if (pendingRoundtableRef.current > 0) {
-              setStreamStatus('streaming');
-              return;
-            }
-            roundtableRunIdsRef.current = [];
-            setStreamStatus('idle');
-            setStreamError(null);
-            setBusy(false);
-            return;
-          }
-          if (chunk.error) {
-            setStreamStatus('error');
-            setStreamError(chunk.error);
-          } else {
-            setStreamStatus('idle');
-            setStreamError(null);
-          }
-          setBusy(false);
-          return;
-        }
-        setStreamStatus('streaming');
-        run.content += chunk.delta;
-        setMessages((prev) => {
-          const next = [...prev];
-          const idx = run.index;
-          if (idx < next.length && next[idx].role === 'assistant') {
-            next[idx] = { ...next[idx], content: run.content };
-          }
-          return next;
-        });
-      })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      unlisten();
-    };
-  }, []);
+  }, [orchestrator, setActiveSessionId]);
 
   const ensureSession = async (titleHint: string) => {
     if (sessionIdRef.current) {
@@ -316,17 +242,18 @@ export default function AIStudioView() {
       setRoundtableOutputs([]);
       setLastConsensus(null);
       const stored = await db.listChatMessages(session.id);
-      setMessages(
+      const storedMessages: Message[] =
         stored.length > 0
           ? stored.map((m) => ({
               id: m.id,
               role: m.role as 'user' | 'assistant',
               content: m.content,
             }))
-          : [{ role: 'assistant', content: '空的对话，输入问题开始论证。' }],
-      );
+          : [{ role: 'assistant' as const, content: '空的对话，输入问题开始论证。' }];
+      setMessages(storedMessages);
+      orchestrator.replaceMessages(storedMessages);
     },
-    [setActiveSessionId],
+    [orchestrator, setActiveSessionId],
   );
 
   const newChat = async () => {
@@ -334,7 +261,11 @@ export default function AIStudioView() {
     sessionIdRef.current = session.id;
     setActiveSessionId(session.id);
     setSessions(await db.listSessions());
-    setMessages([{ role: 'assistant', content: 'Ready. 勾选圆桌席位后开始新论证。' }]);
+    const initialMessages: Message[] = [
+      { role: 'assistant' as const, content: 'Ready. 勾选圆桌席位后开始新论证。' },
+    ];
+    setMessages(initialMessages);
+    orchestrator.replaceMessages(initialMessages);
     setRoundtableOutputs([]);
     setLastConsensus(null);
   };
@@ -346,109 +277,32 @@ export default function AIStudioView() {
       setStreamError('请至少勾选 2 位 Agent 席位');
       return;
     }
-    const runId = `prism-${++runIdRef.current}`;
-    const messageId =
-      crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const userMessage: Message = { id: messageId, role: 'user', content: text };
-    const placeholders: Message[] = seats.map(() => ({ role: 'assistant', content: '__stream__' }));
-    const next: Message[] = [...messages, userMessage, ...placeholders];
-    seatByIndexRef.current.clear();
-    seats.forEach((seat, index) => {
-      seatByIndexRef.current.set(messages.length + 1 + index, seat);
-    });
-    setMessages(next);
-    setStreamStatus('connecting');
-    setStreamError(null);
-    setInput('');
-    const session = await ensureSession(text);
-    await db.saveChatMessage(session.id, 'user', text, messageId);
-    const history: Message[] = next.slice(0, next.length - seats.length);
     const providerBase = activeProvider?.id ?? '';
-    pendingRoundtableRef.current = seats.length;
-    roundtableRunIdsRef.current = [];
+    const providerIds = providerBase ? [providerBase] : activeProviders.map((p) => p.id);
+    const session = await ensureSession(text);
     let relatedJourneys: db.RagSearchResult[] = [];
     if (vibeContext) {
       relatedJourneys = await db
         .searchThoughts(`${vibeContext.projectName} 旅程 归档`, 4)
         .catch(() => []);
     }
-    const seatRuns = seats.map((seat, index) => {
-      const subRunId = `${runId}-s${index}`;
-      roundtableRunIdsRef.current.push(subRunId);
-      const providerIds = providerBase ? [providerBase] : activeProviders.map((p) => p.id);
-      const apiMessages: ApiMessage[] = history.filter((m) => m.content !== '__stream__');
-      if (vibeContext) {
-        apiMessages.unshift({
-          role: 'system',
-          content:
-            `[Vibe Coding 上下文] 当前挂载项目：${vibeContext.projectName}\n` +
-            `Path: ${vibeContext.path}\nBranch: ${vibeContext.branch}\n` +
-            `当前变更文件:\n${vibeContext.changes.map((c) => `- ${c}`).join('\n') || '- 无'}`,
-        });
-      }
-      if (noteContext) {
-        apiMessages.unshift({ role: 'system', content: buildNoteSystemMessage(noteContext) });
-      }
-      if (actionContext) {
-        apiMessages.unshift({ role: 'system', content: buildActionSystemMessage(actionContext) });
-      }
-      if (relatedJourneys.length > 0) {
-        apiMessages.unshift({
-          role: 'system',
-          content:
-            `[相关旅程档案] 以下是与当前项目相关的历史旅程/归档记录，供论证参考：\n` +
-            relatedJourneys.map((h) => `- ${h.content.slice(0, 400)}`).join('\n'),
-        });
-      }
-      apiMessages.unshift({ role: 'system', content: seat.prompt.trim() });
-      if (hits.length > 0) {
-        apiMessages.unshift({
-          role: 'system',
-          content: `Knowledge context:\n${hits.map((h) => `- ${h.content}`).join('\n')}`,
-        });
-      }
-      runsRef.current.set(subRunId, { content: '', index: history.length + index });
-      return db.sendAiMessageStream({
-        providerIds,
-        messages: apiMessages,
-        moa: false,
-        runId: subRunId,
-      });
+    const result = await orchestrator.start({
+      text,
+      seats,
+      providerIds,
+      sessionId: session.id,
+      vibe: vibeContext,
+      note: noteContext,
+      action: actionContext,
+      relatedJourneys,
+      hits,
+      onStageDiscussing: vibeContext
+        ? () => updateProjectJourney(vibeContext.projectId, 'discussing').catch(() => {})
+        : undefined,
     });
-    await Promise.all(seatRuns.map((p) => p.catch(() => {})));
-    const outputs = roundtableRunIdsRef.current.map(
-      (id) => roundtableResultsRef.current.get(id) ?? '',
-    );
-    const outputsFull = seats.map((s, i) => ({ seat: s, opinion: outputs[i] ?? '' }));
-    setRoundtableOutputs(outputsFull);
-    if (vibeContext) {
-      await updateProjectJourney(vibeContext.projectId, 'discussing').catch(() => {});
+    if (result.ok) {
+      setInput('');
     }
-    const consensus = await db
-      .buildMoaConsensus(outputsFull.map((o) => o.opinion))
-      .catch(() => null);
-    setLastConsensus(consensus);
-    const consensusNote = [
-      '## 🧠 Agency 圆桌共识（第二轮汇总）',
-      '',
-      `**议题**：${text}`,
-      '',
-      consensus?.summary
-        ? `**共识摘要**：\n${consensus.summary.trim()}`
-        : '**共识摘要**：各 Agent 已独立发言，等待 CPO 确认定稿。',
-      '',
-      ...outputsFull.map(
-        (o) =>
-          `### ${o.seat.name}（${o.seat.role}）\n${o.opinion.trim().slice(0, 400) || '（无输出）'}`,
-      ),
-      '',
-      '_点击上方「固化为旅程文档」将本次论证落盘为旅程文档。_',
-    ].join('\n');
-    setMessages((prev) => [...prev, { role: 'assistant', content: consensusNote }]);
-    if (session) {
-      await db.saveChatMessage(session.id, 'assistant', consensusNote).catch(() => {});
-    }
-    setBusy(false);
   };
 
   const sendText = async () => {
@@ -736,7 +590,7 @@ export default function AIStudioView() {
           <div className="pc-messages" data-chat-messages>
             {messages.map((message, idx) => {
               if (message.content === '__stream__') {
-                const seat = seatByIndexRef.current.get(idx) ?? null;
+                const seat = orchestrator.seatForMessageIndex(idx);
                 return (
                   <div key={`stream-${idx}`} className="flex items-start gap-2.5">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-xs">

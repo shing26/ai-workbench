@@ -2,6 +2,117 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct SemanticAuditResult {
+    pub status: String,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub evidence: SemanticAuditEvidence,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticAuditEvidence {
+    pub checked_tasks: usize,
+    pub pending_tasks: usize,
+    pub code_files: usize,
+    pub doc_files: usize,
+    pub other_files: usize,
+    pub archived: bool,
+}
+
+fn is_code_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    [
+        ".ts", ".tsx", ".js", ".jsx", ".rs", ".py", ".go", ".java", ".kt", ".swift", ".c", ".h",
+        ".cpp", ".cs", ".rb", ".php",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
+}
+
+fn is_doc_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".rst")
+}
+
+fn parse_do_tasks(dod: &str) -> (usize, usize, bool) {
+    let mut checked = 0;
+    let mut pending = 0;
+    let mut archived = false;
+    for line in dod.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("- [x]") {
+            checked += 1;
+        } else if lower.starts_with("- [ ]") {
+            pending += 1;
+        } else if lower.contains("journeystage: archived") {
+            archived = true;
+        }
+    }
+    (checked, pending, archived)
+}
+
+pub fn run_semantic_audit(dod: Option<&str>, files: &[(String, usize)]) -> SemanticAuditResult {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut code_files = 0usize;
+    let mut doc_files = 0usize;
+    let mut other_files = 0usize;
+    for (path, _) in files {
+        if is_code_file(path) {
+            code_files += 1;
+        } else if is_doc_file(path) {
+            doc_files += 1;
+        } else {
+            other_files += 1;
+        }
+    }
+
+    let mut checked_tasks = 0;
+    let mut pending_tasks = 0;
+    let mut archived = false;
+    if let Some(dod) = dod {
+        (checked_tasks, pending_tasks, archived) = parse_do_tasks(dod);
+    }
+
+    let evidence = SemanticAuditEvidence {
+        checked_tasks,
+        pending_tasks,
+        code_files,
+        doc_files,
+        other_files,
+        archived,
+    };
+
+    let status = if files.is_empty() {
+        "NO_CHANGES".to_string()
+    } else if dod.is_none() {
+        errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string());
+        "FAIL".to_string()
+    } else if code_files == 0 && pending_tasks > 0 && !archived {
+        errors.push(format!(
+            "DoD 仍有 {} 项待办任务，但变更未包含代码实现",
+            pending_tasks
+        ));
+        "FAIL".to_string()
+    } else {
+        if code_files == 0 && pending_tasks == 0 {
+            warnings.push("变更未包含代码文件，且 DoD 无待办任务".to_string());
+        }
+        "PASS".to_string()
+    };
+
+    SemanticAuditResult {
+        status,
+        errors,
+        warnings,
+        evidence,
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct MatrixManifest {
     pub version: u32,
     pub fail_fast: String,
@@ -156,6 +267,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn semantic_audit_accepts_no_changes_without_dod() {
+        let result = run_semantic_audit(None, &[]);
+        assert_eq!(result.status, "NO_CHANGES");
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn semantic_audit_requires_dod_when_changes_exist() {
+        let result = run_semantic_audit(None, &[("src/lib/app.ts".to_string(), 10)]);
+        assert_eq!(result.status, "FAIL");
+        assert!(result.errors.iter().any(|error| error.contains("DoD")));
+    }
+
+    #[test]
+    fn semantic_audit_blocks_doc_only_changes_with_pending_tasks() {
+        let dod =
+            "---\njourneyStage: ready\n---\n\n## 交付任务清单\n- [ ] 实现认证\n- [x] 完成调研\n";
+        let result = run_semantic_audit(Some(dod), &[("docs/journey/topic.md".to_string(), 4)]);
+        assert_eq!(result.status, "FAIL");
+        assert!(result.evidence.pending_tasks == 1);
+        assert!(result.evidence.checked_tasks == 1);
+        assert!(!result.evidence.archived);
+    }
+
+    #[test]
+    fn semantic_audit_blocks_non_code_changes_with_pending_tasks() {
+        let dod = "## tasks\n- [ ] update config\n";
+        let result = run_semantic_audit(Some(dod), &[("verify.matrix.json".to_string(), 8)]);
+        assert_eq!(result.status, "FAIL");
+        assert!(result.evidence.other_files == 1);
+        assert!(result.evidence.code_files == 0);
+        assert!(result.errors.iter().any(|error| error.contains("DoD")));
+    }
+
+    #[test]
+    fn semantic_audit_passes_code_changes_with_pending_tasks() {
+        let dod = "## 交付任务清单\n- [ ] 实现认证\n";
+        let result = run_semantic_audit(
+            Some(dod),
+            &[
+                ("src/lib/auth.ts".to_string(), 12),
+                ("docs/journey/topic.md".to_string(), 2),
+            ],
+        );
+        assert_eq!(result.status, "PASS");
+        assert!(result.errors.is_empty());
+        assert_eq!(result.evidence.code_files, 1);
+        assert_eq!(result.evidence.doc_files, 1);
+    }
+
+    #[test]
+    fn semantic_audit_ignores_pending_tasks_for_archived_journeys() {
+        let dod = "---\njourneyStage: archived\n---\n\n## 交付任务清单\n- [ ] 剩余记录\n";
+        let result = run_semantic_audit(Some(dod), &[("docs/archive.md".to_string(), 5)]);
+        assert_eq!(result.status, "PASS");
+        assert!(result.evidence.archived);
+    }
+
+    #[test]
     fn manifest_parses_with_full_shape() {
         let manifest = load_manifest().expect("verify.matrix.json must parse");
         assert_eq!(manifest.version, 1);
@@ -182,8 +352,12 @@ mod tests {
                 .ai_audit
                 .as_ref()
                 .map(|audit| audit.mode.as_str()),
-            Some("in-app")
+            Some("cli")
         );
+        assert!(manifest.levels[3]
+            .checks
+            .iter()
+            .any(|check| check.name == "semantic audit"));
         assert!(!manifest.security_rules.secrets.is_empty());
         assert!(manifest
             .security_rules

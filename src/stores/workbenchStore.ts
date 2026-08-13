@@ -57,14 +57,11 @@ type WorkbenchState = {
   noteContext: NoteContext | null;
   actionContext: ActionContext | null;
   eventLogs: { id: string; type: string; message: string; timestamp: string }[];
-  qualityGate: { status: string; errors: string[]; projectPath: string } | null;
   init: () => Promise<void>;
   restoreWorkspace: () => Promise<boolean>;
   addEventLog: (type: string, message: string) => void;
   refreshMountedGitStatus: () => Promise<void>;
   refreshTasks: () => Promise<void>;
-  refreshQualityGate: () => Promise<void>;
-  clearQualityGate: () => void;
   addTask: (
     title: string,
     isToday: boolean,
@@ -138,7 +135,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   noteContext: null,
   actionContext: null,
   eventLogs: [],
-  qualityGate: null,
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
@@ -359,14 +355,4 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   refreshTasks: async () => {
     set({ tasks: await db.listTasks() });
   },
-  refreshQualityGate: async () => {
-    const vibe = get().vibeContext;
-    if (!vibe || !vibe.path) {
-      set({ qualityGate: null });
-      return;
-    }
-    const result = await db.runQualityGate(vibe.path);
-    set({ qualityGate: { ...result, projectPath: vibe.path } });
-  },
-  clearQualityGate: () => set({ qualityGate: null }),
 }));

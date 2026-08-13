@@ -2,6 +2,8 @@ import { Check, FolderKanban, Plus, RotateCcw, Sparkles, Terminal, Trash2 } from
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as db from '../lib/db';
 import { usePrismModals } from '../components/modals/prismModalsStore';
+import { useDeliverySnapshot } from '../hooks/useDelivery';
+import { deliveryOrchestrator } from '../lib/delivery';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
 const GATE_PRESETS: { level: number; name: string }[] = [
@@ -33,13 +35,9 @@ export default function ActionsView() {
   const fastInputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<db.Task[]>([]);
   const [focusedTaskIndex, setFocusedTaskIndex] = useState(-1);
-  const [recentRuns, setRecentRuns] = useState<db.CliRunRecord[]>(() =>
-    db.listCliRuns().slice(-6).reverse(),
-  );
-  const [gateResult, setGateResult] = useState<db.QualityGateResult | null>(null);
-  const [gateRunning, setGateRunning] = useState(false);
-  const [gateRound, setGateRound] = useState(0);
-  const [gateError, setGateError] = useState<string | null>(null);
+  const delivery = useDeliverySnapshot();
+  const { gateResult, gateRunning, gateError, fixRound: gateRound, recentRuns } = delivery;
+  const recentCliRuns = recentRuns.filter((run) => run.exitCode !== null);
 
   const vibePath = vibeContext?.path ?? '';
   const activeProject = vibeContext
@@ -64,48 +62,21 @@ export default function ActionsView() {
   const list = todayOnly ? tasks.filter((t) => t.isToday) : tasks;
   listRef.current = list;
 
-  const runGate = useCallback(async () => {
-    if (gateRunning) return;
-    setGateRunning(true);
-    setGateError(null);
-    try {
-      const result = await db.runQualityGate(vibePath, specPath || null);
-      setGateResult(result);
-    } catch (err) {
-      setGateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGateRunning(false);
-    }
-  }, [gateRunning, vibePath, specPath]);
+  const runGate = useCallback(() => {
+    void deliveryOrchestrator.runGate(vibePath, specPath || null);
+  }, [vibePath, specPath]);
 
   const dispatchFix = useCallback(() => {
-    if (!gateResult || gateResult.status === 'GREEN' || gateRound >= 2) return;
-    const fixPrompt = [
-      `验证未通过（第 ${gateRound + 1} 轮修复），错误日志如下：`,
-      '',
-      gateResult.errors.join('\n'),
-      '',
-      specPath
-        ? `请读取 ${specPath}，并修复上述问题。`
-        : '请先读取项目现有旅程文档，再修复上述问题。',
-    ].join('\n');
-    openCli({
+    if (!delivery.gateResult || delivery.gateResult.status === 'GREEN' || delivery.fixRound >= 2) {
+      return;
+    }
+    void deliveryOrchestrator.startFix({
+      projectPath: vibePath,
       projectName: vibeContext?.projectName ?? 'Prism Station',
       specPath: specPath || undefined,
-      prompt: fixPrompt,
       tasks: list.slice(0, 3).map((task) => task.title),
     });
-    setGateRound((round) => round + 1);
-  }, [gateResult, gateRound, openCli, vibeContext, specPath, list]);
-
-  useEffect(() => {
-    const refresh = () => {
-      setRecentRuns(db.listCliRuns().slice(-6).reverse());
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 8000);
-    return () => window.clearInterval(timer);
-  }, []);
+  }, [delivery.gateResult, delivery.fixRound, vibeContext, specPath, list, vibePath]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -421,7 +392,7 @@ export default function ActionsView() {
                       ✘ {err}
                     </div>
                   ))
-                : recentRuns.slice(0, 3).map((run) => (
+                : recentCliRuns.slice(0, 3).map((run) => (
                     <div key={run.runId} data-cli-run-row data-exit={run.exitCode}>
                       <span
                         style={{
@@ -433,7 +404,7 @@ export default function ActionsView() {
                       {run.command}
                     </div>
                   ))}
-              {!gateResult && recentRuns.length === 0 && (
+              {!gateResult && recentCliRuns.length === 0 && (
                 <span style={{ color: 'var(--color-text-muted)' }}>— 等待派发 / 验证 —</span>
               )}
             </div>

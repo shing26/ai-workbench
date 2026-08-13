@@ -7,6 +7,7 @@ import ViewRouter from './components/ViewRouter';
 import { useTauriEvents } from './hooks/useTauriEvents';
 import { useActiveThrottle } from './hooks/useActiveThrottle';
 import * as db from './lib/db';
+import { deliveryOrchestrator } from './lib/delivery';
 import { useThemeStore } from './stores/themeStore';
 import { useWorkbenchStore } from './stores/workbenchStore';
 
@@ -18,6 +19,11 @@ export default function App() {
   const reportError = useWorkbenchStore((s) => s.reportError);
 
   useTauriEvents();
+
+  useEffect(() => {
+    void deliveryOrchestrator.mount();
+    return () => deliveryOrchestrator.dispose();
+  }, []);
 
   useEffect(() => {
     void restoreWorkspace().then((ok) => {

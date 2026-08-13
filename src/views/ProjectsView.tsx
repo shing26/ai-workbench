@@ -93,7 +93,7 @@ export default function ProjectsView() {
   const archiveProject = async (project: db.Project) => {
     const doneTasks = doneTasksFor(project.id);
     const pending = pendingTasksFor(project.id);
-    const runs = db.listCliRuns();
+    const runs = await db.listDeliveryRuns();
     const successRuns = runs.filter((r) => r.exitCode === 0).length;
     const record = buildArchiveRecord({
       projectName: project.name,
