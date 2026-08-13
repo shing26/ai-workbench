@@ -266,8 +266,9 @@ function CliModal() {
       command,
       args: [prompt],
       prompt,
+      isFix: payload?.isFix === true,
     });
-  }, [vibePath, command, prompt]);
+  }, [vibePath, command, prompt, payload?.isFix]);
 
   return (
     <ModalShell title="本地 CLI 派发" onClose={closeModal}>

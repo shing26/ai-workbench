@@ -11,12 +11,14 @@ import { usePrismModals } from '../components/modals/prismModalsStore';
 export const MAX_FIX_ROUNDS = 2;
 export const MAX_DELIVERY_RUNS = DELIVERY_RUN_LIMIT;
 
+export type DeliveryCliLog = Omit<CliLogLine, 'runId'> & { runId: string | null };
+
 export type DeliveryCliSnapshot = {
   runId: string | null;
   deliveryRunId: string | null;
   command: string;
   commandText: string;
-  logs: CliLogLine[];
+  logs: DeliveryCliLog[];
   running: boolean;
   exitCode: number | null;
   projectPath: string;
@@ -32,11 +34,6 @@ export type DeliverySnapshot = {
   activeCli: DeliveryCliSnapshot | null;
 };
 
-export type DeliveryGateInput = {
-  projectPath: string;
-  dodPath?: string | null;
-};
-
 export type DeliveryFixInput = {
   projectPath: string;
   projectName: string;
@@ -49,6 +46,7 @@ export type DeliveryCliInput = {
   command: string;
   args: string[];
   prompt: string;
+  isFix?: boolean;
 };
 
 export type DeliveryFixStartResult =
@@ -61,6 +59,7 @@ export type DeliveryOpenCliPayload = {
   specPath?: string | null;
   prompt: string;
   tasks: string[];
+  isFix?: boolean;
 };
 
 export type DeliveryAdapters = {
@@ -137,7 +136,6 @@ export class DeliveryOrchestrator {
   };
   private currentRun: DeliveryRun | null = null;
   private currentRunId: string | null = null;
-  private awaitingCliFix = false;
   private unlistenLog: (() => void) | null = null;
   private unlistenExit: (() => void) | null = null;
   private mountPromise: Promise<void> | null = null;
@@ -211,7 +209,6 @@ export class DeliveryOrchestrator {
     dodPath: string | null,
   ): Promise<QualityGateResult | null> {
     if (this.state.gateRunning) return this.state.gateResult;
-    this.awaitingCliFix = false;
     this.patch({ gateRunning: true, gateError: null });
     try {
       const result = await this.adapters.runQualityGate(projectPath, dodPath);
@@ -286,7 +283,6 @@ export class DeliveryOrchestrator {
     this.currentRun = run;
     this.currentRunId = run.runId;
     await this.persistRun(run, true);
-    this.awaitingCliFix = true;
 
     const prompt = buildFixPrompt(gateResult, input.specPath, nextRound);
     this.patch({ fixRound: nextRound, gateError: null });
@@ -295,6 +291,7 @@ export class DeliveryOrchestrator {
       specPath: input.specPath ?? null,
       prompt,
       tasks: input.tasks,
+      isFix: true,
     });
     return { ok: true, prompt, fixRound: nextRound };
   }
@@ -306,10 +303,9 @@ export class DeliveryOrchestrator {
 
     const now = Date.now();
     const isFix =
-      this.awaitingCliFix &&
+      input.isFix === true &&
       this.currentRun !== null &&
       this.currentRun.projectPath === input.projectPath;
-    this.awaitingCliFix = false;
     const run: DeliveryRun =
       isFix && this.currentRun
         ? { ...this.currentRun, command: input.command, exitCode: null, finishedAt: null }
@@ -328,60 +324,69 @@ export class DeliveryOrchestrator {
       this.currentRunId = run.runId;
     }
 
+    const commandText = `${input.command} "${input.prompt}"`;
+    this.patch({
+      activeCli: {
+        runId: null,
+        deliveryRunId: run.runId,
+        command: input.command,
+        commandText,
+        logs: [{ runId: null, line: `$ ${commandText}`, stream: 'stdout' }],
+        running: true,
+        exitCode: null,
+        projectPath: input.projectPath,
+      },
+    });
+    await this.persistRun(run, isFix);
+
     try {
       const result = await this.adapters.spawnCliProcess(
         input.projectPath,
         input.command,
         input.args,
       );
-      const commandText = `${input.command} "${input.prompt}"`;
-      const activeCli: DeliveryCliSnapshot = {
-        runId: result.runId,
-        deliveryRunId: run.runId,
-        command: input.command,
-        commandText,
-        logs: [{ runId: result.runId, line: `$ ${commandText}`, stream: 'stdout' }],
-        running: true,
-        exitCode: null,
-        projectPath: input.projectPath,
-      };
-      this.patch({ activeCli });
-      await this.persistRun(run, isFix);
+      const current = this.state.activeCli;
+      if (current && current.deliveryRunId === run.runId && current.runId === null) {
+        this.patch({ activeCli: { ...current, runId: result.runId } });
+      }
       return { ok: true, runId: result.runId };
     } catch (err) {
       const message = errorMessage(err);
-      const commandText = `${input.command} "${input.prompt}"`;
-      const activeCli: DeliveryCliSnapshot = {
-        runId: null,
-        deliveryRunId: run.runId,
-        command: input.command,
-        commandText,
-        logs: [{ runId: 'err', line: message, stream: 'stderr' }],
-        running: false,
-        exitCode: null,
-        projectPath: input.projectPath,
-      };
-      this.patch({ activeCli });
+      const current = this.state.activeCli;
+      this.patch({
+        activeCli: {
+          runId: null,
+          deliveryRunId: run.runId,
+          command: input.command,
+          commandText,
+          logs: [...(current?.logs ?? []), { runId: null, line: message, stream: 'stderr' }],
+          running: false,
+          exitCode: null,
+          projectPath: input.projectPath,
+        },
+      });
       return { ok: false, error: message };
     }
   }
 
   private handleLog(line: CliLogLine): void {
     const active = this.state.activeCli;
-    if (!active || active.runId !== line.runId) return;
-    this.patch({ activeCli: { ...active, logs: [...active.logs, line] } });
+    if (!active || (active.runId !== null && active.runId !== line.runId)) return;
+    const bound = active.runId === null ? { ...active, runId: line.runId } : active;
+    this.patch({ activeCli: { ...bound, logs: [...bound.logs, line] } });
   }
 
   private async handleExit(evt: CliExited): Promise<void> {
     const active = this.state.activeCli;
-    if (!active || active.runId !== evt.runId) return;
+    if (!active || (active.runId !== null && active.runId !== evt.runId)) return;
+    const bound = active.runId === null ? { ...active, runId: evt.runId } : active;
     const finishedAt = Date.now();
-    this.patch({ activeCli: { ...active, running: false, exitCode: evt.exitCode } });
-    const existing = this.state.runs.find((run) => run.runId === active.deliveryRunId);
+    this.patch({ activeCli: { ...bound, running: false, exitCode: evt.exitCode } });
+    const existing = this.state.runs.find((run) => run.runId === bound.deliveryRunId);
     if (existing) {
       const run: DeliveryRun = {
         ...existing,
-        command: active.command,
+        command: bound.command,
         exitCode: evt.exitCode,
         finishedAt,
       };

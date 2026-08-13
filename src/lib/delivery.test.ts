@@ -34,6 +34,7 @@ function createHarness(
   options: {
     initialRuns?: DeliveryRun[];
     gateResult?: QualityGateResult;
+    spawnCliProcess?: DeliveryAdapters['spawnCliProcess'];
   } = {},
 ) {
   let logHandler: ((line: CliLogLine) => void) | null = null;
@@ -49,6 +50,8 @@ function createHarness(
   const snapshots: DeliverySnapshot[] = [];
   let cliCounter = 0;
   let currentGateResult = options.gateResult ?? gateResult('GREEN');
+  const spawnCliProcess =
+    options.spawnCliProcess ?? (async () => ({ runId: `cli-${++cliCounter}` }));
 
   const adapters: DeliveryAdapters = {
     listRuns: async () => [...runs].sort((a, b) => b.startedAt - a.startedAt),
@@ -62,7 +65,7 @@ function createHarness(
       return run;
     },
     runQualityGate: async () => currentGateResult,
-    spawnCliProcess: async () => ({ runId: `cli-${++cliCounter}` }),
+    spawnCliProcess,
     listenCliLog: async (handler) => {
       logHandler = handler;
       return () => {
@@ -160,6 +163,7 @@ describe('DeliveryOrchestrator', () => {
       command: 'claude',
       args: ['-p', 'fix'],
       prompt: 'Fix failing gate',
+      isFix: true,
     });
     expect(cli.ok).toBe(true);
     if (!cli.ok) return;
@@ -208,6 +212,95 @@ describe('DeliveryOrchestrator', () => {
       exitCode: 2,
       fixRound: 0,
       gateResult: null,
+    });
+  });
+
+  it('keeps a manual CLI dispatch independent after a fix modal is opened', async () => {
+    const harness = createHarness({ gateResult: gateResult('FAILED', ['gate failed']) });
+    await harness.orchestrator.mount();
+
+    await harness.orchestrator.runGate('/project');
+    const fix = await harness.orchestrator.startFix({
+      projectPath: '/project',
+      projectName: 'Project',
+      tasks: ['Fix'],
+    });
+    expect(fix.ok).toBe(true);
+
+    const cli = await harness.orchestrator.startCli({
+      projectPath: '/project',
+      command: 'codex',
+      args: ['do'],
+      prompt: 'Manual task',
+      isFix: false,
+    });
+    expect(cli.ok).toBe(true);
+    if (!cli.ok) return;
+
+    harness.emitExit({ runId: cli.runId, exitCode: 2 });
+
+    expect(harness.persisted).toHaveLength(2);
+    const manualRun = harness.persisted.find((run) => run.command === 'codex');
+    expect(manualRun).toMatchObject({
+      projectPath: '/project',
+      command: 'codex',
+      exitCode: 2,
+      fixRound: 0,
+      gateResult: null,
+    });
+    expect(harness.orchestrator.getSnapshot().gateResult?.status).toBe('FAILED');
+  });
+
+  it('persists a fast CLI exit that arrives before spawn resolves', async () => {
+    let markSpawnStarted: () => void = () => {};
+    let resolveSpawn: (value: { runId: string }) => void = () => {};
+    const spawnStarted = new Promise<void>((resolve) => {
+      markSpawnStarted = resolve;
+    });
+    const spawnResult = new Promise<{ runId: string }>((resolve) => {
+      resolveSpawn = resolve;
+    });
+    const harness = createHarness({
+      gateResult: gateResult('FAILED', ['gate failed']),
+      spawnCliProcess: async () => {
+        markSpawnStarted();
+        return spawnResult;
+      },
+    });
+    await harness.orchestrator.mount();
+
+    await harness.orchestrator.runGate('/project');
+    const fix = await harness.orchestrator.startFix({
+      projectPath: '/project',
+      projectName: 'Project',
+      tasks: ['Fix'],
+    });
+    expect(fix.ok).toBe(true);
+
+    const cliPromise = harness.orchestrator.startCli({
+      projectPath: '/project',
+      command: 'claude',
+      args: ['-p', 'fix'],
+      prompt: 'Fix failing gate',
+      isFix: true,
+    });
+    await spawnStarted;
+    harness.emitExit({ runId: 'cli-fast', exitCode: 7 });
+    resolveSpawn({ runId: 'cli-fast' });
+    const cli = await cliPromise;
+    expect(cli.ok).toBe(true);
+    if (!cli.ok) return;
+
+    const snapshot = harness.orchestrator.getSnapshot();
+    expect(snapshot.activeCli).toMatchObject({
+      runId: 'cli-fast',
+      running: false,
+      exitCode: 7,
+    });
+    expect(harness.persisted[0]).toMatchObject({
+      command: 'claude',
+      exitCode: 7,
+      fixRound: 1,
     });
   });
 

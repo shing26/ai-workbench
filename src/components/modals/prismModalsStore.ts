@@ -9,6 +9,7 @@ export type CliModalPayload = {
   prompt?: string;
   tasks?: string[];
   taskId?: string;
+  isFix?: boolean;
 };
 
 export type AttachModalPayload = {
