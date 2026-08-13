@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url TEXT NOT NULL,
     api_key TEXT,
     model TEXT DEFAULT '',
+    provider_type TEXT NOT NULL DEFAULT 'openai-compatible',
     priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER DEFAULT 1,
     api_key_encrypted INTEGER NOT NULL DEFAULT 0,
@@ -685,6 +686,7 @@ pub struct Provider {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    pub provider_type: String,
     pub priority: i64,
     pub is_active: bool,
     pub api_key_encrypted: bool,
@@ -1708,6 +1710,7 @@ pub fn init_connection(path: &Path) -> Result<Connection> {
     migrate_vector_index(&conn)?;
     migrate_knowledge_clusters(&conn)?;
     migrate_provider_model(&conn)?;
+    migrate_provider_type(&conn)?;
     migrate_provider_priority(&conn)?;
     migrate_provider_stream_config(&conn)?;
     migrate_provider_api_key_encryption(&conn)?;
@@ -1886,6 +1889,26 @@ fn migrate_provider_model(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE providers ADD COLUMN model TEXT DEFAULT '';")?;
     }
     conn.execute("UPDATE providers SET model = '' WHERE model IS NULL", [])?;
+    Ok(())
+}
+
+fn migrate_provider_type(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "providers", "provider_type")? {
+        conn.execute_batch(
+            "ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai-compatible';",
+        )?;
+    }
+    conn.execute(
+        "UPDATE providers SET provider_type = 'ollama'
+         WHERE provider_type = 'openai-compatible'
+           AND (LOWER(name) LIKE '%ollama%' OR base_url LIKE '%11434%')",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE providers SET provider_type = 'openai-compatible'
+         WHERE provider_type IS NULL OR provider_type = ''",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2869,7 +2892,7 @@ pub fn upsert_quick_prompt_usage(
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, priority, is_active,
+        "SELECT id, name, base_url, api_key, model, provider_type, priority, is_active,
                 api_key_encrypted, timeout_secs, retry_count, retry_delay_secs
          FROM providers ORDER BY priority DESC, rowid ASC",
     )?;
@@ -2880,12 +2903,13 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
             base_url: row.get(2)?,
             api_key: row.get(3)?,
             model: row.get(4)?,
-            priority: row.get(5)?,
-            is_active: row.get::<_, i64>(6)? != 0,
-            api_key_encrypted: row.get::<_, i64>(7)? != 0,
-            timeout_secs: row.get(8)?,
-            retry_count: row.get(9)?,
-            retry_delay_secs: row.get(10)?,
+            provider_type: row.get(5)?,
+            priority: row.get(6)?,
+            is_active: row.get::<_, i64>(7)? != 0,
+            api_key_encrypted: row.get::<_, i64>(8)? != 0,
+            timeout_secs: row.get(9)?,
+            retry_count: row.get(10)?,
+            retry_delay_secs: row.get(11)?,
         })
     })?;
     rows.collect()
@@ -2893,7 +2917,7 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
 
 pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, base_url, api_key, model, priority, is_active,
+        "SELECT id, name, base_url, api_key, model, provider_type, priority, is_active,
                 api_key_encrypted, timeout_secs, retry_count, retry_delay_secs
          FROM providers WHERE id = ?1",
     )?;
@@ -2904,12 +2928,13 @@ pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
             base_url: row.get(2)?,
             api_key: row.get(3)?,
             model: row.get(4)?,
-            priority: row.get(5)?,
-            is_active: row.get::<_, i64>(6)? != 0,
-            api_key_encrypted: row.get::<_, i64>(7)? != 0,
-            timeout_secs: row.get(8)?,
-            retry_count: row.get(9)?,
-            retry_delay_secs: row.get(10)?,
+            provider_type: row.get(5)?,
+            priority: row.get(6)?,
+            is_active: row.get::<_, i64>(7)? != 0,
+            api_key_encrypted: row.get::<_, i64>(8)? != 0,
+            timeout_secs: row.get(9)?,
+            retry_count: row.get(10)?,
+            retry_delay_secs: row.get(11)?,
         })
     })?;
     rows.next().transpose()
@@ -2924,9 +2949,16 @@ pub fn create_provider(
     model: &str,
 ) -> Result<Provider> {
     let id = uid();
+    let provider_type =
+        if name.to_lowercase().contains("ollama") || base_url.to_lowercase().contains("11434") {
+            "ollama"
+        } else {
+            "openai-compatible"
+        };
     conn.execute(
-        "INSERT INTO providers (id, name, base_url, api_key, model, is_active) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        params![id, name, base_url, api_key, model],
+        "INSERT INTO providers (id, name, base_url, api_key, model, provider_type, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+        params![id, name, base_url, api_key, model, provider_type],
     )?;
     Ok(Provider {
         id,
@@ -2934,6 +2966,7 @@ pub fn create_provider(
         base_url: base_url.to_string(),
         api_key: api_key.to_string(),
         model: model.to_string(),
+        provider_type: provider_type.to_string(),
         priority: 0,
         is_active: false,
         api_key_encrypted: false,
@@ -2950,6 +2983,7 @@ pub fn create_provider_with_options(
     base_url: &str,
     stored_api_key: &str,
     model: &str,
+    provider_type: &str,
     api_key_encrypted: bool,
     timeout_secs: i64,
     retry_count: i64,
@@ -2957,15 +2991,16 @@ pub fn create_provider_with_options(
 ) -> Result<Provider> {
     let id = uid();
     conn.execute(
-        "INSERT INTO providers (id, name, base_url, api_key, model, is_active,
+        "INSERT INTO providers (id, name, base_url, api_key, model, provider_type, is_active,
                 api_key_encrypted, timeout_secs, retry_count, retry_delay_secs)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10)",
         params![
             id,
             name,
             base_url,
             stored_api_key,
             model,
+            provider_type,
             api_key_encrypted as i64,
             timeout_secs,
             retry_count,
@@ -2978,6 +3013,7 @@ pub fn create_provider_with_options(
         base_url: base_url.to_string(),
         api_key: stored_api_key.to_string(),
         model: model.to_string(),
+        provider_type: provider_type.to_string(),
         priority: 0,
         is_active: false,
         api_key_encrypted,
@@ -3127,15 +3163,16 @@ pub fn replace_providers(conn: &Connection, providers: &[Provider]) -> Result<us
     for provider in providers {
         let id = uid();
         conn.execute(
-            "INSERT INTO providers (id, name, base_url, api_key, model, priority, is_active,
+            "INSERT INTO providers (id, name, base_url, api_key, model, provider_type, priority, is_active,
                     api_key_encrypted, timeout_secs, retry_count, retry_delay_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 id,
                 provider.name,
                 provider.base_url,
                 provider.api_key,
                 provider.model,
+                provider.provider_type,
                 provider.priority.max(0),
                 provider.is_active as i64,
                 provider.api_key_encrypted as i64,
@@ -3179,6 +3216,39 @@ pub fn update_provider_model(conn: &Connection, id: &str, model: &str) -> Result
         params![model, id],
     )?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_provider_profile(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    base_url: &str,
+    stored_api_key: &str,
+    model: &str,
+    provider_type: &str,
+    api_key_encrypted: bool,
+) -> Result<Provider> {
+    let provider_type = if provider_type == "ollama" || provider_type == "custom" {
+        provider_type
+    } else {
+        "openai-compatible"
+    };
+    conn.execute(
+        "UPDATE providers SET name = ?1, base_url = ?2, api_key = ?3, model = ?4,
+                provider_type = ?5, api_key_encrypted = ?6
+         WHERE id = ?7",
+        params![
+            name,
+            base_url,
+            stored_api_key,
+            model,
+            provider_type,
+            api_key_encrypted as i64,
+            id
+        ],
+    )?;
+    get_provider(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn list_departments(conn: &Connection) -> Result<Vec<Department>> {
@@ -7993,6 +8063,7 @@ mod tests {
         )
         .unwrap();
         migrate_provider_model(&conn).unwrap();
+        migrate_provider_type(&conn).unwrap();
         migrate_provider_priority(&conn).unwrap();
         migrate_provider_stream_config(&conn).unwrap();
         migrate_provider_api_key_encryption(&conn).unwrap();
@@ -8003,6 +8074,32 @@ mod tests {
         update_provider_model(&conn, &provider.id, "qwen3:8b").unwrap();
         let updated = get_provider(&conn, &provider.id).unwrap().unwrap();
         assert_eq!(updated.model, "qwen3:8b");
+    }
+
+    #[test]
+    fn provider_type_migration_adds_column_and_infers_ollama() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                model TEXT DEFAULT '',
+                priority INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1
+            );",
+        )
+        .unwrap();
+        migrate_provider_type(&conn).unwrap();
+        assert!(column_exists(&conn, "providers", "provider_type").unwrap());
+
+        let ollama =
+            create_provider(&conn, "Local", "http://localhost:11434", "", "qwen2.5:3b").unwrap();
+        let openai = create_provider(&conn, "OpenAI", "https://api.openai.com/v1", "", "").unwrap();
+
+        assert_eq!(ollama.provider_type, "ollama");
+        assert_eq!(openai.provider_type, "openai-compatible");
     }
 
     #[test]
@@ -8019,6 +8116,7 @@ mod tests {
             );",
         )
         .unwrap();
+        migrate_provider_type(&conn).unwrap();
         migrate_provider_priority(&conn).unwrap();
         migrate_provider_stream_config(&conn).unwrap();
         migrate_provider_api_key_encryption(&conn).unwrap();
@@ -8051,9 +8149,11 @@ mod tests {
             );",
         )
         .unwrap();
+        migrate_provider_type(&conn).unwrap();
         migrate_provider_stream_config(&conn).unwrap();
         migrate_provider_api_key_encryption(&conn).unwrap();
         for column in [
+            "provider_type",
             "api_key_encrypted",
             "timeout_secs",
             "retry_count",
@@ -8067,6 +8167,7 @@ mod tests {
             "https://example.test/v1",
             "enc:v1:stored",
             "mock-model",
+            "openai-compatible",
             true,
             15,
             2,
@@ -8096,6 +8197,7 @@ mod tests {
             "https://a.test/v1",
             "key-a",
             "model-a",
+            "openai-compatible",
             false,
             30,
             1,
@@ -8108,6 +8210,7 @@ mod tests {
             "https://b.test/v1",
             "key-b",
             "model-b",
+            "openai-compatible",
             false,
             30,
             1,
@@ -8120,6 +8223,7 @@ mod tests {
             base_url: "https://c.test/v1".to_string(),
             api_key: "enc:v1:key-c".to_string(),
             model: "model-c".to_string(),
+            provider_type: "openai-compatible".to_string(),
             priority: 900,
             is_active: true,
             api_key_encrypted: true,
@@ -8149,6 +8253,7 @@ mod tests {
             "https://delete.test/v1",
             "",
             "model",
+            "custom",
             false,
             30,
             1,
@@ -8165,6 +8270,45 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(delete_provider(&conn, &provider.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn update_provider_profile_persists_label_endpoint_and_type() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let provider = create_provider_with_options(
+            &conn,
+            "OpenAI",
+            "https://api.openai.com/v1",
+            "",
+            "gpt-4o-mini",
+            "openai-compatible",
+            false,
+            30,
+            1,
+            1,
+        )
+        .unwrap();
+
+        let updated = update_provider_profile(
+            &conn,
+            &provider.id,
+            "DeepSeek",
+            "https://api.deepseek.com/v1",
+            "enc:v1:stored-key",
+            "deepseek-chat",
+            "custom",
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(updated.name, "DeepSeek");
+        assert_eq!(updated.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(updated.model, "deepseek-chat");
+        assert_eq!(updated.provider_type, "custom");
+        assert!(updated.api_key_encrypted);
+        let persisted = get_provider(&conn, &provider.id).unwrap().unwrap();
+        assert_eq!(persisted.provider_type, "custom");
     }
 
     #[test]

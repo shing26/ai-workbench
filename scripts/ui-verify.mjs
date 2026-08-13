@@ -293,11 +293,28 @@ async function main() {
     '[data-provider-health]',
     '[data-provider-smoke]',
     '[data-provider-delete]',
+    '[data-provider-lab]',
+    '[data-provider-lab-health]',
+    '[data-provider-lab-models]',
+    '[data-provider-type]',
+    '[data-provider-label-input]',
+    '[data-provider-profile-save]',
+    '[data-provider-preset-add]',
   ]) {
     const ok = await evaluate(`document.querySelector('${sel}') !== null`);
     results.modals.push({ name: `provider-${sel}`, selectorOk: ok });
     if (!ok) throw new Error(`missing provider selector ${sel}`);
   }
+  await click(`document.querySelector('[data-provider-preset-add="custom"]')`);
+  await waitFor(
+    `document.querySelectorAll('[data-provider-card]').length >= 4`,
+    'custom provider saved',
+  );
+  results.modals.push({
+    name: 'provider-preset-add',
+    ok: true,
+    cards: await evaluate(`document.querySelectorAll('[data-provider-card]').length`),
+  });
   await screenshot('provider-modal');
   await evaluate(`document.querySelector('[role="dialog"] [aria-label="Close"]')?.click()`);
   await delay(150);

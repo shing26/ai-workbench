@@ -463,8 +463,13 @@ fn is_ollama_provider(name: &str, url: &str) -> bool {
     name.contains("ollama") || url.contains("11434")
 }
 
+fn provider_is_ollama(provider: &db::Provider) -> bool {
+    provider.provider_type.eq_ignore_ascii_case("ollama")
+        || is_ollama_provider(&provider.name, &provider.base_url)
+}
+
 fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String, String> {
-    if is_ollama_provider(&provider.name, &provider.base_url) {
+    if provider_is_ollama(provider) {
         let model = if provider.model.is_empty() {
             "qwen2.5:3b"
         } else {
@@ -488,7 +493,7 @@ fn stream_provider(
     provider: &db::Provider,
     messages_json: &str,
 ) -> Result<String, String> {
-    let is_ollama = is_ollama_provider(&provider.name, &provider.base_url);
+    let is_ollama = provider_is_ollama(provider);
     let model = if is_ollama {
         if provider.model.is_empty() {
             "qwen2.5:3b"
@@ -1182,6 +1187,7 @@ fn create_provider(
     base_url: String,
     api_key: String,
     model: Option<String>,
+    provider_type: Option<String>,
 ) -> Result<db::Provider, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let secret = provider_secret()?;
@@ -1196,6 +1202,10 @@ fn create_provider(
         &base_url,
         &stored_key,
         &model.unwrap_or_default(),
+        provider_type
+            .as_deref()
+            .filter(|value| matches!(*value, "ollama" | "custom"))
+            .unwrap_or("openai-compatible"),
         encrypted,
         30,
         1,
@@ -1213,6 +1223,46 @@ fn delete_provider(state: State<'_, db::Db>, id: String) -> Result<(), String> {
         return Err("Provider not found".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+fn update_provider_profile(
+    state: State<'_, db::Db>,
+    id: String,
+    name: String,
+    base_url: String,
+    api_key: String,
+    model: String,
+    provider_type: Option<String>,
+) -> Result<db::Provider, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let current = db::get_provider(&conn, &id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Provider not found".to_string())?;
+    let provider_type = provider_type
+        .as_deref()
+        .filter(|value| matches!(*value, "ollama" | "custom"))
+        .unwrap_or("openai-compatible");
+    let (stored_key, encrypted) = if api_key.trim().is_empty() {
+        (String::new(), false)
+    } else if current.api_key == api_key && current.api_key_encrypted {
+        (current.api_key.clone(), true)
+    } else {
+        let secret = provider_secret()?;
+        (encrypt_provider_api_key(&api_key, secret)?, true)
+    };
+    let provider = db::update_provider_profile(
+        &conn,
+        &id,
+        &name,
+        &base_url,
+        &stored_key,
+        &model,
+        provider_type,
+        encrypted,
+    )
+    .map_err(|e| e.to_string())?;
+    decrypt_provider(provider)
 }
 
 #[tauri::command]
@@ -1288,6 +1338,12 @@ fn import_providers(state: State<'_, db::Db>, payload: String) -> Result<usize, 
                 .get("model")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
+                .to_string(),
+            provider_type: item
+                .get("providerType")
+                .and_then(|v| v.as_str())
+                .filter(|value| matches!(*value, "ollama" | "custom"))
+                .unwrap_or("openai-compatible")
                 .to_string(),
             priority: item
                 .get("priority")
@@ -1369,7 +1425,7 @@ fn fetch_provider_models(provider: &db::Provider) -> Result<Vec<ProviderModel>, 
         .timeout(Duration::from_secs(8))
         .build()
         .map_err(|e| e.to_string())?;
-    let is_ollama = is_ollama_provider(&provider.name, &provider.base_url);
+    let is_ollama = provider_is_ollama(provider);
     let endpoint = if is_ollama {
         format!("{}/api/tags", provider.base_url.trim_end_matches('/'))
     } else {
@@ -2256,12 +2312,12 @@ fn check_provider_health_state(provider: &db::Provider) -> ProviderHealth {
         .timeout(Duration::from_secs(6))
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new());
-    let endpoint = if is_ollama_provider(&provider.name, &provider.base_url) {
+    let endpoint = if provider_is_ollama(provider) {
         format!("{}/api/tags", provider.base_url.trim_end_matches('/'))
     } else {
         format!("{}/models", provider.base_url.trim_end_matches('/'))
     };
-    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+    let result = if provider_is_ollama(provider) {
         client.get(&endpoint).send()
     } else {
         match resolve_provider_api_key(provider) {
@@ -2352,7 +2408,7 @@ fn run_provider_stream_smoke_test(
     let mut chunks = 0usize;
     let is_cancelled = || false;
     let timeout_secs = provider.timeout_secs.clamp(1, 300) as u64;
-    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+    let result = if provider_is_ollama(&provider) {
         let model = if provider.model.is_empty() {
             "qwen2.5:3b"
         } else {
@@ -2427,7 +2483,7 @@ fn run_provider_e2e_stream(
     let started = std::time::Instant::now();
     let is_cancelled = || false;
     let timeout_secs = provider.timeout_secs.clamp(1, 300) as u64;
-    let result = if is_ollama_provider(&provider.name, &provider.base_url) {
+    let result = if provider_is_ollama(&provider) {
         let model = if provider.model.is_empty() {
             "qwen2.5:3b"
         } else {
@@ -5474,6 +5530,7 @@ pub fn run() {
             list_providers,
             create_provider,
             delete_provider,
+            update_provider_profile,
             set_provider_active,
             set_provider_priority,
             update_provider_model,
@@ -6098,6 +6155,7 @@ mod tests {
             base_url: "http://localhost:11434".to_string(),
             api_key: String::new(),
             model: String::new(),
+            provider_type: "ollama".to_string(),
             priority: 0,
             is_active: true,
             api_key_encrypted: false,
@@ -6161,6 +6219,27 @@ mod tests {
         assert!(is_ollama_provider("Ollama", "http://localhost:11434"));
         assert!(is_ollama_provider("My Local", "http://127.0.0.1:11434"));
         assert!(!is_ollama_provider("OpenAI", "https://api.openai.com/v1"));
+
+        let explicit_ollama = db::Provider {
+            id: "p1".to_string(),
+            name: "Local".to_string(),
+            base_url: "http://localhost:9999".to_string(),
+            api_key: String::new(),
+            model: String::new(),
+            provider_type: "ollama".to_string(),
+            priority: 0,
+            is_active: true,
+            api_key_encrypted: false,
+            timeout_secs: 30,
+            retry_count: 1,
+            retry_delay_secs: 1,
+        };
+        let explicit_custom = db::Provider {
+            provider_type: "custom".to_string(),
+            ..explicit_ollama.clone()
+        };
+        assert!(provider_is_ollama(&explicit_ollama));
+        assert!(!provider_is_ollama(&explicit_custom));
     }
 
     fn init_test_git_repo(dir: &Path) -> String {
@@ -6977,6 +7056,7 @@ mod tests {
             base_url: "https://example.test/v1".to_string(),
             api_key: envelope,
             model: "mock".to_string(),
+            provider_type: "openai-compatible".to_string(),
             priority: 0,
             is_active: true,
             api_key_encrypted: true,

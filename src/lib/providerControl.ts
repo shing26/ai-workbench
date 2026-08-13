@@ -8,12 +8,21 @@ export const PROVIDER_PRESETS = [
     label: 'OpenAI Compatible',
     baseUrl: 'https://api.openai.com/v1',
     model: '',
+    providerType: 'openai-compatible',
   },
   {
     id: 'ollama',
     label: 'Ollama',
     baseUrl: 'http://localhost:11434',
     model: 'qwen2.5:3b',
+    providerType: 'ollama',
+  },
+  {
+    id: 'custom',
+    label: 'Other / Custom',
+    baseUrl: 'https://api.example.com/v1',
+    model: '',
+    providerType: 'custom',
   },
 ] as const;
 
@@ -22,6 +31,7 @@ export type ProviderDraft = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerType: db.ProviderKind;
 };
 
 export type ProviderContext = {
@@ -29,6 +39,7 @@ export type ProviderContext = {
   name: string;
   baseUrl: string;
   model: string;
+  providerType: db.ProviderKind;
 };
 
 export type ProviderTestState = {
@@ -57,11 +68,22 @@ export type ProviderControlAdapters = {
     baseUrl: string,
     apiKey: string,
     model: string,
+    providerType: db.ProviderKind,
   ) => Promise<db.Provider> | db.Provider;
   deleteProvider: (id: string) => Promise<void> | void;
   setProviderActive: (id: string, isActive: boolean) => Promise<void> | void;
   setProviderPriority: (id: string, priority: number) => Promise<void> | void;
   updateProviderModel: (id: string, model: string) => Promise<void> | void;
+  updateProviderProfile: (
+    id: string,
+    profile: {
+      name: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      providerType: db.ProviderKind;
+    },
+  ) => Promise<db.Provider> | db.Provider;
   updateProviderStreamConfig: (
     id: string,
     timeoutSecs: number,
@@ -100,12 +122,13 @@ function writeStoredSelection(id: string | null): void {
 function defaultAdapters(): ProviderControlAdapters {
   return {
     listProviders: () => db.listProviders(),
-    createProvider: (name, baseUrl, apiKey, model) =>
-      db.createProvider(name, baseUrl, apiKey, model),
+    createProvider: (name, baseUrl, apiKey, model, providerType) =>
+      db.createProvider(name, baseUrl, apiKey, model, providerType),
     deleteProvider: (id) => db.deleteProvider(id),
     setProviderActive: (id, isActive) => db.setProviderActive(id, isActive),
     setProviderPriority: (id, priority) => db.setProviderPriority(id, priority),
     updateProviderModel: (id, model) => db.updateProviderModel(id, model),
+    updateProviderProfile: (id, profile) => db.updateProviderProfile(id, profile),
     updateProviderStreamConfig: (id, timeoutSecs, retryCount, retryDelaySecs) =>
       db.updateProviderStreamConfig(id, timeoutSecs, retryCount, retryDelaySecs),
     checkProviderHealth: (id) => db.checkProviderHealth(id),
@@ -122,11 +145,12 @@ export function normalizeProviderDraft(input: ProviderDraft): {
   errors: string[];
   value: ProviderDraft;
 } {
-  const value = {
+  const value: ProviderDraft = {
     name: input.name.trim(),
     baseUrl: input.baseUrl.trim(),
     apiKey: input.apiKey.trim(),
     model: input.model.trim(),
+    providerType: db.normalizeProviderKind(input.providerType),
   };
   const errors: string[] = [];
   if (!value.name) errors.push('Provider name is required');
@@ -142,6 +166,7 @@ export function providerContext(provider: db.Provider): ProviderContext {
     name: provider.name,
     baseUrl: provider.baseUrl,
     model: provider.model,
+    providerType: provider.providerType,
   };
 }
 
@@ -248,6 +273,7 @@ export class ProviderControlOrchestrator {
           normalized.value.baseUrl,
           normalized.value.apiKey,
           normalized.value.model,
+          normalized.value.providerType,
         ),
       );
       await this.refreshProviders();
@@ -312,6 +338,40 @@ export class ProviderControlOrchestrator {
       await this.refreshProviders();
     } catch (err) {
       this.patch({ error: errorMessage(err) });
+    }
+  }
+
+  async updateProviderProfile(
+    id: string,
+    profile: {
+      name: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      providerType: db.ProviderKind;
+    },
+  ): Promise<db.Provider | null> {
+    const value: {
+      name: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      providerType: db.ProviderKind;
+    } = {
+      name: profile.name.trim(),
+      baseUrl: profile.baseUrl.trim(),
+      apiKey: profile.apiKey.trim(),
+      model: profile.model.trim(),
+      providerType: db.normalizeProviderKind(profile.providerType),
+    };
+    try {
+      const provider = await Promise.resolve(this.adapters.updateProviderProfile(id, value));
+      await this.refreshProviders();
+      await this.selectProvider(id);
+      return provider;
+    } catch (err) {
+      this.patch({ error: errorMessage(err) });
+      return null;
     }
   }
 

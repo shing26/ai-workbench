@@ -165,6 +165,7 @@ export type Provider = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerType: ProviderKind;
   priority?: number;
   isActive: boolean;
   apiKeyEncrypted?: boolean;
@@ -172,6 +173,8 @@ export type Provider = {
   retryCount?: number;
   retryDelaySecs?: number;
 };
+
+export type ProviderKind = 'ollama' | 'openai-compatible' | 'custom';
 
 export type ProviderModel = {
   id: string;
@@ -1190,6 +1193,7 @@ function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
         baseUrl: 'https://api.openai.com/v1',
         apiKey: 'OPENAI_API_KEY',
         model: '',
+        providerType: 'openai-compatible',
         isActive: true,
       },
       {
@@ -1198,6 +1202,7 @@ function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
         baseUrl: 'http://localhost:11434',
         apiKey: '',
         model: '',
+        providerType: 'ollama',
         isActive: true,
       },
       {
@@ -1206,6 +1211,7 @@ function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
         baseUrl: 'https://openrouter.ai/api/v1',
         apiKey: 'OPENROUTER_API_KEY',
         model: '',
+        providerType: 'openai-compatible',
         isActive: false,
       },
     ],
@@ -2416,6 +2422,7 @@ export async function listProviders(): Promise<Provider[]> {
   return (readLocal().providers ?? [])
     .map((p) => ({
       ...p,
+      providerType: normalizeProviderKind(p.providerType),
       priority: p.priority ?? 0,
       timeoutSecs: p.timeoutSecs ?? 30,
       retryCount: p.retryCount ?? 1,
@@ -2429,8 +2436,17 @@ export async function createProvider(
   baseUrl: string,
   apiKey: string,
   model = '',
+  providerType: ProviderKind = 'openai-compatible',
 ): Promise<Provider> {
-  if (isTauri()) return invoke<Provider>('create_provider', { name, baseUrl, apiKey, model });
+  if (isTauri()) {
+    return invoke<Provider>('create_provider', {
+      name,
+      baseUrl,
+      apiKey,
+      model,
+      providerType,
+    });
+  }
   const shape = readLocal();
   const provider: Provider = {
     id: makeId(),
@@ -2438,6 +2454,7 @@ export async function createProvider(
     baseUrl,
     apiKey,
     model,
+    providerType: normalizeProviderKind(providerType),
     priority: 0,
     isActive: false,
     apiKeyEncrypted: false,
@@ -2481,6 +2498,38 @@ export async function updateProviderModel(id: string, model: string): Promise<vo
   const provider = shape.providers.find((p) => p.id === id);
   if (provider) provider.model = model;
   writeLocal(shape);
+}
+
+export async function updateProviderProfile(
+  id: string,
+  profile: {
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    providerType: ProviderKind;
+  },
+): Promise<Provider> {
+  if (isTauri()) {
+    return invoke<Provider>('update_provider_profile', {
+      id,
+      name: profile.name,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+      model: profile.model,
+      providerType: profile.providerType,
+    });
+  }
+  const shape = readLocal();
+  const provider = shape.providers.find((p) => p.id === id);
+  if (!provider) throw new Error('Provider not found');
+  provider.name = profile.name.trim();
+  provider.baseUrl = profile.baseUrl.trim();
+  provider.apiKey = profile.apiKey.trim();
+  provider.model = profile.model.trim();
+  provider.providerType = normalizeProviderKind(profile.providerType);
+  writeLocal(shape);
+  return provider;
 }
 
 export async function updateProviderStreamConfig(
@@ -2536,6 +2585,7 @@ export async function importProviders(payload: string): Promise<number> {
     baseUrl: String(item.baseUrl ?? ''),
     apiKey: String(item.apiKey ?? ''),
     model: String(item.model ?? ''),
+    providerType: normalizeProviderKind(item.providerType),
     priority: Math.max(0, Math.round(Number(item.priority ?? 0))),
     isActive: Boolean(item.isActive),
     apiKeyEncrypted: false,
@@ -2566,7 +2616,7 @@ export async function listProviderModels(provider: Provider): Promise<ProviderMo
   if (isTauri()) {
     return invoke<ProviderModel[]>('list_provider_models', { providerId: provider.id });
   }
-  const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
+  const isOllama = isOllamaProvider(provider);
   const base = provider.baseUrl.replace(/\/+$/, '');
   const endpoint = isOllama ? `${base}/api/tags` : `${base}/models`;
   const headers: Record<string, string> = {};
@@ -3019,8 +3069,30 @@ export async function saveCliToolDetections(
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
   if (isTauri()) return invoke<ProviderHealth>('check_provider_health', { providerId });
   if (isMockAgentsEnabled()) return mockProviderHealth(providerId);
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  return { ok: true, latencyMs: 120, message: 'ok' };
+  const provider = (await listProviders()).find((p) => p.id === providerId);
+  if (!provider) throw new Error('Provider not found');
+  const isOllama = isOllamaProvider(provider);
+  const base = provider.baseUrl.replace(/\/+$/, '');
+  const endpoint = isOllama ? `${base}/api/tags` : `${base}/models`;
+  const headers: Record<string, string> = {};
+  if (!isOllama && provider.apiKey.trim()) {
+    headers.Authorization = `Bearer ${provider.apiKey.trim()}`;
+  }
+  const started = performance.now();
+  try {
+    const response = await fetch(endpoint, { headers });
+    const latencyMs = Math.max(1, Math.round(performance.now() - started));
+    if (!response.ok) {
+      return { ok: false, latencyMs, message: `Health HTTP ${response.status}` };
+    }
+    return { ok: true, latencyMs, message: 'ok' };
+  } catch (err) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 const localHeartbeatHandlers = new Set<(snapshot: ProviderHeartbeatSnapshot) => void>();
@@ -4980,8 +5052,21 @@ export type MoaConsensus = {
 const localCancelledRuns = new Set<string>();
 const localStreamControllers = new Map<string, AbortController>();
 
-export function isOllamaProvider(name: string, baseUrl: string): boolean {
-  return name.toLowerCase().includes('ollama') || baseUrl.toLowerCase().includes('11434');
+export function normalizeProviderKind(
+  value: unknown,
+  fallback: ProviderKind = 'openai-compatible',
+): ProviderKind {
+  return value === 'ollama' || value === 'custom' ? value : fallback;
+}
+
+export function isOllamaProvider(
+  provider: Pick<Provider, 'name' | 'baseUrl' | 'providerType'>,
+): boolean {
+  return (
+    provider.providerType === 'ollama' ||
+    provider.name.toLowerCase().includes('ollama') ||
+    provider.baseUrl.toLowerCase().includes('11434')
+  );
 }
 
 function canRealStream(provider: Provider): boolean {
@@ -5061,7 +5146,7 @@ async function streamProviderLive(
   const manageCancel = opts.manageCancel !== false;
   const timeoutMs = Math.max(100, (provider.timeoutSecs ?? 30) * 1000);
   let timedOut = false;
-  const isOllama = isOllamaProvider(provider.name, provider.baseUrl);
+  const isOllama = isOllamaProvider(provider);
   const base = provider.baseUrl.replace(/\/+$/, '');
   const endpoint = isOllama ? `${base}/api/chat` : `${base}/chat/completions`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -6385,7 +6470,37 @@ export async function runProviderStreamSmokeTest(providerId: string): Promise<St
   if (isTauri()) {
     return invoke<StreamSmokeResult>('run_provider_stream_smoke_test', { providerId });
   }
-  return { ok: true, chunks: 2, message: 'Streamed 2 chunk(s)' };
+  const provider = (await listProviders()).find((p) => p.id === providerId);
+  if (!provider || !canRealStream(provider)) {
+    return { ok: false, chunks: 0, message: 'Provider or model is not configured' };
+  }
+  const runId = `smoke-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let chunks = 0;
+  try {
+    await streamProviderWithRetry(
+      provider,
+      {
+        providerIds: [provider.id],
+        messages: [{ role: 'user', content: 'Ping stream smoke test' }],
+        moa: false,
+        runId,
+      },
+      {
+        final: false,
+        manageCancel: false,
+        onChunk: () => {
+          chunks += 1;
+        },
+      },
+    );
+    return { ok: true, chunks, message: `Streamed ${chunks} chunk(s)` };
+  } catch (err) {
+    return {
+      ok: false,
+      chunks,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export async function runProviderE2EStream(providerId: string): Promise<ProviderE2eResult> {

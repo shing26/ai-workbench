@@ -89,9 +89,25 @@ type WorkbenchState = {
   updateThoughtContent: (id: string, content: string) => Promise<void>;
   updateThoughtType: (id: string, type: db.ThoughtType) => Promise<void>;
   deleteThought: (id: string, confirmed?: boolean) => Promise<void>;
-  addProvider: (name: string, baseUrl: string, apiKey: string, model?: string) => Promise<void>;
+  addProvider: (
+    name: string,
+    baseUrl: string,
+    apiKey: string,
+    model?: string,
+    providerType?: db.ProviderKind,
+  ) => Promise<void>;
   toggleProvider: (id: string, isActive: boolean) => Promise<void>;
   setProviderModel: (id: string, model: string) => Promise<void>;
+  updateProviderProfile: (
+    id: string,
+    profile: {
+      name: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      providerType: db.ProviderKind;
+    },
+  ) => Promise<void>;
   setProviderPriority: (id: string, priority: number) => Promise<void>;
   setProviderStreamConfig: (
     id: string,
@@ -248,8 +264,8 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     await db.deleteThought(id, confirmed);
     set({ thoughts: await db.listThoughts() });
   },
-  addProvider: async (name, baseUrl, apiKey, model = '') => {
-    await db.createProvider(name, baseUrl, apiKey, model);
+  addProvider: async (name, baseUrl, apiKey, model = '', providerType = 'openai-compatible') => {
+    await db.createProvider(name, baseUrl, apiKey, model, providerType);
     set({ providers: await db.listProviders() });
   },
   toggleProvider: async (id, isActive) => {
@@ -258,6 +274,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
   setProviderModel: async (id, model) => {
     await db.updateProviderModel(id, model);
+    set({ providers: await db.listProviders() });
+  },
+  updateProviderProfile: async (id, profile) => {
+    await db.updateProviderProfile(id, profile);
     set({ providers: await db.listProviders() });
   },
   setProviderPriority: async (id, priority) => {

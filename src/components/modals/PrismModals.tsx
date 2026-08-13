@@ -498,13 +498,27 @@ function ProviderModal() {
   const closeModal = usePrismModals((s) => s.closeModal);
   const snapshot = useProviderControlSnapshot();
   const providers = snapshot.providers;
+  const selectedProvider = snapshot.selectedProvider;
+  const labModels = selectedProvider ? (snapshot.modelsByProvider[selectedProvider.id] ?? []) : [];
   const [draft, setDraft] = useState<ProviderDraft>({
     name: 'Ollama',
     baseUrl: 'http://localhost:11434',
     apiKey: '',
     model: 'qwen2.5:3b',
+    providerType: 'ollama',
   });
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [profileDrafts, setProfileDrafts] = useState<
+    Record<
+      string,
+      {
+        name: string;
+        baseUrl: string;
+        apiKey: string;
+        providerType: db.ProviderKind;
+      }
+    >
+  >({});
   const [priorityDrafts, setPriorityDrafts] = useState<Record<string, string>>({});
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [configDrafts, setConfigDrafts] = useState<
@@ -517,13 +531,14 @@ function ProviderModal() {
       baseUrl: preset.baseUrl,
       apiKey: '',
       model: preset.model,
+      providerType: preset.providerType,
     });
   };
 
-  const addProvider = async () => {
-    const created = await providerControlOrchestrator.addProvider(draft);
+  const addProvider = async (nextDraft: ProviderDraft = draft) => {
+    const created = await providerControlOrchestrator.addProvider(nextDraft);
     if (created) {
-      setDraft({ name: '', baseUrl: '', apiKey: '', model: '' });
+      setDraft({ name: '', baseUrl: '', apiKey: '', model: '', providerType: 'openai-compatible' });
     }
   };
 
@@ -553,6 +568,24 @@ function ProviderModal() {
     );
   };
 
+  const saveProfile = async (providerId: string) => {
+    const profile = profileDrafts[providerId];
+    if (!profile) return;
+    const provider = providers.find((item) => item.id === providerId);
+    const model = (modelDrafts[providerId] ?? provider?.model ?? '').trim();
+    const updated = await providerControlOrchestrator.updateProviderProfile(providerId, {
+      ...profile,
+      model,
+    });
+    if (updated) {
+      setProfileDrafts((prev) => {
+        const next = { ...prev };
+        delete next[providerId];
+        return next;
+      });
+    }
+  };
+
   return (
     <ModalShell title="Provider Control" onClose={closeModal}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -579,6 +612,101 @@ function ProviderModal() {
         </div>
       )}
 
+      <div
+        data-provider-lab
+        className="mb-3 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.05] p-3"
+      >
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <Activity size={12} className="text-cyan-300" />
+          <span className="text-[10px] font-semibold text-slate-300">Provider Lab</span>
+          {selectedProvider && (
+            <span
+              data-provider-lab-target
+              className="ml-auto truncate font-mono text-[9px] text-slate-500"
+            >
+              {selectedProvider.name} / {selectedProvider.providerType}
+            </span>
+          )}
+        </div>
+        {selectedProvider ? (
+          <>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                data-provider-lab-health
+                disabled={snapshot.busyProviderId === selectedProvider.id}
+                onClick={() => void providerControlOrchestrator.checkHealth(selectedProvider.id)}
+                className="pc-mini-btn disabled:opacity-50"
+              >
+                <Activity size={10} />
+                Test connection
+              </button>
+              <button
+                type="button"
+                data-provider-lab-smoke
+                disabled={snapshot.busyProviderId === selectedProvider.id}
+                onClick={() => void providerControlOrchestrator.runSmoke(selectedProvider.id)}
+                className="pc-mini-btn disabled:opacity-50"
+              >
+                <Zap size={10} />
+                Stream smoke
+              </button>
+              <button
+                type="button"
+                data-provider-lab-models
+                disabled={snapshot.busyProviderId === selectedProvider.id}
+                onClick={() => void providerControlOrchestrator.refreshModels(selectedProvider.id)}
+                className="pc-mini-btn disabled:opacity-50"
+              >
+                <RefreshCw size={10} />
+                Fetch models
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-3 text-[9px] text-slate-500">
+              <span data-provider-lab-health-result>
+                Health:{' '}
+                <ProviderTestResult state={snapshot.healthByProvider[selectedProvider.id]} />
+              </span>
+              <span data-provider-lab-smoke-result>
+                Smoke: <ProviderTestResult state={snapshot.smokeByProvider[selectedProvider.id]} />
+              </span>
+            </div>
+            {labModels.length > 0 && (
+              <div
+                data-provider-lab-model-list
+                className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto"
+              >
+                {labModels.slice(0, 12).map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    data-provider-lab-model-option={model.id}
+                    onClick={() => {
+                      setModelDrafts((prev) => ({ ...prev, [selectedProvider.id]: model.id }));
+                      void providerControlOrchestrator.setProviderModel(
+                        selectedProvider.id,
+                        model.id,
+                      );
+                    }}
+                    className={`rounded border px-1.5 py-0.5 text-[9px] ${
+                      selectedProvider.model === model.id
+                        ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                        : 'border-white/10 text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {model.id}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-[9px] text-slate-600">
+            Select a provider to run connection, stream and model discovery checks.
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
         {providers.map((provider) => {
           const selected = snapshot.selectedProviderId === provider.id;
@@ -587,6 +715,12 @@ function ProviderModal() {
           const smoke = snapshot.smokeByProvider[provider.id];
           const models = snapshot.modelsByProvider[provider.id] ?? [];
           const modelDraft = modelDrafts[provider.id] ?? provider.model;
+          const profile = profileDrafts[provider.id] ?? {
+            name: provider.name,
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey,
+            providerType: provider.providerType ?? 'openai-compatible',
+          };
           const priorityDraft = priorityDrafts[provider.id] ?? String(provider.priority ?? 0);
           const config = configDrafts[provider.id] ?? {
             timeoutSecs: String(provider.timeoutSecs ?? 30),
@@ -656,6 +790,82 @@ function ProviderModal() {
                 >
                   <Trash2 size={10} />
                   {deleteConfirmId === provider.id ? 'Confirm?' : 'Delete'}
+                </button>
+              </div>
+
+              <div className="mt-2 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Label</span>
+                  <input
+                    data-provider-label-input={provider.id}
+                    value={profile.name}
+                    onChange={(e) =>
+                      setProfileDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...profile, name: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Base URL</span>
+                  <input
+                    data-provider-base-url-input={provider.id}
+                    value={profile.baseUrl}
+                    onChange={(e) =>
+                      setProfileDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...profile, baseUrl: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">API key</span>
+                  <input
+                    data-provider-api-key-input={provider.id}
+                    type="password"
+                    value={profile.apiKey}
+                    onChange={(e) =>
+                      setProfileDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: { ...profile, apiKey: e.target.value },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 text-[10px] text-slate-200 outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[9px] text-slate-500">Provider type</span>
+                  <select
+                    data-provider-type-input={provider.id}
+                    value={profile.providerType}
+                    onChange={(e) =>
+                      setProfileDrafts((prev) => ({
+                        ...prev,
+                        [provider.id]: {
+                          ...profile,
+                          providerType: e.target.value as db.ProviderKind,
+                        },
+                      }))
+                    }
+                    className="h-7 w-full rounded-lg border border-white/10 bg-black/25 px-2 text-[10px] text-slate-200 outline-none"
+                  >
+                    <option value="openai-compatible">OpenAI compatible</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="custom">Other / Custom</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  data-provider-profile-save={provider.id}
+                  onClick={() => void saveProfile(provider.id)}
+                  className="sm:col-span-2 lg:col-span-4 pc-mini-btn"
+                >
+                  <Save size={10} />
+                  Save provider profile
                 </button>
               </div>
 
@@ -848,15 +1058,34 @@ function ProviderModal() {
         <div className="mb-2 text-[10px] font-semibold text-slate-300">Add provider</div>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {PROVIDER_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              data-provider-preset={preset.id}
-              onClick={() => applyPreset(preset)}
-              className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 text-[9px] text-cyan-300 hover:bg-cyan-500/20"
-            >
-              {preset.label}
-            </button>
+            <div key={preset.id} className="flex items-center gap-1">
+              <button
+                type="button"
+                data-provider-preset={preset.id}
+                onClick={() => applyPreset(preset)}
+                className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 text-[9px] text-cyan-300 hover:bg-cyan-500/20"
+              >
+                {preset.label}
+              </button>
+              <button
+                type="button"
+                data-provider-preset-add={preset.id}
+                aria-label={`Add ${preset.label}`}
+                title="Save this provider now"
+                onClick={() =>
+                  void addProvider({
+                    name: preset.label,
+                    baseUrl: preset.baseUrl,
+                    apiKey: '',
+                    model: preset.model,
+                    providerType: preset.providerType,
+                  })
+                }
+                className="flex h-6 w-6 items-center justify-center rounded-lg border border-emerald-500/25 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+              >
+                <Plus size={10} />
+              </button>
+            </div>
           ))}
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -867,6 +1096,21 @@ function ProviderModal() {
             placeholder="Provider name"
             className="pc-text-input"
           />
+          <select
+            data-provider-type
+            value={draft.providerType}
+            onChange={(e) =>
+              setDraft((prev) => ({
+                ...prev,
+                providerType: e.target.value as db.ProviderKind,
+              }))
+            }
+            className="pc-text-input"
+          >
+            <option value="openai-compatible">OpenAI compatible</option>
+            <option value="ollama">Ollama</option>
+            <option value="custom">Other / Custom</option>
+          </select>
           <input
             data-provider-url
             value={draft.baseUrl}

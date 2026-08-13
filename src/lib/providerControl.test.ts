@@ -14,6 +14,7 @@ function provider(partial: Partial<Provider>): Provider {
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',
     model: 'gpt-4o-mini',
+    providerType: 'openai-compatible',
     priority: 0,
     isActive: true,
     apiKeyEncrypted: false,
@@ -41,11 +42,12 @@ function createHarness(
   const healthCalls: string[] = [];
   const refreshCalls: string[] = [];
   const deleted: string[] = [];
+  const profileUpdates: Array<{ id: string; profile: unknown }> = [];
 
   const adapters: ProviderControlAdapters = {
     listProviders: async () => providers,
-    createProvider: async (name, baseUrl, apiKey, model) => {
-      const draft = { name, baseUrl, apiKey, model };
+    createProvider: async (name, baseUrl, apiKey, model, providerType) => {
+      const draft = { name, baseUrl, apiKey, model, providerType };
       created.push(draft);
       const next: Provider = provider({
         id: `p${providers.length + 1}`,
@@ -53,6 +55,7 @@ function createHarness(
         baseUrl,
         apiKey,
         model,
+        providerType,
         isActive: false,
       });
       providers = [next, ...providers];
@@ -71,6 +74,12 @@ function createHarness(
     },
     updateProviderModel: async (id, model) => {
       providers = providers.map((p) => (p.id === id ? { ...p, model } : p));
+    },
+    updateProviderProfile: async (id, profile) => {
+      profileUpdates.push({ id, profile });
+      const updated = providers.map((p) => (p.id === id ? { ...p, ...profile } : p));
+      providers = updated;
+      return updated.find((p) => p.id === id) as Provider;
     },
     updateProviderStreamConfig: async (id, timeoutSecs, retryCount, retryDelaySecs) => {
       providers = providers.map((p) =>
@@ -110,6 +119,7 @@ function createHarness(
     healthCalls,
     refreshCalls,
     deleted,
+    profileUpdates,
     getProviders: () => providers,
     getSavedSelection: () => savedSelection,
   };
@@ -151,6 +161,7 @@ describe('ProviderControlOrchestrator', () => {
       baseUrl: 'http://localhost:11434',
       apiKey: '',
       model: 'qwen2.5:3b',
+      providerType: 'ollama',
     });
 
     expect(result).not.toBeNull();
@@ -159,9 +170,33 @@ describe('ProviderControlOrchestrator', () => {
       baseUrl: 'http://localhost:11434',
       apiKey: '',
       model: 'qwen2.5:3b',
+      providerType: 'ollama',
     });
     expect(harness.orchestrator.getSnapshot().selectedProvider?.name).toBe('Local');
     expect(harness.getSavedSelection()).toBe(result?.id);
+  });
+
+  it('saves an explicit custom provider type', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.mount();
+
+    const result = await harness.orchestrator.addProvider({
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-deepseek',
+      model: 'deepseek-chat',
+      providerType: 'custom',
+    });
+
+    expect(result).not.toBeNull();
+    expect(harness.created[0]).toEqual({
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-deepseek',
+      model: 'deepseek-chat',
+      providerType: 'custom',
+    });
+    expect(harness.orchestrator.getSnapshot().selectedProvider?.providerType).toBe('custom');
   });
 
   it('rejects an invalid provider draft without writing', async () => {
@@ -173,6 +208,7 @@ describe('ProviderControlOrchestrator', () => {
       baseUrl: 'not-a-url',
       apiKey: '',
       model: '',
+      providerType: 'custom',
     });
 
     expect(result).toBeNull();
@@ -198,6 +234,39 @@ describe('ProviderControlOrchestrator', () => {
     expect(snapshot.smokeByProvider.p1?.status).toBe('ok');
     expect(harness.healthCalls).toEqual(['p1']);
     expect(harness.smokeCalls).toEqual(['p1']);
+  });
+
+  it('updates provider label, endpoint and vendor type', async () => {
+    const harness = createHarness({
+      providers: [provider({ id: 'p1', providerType: 'ollama' })],
+    });
+    await harness.orchestrator.mount();
+
+    const updated = await harness.orchestrator.updateProviderProfile('p1', {
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-deepseek',
+      model: 'deepseek-chat',
+      providerType: 'custom',
+    });
+
+    expect(updated?.name).toBe('DeepSeek');
+    expect(updated?.providerType).toBe('custom');
+    expect(harness.profileUpdates).toEqual([
+      {
+        id: 'p1',
+        profile: {
+          name: 'DeepSeek',
+          baseUrl: 'https://api.deepseek.com/v1',
+          apiKey: 'sk-deepseek',
+          model: 'deepseek-chat',
+          providerType: 'custom',
+        },
+      },
+    ]);
+    expect(harness.orchestrator.getSnapshot().selectedProvider?.baseUrl).toBe(
+      'https://api.deepseek.com/v1',
+    );
   });
 
   it('refreshes the model catalog for a provider', async () => {
