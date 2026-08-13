@@ -17,6 +17,7 @@
 4. 新增 `delivery_runs` SQLite 表与 `list_delivery_runs` / `record_delivery_run` Tauri 命令；浏览器 fallback 使用 `ai-workbench:delivery-runs:v1` 保持同构。
 5. `ActionsView` / `CliModal` / `DashboardView` 改为消费 orchestrator snapshot；`workbenchStore.qualityGate` 死状态删除，`FILE_UPDATED` 改调 `refreshGate`。
 6. 按 `/code-review` 双轴审查修复 findings，并重跑完整质量门。
+7. 收敛 L4 残余风险：新增 CLI/Rust 双端确定性 DoD 语义对齐，L4 从 `SKIP` 转为 `GREEN`。
 
 ## 架构决策
 
@@ -43,7 +44,7 @@ Spec/ADR 源：`docs/adr/ADR-008-Delivery-Orchestrator.md`、`CONTEXT.md` 交付
 - `npm run lint` / `npm run build` / `npm run test:unit`（24 通过）✅
 - `npm run format:check` / `node scripts/audit-contract.mjs` ✅
 - `cargo test`（143 通过）+ `cargo clippy --all-targets --all-features -- -D warnings` + `cargo fmt --check` ✅
-- `npm run verify:matrix` L1-L3 GREEN；L4 AI 语义终审需在 app 内执行（SKIP）✅
+- `npm run verify:matrix` L1-L4 GREEN；L4 由 CLI/Rust 确定性 DoD 语义对齐 + 安全扫描执行 ✅
 - `prettier --check` 保持兼容 ✅
 
 ## 工作区注意
