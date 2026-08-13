@@ -1191,7 +1191,7 @@ function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
         id: makeId(),
         name: 'OpenAI',
         baseUrl: 'https://api.openai.com/v1',
-        apiKey: 'OPENAI_API_KEY',
+        apiKey: '',
         model: '',
         providerType: 'openai-compatible',
         isActive: true,
@@ -1209,7 +1209,7 @@ function seedShape(existing: Partial<LocalShape> = emptyShape()): LocalShape {
         id: makeId(),
         name: 'OpenRouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: 'OPENROUTER_API_KEY',
+        apiKey: '',
         model: '',
         providerType: 'openai-compatible',
         isActive: false,
@@ -2422,6 +2422,8 @@ export async function listProviders(): Promise<Provider[]> {
   return (readLocal().providers ?? [])
     .map((p) => ({
       ...p,
+      apiKey:
+        p.apiKey === 'OPENAI_API_KEY' || p.apiKey === 'OPENROUTER_API_KEY' ? '' : (p.apiKey ?? ''),
       providerType: normalizeProviderKind(p.providerType),
       priority: p.priority ?? 0,
       timeoutSecs: p.timeoutSecs ?? 30,

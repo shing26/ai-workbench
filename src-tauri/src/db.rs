@@ -1946,6 +1946,12 @@ fn migrate_provider_api_key_encryption(conn: &Connection) -> Result<()> {
         "UPDATE providers SET api_key_encrypted = 0 WHERE api_key_encrypted IS NULL",
         [],
     )?;
+    conn.execute(
+        "UPDATE providers SET api_key = ''
+         WHERE api_key IN ('OPENAI_API_KEY', 'OPENROUTER_API_KEY')
+           AND api_key_encrypted = 0",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2228,7 +2234,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
         params![uid(), "# Sprint 3 笔记\n\n## 本周节奏\n\n- 早间：阅读 30 分钟\n- 下午：Sprint 验收\n\n```ts\nconst focus = tasks.filter(t => t.isToday);\n```\n\n> 先冻结范围，再写代码。", now],
     )?;
     conn.execute(
-        "INSERT INTO providers (id, name, base_url, api_key, is_active) VALUES (?1, 'OpenAI', 'https://api.openai.com/v1', 'OPENAI_API_KEY', 1)",
+        "INSERT INTO providers (id, name, base_url, api_key, is_active) VALUES (?1, 'OpenAI', 'https://api.openai.com/v1', '', 1)",
         params![uid()],
     )?;
     conn.execute(

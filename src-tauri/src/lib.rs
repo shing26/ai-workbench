@@ -249,9 +249,11 @@ fn stream_openai_compatible_with(
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = stream_client(timeout_secs);
-    let resp = client
-        .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
+    let mut request = client.post(&endpoint);
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let resp = request
         .json(&serde_json::json!({
             "model": model,
             "messages": body,
@@ -392,9 +394,11 @@ fn chat_openai_compatible(
     let body: Value = serde_json::from_str(messages_json).map_err(|e| e.to_string())?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
+    let mut request = client.post(&endpoint);
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let resp = request
         .json(&serde_json::json!({
             "model": model,
             "messages": body
@@ -1434,7 +1438,9 @@ fn fetch_provider_models(provider: &db::Provider) -> Result<Vec<ProviderModel>, 
     let mut request = client.get(&endpoint);
     if !is_ollama {
         let api_key = resolve_provider_api_key(provider)?;
-        request = request.header("Authorization", format!("Bearer {}", api_key));
+        if !api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
     }
     let response = request.send().map_err(|e| e.to_string())?;
     let status = response.status();
@@ -2242,10 +2248,16 @@ fn looks_like_keyring_ref(key: &str) -> bool {
 
 fn resolve_provider_api_key(provider: &db::Provider) -> Result<String, String> {
     if provider.api_key.is_empty() {
-        return get_api_key("OPENAI_API_KEY");
+        return Ok(String::new());
     }
     if looks_like_keyring_ref(&provider.api_key) {
-        return get_api_key(provider.api_key.trim());
+        let name = provider.api_key.trim();
+        return get_api_key(name).map_err(|_| {
+            format!(
+                "Secure storage has no '{}'; enter the API key directly in Provider Control or save it in the OS keyring",
+                name
+            )
+        });
     }
     Ok(provider.api_key.clone())
 }
@@ -2321,10 +2333,13 @@ fn check_provider_health_state(provider: &db::Provider) -> ProviderHealth {
         client.get(&endpoint).send()
     } else {
         match resolve_provider_api_key(provider) {
-            Ok(key) => client
-                .get(&endpoint)
-                .header("Authorization", format!("Bearer {}", key))
-                .send(),
+            Ok(key) => {
+                let mut request = client.get(&endpoint);
+                if !key.is_empty() {
+                    request = request.header("Authorization", format!("Bearer {}", key));
+                }
+                request.send()
+            }
             Err(err) => {
                 return ProviderHealth {
                     ok: false,
@@ -7081,6 +7096,34 @@ mod tests {
         assert!(!looks_like_keyring_ref(""));
         assert!(!looks_like_keyring_ref("lower_case"));
         assert!(!looks_like_keyring_ref(&"K".repeat(65)));
+    }
+
+    #[test]
+    fn empty_provider_api_key_skips_keyring_lookup() {
+        let empty = db::Provider {
+            id: "p1".to_string(),
+            name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: String::new(),
+            model: String::new(),
+            provider_type: "openai-compatible".to_string(),
+            priority: 0,
+            is_active: true,
+            api_key_encrypted: false,
+            timeout_secs: 30,
+            retry_count: 1,
+            retry_delay_secs: 1,
+        };
+        let plain = db::Provider {
+            api_key: "sk-live-secret-123".to_string(),
+            ..empty.clone()
+        };
+
+        assert_eq!(resolve_provider_api_key(&empty).unwrap(), "");
+        assert_eq!(
+            resolve_provider_api_key(&plain).unwrap(),
+            "sk-live-secret-123"
+        );
     }
 
     #[test]
