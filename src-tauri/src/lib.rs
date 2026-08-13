@@ -22,6 +22,7 @@ use tauri::{Emitter, Manager, State};
 mod cli_spawn;
 mod db;
 mod file_ops;
+mod journey;
 mod prism_agents;
 mod verify_matrix;
 
@@ -983,6 +984,60 @@ fn update_project_journey(
 ) -> Result<db::Project, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::update_project_journey(&conn, &id, &stage, journey_doc_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_journey_doc(
+    state: State<'_, db::Db>,
+    vault_path: String,
+    file_name: String,
+    content: String,
+    project_id: String,
+    stage: String,
+    mode: String,
+) -> Result<db::Project, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let current = db::list_projects(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("project not found: {project_id}"))?;
+    if !journey::stage_valid(&stage) {
+        return Err(format!("invalid journey stage: {stage}"));
+    }
+    if !journey::transition_allowed(&current.journey_stage, &stage) {
+        return Err(format!(
+            "journey transition not allowed: {} -> {stage}",
+            current.journey_stage
+        ));
+    }
+
+    let vault = Path::new(&vault_path);
+    let vault_canon =
+        fs::canonicalize(vault).map_err(|e| format!("Vault path not accessible: {e}"))?;
+    let name = Path::new(&file_name);
+    if name.components().any(|component| {
+        component == std::path::Component::ParentDir || component == std::path::Component::RootDir
+    }) {
+        return Err("Invalid file name: path traversal not allowed".into());
+    }
+    let full = vault.join(name);
+    let full_canon = fs::canonicalize(&full).unwrap_or_else(|_| full.clone());
+    if !full_canon.starts_with(&vault_canon) {
+        return Err("Path escapes vault directory".into());
+    }
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {e}"))?;
+    }
+    let final_content = if mode == "append" {
+        let existing = fs::read_to_string(&full).unwrap_or_default();
+        journey::append_record(&existing, &content, &stage)
+    } else {
+        content
+    };
+    fs::write(&full, final_content).map_err(|e| format!("Failed to write journey doc: {e}"))?;
+    db::update_project_journey(&conn, &project_id, &stage, Some(file_name))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5311,6 +5366,7 @@ pub fn run() {
             update_project,
             update_project_material,
             update_project_journey,
+            write_journey_doc,
             delete_project,
             reorder_projects,
             list_project_revenue_history,

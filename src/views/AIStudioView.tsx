@@ -1,6 +1,7 @@
 import { Check, ChevronDown, History, Plus, Save, Search, Send, Square } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as db from '../lib/db';
+import { buildJourneyDoc, journeyDocFileName } from '../lib/journeyDoc';
 import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
@@ -460,7 +461,6 @@ export default function AIStudioView() {
   const consolidateKnowledge = async () => {
     if (roundtableOutputs.length === 0) return;
     const topic = roundtableOutputs[0]?.opinion.slice(0, 40) || 'Prism Roundtable';
-    const participants = roundtableOutputs.map((o) => o.seat.id).join(', ');
     const opinionsMarkdown = roundtableOutputs
       .map((o) => `### ${o.seat.name}（${o.seat.role}）\n${o.opinion.trim().slice(0, 500)}`)
       .join('\n\n');
@@ -481,50 +481,25 @@ export default function AIStudioView() {
         toast.success('已固化为知识卡片（Knowledge）');
         return;
       }
-      const slugBase =
-        vibeContext.projectName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '') || `project-${vibeContext.projectId.slice(0, 8)}`;
-      const fileName = `docs/journey/${slugBase}.md`;
-      const journeyMarkdown = [
-        '---',
-        `projectId: ${vibeContext.projectId}`,
-        'journeyStage: ready',
-        `participants: [${participants}]`,
-        `updatedAt: ${new Date().toISOString()}`,
-        'tags: [prism, journey, consensus]',
-        '---',
-        '',
-        `# ${topic}`,
-        '',
-        '## 背景与目标',
-        `围绕「${topic}」发起 Agency 圆桌论证，由 ${roundtableOutputs.length} 位 Agency Agent 独立发言并汇总共识。`,
-        '',
-        '## PRD 要点',
-        '待 CPO 根据共识结论补充正式 PRD；本旅程文档作为需求源头。',
-        '',
-        '## 设计决策',
-        opinionsMarkdown,
-        '',
-        '## 风险与 Trade-off',
-        lastConsensus?.viewpoints?.length
-          ? lastConsensus.viewpoints.map((viewpoint) => `- ${viewpoint}`).join('\n')
-          : '- 待补充',
-        '',
-        '## 论证结论',
-        lastConsensus?.summary ?? '- 待 CPO 确认',
-        '',
-        '## 交付任务清单',
-        '- [ ] 由 Actions 派发本地 CLI 实现',
-        '',
-        '## 实现与验证记录',
-        '- 待 CLI 完成后回填验证记录',
-        '',
-      ].join('\n');
-      await db.writeNote(vibeContext.path, fileName, journeyMarkdown);
-      await updateProjectJourney(vibeContext.projectId, 'ready', fileName);
-      await addThought(knowledgeMarkdown, '#prism,#journey', 'note');
+      const fileName = journeyDocFileName({
+        id: vibeContext.projectId,
+        name: vibeContext.projectName,
+      });
+      const journeyMarkdown = buildJourneyDoc({
+        projectId: vibeContext.projectId,
+        topic,
+        opinions: roundtableOutputs,
+        consensus: lastConsensus ?? undefined,
+      });
+      await db.writeJourneyDoc(
+        vibeContext.path,
+        fileName,
+        journeyMarkdown,
+        vibeContext.projectId,
+        'ready',
+        'replace',
+      );
+      await addThought(journeyMarkdown, '#prism,#journey', 'note');
       setRoundtableOutputs([]);
       setLastConsensus(null);
       toast.success(`已固化为旅程文档（${fileName}）`);

@@ -2,6 +2,12 @@ import { Archive, FolderKanban, Pin, Plus, Terminal, Trash2 } from 'lucide-react
 import { useState } from 'react';
 import { usePrismModals } from '../components/modals/prismModalsStore';
 import * as db from '../lib/db';
+import {
+  JOURNEY_STAGE_LABELS,
+  allowedTargets,
+  buildArchiveRecord,
+  journeyDocFileName,
+} from '../lib/journeyDoc';
 import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
@@ -85,23 +91,25 @@ export default function ProjectsView() {
     const pending = pendingTasksFor(project.id);
     const runs = db.listCliRuns();
     const successRuns = runs.filter((r) => r.exitCode === 0).length;
-    const summary = [
-      '# 📚 项目旅程归档',
-      '',
-      `**项目**：${project.name}`,
-      `**归档阶段**：${project.journeyStage} → archived`,
-      `**旅程文档**：${project.journeyDocPath || '未生成'}`,
-      '',
-      '## 交付总结',
-      `- 已完成 DoD：${doneTasks.length} 项`,
-      `- 待完成：${pending.length} 项`,
-      `- CLI 运行记录：${runs.length} 次（成功 ${successRuns} 次）`,
-      '',
-      '## 归档结论',
-      `项目「${project.name}」已手动归档，可在 Knowledge 检索并重新打开。`,
-    ].join('\n');
-    await addThought(summary, `#prism,#journey,#archived,#project-${project.id}`, 'doc');
-    await updateProjectJourney(project.id, 'archived', project.journeyDocPath);
+    const record = buildArchiveRecord({
+      projectName: project.name,
+      fromStage: project.journeyStage,
+      journeyDocPath: project.journeyDocPath,
+      doneCount: doneTasks.length,
+      pendingCount: pending.length,
+      runsCount: runs.length,
+      successRunsCount: successRuns,
+    });
+    const fileName = project.journeyDocPath || journeyDocFileName(project);
+    await db.writeJourneyDoc(
+      project.path ?? '',
+      fileName,
+      record,
+      project.id,
+      'archived',
+      'append',
+    );
+    await addThought(record, `#prism,#journey,#archived,#project-${project.id}`, 'doc');
     toast.success(`已归档「${project.name}」到 Knowledge`);
   };
 
@@ -155,11 +163,11 @@ export default function ProjectsView() {
                     data-project-stage={project.journeyStage}
                     className="h-7 rounded border border-white/10 bg-white/[0.04] px-1.5 text-[10px] text-slate-300 outline-none"
                   >
-                    <option value="idea">💡 想法池</option>
-                    <option value="discussing">💬 Agency 圆桌论证</option>
-                    <option value="ready">📦 方案定稿</option>
-                    <option value="building">🛠 本地 CLI 实现</option>
-                    <option value="archived">📚 已归档</option>
+                    {allowedTargets(project.journeyStage).map((stage) => (
+                      <option key={stage} value={stage}>
+                        {JOURNEY_STAGE_LABELS[stage]}
+                      </option>
+                    ))}
                   </select>
                   <button
                     type="button"

@@ -14,6 +14,7 @@ import {
 } from './embed';
 export type { EmbeddingMode };
 import { parseWorkbenchError, WorkbenchError } from './errors';
+import { JOURNEY_STAGES } from './journeyDoc';
 import { isMockAgentsEnabled, mockLlmReply, mockProviderHealth } from './mockAgents';
 
 export type { CustomQuickPrompt, QuickPrompt };
@@ -2065,20 +2066,12 @@ export async function updateProjectMaterial(id: string, material: string): Promi
   return project;
 }
 
-const PROJECT_JOURNEY_STAGES: ProjectJourneyStage[] = [
-  'idea',
-  'discussing',
-  'ready',
-  'building',
-  'archived',
-];
-
 export async function updateProjectJourney(
   id: string,
   stage: ProjectJourneyStage,
   journeyDocPath: string | null = null,
 ): Promise<Project> {
-  if (!PROJECT_JOURNEY_STAGES.includes(stage)) {
+  if (!JOURNEY_STAGES.includes(stage)) {
     throw new WorkbenchError('INVALID_INPUT', `update_project_journey:${stage}`);
   }
   if (isTauri()) {
@@ -2091,6 +2084,27 @@ export async function updateProjectJourney(
   if (journeyDocPath !== null) project.journeyDocPath = journeyDocPath;
   writeLocal(shape);
   return project;
+}
+
+export async function writeJourneyDoc(
+  vaultPath: string,
+  fileName: string,
+  content: string,
+  projectId: string,
+  stage: ProjectJourneyStage,
+  mode: 'replace' | 'append',
+): Promise<Project> {
+  if (isTauri()) {
+    return invoke<Project>('write_journey_doc', {
+      vaultPath,
+      fileName,
+      content,
+      projectId,
+      stage,
+      mode,
+    });
+  }
+  return updateProjectJourney(projectId, stage, fileName);
 }
 
 export async function deleteProject(id: string, confirmed = false): Promise<void> {

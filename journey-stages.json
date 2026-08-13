@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "stages": ["idea", "discussing", "ready", "building", "archived"],
+  "labels": {
+    "idea": "💡 想法池",
+    "discussing": "💬 Agency 圆桌论证",
+    "ready": "📦 方案定稿",
+    "building": "🛠 本地 CLI 实现",
+    "archived": "📚 已归档"
+  },
+  "transitions": {
+    "idea": ["discussing", "ready", "archived"],
+    "discussing": ["ready", "archived"],
+    "ready": ["building", "archived"],
+    "building": ["ready", "archived"],
+    "archived": ["ready"]
+  }
+}

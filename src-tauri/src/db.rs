@@ -6,6 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::journey;
+
 pub struct Db(pub Mutex<Connection>);
 
 #[cfg(test)]
@@ -2610,17 +2612,25 @@ pub fn update_project_material(conn: &Connection, id: &str, material: &str) -> R
         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
 
-const PROJECT_JOURNEY_STAGES: [&str; 5] = ["idea", "discussing", "ready", "building", "archived"];
-
 pub fn update_project_journey(
     conn: &Connection,
     id: &str,
     stage: &str,
     journey_doc_path: Option<String>,
 ) -> Result<Project> {
-    if !PROJECT_JOURNEY_STAGES.contains(&stage) {
+    if !journey::stage_valid(stage) {
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "journey stage: {stage}"
+        )));
+    }
+    let current = list_projects(conn)?
+        .into_iter()
+        .find(|project| project.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    if !journey::transition_allowed(&current.journey_stage, stage) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "journey transition: {} -> {stage}",
+            current.journey_stage
         )));
     }
     conn.execute(
@@ -6452,6 +6462,19 @@ mod tests {
             assert_eq!(gamma.journey_stage, "idea");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn journey_transition_rules_are_enforced() {
+        let conn = new_test_connection();
+        let project = create_project(&conn, "Alpha", "").unwrap();
+        assert!(update_project_journey(&conn, &project.id, "discussing", None).is_ok());
+        assert!(update_project_journey(&conn, &project.id, "building", None).is_err());
+        assert!(update_project_journey(&conn, &project.id, "ready", None).is_ok());
+        assert!(update_project_journey(&conn, &project.id, "building", None).is_ok());
+        assert!(update_project_journey(&conn, &project.id, "archived", None).is_ok());
+        assert!(update_project_journey(&conn, &project.id, "idea", None).is_err());
+        assert!(update_project_journey(&conn, &project.id, "ready", None).is_ok());
     }
 
     #[test]
