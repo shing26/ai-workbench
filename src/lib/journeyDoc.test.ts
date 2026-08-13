@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   JOURNEY_STAGES,
   allowedTargets,
+  buildArchiveIndex,
+  buildArchiveJourneyDoc,
   buildArchiveRecord,
   buildJourneyDoc,
+  buildJourneyDocIndex,
   isAllowedTransition,
   journeyDocFileName,
 } from './journeyDoc';
@@ -90,5 +93,56 @@ describe('journeyDoc module', () => {
     expect(record).toContain('- 归档阶段: ready → archived');
     expect(record).toContain('- 已完成 DoD: 3 项');
     expect(record).toContain('CLI 运行记录: 5 次（成功 4 次）');
+  });
+
+  it('builds compact index cards instead of duplicating the doc', () => {
+    const index = buildJourneyDocIndex({
+      projectId: 'p1',
+      topic: 'AI 工作台',
+      fileName: 'docs/journey/p1-ai.md',
+      opinions: [
+        {
+          seat: { id: 'ui-designer', name: 'UI Designer', role: 'Design' },
+          opinion: '保持旅程阶段可视化',
+        },
+      ],
+      consensus: { summary: '共识：旅程文档单一产物' },
+    });
+    expect(index).toContain('# AI 工作台');
+    expect(index).toContain('- 旅程文档: docs/journey/p1-ai.md');
+    expect(index).toContain('- 参与 Agent: 1');
+    expect(index).not.toContain('## 设计决策');
+
+    const archived = buildArchiveIndex({
+      projectName: 'Demo',
+      fileName: 'docs/journey/p1-demo.md',
+      fromStage: 'ready',
+      doneCount: 3,
+      pendingCount: 1,
+      runsCount: 5,
+      successRunsCount: 4,
+    });
+    expect(archived).toContain('# Demo（已归档）');
+    expect(archived).toContain('- 旅程文档: docs/journey/p1-demo.md');
+    expect(archived).not.toContain('## 归档记录');
+  });
+
+  it('builds a full seven-section doc when archiving without an existing journey doc', () => {
+    const doc = buildArchiveJourneyDoc({
+      projectId: 'p1',
+      projectName: 'Demo',
+      fromStage: 'ready',
+      doneCount: 3,
+      pendingCount: 1,
+      runsCount: 5,
+      successRunsCount: 4,
+      archivedAt: '2026-08-13T00:00:00.000Z',
+    });
+    expect(doc).toContain('projectId: p1');
+    expect(doc).toContain('journeyStage: archived');
+    expect(doc).toContain('updatedAt: 2026-08-13T00:00:00.000Z');
+    for (const section of SECTIONS) {
+      expect(doc).toContain(`## ${section}`);
+    }
   });
 });

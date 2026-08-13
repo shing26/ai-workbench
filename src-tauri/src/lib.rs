@@ -997,11 +997,7 @@ fn write_journey_doc(
     mode: String,
 ) -> Result<db::Project, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let current = db::list_projects(&conn)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| format!("project not found: {project_id}"))?;
+    let current = db::get_project(&conn, &project_id).map_err(|e| e.to_string())?;
     if !journey::stage_valid(&stage) {
         return Err(format!("invalid journey stage: {stage}"));
     }
@@ -1010,6 +1006,9 @@ fn write_journey_doc(
             "journey transition not allowed: {} -> {stage}",
             current.journey_stage
         ));
+    }
+    if mode != "replace" && mode != "append" {
+        return Err(format!("invalid journey doc mode: {mode}"));
     }
 
     let vault = Path::new(&vault_path);
@@ -1029,15 +1028,29 @@ fn write_journey_doc(
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {e}"))?;
     }
+    let existing = fs::read_to_string(&full).ok();
     let final_content = if mode == "append" {
-        let existing = fs::read_to_string(&full).unwrap_or_default();
-        journey::append_record(&existing, &content, &stage)
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        journey::append_record(
+            existing.as_deref().unwrap_or(""),
+            &content,
+            &stage,
+            &updated_at,
+            &project_id,
+        )
     } else {
         content
     };
     fs::write(&full, final_content).map_err(|e| format!("Failed to write journey doc: {e}"))?;
-    db::update_project_journey(&conn, &project_id, &stage, Some(file_name))
-        .map_err(|e| e.to_string())
+    let update = db::update_project_journey(&conn, &project_id, &stage, Some(file_name));
+    if let Err(error) = update {
+        let _ = match existing {
+            Some(previous) => fs::write(&full, previous),
+            None => fs::remove_file(&full),
+        };
+        return Err(error.to_string());
+    }
+    update.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

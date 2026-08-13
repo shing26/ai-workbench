@@ -5,6 +5,8 @@ import * as db from '../lib/db';
 import {
   JOURNEY_STAGE_LABELS,
   allowedTargets,
+  buildArchiveIndex,
+  buildArchiveJourneyDoc,
   buildArchiveRecord,
   journeyDocFileName,
 } from '../lib/journeyDoc';
@@ -26,6 +28,7 @@ export default function ProjectsView() {
   const vibeContext = useWorkbenchStore((s) => s.vibeContext);
   const addProject = useWorkbenchStore((s) => s.addProject);
   const updateProjectJourney = useWorkbenchStore((s) => s.updateProjectJourney);
+  const setProjects = useWorkbenchStore((s) => s.setProjects);
   const setVibeContext = useWorkbenchStore((s) => s.setVibeContext);
   const setActiveView = useWorkbenchStore((s) => s.setActiveView);
   const addThought = useWorkbenchStore((s) => s.addThought);
@@ -71,6 +74,7 @@ export default function ProjectsView() {
       setVibeContext({
         projectId: project.id,
         projectName: project.name,
+        journeyDocPath: project.journeyDocPath,
         path: project.path,
         branch: ctx.branch,
         head: ctx.head,
@@ -101,15 +105,37 @@ export default function ProjectsView() {
       successRunsCount: successRuns,
     });
     const fileName = project.journeyDocPath || journeyDocFileName(project);
+    const archiveDoc = buildArchiveJourneyDoc({
+      projectId: project.id,
+      projectName: project.name,
+      fromStage: project.journeyStage,
+      doneCount: doneTasks.length,
+      pendingCount: pending.length,
+      runsCount: runs.length,
+      successRunsCount: successRuns,
+    });
     await db.writeJourneyDoc(
       project.path ?? '',
       fileName,
-      record,
+      project.journeyDocPath ? record : archiveDoc,
       project.id,
       'archived',
-      'append',
+      project.journeyDocPath ? 'append' : 'replace',
     );
-    await addThought(record, `#prism,#journey,#archived,#project-${project.id}`, 'doc');
+    await setProjects(await db.listProjects());
+    await addThought(
+      buildArchiveIndex({
+        projectName: project.name,
+        fileName,
+        fromStage: project.journeyStage,
+        doneCount: doneTasks.length,
+        pendingCount: pending.length,
+        runsCount: runs.length,
+        successRunsCount: successRuns,
+      }),
+      `#prism,#journey,#archived,#project-${project.id}`,
+      'doc',
+    );
     toast.success(`已归档「${project.name}」到 Knowledge`);
   };
 

@@ -125,3 +125,89 @@ export function buildArchiveRecord(input: ArchiveRecordInput): string {
     '',
   ].join('\n');
 }
+
+export function buildJourneyDocIndex(input: {
+  projectId: string;
+  topic: string;
+  fileName: string;
+  opinions: JourneyOpinion[];
+  consensus?: JourneyConsensus;
+}): string {
+  const summary = input.consensus?.summary ?? '- 待 CPO 确认';
+  return [
+    `# ${input.topic}`,
+    '',
+    `- 旅程文档: ${input.fileName}`,
+    '- 阶段: ready',
+    `- 参与 Agent: ${input.opinions.length}`,
+    `- 论证结论: ${summary}`,
+    '',
+  ].join('\n');
+}
+
+export function buildArchiveIndex(input: {
+  projectName: string;
+  fileName: string;
+  fromStage: ProjectJourneyStage;
+  doneCount: number;
+  pendingCount: number;
+  runsCount: number;
+  successRunsCount: number;
+}): string {
+  return [
+    `# ${input.projectName}（已归档）`,
+    '',
+    `- 旅程文档: ${input.fileName}`,
+    `- 归档阶段: ${input.fromStage} → archived`,
+    `- 已完成 DoD: ${input.doneCount} 项`,
+    `- 待完成: ${input.pendingCount} 项`,
+    `- CLI 运行记录: ${input.runsCount} 次（成功 ${input.successRunsCount} 次）`,
+    '',
+  ].join('\n');
+}
+
+export function buildArchiveJourneyDoc(input: {
+  projectId: string;
+  projectName: string;
+  fromStage: ProjectJourneyStage;
+  doneCount: number;
+  pendingCount: number;
+  runsCount: number;
+  successRunsCount: number;
+  archivedAt?: string;
+}): string {
+  const archivedAt = input.archivedAt ?? new Date().toISOString();
+  return [
+    '---',
+    `projectId: ${input.projectId}`,
+    'journeyStage: archived',
+    `updatedAt: ${archivedAt}`,
+    'tags: [prism, journey, archived]',
+    '---',
+    '',
+    `# ${input.projectName}（旅程归档）`,
+    '',
+    '## 背景与目标',
+    `项目「${input.projectName}」完成旅程闭环后手动归档，旅程文档作为项目决策与交付的单一记录。`,
+    '',
+    '## PRD 要点',
+    '见上方旅程记录；归档时未新增需求。',
+    '',
+    '## 设计决策',
+    '归档决策由 CPO 手动确认，保留交付摘要与 CLI 运行记录。',
+    '',
+    '## 风险与 Trade-off',
+    '- 待补充',
+    '',
+    '## 论证结论',
+    `已完成 DoD ${input.doneCount} 项，待完成 ${input.pendingCount} 项。`,
+    '',
+    '## 交付任务清单',
+    `- [x] 已完成 DoD: ${input.doneCount} 项`,
+    `- [ ] 待完成: ${input.pendingCount} 项`,
+    '',
+    '## 实现与验证记录',
+    `- CLI 运行: ${input.runsCount} 次（成功 ${input.successRunsCount} 次）`,
+    '',
+  ].join('\n');
+}

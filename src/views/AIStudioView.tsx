@@ -1,7 +1,7 @@
 import { Check, ChevronDown, History, Plus, Save, Search, Send, Square } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as db from '../lib/db';
-import { buildJourneyDoc, journeyDocFileName } from '../lib/journeyDoc';
+import { buildJourneyDoc, buildJourneyDocIndex, journeyDocFileName } from '../lib/journeyDoc';
 import { toast } from '../lib/toast';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
@@ -78,6 +78,7 @@ export default function AIStudioView() {
   const noteContext = useWorkbenchStore((s) => s.noteContext);
   const actionContext = useWorkbenchStore((s) => s.actionContext);
   const updateProjectJourney = useWorkbenchStore((s) => s.updateProjectJourney);
+  const setProjects = useWorkbenchStore((s) => s.setProjects);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -481,10 +482,12 @@ export default function AIStudioView() {
         toast.success('已固化为知识卡片（Knowledge）');
         return;
       }
-      const fileName = journeyDocFileName({
-        id: vibeContext.projectId,
-        name: vibeContext.projectName,
-      });
+      const fileName =
+        vibeContext.journeyDocPath ||
+        journeyDocFileName({
+          id: vibeContext.projectId,
+          name: vibeContext.projectName,
+        });
       const journeyMarkdown = buildJourneyDoc({
         projectId: vibeContext.projectId,
         topic,
@@ -499,7 +502,18 @@ export default function AIStudioView() {
         'ready',
         'replace',
       );
-      await addThought(journeyMarkdown, '#prism,#journey', 'note');
+      await setProjects(await db.listProjects());
+      await addThought(
+        buildJourneyDocIndex({
+          projectId: vibeContext.projectId,
+          topic,
+          fileName,
+          opinions: roundtableOutputs,
+          consensus: lastConsensus ?? undefined,
+        }),
+        '#prism,#journey',
+        'note',
+      );
       setRoundtableOutputs([]);
       setLastConsensus(null);
       toast.success(`已固化为旅程文档（${fileName}）`);

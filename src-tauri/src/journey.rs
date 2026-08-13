@@ -35,9 +35,14 @@ pub fn transition_allowed(from: &str, to: &str) -> bool {
 }
 
 pub fn replace_frontmatter_stage(content: &str, stage: &str) -> String {
+    replace_frontmatter_field(content, "journeyStage", stage)
+}
+
+fn replace_frontmatter_field(content: &str, field: &str, value: &str) -> String {
     let mut fence_seen = 0;
     let mut in_frontmatter = false;
     let mut out: Vec<String> = Vec::new();
+    let prefix = format!("{field}:");
     for line in content.lines() {
         if line.trim() == "---" {
             fence_seen += 1;
@@ -45,8 +50,8 @@ pub fn replace_frontmatter_stage(content: &str, stage: &str) -> String {
             out.push(line.to_string());
             continue;
         }
-        if in_frontmatter && line.starts_with("journeyStage:") {
-            out.push(format!("journeyStage: {stage}"));
+        if in_frontmatter && line.starts_with(&prefix) {
+            out.push(format!("{field}: {value}"));
             continue;
         }
         out.push(line.to_string());
@@ -54,8 +59,33 @@ pub fn replace_frontmatter_stage(content: &str, stage: &str) -> String {
     out.join("\n")
 }
 
-pub fn append_record(content: &str, record: &str, stage: &str) -> String {
-    let updated = replace_frontmatter_stage(content, stage);
+fn upsert_frontmatter_field(content: &str, field: &str, value: &str) -> String {
+    let replaced = replace_frontmatter_field(content, field, value);
+    if replaced != content {
+        return replaced;
+    }
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    if let Some(index) = lines.iter().position(|line| line.trim() == "---") {
+        lines.insert(index + 1, format!("{field}: {value}"));
+    }
+    lines.join("\n")
+}
+
+pub fn append_record(
+    content: &str,
+    record: &str,
+    stage: &str,
+    updated_at: &str,
+    project_id: &str,
+) -> String {
+    if content.trim().is_empty() {
+        return format!(
+            "---\nprojectId: {project_id}\njourneyStage: {stage}\nupdatedAt: {updated_at}\ntags: [prism, journey]\n---\n\n# 旅程归档\n\n{}",
+            record.trim()
+        );
+    }
+    let updated = upsert_frontmatter_field(content, "updatedAt", updated_at);
+    let updated = replace_frontmatter_stage(&updated, stage);
     format!("{}\n\n{}", updated.trim_end(), record.trim())
 }
 
@@ -105,9 +135,32 @@ mod tests {
     #[test]
     fn append_record_keeps_existing_doc_and_adds_record() {
         let content = "---\njourneyStage: ready\n---\n\n# Topic\n\nbody";
-        let updated = append_record(content, "## 归档记录\n\n- 项目: Demo", "archived");
-        assert!(updated.starts_with("---\njourneyStage: archived"));
+        let updated = append_record(
+            content,
+            "## 归档记录\n\n- 项目: Demo",
+            "archived",
+            "2026-08-13T00:00:00Z",
+            "p1",
+        );
+        assert!(updated.starts_with("---\n"));
+        assert!(updated.contains("journeyStage: archived"));
+        assert!(updated.contains("updatedAt: 2026-08-13T00:00:00Z"));
         assert!(updated.contains("body"));
         assert!(updated.ends_with("## 归档记录\n\n- 项目: Demo"));
+    }
+
+    #[test]
+    fn append_record_builds_minimal_doc_when_missing() {
+        let updated = append_record(
+            "",
+            "## 归档记录\n\n- 项目: Demo",
+            "archived",
+            "2026-08-13T00:00:00Z",
+            "p1",
+        );
+        assert!(updated.starts_with("---\nprojectId: p1"));
+        assert!(updated.contains("journeyStage: archived"));
+        assert!(updated.contains("updatedAt: 2026-08-13T00:00:00Z"));
+        assert!(updated.contains("## 归档记录"));
     }
 }

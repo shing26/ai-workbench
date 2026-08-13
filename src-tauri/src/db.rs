@@ -2519,6 +2519,13 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     rows.collect()
 }
 
+pub fn get_project(conn: &Connection, id: &str) -> Result<Project> {
+    list_projects(conn)?
+        .into_iter()
+        .find(|project| project.id == id)
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
 pub fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Project> {
     let id = uid();
     let now = now_millis();
@@ -2589,10 +2596,7 @@ pub fn update_project(conn: &Connection, id: &str, status: &str, revenue: f64) -
         "INSERT INTO project_revenue_history (id, project_id, revenue, recorded_at) VALUES (?1, ?2, ?3, ?4)",
         params![uid(), id, revenue, now_millis()],
     )?;
-    list_projects(conn)?
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    get_project(conn, id)
 }
 
 pub fn update_project_material(conn: &Connection, id: &str, material: &str) -> Result<Project> {
@@ -2623,10 +2627,7 @@ pub fn update_project_journey(
             "journey stage: {stage}"
         )));
     }
-    let current = list_projects(conn)?
-        .into_iter()
-        .find(|project| project.id == id)
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    let current = get_project(conn, id)?;
     if !journey::transition_allowed(&current.journey_stage, stage) {
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "journey transition: {} -> {stage}",

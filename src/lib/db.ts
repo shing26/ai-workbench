@@ -14,7 +14,7 @@ import {
 } from './embed';
 export type { EmbeddingMode };
 import { parseWorkbenchError, WorkbenchError } from './errors';
-import { JOURNEY_STAGES } from './journeyDoc';
+import { JOURNEY_STAGES, isAllowedTransition } from './journeyDoc';
 import { isMockAgentsEnabled, mockLlmReply, mockProviderHealth } from './mockAgents';
 
 export type { CustomQuickPrompt, QuickPrompt };
@@ -2080,6 +2080,12 @@ export async function updateProjectJourney(
   const shape = readLocal();
   const project = shape.projects.find((p) => p.id === id);
   if (!project) throw new Error('project not found');
+  if (!isAllowedTransition(project.journeyStage, stage)) {
+    throw new WorkbenchError(
+      'INVALID_INPUT',
+      `update_project_journey:${project.journeyStage}->${stage}`,
+    );
+  }
   project.journeyStage = stage;
   if (journeyDocPath !== null) project.journeyDocPath = journeyDocPath;
   writeLocal(shape);

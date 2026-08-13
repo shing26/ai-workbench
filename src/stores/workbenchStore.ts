@@ -13,6 +13,7 @@ export type InspectorState = {
 export type VibeContext = {
   projectId: string;
   projectName: string;
+  journeyDocPath: string | null;
   path: string;
   branch: string;
   head: string;
