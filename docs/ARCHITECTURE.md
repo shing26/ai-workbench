@@ -952,3 +952,11 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 - `db.ts` 提供与 Rust 同构的高级渲染器与 `validateWebhookPayloadTemplate`，版本记录持久化到 `ai-workbench:webhook-template-versions:v1`，`readWebhookRules` 自动补 `templateVersion ?? 1`。
 - SystemView payload 编辑区新增模板片段按钮（event / ts / context / if / each）与 Validate schema；每条规则下方新增模板编辑器、保存版本、版本下拉与 Restore，锚点 `data-webhook-template-snippet` / `data-webhook-template-validation` / `data-webhook-rule-payload-input` / `data-webhook-rule-version-save` / `data-webhook-rule-version-count` / `data-webhook-rule-version-select` / `data-webhook-rule-version-restore` / `data-webhook-rule-version-note`。
 - `verify:ui` / `verify:preview` 新增 `webhookTemplateVersioning` / `webhookTemplateValidationUi` lane；Rust 单测覆盖条件、循环、未知变量、块收集与版本生命周期，总数增至 199 条。
+
+## Sprint 157：Delivery Orchestrator
+
+- 新增 `src/lib/delivery.ts`：`DeliveryOrchestrator` 作为交付终端单一状态 owner，提供 `snapshot / subscribe` 与可注入 adapter；应用启动时 mount 一次，`ActionsView` / `CliModal` 只消费快照和命令。
+- Orchestrator 在 mount 时订阅 `cli_log_line` / `cli_exited`，负责 active run、logs、running、exitCode 与退出后的持久化回流；组件不再直接调用 `recordCliRun`，`ActionsView` 移除 8 秒轮询。
+- 验证矩阵与 CLI 生命周期统一写入 `delivery_runs`：点 `v` 创建或更新当前 attempt，自动修复复用同一条记录并推进 `fixRound`，手动 CLI 派发单独生成一条 CLI run。
+- 新增 Tauri 命令 `list_delivery_runs` / `record_delivery_run`；浏览器 fallback 使用 `ai-workbench:delivery-runs:v1` 保存同一模型，Rust/browser 差异收在 db adapter。
+- 删除 `workbenchStore.qualityGate` / `refreshQualityGate` / `clearQualityGate`；`FILE_UPDATED` 改调 `DeliveryOrchestrator.refreshGate()`。

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { deliveryOrchestrator } from '../lib/delivery';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
 /**
@@ -11,7 +12,6 @@ export function useTauriEvents(): void {
   const addEventLog = useWorkbenchStore((s) => s.addEventLog);
   const refreshMountedGitStatus = useWorkbenchStore((s) => s.refreshMountedGitStatus);
   const refreshTasks = useWorkbenchStore((s) => s.refreshTasks);
-  const refreshQualityGate = useWorkbenchStore((s) => s.refreshQualityGate);
 
   useEffect(() => {
     const isTauriRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -23,7 +23,10 @@ export function useTauriEvents(): void {
     const handleUpdated = (filePath: string) => {
       addEventLog('IPC', `file_ops::file_updated -> ${filePath}`);
       void refreshMountedGitStatus();
-      void refreshQualityGate();
+      const vibe = useWorkbenchStore.getState().vibeContext;
+      if (vibe?.path) {
+        void deliveryOrchestrator.refreshGate(vibe.path, vibe.journeyDocPath);
+      }
     };
     const handleRestored = (backupId: string) => {
       addEventLog('INFO', `file_ops::file_restored -> ${backupId}`);
@@ -71,5 +74,5 @@ export function useTauriEvents(): void {
       unlistenRestored?.();
       unlistenDod?.();
     };
-  }, [addEventLog, refreshMountedGitStatus, refreshTasks, refreshQualityGate]);
+  }, [addEventLog, refreshMountedGitStatus, refreshTasks]);
 }

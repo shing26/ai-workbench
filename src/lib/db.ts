@@ -1756,30 +1756,48 @@ const localCliHandlers = {
   exited: new Set<(evt: CliExited) => void>(),
 };
 
-const CLI_RUNS_LS_KEY = 'ai-workbench:cli-runs:v1';
+const DELIVERY_RUNS_LS_KEY = 'ai-workbench:delivery-runs:v1';
+const LEGACY_CLI_RUNS_LS_KEY = 'ai-workbench:cli-runs:v1';
+export const DELIVERY_RUN_LIMIT = 200;
 
-export type CliRunRecord = {
+export type DeliveryRun = {
   runId: string;
+  projectPath: string;
   command: string;
-  exitCode: number;
+  exitCode: number | null;
   startedAt: number;
+  finishedAt: number | null;
+  gateResult: QualityGateResult | null;
+  fixRound: number;
 };
 
-export function recordCliRun(run: CliRunRecord): void {
+function readDeliveryRunsLocal(): DeliveryRun[] {
   try {
-    const runs = listCliRuns();
-    runs.push(run);
-    localStorage.setItem(CLI_RUNS_LS_KEY, JSON.stringify(runs.slice(-200)));
-  } catch {
-    /* storage failures are non-fatal */
-  }
-}
-
-export function listCliRuns(): CliRunRecord[] {
-  try {
-    const raw = localStorage.getItem(CLI_RUNS_LS_KEY);
+    const legacyRaw = localStorage.getItem(LEGACY_CLI_RUNS_LS_KEY);
+    if (legacyRaw && !localStorage.getItem(DELIVERY_RUNS_LS_KEY)) {
+      const legacy = JSON.parse(legacyRaw) as Array<{
+        runId: string;
+        command: string;
+        exitCode: number;
+        startedAt: number;
+      }>;
+      if (Array.isArray(legacy)) {
+        const migrated: DeliveryRun[] = legacy.map((run) => ({
+          runId: run.runId,
+          projectPath: '',
+          command: run.command,
+          exitCode: run.exitCode,
+          startedAt: run.startedAt,
+          finishedAt: run.startedAt,
+          gateResult: null,
+          fixRound: 0,
+        }));
+        return migrated;
+      }
+    }
+    const raw = localStorage.getItem(DELIVERY_RUNS_LS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as CliRunRecord[];
+      const parsed = JSON.parse(raw) as DeliveryRun[];
       if (Array.isArray(parsed)) return parsed;
     }
   } catch {
@@ -1788,19 +1806,45 @@ export function listCliRuns(): CliRunRecord[] {
   return [];
 }
 
-export function getCliRunStats(): {
+function writeDeliveryRunsLocal(runs: DeliveryRun[]) {
+  localStorage.setItem(DELIVERY_RUNS_LS_KEY, JSON.stringify(runs.slice(-DELIVERY_RUN_LIMIT)));
+}
+
+export async function listDeliveryRuns(): Promise<DeliveryRun[]> {
+  if (isTauri()) {
+    return invoke<DeliveryRun[]>('list_delivery_runs', { limit: DELIVERY_RUN_LIMIT });
+  }
+  return readDeliveryRunsLocal()
+    .slice()
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+export async function recordDeliveryRun(run: DeliveryRun): Promise<DeliveryRun> {
+  if (isTauri()) {
+    return invoke<DeliveryRun>('record_delivery_run', { request: run });
+  }
+  const runs = readDeliveryRunsLocal();
+  const index = runs.findIndex((item) => item.runId === run.runId);
+  if (index >= 0) runs[index] = run;
+  else runs.push(run);
+  runs.sort((a, b) => b.startedAt - a.startedAt);
+  writeDeliveryRunsLocal(runs);
+  return run;
+}
+
+export function getDeliveryRunStats(runs: DeliveryRun[]): {
   total: number;
   success: number;
   successRate: number;
   lastRunAt: number | null;
 } {
-  const runs = listCliRuns();
-  const success = runs.filter((r) => r.exitCode === 0).length;
-  const last = runs.length > 0 ? runs[runs.length - 1]!.startedAt : null;
+  const cliRuns = runs.filter((run) => run.exitCode !== null);
+  const success = cliRuns.filter((run) => run.exitCode === 0).length;
+  const last = cliRuns[0]?.startedAt ?? null;
   return {
-    total: runs.length,
+    total: cliRuns.length,
     success,
-    successRate: runs.length > 0 ? Math.round((success / runs.length) * 100) : 0,
+    successRate: cliRuns.length > 0 ? Math.round((success / cliRuns.length) * 100) : 0,
     lastRunAt: last,
   };
 }

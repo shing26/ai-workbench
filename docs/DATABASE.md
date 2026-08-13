@@ -1293,3 +1293,25 @@ ALTER TABLE vector_shards ADD COLUMN centroid TEXT NOT NULL DEFAULT '';
 - `vector_shards.centroid` 保存 shard 内已索引文档向量的均值并归一化；`refresh_shard_stats` 聚合后把 `status` 设为 `ready`（有文档且质心非空）/ `partial`（有文档但质心缺失）/ `idle`，`get_vector_index_status.centroids_ready` 表示所有非空 shard 均具备质心。
 - `search_thoughts` 在 `ann_enabled && 1 < probe_count < shard_count` 时按查询向量与各 shard 质心余弦相似度保留 top probe shard，再对剩余文档做 BM25 + 向量混合评分；关闭 ANN 或 `probe_count == shard_count` 时全量返回，保证关闭后无召回损失。
 - 浏览器 fallback 使用 `ai-workbench:embedding-config:v1` 的 `annEnabled / probeCount` 与 `ai-workbench:vector-shards:v1` 的 `centroid` 同构持久化，`refreshVectorShardStats` 在 rebuild / config 保存后重新计算质心。
+
+## Sprint 157：交付运行记录
+
+```sql
+CREATE TABLE IF NOT EXISTS delivery_runs (
+    run_id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL DEFAULT '',
+    command TEXT NOT NULL DEFAULT '',
+    exit_code INTEGER,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    finished_at INTEGER,
+    gate_result TEXT,
+    fix_round INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_runs_started
+    ON delivery_runs(started_at DESC);
+```
+
+- 一条 `delivery_runs` 记录代表一次交付尝试：自动修复复用同一 `run_id` 并推进 `fix_round`，手动 CLI 派发单独生成一条记录。
+- `gate_result` 保存验证矩阵 JSON；`exit_code` / `finished_at` 在 CLI 退出后回写，未退出时为 `NULL`。
+- 新增 Tauri 命令：`list_delivery_runs(limit)`（`limit` clamp 到 1~500，按 `started_at DESC` 返回）与 `record_delivery_run(request)`（按 `run_id` upsert，拒绝空 id / 负 fix round）。
+- 浏览器 fallback 使用 `ai-workbench:delivery-runs:v1` 保存同一模型，最多保留 200 条；旧 `ai-workbench:cli-runs:v1` 仅作一次非破坏性迁移读取，不删除旧 key。

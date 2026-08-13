@@ -1,24 +1,19 @@
 import { AlertTriangle, Clock3, Lock } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import * as db from '../lib/db';
 import { formatTokens, getBudgetStatus, lastNDaysUsage, loadTokenBudget } from '../lib/tokenBudget';
+import { useDeliverySnapshot } from '../hooks/useDelivery';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
 export default function DashboardView() {
   const projects = useWorkbenchStore((s) => s.projects);
   const tasks = useWorkbenchStore((s) => s.tasks);
   const thoughts = useWorkbenchStore((s) => s.thoughts);
-  const [cliStats, setCliStats] = useState(() => db.getCliRunStats());
-  const [recentRuns] = useState(() => db.listCliRuns().slice(-1));
+  const delivery = useDeliverySnapshot();
+  const cliStats = db.getDeliveryRunStats(delivery.runs);
+  const lastRun = delivery.runs.find((run) => run.exitCode !== null);
   const [tokenUsage] = useState(() => lastNDaysUsage(7));
   const [budget] = useState(() => getBudgetStatus(loadTokenBudget()));
-
-  useEffect(() => {
-    const refresh = () => setCliStats(db.getCliRunStats());
-    refresh();
-    const timer = window.setInterval(refresh, 8000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const coverage = useMemo(() => {
     const total = projects.length;
@@ -44,7 +39,6 @@ export default function DashboardView() {
   const blockedCount = tasks.filter((t) => t.status === 'in_progress').length;
   const totalTokens = tokenUsage.reduce((sum, p) => sum + p.tokens, 0);
   const maxTokens = Math.max(1, ...tokenUsage.map((p) => p.tokens));
-  const lastRun = recentRuns[0];
   const topDoD = todayDoD[0];
   const topBlocked = blocked[0];
   const riskTitle = budget.over

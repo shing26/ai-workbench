@@ -1589,6 +1589,24 @@ fn detect_cli_tools(state: State<'_, db::Db>) -> Result<Vec<db::CliToolDetection
 }
 
 #[tauri::command]
+fn list_delivery_runs(
+    state: State<'_, db::Db>,
+    limit: i64,
+) -> Result<Vec<db::DeliveryRun>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::list_delivery_runs(&conn, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn record_delivery_run(
+    state: State<'_, db::Db>,
+    request: db::DeliveryRun,
+) -> Result<db::DeliveryRun, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::record_delivery_run(&conn, &request).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn save_cli_tool_detections(
     state: State<'_, db::Db>,
     tools: Vec<db::CliToolDetection>,
@@ -5420,6 +5438,8 @@ pub fn run() {
             delete_team_preset,
             list_cli_tools,
             detect_cli_tools,
+            list_delivery_runs,
+            record_delivery_run,
             save_cli_tool_detections,
             list_sessions,
             get_workspace_summary,

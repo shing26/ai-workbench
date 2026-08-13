@@ -2,6 +2,8 @@ import { Copy, Play, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as db from '../../lib/db';
+import { useDeliverySnapshot } from '../../hooks/useDelivery';
+import { deliveryOrchestrator } from '../../lib/delivery';
 import { emitEvent, TOPICS } from '../../stores/events';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 import { usePrismModals } from './prismModalsStore';
@@ -228,10 +230,11 @@ function CliModal() {
   const attachedPaths = usePrismModals((s) => s.attachedPaths);
   const closeModal = usePrismModals((s) => s.closeModal);
   const vibePath = useWorkbenchStore((s) => s.vibeContext?.path ?? '');
-  const [logs, setLogs] = useState<db.CliLogLine[]>([]);
-  const [running, setRunning] = useState(false);
-  const [exitCode, setExitCode] = useState<number | null>(null);
-  const runIdRef = useRef<string | null>(null);
+  const delivery = useDeliverySnapshot();
+  const activeCli = delivery.activeCli;
+  const logs = useMemo(() => activeCli?.logs ?? [], [activeCli]);
+  const running = activeCli?.running ?? false;
+  const exitCode = activeCli?.exitCode ?? null;
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const specPath = payload?.specPath ?? '';
@@ -249,12 +252,6 @@ function CliModal() {
     void refreshCliTools();
   }, [refreshCliTools]);
 
-  useEffect(() => {
-    return () => {
-      runIdRef.current = null;
-    };
-  }, []);
-
   const copy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(commandText);
@@ -264,42 +261,13 @@ function CliModal() {
   }, [commandText]);
 
   const run = useCallback(async () => {
-    if (running) return;
-    setRunning(true);
-    setExitCode(null);
-    setLogs([{ runId: 'pending', line: `$ ${commandText}`, stream: 'stdout' }]);
-    try {
-      const { runId } = await db.spawnCliProcess(vibePath, command, [prompt]);
-      runIdRef.current = runId;
-      const unLog = await db.listenCliLog((line) => {
-        if (line.runId !== runId) return;
-        setLogs((prev) => [...prev, line]);
-      });
-      const unExit = await db.listenCliExit((evt) => {
-        if (evt.runId !== runId) return;
-        setExitCode(evt.exitCode);
-        setRunning(false);
-        db.recordCliRun({
-          runId,
-          command,
-          exitCode: evt.exitCode,
-          startedAt: Date.now(),
-        });
-        unLog();
-        unExit();
-      });
-    } catch (err) {
-      setLogs((prev) => [
-        ...prev,
-        {
-          runId: 'err',
-          line: err instanceof Error ? err.message : String(err),
-          stream: 'stderr',
-        },
-      ]);
-      setRunning(false);
-    }
-  }, [running, vibePath, command, commandText, prompt]);
+    await deliveryOrchestrator.startCli({
+      projectPath: vibePath,
+      command,
+      args: [prompt],
+      prompt,
+    });
+  }, [vibePath, command, prompt]);
 
   return (
     <ModalShell title="本地 CLI 派发" onClose={closeModal}>

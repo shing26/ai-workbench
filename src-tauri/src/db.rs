@@ -564,6 +564,18 @@ CREATE TABLE IF NOT EXISTS cli_tools (
     detected INTEGER NOT NULL DEFAULT 0,
     last_checked_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS delivery_runs (
+    run_id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL DEFAULT '',
+    command TEXT NOT NULL DEFAULT '',
+    exit_code INTEGER,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    finished_at INTEGER,
+    gate_result TEXT,
+    fix_round INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_runs_started
+    ON delivery_runs(started_at DESC);
 "#;
 
 #[derive(Clone, Serialize)]
@@ -781,6 +793,19 @@ pub struct CliToolDetection {
     pub label: String,
     pub detected: bool,
     pub last_checked_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryRun {
+    pub run_id: String,
+    pub project_path: String,
+    pub command: String,
+    pub exit_code: Option<i64>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub gate_result: Option<Value>,
+    pub fix_round: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -3546,6 +3571,84 @@ pub fn save_cli_tool_detections(
         )?;
     }
     list_cli_tools(conn)
+}
+
+fn delivery_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRun> {
+    let gate_result: Option<String> = row.get(6)?;
+    Ok(DeliveryRun {
+        run_id: row.get(0)?,
+        project_path: row.get(1)?,
+        command: row.get(2)?,
+        exit_code: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        gate_result: gate_result.and_then(|json| serde_json::from_str(&json).ok()),
+        fix_round: row.get(7)?,
+    })
+}
+
+pub fn get_delivery_run(conn: &Connection, run_id: &str) -> Result<Option<DeliveryRun>> {
+    conn.query_row(
+        "SELECT run_id, project_path, command, exit_code, started_at, finished_at,
+                gate_result, fix_round
+         FROM delivery_runs
+         WHERE run_id = ?1",
+        params![run_id],
+        delivery_run_from_row,
+    )
+    .optional()
+}
+
+pub fn list_delivery_runs(conn: &Connection, limit: i64) -> Result<Vec<DeliveryRun>> {
+    let limit = limit.clamp(1, 500);
+    let mut stmt = conn.prepare(
+        "SELECT run_id, project_path, command, exit_code, started_at, finished_at,
+                gate_result, fix_round
+         FROM delivery_runs
+         ORDER BY started_at DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], delivery_run_from_row)?;
+    rows.collect()
+}
+
+pub fn record_delivery_run(conn: &Connection, run: &DeliveryRun) -> Result<DeliveryRun> {
+    if run.run_id.trim().is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "empty delivery run id".into(),
+        ));
+    }
+    if run.fix_round < 0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "negative delivery fix round".into(),
+        ));
+    }
+    let gate_result = run.gate_result.as_ref().map(ToString::to_string);
+    conn.execute(
+        "INSERT INTO delivery_runs (
+            run_id, project_path, command, exit_code, started_at, finished_at,
+            gate_result, fix_round
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(run_id) DO UPDATE SET
+            project_path = excluded.project_path,
+            command = excluded.command,
+            exit_code = excluded.exit_code,
+            started_at = excluded.started_at,
+            finished_at = excluded.finished_at,
+            gate_result = excluded.gate_result,
+            fix_round = excluded.fix_round",
+        params![
+            run.run_id,
+            run.project_path,
+            run.command,
+            run.exit_code,
+            run.started_at,
+            run.finished_at,
+            gate_result,
+            run.fix_round
+        ],
+    )?;
+    get_delivery_run(conn, &run.run_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
 pub fn capture_clipboard(conn: &Connection, content: &str, source: &str) -> Result<ClipboardItem> {
@@ -8612,6 +8715,62 @@ mod tests {
         assert_eq!(summary.thoughts.len(), 1);
         assert_eq!(summary.sessions.len(), 1);
         assert_eq!(summary.providers.len(), 1);
+    }
+
+    #[test]
+    fn delivery_runs_persist_update_and_list_newest_first() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        let gate = serde_json::json!({
+            "status": "FAILED",
+            "errors": ["error A"],
+            "levels": []
+        });
+        let first = DeliveryRun {
+            run_id: "delivery-1".to_string(),
+            project_path: "/project".to_string(),
+            command: String::new(),
+            exit_code: None,
+            started_at: 100,
+            finished_at: Some(150),
+            gate_result: Some(gate),
+            fix_round: 0,
+        };
+        let second = DeliveryRun {
+            run_id: "delivery-2".to_string(),
+            project_path: "/project".to_string(),
+            command: "claude".to_string(),
+            exit_code: Some(0),
+            started_at: 200,
+            finished_at: Some(250),
+            gate_result: None,
+            fix_round: 1,
+        };
+
+        let saved = record_delivery_run(&conn, &first).unwrap();
+        assert_eq!(saved.run_id, "delivery-1");
+        assert_eq!(
+            saved.gate_result.as_ref().unwrap()["status"],
+            serde_json::Value::String("FAILED".to_string())
+        );
+
+        record_delivery_run(&conn, &second).unwrap();
+        let updated = DeliveryRun {
+            run_id: "delivery-2".to_string(),
+            exit_code: Some(1),
+            fix_round: 2,
+            ..second
+        };
+        record_delivery_run(&conn, &updated).unwrap();
+
+        let runs = list_delivery_runs(&conn, 10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].run_id, "delivery-2");
+        assert_eq!(runs[0].exit_code, Some(1));
+        assert_eq!(runs[0].fix_round, 2);
+        assert_eq!(runs[1].run_id, "delivery-1");
+        assert!(get_delivery_run(&conn, "missing").unwrap().is_none());
     }
 
     #[test]
