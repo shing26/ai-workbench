@@ -126,12 +126,20 @@ _Avoid_: 无限自动循环、只报错不修
 _Avoid_: CLI 历史、终端日志、本地缓存
 
 **Provider 配置 (Provider Profile)**:
-一个 Provider 在工作台内的可配置身份，包含名称、baseUrl、API Key、默认模型、启用状态、优先级与流式请求超时/重试配置；由 Provider Control 统一管理，Studio 论证与验证矩阵共享当前选中配置。
+一个 Provider 在工作台内的可配置身份，包含名称、baseUrl、API Key、默认模型、显式供应商类型、启用状态、优先级与流式请求超时/重试配置；由 Provider Control 统一管理，Studio 论证与验证矩阵共享当前选中配置。
 _Avoid_: 模型下拉、API 设置散落在各视图、临时 provider 变量
 
 **Provider 测试 (Provider Test)**:
 对单个 Provider 配置执行健康检查或流式 smoke test，返回延迟、状态与可读错误；测试结果按配置缓存并展示，不阻断应用启动。
 _Avoid_: 只显示“已连接”、无错误细节的模拟成功
+
+**供应商类型 (Provider Type)**:
+`ollama` / `openai-compatible` / `custom`，用于区分 API 协议与模型发现/流式端点；显式类型让 OpenAI、Ollama 之外的供应商可接入，不再只靠名称或端口猜测。
+_Avoid_: 把供应商协议硬编码成 OpenAI/Ollama 两分支
+
+**Provider Lab**:
+Provider Control 内的独立测试入口，对当前选中 Provider 执行连接测试、流式 smoke test 与模型获取，并展示最近一次结果与可复用模型列表。
+_Avoid_: 测试能力藏在 provider 卡片里没有独立可操作入口
 
 ## 验证矩阵（四级门禁）
 

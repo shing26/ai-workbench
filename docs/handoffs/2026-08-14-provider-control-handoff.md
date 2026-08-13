@@ -8,6 +8,7 @@
 
 - `feat(provider-control)`: add Provider Control deep module and shared selection
 - `fix(provider-control)`: support deleting providers
+- `feat(provider-control)`: add provider types, profile editing, and Provider Lab
 - `docs(provider-control)`: add provider control handoff
 
 ## 本次会话做了什么
@@ -23,6 +24,9 @@
 9. 跑完整质量门，全部通过后按 Conventional Commits 提交。
 10. 根据用户反馈补齐 provider 删除：Provider Control 提供两步确认删除按钮，`ProviderControlOrchestrator` 删除后自动重选下一个可用 provider，并清理模型缓存与健康/smoke 状态。
 11. 桌面端新增 `delete_provider` Tauri 命令，删除 provider 时同步清理 `model_metadata`；Rust DB 测试覆盖删除及缓存清理。
+12. 根据用户反馈补齐供应商类型：Provider 持久化 `providerType`（`ollama` / `openai-compatible` / `custom`），Rust 迁移与浏览器 fallback 同时升级，不再只靠名称/端口猜测。
+13. Provider 资料支持编辑标签、Base URL、API key、模型与类型；桌面端新增 `update_provider_profile` 命令，API key 继续加密存储。
+14. 新增 Provider Lab：对当前选中 Provider 提供连接测试、流式 smoke test 与模型获取；预设支持一键保存，解决“自动增加保存不了”和“没有测试/获取模型模块”的问题。
 
 ## 架构决策
 
@@ -44,12 +48,14 @@ Spec/ADR 来源：`docs/adr/ADR-009-Provider-Control.md`、`.scratch/provider-co
 - UI verify 的项目输入框 selector 从 `[data-project-name]` 收敛为 `input[data-project-name]`，避免与项目卡同名锚点冲突。
 - L4 审计上下文现在会随 `QualityGateResult` 持久化，Actions 优先显示最近一次 gate 记录的 Provider Profile。
 - Provider 删除支持在 Rust 与 browser fallback 中同构：删除 provider、清理模型缓存，找不到 provider 时返回明确错误。
+- Provider 类型显式建模为 `providerType`，支持 OpenAI/Ollama 之外的 OpenAI-compatible 或 custom 供应商；旧数据迁移时按名称/端口补推 Ollama 类型。
+- Provider Lab 与 per-provider 操作共用 orchestrator 的 health/smoke/model 状态，浏览器端 health 与 smoke 也从确定性 mock 改为真实连接尝试。
 
 ## 质量门（2026-08-14 实跑）
 
-- `npm run lint` / `npm run build` / `npm run test:unit`：通过（41 tests）
+- `npm run lint` / `npm run build` / `npm run test:unit`：通过（43 tests）
 - `npm run format:check` / `node scripts/audit-contract.mjs`：通过
-- `cargo test`：150 通过；`cargo clippy --all-targets --all-features -- -D warnings` + `cargo fmt --check`：通过
+- `cargo test`：152 通过；`cargo clippy --all-targets --all-features -- -D warnings` + `cargo fmt --check`：通过
 - `npm run verify:matrix`：L1-L4 GREEN；preview-verify 覆盖 Provider modal 通过
 
 ## 工作区注意
