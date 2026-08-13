@@ -143,6 +143,22 @@ describe('RoundtableOrchestrator', () => {
     );
   });
 
+  it('blocks a roundtable with more than five seats', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.mount();
+
+    const result = await harness.orchestrator.start({
+      text: '超席论证',
+      seats: [seatA, seatB, seatA, seatB, seatA, seatB],
+      providerIds: ['p1'],
+      sessionId: 's1',
+    });
+
+    expect(result).toEqual({ ok: false, error: '最多选择 5 位 Agent 席位' });
+    expect(harness.calls).toHaveLength(0);
+    expect(harness.snapshots[harness.snapshots.length - 1]?.error).toBe('最多选择 5 位 Agent 席位');
+  });
+
   it('surfaces failed lanes and keeps healthy lanes in the consensus', async () => {
     const harness = createHarness({ failRun: (runId) => runId.endsWith('-s1') });
     await harness.orchestrator.mount();

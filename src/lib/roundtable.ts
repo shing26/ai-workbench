@@ -298,7 +298,13 @@ export class RoundtableOrchestrator {
       return { ok: false, error };
     }
 
-    const seats = input.seats.slice(0, MAX_SEATS);
+    const seats = input.seats;
+    if (seats.length > MAX_SEATS) {
+      const error = '最多选择 5 位 Agent 席位';
+      this.state = { ...this.state, status: 'idle', busy: false, error };
+      this.emit();
+      return { ok: false, error };
+    }
     if (seats.length < MIN_SEATS) {
       const error = '请至少勾选 2 位 Agent 席位';
       this.state = { ...this.state, status: 'idle', busy: false, error };
