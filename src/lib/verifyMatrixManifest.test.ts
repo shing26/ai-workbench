@@ -53,9 +53,10 @@ describe('verify.matrix.json contract', () => {
     }
   });
 
-  it('keeps L4 AI audit mode and shared security rules', () => {
+  it('keeps L4 CLI audit mode and shared security rules', () => {
     const l4 = matrix.levels[3];
-    expect(l4.aiAudit?.mode).toBe('in-app');
+    expect(l4.aiAudit?.mode).toBe('cli');
+    expect(l4.checks.some((check) => check.name === 'semantic audit')).toBe(true);
     expect(matrix.securityRules.ignorePaths).toContain('verify.matrix.json');
     expect(matrix.securityRules.secrets.length).toBeGreaterThan(0);
     for (const rule of matrix.securityRules.secrets) {

@@ -3028,6 +3028,18 @@ fn append_command_result(
     }
 }
 
+fn semantic_evidence_summary(evidence: &verify_matrix::SemanticAuditEvidence) -> String {
+    format!(
+        "tasks {}/{} code {} doc {} other {} archived {}",
+        evidence.checked_tasks,
+        evidence.pending_tasks,
+        evidence.code_files,
+        evidence.doc_files,
+        evidence.other_files,
+        evidence.archived
+    )
+}
+
 fn run_quality_gate_sync(
     path: &str,
     dod_path: Option<String>,
@@ -3148,6 +3160,10 @@ fn run_quality_gate_sync(
                             // with a note so the DoD doc requirement remains visible.
                         } else {
                             let mut security_hits: Vec<String> = Vec::new();
+                            let file_stats: Vec<(String, usize)> = diff
+                                .iter()
+                                .map(|file| (file.path.clone(), file.insertions))
+                                .collect();
                             for file in &diff {
                                 let added_text = diff_added_text(&file.hunk_preview);
                                 security_hits.extend(verify_matrix::scan_security_hits(
@@ -3155,6 +3171,20 @@ fn run_quality_gate_sync(
                                     &added_text,
                                     &manifest.security_rules,
                                 ));
+                            }
+                            if ai_mode != "in-app" {
+                                let semantic =
+                                    verify_matrix::run_semantic_audit(Some(&dod_text), &file_stats);
+                                if semantic.status == "FAIL" {
+                                    l4_errors.extend(semantic.warnings.iter().take(5).cloned());
+                                }
+                                l4_errors.extend(semantic.errors.iter().take(10).cloned());
+                                if !semantic.errors.is_empty() {
+                                    l4_errors.push(format!(
+                                        "semantic audit evidence: {}",
+                                        semantic_evidence_summary(&semantic.evidence)
+                                    ));
+                                }
                             }
                             if ai_mode == "in-app" {
                                 let dod_snippet: String = dod_text.chars().take(4000).collect();
@@ -3179,8 +3209,17 @@ fn run_quality_gate_sync(
                     Err(e) => l4_errors.push(format!("无法读取旅程文档（DoD）{}: {}", dod_abs, e)),
                 }
             }
-            None if ai_mode != "in-app" => {}
-            None => l4_errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string()),
+            None => {
+                let diff = get_project_diff_tree(path.to_string()).unwrap_or_default();
+                let file_stats: Vec<(String, usize)> = diff
+                    .iter()
+                    .map(|file| (file.path.clone(), file.insertions))
+                    .collect();
+                let semantic = verify_matrix::run_semantic_audit(None, &file_stats);
+                if semantic.status == "FAIL" {
+                    l4_errors.push("未提供旅程文档（DoD），无法执行语义对齐审查".to_string());
+                }
+            }
         }
     }
     levels.push(QualityGateLevel {
@@ -3190,8 +3229,6 @@ fn run_quality_gate_sync(
             .unwrap_or_else(|| "AI DoD 语义对齐与安全审计".to_string()),
         status: if !l4_errors.is_empty() {
             "FAILED".to_string()
-        } else if ai_mode != "in-app" {
-            "SKIPPED".to_string()
         } else {
             "GREEN".to_string()
         },
