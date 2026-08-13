@@ -58,6 +58,7 @@ export type ProviderControlAdapters = {
     apiKey: string,
     model: string,
   ) => Promise<db.Provider> | db.Provider;
+  deleteProvider: (id: string) => Promise<void> | void;
   setProviderActive: (id: string, isActive: boolean) => Promise<void> | void;
   setProviderPriority: (id: string, priority: number) => Promise<void> | void;
   updateProviderModel: (id: string, model: string) => Promise<void> | void;
@@ -101,6 +102,7 @@ function defaultAdapters(): ProviderControlAdapters {
     listProviders: () => db.listProviders(),
     createProvider: (name, baseUrl, apiKey, model) =>
       db.createProvider(name, baseUrl, apiKey, model),
+    deleteProvider: (id) => db.deleteProvider(id),
     setProviderActive: (id, isActive) => db.setProviderActive(id, isActive),
     setProviderPriority: (id, priority) => db.setProviderPriority(id, priority),
     updateProviderModel: (id, model) => db.updateProviderModel(id, model),
@@ -255,6 +257,31 @@ export class ProviderControlOrchestrator {
     } catch (err) {
       this.patch({ error: errorMessage(err) });
       return null;
+    }
+  }
+
+  async deleteProvider(id: string): Promise<boolean> {
+    this.patch({ busyProviderId: id, error: null });
+    try {
+      await Promise.resolve(this.adapters.deleteProvider(id));
+      await this.refreshProviders();
+      this.patch({
+        busyProviderId: null,
+        modelsByProvider: Object.fromEntries(
+          Object.entries(this.state.modelsByProvider).filter(([providerId]) => providerId !== id),
+        ),
+        healthByProvider: Object.fromEntries(
+          Object.entries(this.state.healthByProvider).filter(([providerId]) => providerId !== id),
+        ),
+        smokeByProvider: Object.fromEntries(
+          Object.entries(this.state.smokeByProvider).filter(([providerId]) => providerId !== id),
+        ),
+        error: null,
+      });
+      return true;
+    } catch (err) {
+      this.patch({ busyProviderId: null, error: errorMessage(err) });
+      return false;
     }
   }
 

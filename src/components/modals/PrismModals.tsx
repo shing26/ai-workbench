@@ -1,4 +1,16 @@
-import { Activity, Copy, Play, Plus, RefreshCw, Save, Search, Server, X, Zap } from 'lucide-react';
+import {
+  Activity,
+  Copy,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Search,
+  Server,
+  Trash2,
+  X,
+  Zap,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as db from '../../lib/db';
@@ -494,6 +506,7 @@ function ProviderModal() {
   });
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   const [priorityDrafts, setPriorityDrafts] = useState<Record<string, string>>({});
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [configDrafts, setConfigDrafts] = useState<
     Record<string, { timeoutSecs: string; retryCount: string; retryDelaySecs: string }>
   >({});
@@ -621,6 +634,28 @@ function ProviderModal() {
                   }`}
                 >
                   {provider.isActive ? 'enabled' : 'disabled'}
+                </button>
+                <button
+                  type="button"
+                  data-provider-delete={provider.id}
+                  disabled={snapshot.busyProviderId === provider.id}
+                  onClick={() => {
+                    if (deleteConfirmId !== provider.id) {
+                      setDeleteConfirmId(provider.id);
+                      return;
+                    }
+                    setDeleteConfirmId(null);
+                    void providerControlOrchestrator.deleteProvider(provider.id);
+                  }}
+                  className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[9px] ${
+                    deleteConfirmId === provider.id
+                      ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+                      : 'border-white/10 bg-white/[0.04] text-slate-500 hover:text-rose-300'
+                  } disabled:opacity-50`}
+                  title="Delete provider"
+                >
+                  <Trash2 size={10} />
+                  {deleteConfirmId === provider.id ? 'Confirm?' : 'Delete'}
                 </button>
               </div>
 

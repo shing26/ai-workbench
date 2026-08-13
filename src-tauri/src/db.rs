@@ -3149,6 +3149,14 @@ pub fn replace_providers(conn: &Connection, providers: &[Provider]) -> Result<us
     Ok(inserted)
 }
 
+pub fn delete_provider(conn: &Connection, id: &str) -> Result<usize> {
+    conn.execute(
+        "DELETE FROM model_metadata WHERE provider_id = ?1",
+        params![id],
+    )?;
+    conn.execute("DELETE FROM providers WHERE id = ?1", params![id])
+}
+
 pub fn set_provider_active(conn: &Connection, id: &str, is_active: bool) -> Result<()> {
     conn.execute(
         "UPDATE providers SET is_active = ?1 WHERE id = ?2",
@@ -8129,6 +8137,34 @@ mod tests {
         assert_eq!(providers[0].retry_count, 5);
         assert_eq!(providers[0].retry_delay_secs, 0);
         assert!(providers[0].api_key_encrypted);
+    }
+
+    #[test]
+    fn delete_provider_removes_provider_and_model_cache() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let provider = create_provider_with_options(
+            &conn,
+            "Delete Me",
+            "https://delete.test/v1",
+            "",
+            "model",
+            false,
+            30,
+            1,
+            1,
+        )
+        .unwrap();
+        upsert_provider_models(&conn, &provider.id, &[("m1".to_string(), None)]).unwrap();
+
+        let deleted = delete_provider(&conn, &provider.id).unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(get_provider(&conn, &provider.id).unwrap().is_none());
+        assert!(list_cached_provider_models(&conn, &provider.id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(delete_provider(&conn, &provider.id).unwrap(), 0);
     }
 
     #[test]

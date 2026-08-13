@@ -1206,6 +1206,16 @@ fn create_provider(
 }
 
 #[tauri::command]
+fn delete_provider(state: State<'_, db::Db>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let deleted = db::delete_provider(&conn, &id).map_err(|e| e.to_string())?;
+    if deleted == 0 {
+        return Err("Provider not found".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn update_provider_stream_config(
     state: State<'_, db::Db>,
     id: String,
@@ -5463,6 +5473,7 @@ pub fn run() {
             delete_thought,
             list_providers,
             create_provider,
+            delete_provider,
             set_provider_active,
             set_provider_priority,
             update_provider_model,

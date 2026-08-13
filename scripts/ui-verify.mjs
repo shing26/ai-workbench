@@ -288,7 +288,12 @@ async function main() {
   await screenshot('studio-seats');
   await click(`document.querySelector('[data-provider-open]')`);
   await waitFor(`document.querySelector('[role="dialog"]') !== null`, 'provider modal');
-  for (const sel of ['[data-provider-save]', '[data-provider-health]', '[data-provider-smoke]']) {
+  for (const sel of [
+    '[data-provider-save]',
+    '[data-provider-health]',
+    '[data-provider-smoke]',
+    '[data-provider-delete]',
+  ]) {
     const ok = await evaluate(`document.querySelector('${sel}') !== null`);
     results.modals.push({ name: `provider-${sel}`, selectorOk: ok });
     if (!ok) throw new Error(`missing provider selector ${sel}`);

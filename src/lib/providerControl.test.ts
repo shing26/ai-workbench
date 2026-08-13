@@ -40,6 +40,7 @@ function createHarness(
   const smokeCalls: string[] = [];
   const healthCalls: string[] = [];
   const refreshCalls: string[] = [];
+  const deleted: string[] = [];
 
   const adapters: ProviderControlAdapters = {
     listProviders: async () => providers,
@@ -56,6 +57,11 @@ function createHarness(
       });
       providers = [next, ...providers];
       return next;
+    },
+    deleteProvider: async (id) => {
+      deleted.push(id);
+      providers = providers.filter((p) => p.id !== id);
+      delete modelsByProvider[id];
     },
     setProviderActive: async (id, isActive) => {
       providers = providers.map((p) => (p.id === id ? { ...p, isActive } : p));
@@ -103,6 +109,7 @@ function createHarness(
     smokeCalls,
     healthCalls,
     refreshCalls,
+    deleted,
     getProviders: () => providers,
     getSavedSelection: () => savedSelection,
   };
@@ -217,5 +224,24 @@ describe('ProviderControlOrchestrator', () => {
     expect(harness.orchestrator.getSnapshot().selectedProviderId).toBe('p1');
     expect(harness.orchestrator.getSnapshot().selectedProvider?.id).toBe('p1');
     expect(harness.getSavedSelection()).toBe('p1');
+  });
+
+  it('deletes a provider and selects the next available provider', async () => {
+    const harness = createHarness({
+      providers: [
+        provider({ id: 'p1', isActive: true }),
+        provider({ id: 'p2', name: 'Ollama', isActive: false }),
+      ],
+      savedSelection: 'p1',
+    });
+    await harness.orchestrator.mount();
+
+    const ok = await harness.orchestrator.deleteProvider('p1');
+
+    expect(ok).toBe(true);
+    expect(harness.deleted).toEqual(['p1']);
+    expect(harness.getProviders()).toHaveLength(1);
+    expect(harness.orchestrator.getSnapshot().selectedProviderId).toBe('p2');
+    expect(harness.getSavedSelection()).toBe('p2');
   });
 });

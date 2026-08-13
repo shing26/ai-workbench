@@ -2547,6 +2547,21 @@ export async function importProviders(payload: string): Promise<number> {
   return shape.providers.length;
 }
 
+export async function deleteProvider(id: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_provider', { id });
+    return;
+  }
+  const shape = readLocal();
+  const before = shape.providers.length;
+  shape.providers = shape.providers.filter((provider) => provider.id !== id);
+  if (shape.providers.length === before) {
+    throw new Error('Provider not found');
+  }
+  delete shape.modelCache[id];
+  writeLocal(shape);
+}
+
 export async function listProviderModels(provider: Provider): Promise<ProviderModel[]> {
   if (isTauri()) {
     return invoke<ProviderModel[]>('list_provider_models', { providerId: provider.id });
