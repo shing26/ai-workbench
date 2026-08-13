@@ -39,11 +39,17 @@ Spec/ADR 源：`docs/adr/ADR-008-Delivery-Orchestrator.md`、`CONTEXT.md` 交付
 - 旧 localStorage CLI 记录改为非破坏性迁移读取，不删除旧 key。
 - Rust `get_delivery_run` / `list_delivery_runs` 提取共用 row mapper。
 
+独立双轴 code review（2026-08-13 收尾）已修复：
+- 快速退出的 CLI 事件在 `activeCli` 建立前到达时仍会绑定 runId 并回写 `exitCode` / `finishedAt`。
+- fix modal 关闭后再手动 CLI 派发不会误复用 gate attempt；fix 语义由 modal payload 的 `isFix` 显式传递。
+- roundtable 超过 5 席直接拒绝，不再静默截断。
+- L4 非代码变更语义在 ADR/journey 中明确，JSON/配置不充当待办任务实现证据；CLI 审计脚本改为直接执行 `.mjs`，不再依赖 Node type stripping。
+
 ## 质量门（2026-08-13 实跑）
 
-- `npm run lint` / `npm run build` / `npm run test:unit`（24 通过）✅
+- `npm run lint` / `npm run build` / `npm run test:unit`（33 通过）✅
 - `npm run format:check` / `node scripts/audit-contract.mjs` ✅
-- `cargo test`（143 通过）+ `cargo clippy --all-targets --all-features -- -D warnings` + `cargo fmt --check` ✅
+- `cargo test`（149 通过）+ `cargo clippy --all-targets --all-features -- -D warnings` + `cargo fmt --check` ✅
 - `npm run verify:matrix` L1-L4 GREEN；L4 由 CLI/Rust 确定性 DoD 语义对齐 + 安全扫描执行 ✅
 - `prettier --check` 保持兼容 ✅
 
