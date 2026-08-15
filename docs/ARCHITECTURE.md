@@ -175,9 +175,20 @@ Sprint 64 扩展 `list_knowledge_files`：每条记录新增 `exists` / `stale`�
 ## Provider 健康度监控
 
 - Rust `check_provider_health(provider_id)` 按类型探测：Ollama 请求 `/api/tags`，OpenAI 兼容节点请求 `/models`，返回 `{ ok, latencyMs, message }`。
-- `is_ollama_provider(name, url)` 收敛 Ollama 判定，供健康检查与消息路由复用。
+- 显式 `provider_type`（`ollama` / `openai-compatible` / `custom`）是路由唯一依据，不再按名称或 11434 端口猜测；legacy 数据只在首次迁移时推断。
 - System Provider 卡片展示健康点、状态与延迟；进入视图自动检查，支持单个 Check 与 Check all。
-- 浏览器 fallback 模拟健康结果，保证 UI 验证可运行。
+- 健康检查双端同构：Rust 与浏览器 fallback 均为 6 秒超时；浏览器真实请求带 AbortController，超时回显 `Request timeout: provider did not respond in time`。
+- 浏览器 fallback 在可运行 UI 验证模式下继续返回模拟健康结果。
+
+## Provider Control 深模块
+
+- `ProviderControlOrchestrator` 统一管理 provider 列表、Lab 选中项、健康 / smoke / model 状态与 busy/error；视图只消费 snapshot 与命令。
+- Provider Control modal 从 Header / AI Studio / Actions 进入，承担新增、删除、启用/停用、标签 / Base URL / API key / 类型编辑、优先级、超时与重试配置。
+- Provider Lab 对当前选中 Provider 执行连接测试、流式 smoke test 与模型发现；所有写操作通过可注入 adapter 走 `db.ts`，Rust 与浏览器 fallback 不在组件中分支。
+- `activeProviderFromSnapshot` 只把 enabled Provider 提供给 roundtable、L4 与 CLI 交付链路；Provider Lab 仍可保留 disabled Provider 作为编辑 / 测试对象。
+- 显式类型契约：Rust 新增 `delete_provider` / `update_provider_profile`，`provider_type` 在 create / update / import 中统一归一化；浏览器 fallback 对缺失类型的 legacy 数据做一次性推断，不覆盖显式 `openai-compatible`。
+- smoke 双端同构：空 model 时使用 Rust 相同默认值（Ollama `qwen2.5:3b`，其他 `gpt-4o-mini`），并执行单次流式请求，不经过重试层。
+- 新增锚点 `data-provider-open` / `data-provider-card` / `data-provider-lab-*` / `data-provider-selected-name`，保留既有 `data-*` / `aria-label` 契约。
 
 ## AI Studio 多会话持久化
 

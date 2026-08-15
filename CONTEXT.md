@@ -134,7 +134,7 @@ _Avoid_: 模型下拉、API 设置散落在各视图、临时 provider 变量
 _Avoid_: 只显示“已连接”、无错误细节的模拟成功
 
 **供应商类型 (Provider Type)**:
-`ollama` / `openai-compatible` / `custom`，用于区分 API 协议与模型发现/流式端点；显式类型让 OpenAI、Ollama 之外的供应商可接入，不再只靠名称或端口猜测。
+`ollama` / `openai-compatible` / `custom`，用于区分 API 协议与模型发现/流式端点；显式类型是路由唯一依据，让 OpenAI、Ollama 之外的供应商可接入，legacy 数据只在首次迁移时推断，不再被名称或端口覆盖。
 _Avoid_: 把供应商协议硬编码成 OpenAI/Ollama 两分支
 
 **Provider Lab**:

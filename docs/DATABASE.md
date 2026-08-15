@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url TEXT NOT NULL,
     api_key TEXT,
     model TEXT DEFAULT '',
+    provider_type TEXT NOT NULL DEFAULT 'openai-compatible',
     priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER DEFAULT 1,
     api_key_encrypted INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +80,8 @@ CREATE TABLE IF NOT EXISTS providers (
 ```
 
 `api_key` 优先保存 AES-256-GCM 密文（`enc:v1:` 前缀），`api_key_encrypted=1` 表示加密；旧库明文 / Keyring 引用继续兼容，读取时统一解密或原样使用。
+
+`provider_type` 是显式供应商类型（`ollama` / `openai-compatible` / `custom`），健康检查与消息路由只以它为准。旧库由 `migrate_provider_type` 在首次补列时对 legacy 行做一次性推断；已经显式保存为 `openai-compatible` 的行不会被名称或端口覆盖。
 
 ## Sprint 106：Provider 优先级
 
@@ -1196,6 +1199,14 @@ CREATE INDEX IF NOT EXISTS idx_model_metadata_sort
 - 新库 SCHEMA 直接建表；旧库由 `init_connection` 的 `CREATE TABLE IF NOT EXISTS` 自动补齐，无需额外迁移函数。
 - `refresh_provider_models` 把真实 `/models` / `/api/tags` 探测结果 upsert 进 `model_metadata`，仅更新 `owned_by / fetched_at / updated_at`；`update_model_meta` / `set_model_favorite` / `touch_model_usage` 对缺失行自动 INSERT，保留其余字段。
 - `list_cached_provider_models` 按 `is_favorite DESC, last_used_at DESC, model_id ASC` 返回完整模型目录；浏览器 fallback 使用 `ai-workbench:db:v1` 的 `modelCache`（按 providerId 分组）同构实现，TTL 24 小时，不新增独立 localStorage key。
+
+## Provider Control 深模块
+
+- `providers` 的 `provider_type` 是显式供应商类型，health / models / stream 路由只以它为准。`migrate_provider_type` 仅在首次补列时对 legacy 行按名称或 11434 端口做一次性推断，已显式保存的 `openai-compatible` / `custom` 不会被覆盖。
+- 新增 Tauri 命令：`delete_provider(id)`、`update_provider_profile(id, name, baseUrl, apiKey, model, providerType)`；Profile 更新对非空 API Key 重新 AES-256-GCM 加密，空 API Key 回写为空并标记未加密。
+- `migrate_provider_api_key_encryption` 会清空旧 seed 中遗留的 `OPENAI_API_KEY` / `OPENROUTER_API_KEY` 明文占位，避免把 keyring 引用当作字面 API Key；真实密文与用户明文 key 不受影响。
+- 浏览器 fallback 在 `ai-workbench:db:v1` 的 `providers` 数组中保存 `providerType`；缺失类型的 legacy 数据在读取 / 导入时按名称或端口推断一次，显式类型保持权威。
+- Provider Lab 的 health / smoke / model discovery 均复用 `db.ts` adapter，不新增独立 localStorage key。
 
 ## Sprint 152：Sync 口令安全、多设备配对与密钥轮换
 
