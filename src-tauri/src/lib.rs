@@ -461,15 +461,16 @@ fn chat_codex(prompt: &str) -> Result<String, String> {
     }
 }
 
-fn is_ollama_provider(name: &str, url: &str) -> bool {
-    let name = name.to_lowercase();
-    let url = url.to_lowercase();
-    name.contains("ollama") || url.contains("11434")
-}
-
 fn provider_is_ollama(provider: &db::Provider) -> bool {
     provider.provider_type.eq_ignore_ascii_case("ollama")
-        || is_ollama_provider(&provider.name, &provider.base_url)
+}
+
+fn normalize_provider_type(value: Option<&str>) -> &'static str {
+    match value {
+        Some("ollama") => "ollama",
+        Some("custom") => "custom",
+        _ => "openai-compatible",
+    }
 }
 
 fn call_provider(provider: &db::Provider, messages_json: &str) -> Result<String, String> {
@@ -1206,10 +1207,7 @@ fn create_provider(
         &base_url,
         &stored_key,
         &model.unwrap_or_default(),
-        provider_type
-            .as_deref()
-            .filter(|value| matches!(*value, "ollama" | "custom"))
-            .unwrap_or("openai-compatible"),
+        normalize_provider_type(provider_type.as_deref()),
         encrypted,
         30,
         1,
@@ -1243,10 +1241,7 @@ fn update_provider_profile(
     let current = db::get_provider(&conn, &id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Provider not found".to_string())?;
-    let provider_type = provider_type
-        .as_deref()
-        .filter(|value| matches!(*value, "ollama" | "custom"))
-        .unwrap_or("openai-compatible");
+    let provider_type = normalize_provider_type(provider_type.as_deref());
     let (stored_key, encrypted) = if api_key.trim().is_empty() {
         (String::new(), false)
     } else if current.api_key == api_key && current.api_key_encrypted {
@@ -1343,12 +1338,10 @@ fn import_providers(state: State<'_, db::Db>, payload: String) -> Result<usize, 
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            provider_type: item
-                .get("providerType")
-                .and_then(|v| v.as_str())
-                .filter(|value| matches!(*value, "ollama" | "custom"))
-                .unwrap_or("openai-compatible")
-                .to_string(),
+            provider_type: normalize_provider_type(
+                item.get("providerType").and_then(|v| v.as_str()),
+            )
+            .to_string(),
             priority: item
                 .get("priority")
                 .and_then(|v| v.as_i64())
@@ -6230,15 +6223,11 @@ mod tests {
     }
 
     #[test]
-    fn provider_health_kind_detects_ollama() {
-        assert!(is_ollama_provider("Ollama", "http://localhost:11434"));
-        assert!(is_ollama_provider("My Local", "http://127.0.0.1:11434"));
-        assert!(!is_ollama_provider("OpenAI", "https://api.openai.com/v1"));
-
-        let explicit_ollama = db::Provider {
+    fn provider_health_kind_uses_explicit_type_only() {
+        let base = db::Provider {
             id: "p1".to_string(),
-            name: "Local".to_string(),
-            base_url: "http://localhost:9999".to_string(),
+            name: "Ollama".to_string(),
+            base_url: "http://localhost:11434".to_string(),
             api_key: String::new(),
             model: String::new(),
             provider_type: "ollama".to_string(),
@@ -6251,10 +6240,16 @@ mod tests {
         };
         let explicit_custom = db::Provider {
             provider_type: "custom".to_string(),
-            ..explicit_ollama.clone()
+            ..base.clone()
         };
-        assert!(provider_is_ollama(&explicit_ollama));
+        let explicit_openai_on_ollama_port = db::Provider {
+            provider_type: "openai-compatible".to_string(),
+            ..base.clone()
+        };
+
+        assert!(provider_is_ollama(&base));
         assert!(!provider_is_ollama(&explicit_custom));
+        assert!(!provider_is_ollama(&explicit_openai_on_ollama_port));
     }
 
     fn init_test_git_repo(dir: &Path) -> String {

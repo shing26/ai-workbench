@@ -4,6 +4,7 @@ import * as db from '../lib/db';
 import { usePrismModals } from '../components/modals/prismModalsStore';
 import { useDeliverySnapshot } from '../hooks/useDelivery';
 import { useProviderControlSnapshot } from '../hooks/useProviderControl';
+import { activeProviderFromSnapshot } from '../lib/providerControl';
 import { deliveryOrchestrator } from '../lib/delivery';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 
@@ -42,7 +43,7 @@ export default function ActionsView() {
   const { gateResult, gateRunning, gateError, fixRound: gateRound, recentRuns } = delivery;
   const recentCliRuns = recentRuns.filter((run) => run.exitCode !== null);
   const recordedProfile = gateResult?.providerProfile;
-  const activeProfile = recordedProfile ?? providerControl.selectedProvider;
+  const activeProfile = recordedProfile ?? activeProviderFromSnapshot(providerControl);
 
   const vibePath = vibeContext?.path ?? '';
   const activeProject = vibeContext

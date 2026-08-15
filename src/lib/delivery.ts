@@ -7,7 +7,11 @@ import {
   type QualityGateResult,
 } from './db';
 import { usePrismModals } from '../components/modals/prismModalsStore';
-import { providerContext, providerControlOrchestrator } from './providerControl';
+import {
+  activeProviderFromSnapshot,
+  providerContext,
+  providerControlOrchestrator,
+} from './providerControl';
 
 export const MAX_FIX_ROUNDS = 2;
 export const MAX_DELIVERY_RUNS = DELIVERY_RUN_LIMIT;
@@ -114,7 +118,7 @@ function defaultAdapters(): DeliveryAdapters {
     listRuns: () => db.listDeliveryRuns(),
     recordRun: (run) => db.recordDeliveryRun(run),
     runQualityGate: (projectPath, dodPath) => {
-      const selected = providerControlOrchestrator.getSnapshot().selectedProvider;
+      const selected = activeProviderFromSnapshot(providerControlOrchestrator.getSnapshot());
       return db.runQualityGate(projectPath, dodPath, selected ? providerContext(selected) : null);
     },
     spawnCliProcess: (projectPath, command, args, cwd) =>

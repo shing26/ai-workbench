@@ -5,7 +5,7 @@ import { buildJourneyDoc, buildJourneyDocIndex, journeyDocFileName } from '../li
 import { RoundtableOrchestrator, type RoundtableMessage } from '../lib/roundtable';
 import { toast } from '../lib/toast';
 import { useProviderControlSnapshot } from '../hooks/useProviderControl';
-import { providerControlOrchestrator } from '../lib/providerControl';
+import { activeProviderFromSnapshot, providerControlOrchestrator } from '../lib/providerControl';
 import { usePrismModals } from '../components/modals/prismModalsStore';
 import { useWorkbenchStore } from '../stores/workbenchStore';
 import { useViewState } from '../stores/viewState';
@@ -120,7 +120,7 @@ export default function AIStudioView() {
   const catalogRef = useRef<db.AgencyAgent[]>([]);
   const sessionIdRef = useRef<string | null>(null);
 
-  const activeProvider = providerControl.selectedProvider;
+  const activeProvider = activeProviderFromSnapshot(providerControl);
 
   const selectedSeatList = useMemo(
     () => prismSeats.filter((s) => selectedSeats.has(s.id) && s.active),

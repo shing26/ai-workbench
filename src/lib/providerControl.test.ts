@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider, ProviderModel, StreamSmokeResult } from './db';
 import {
+  activeProviderFromSnapshot,
   ProviderControlOrchestrator,
   type ProviderControlAdapters,
   type ProviderControlSnapshot,
@@ -150,6 +151,33 @@ describe('ProviderControlOrchestrator', () => {
     expect(snapshot.providers).toHaveLength(2);
     expect(snapshot.selectedProviderId).toBe('p2');
     expect(snapshot.selectedProvider?.name).toBe('Ollama');
+  });
+
+  it('keeps a disabled lab selection but resolves an active provider for live workflows', async () => {
+    const harness = createHarness({
+      providers: [
+        provider({ id: 'p1', isActive: true }),
+        provider({ id: 'p2', name: 'Ollama', isActive: false }),
+      ],
+      savedSelection: 'p2',
+    });
+
+    await harness.orchestrator.mount();
+
+    const snapshot = harness.orchestrator.getSnapshot();
+    expect(snapshot.selectedProviderId).toBe('p2');
+    expect(activeProviderFromSnapshot(snapshot)?.id).toBe('p1');
+  });
+
+  it('returns null when no provider is active for live workflows', async () => {
+    const harness = createHarness({
+      providers: [provider({ id: 'p1', isActive: false })],
+      savedSelection: 'p1',
+    });
+
+    await harness.orchestrator.mount();
+
+    expect(activeProviderFromSnapshot(harness.orchestrator.getSnapshot())).toBeNull();
   });
 
   it('creates a provider and makes it the active selection', async () => {

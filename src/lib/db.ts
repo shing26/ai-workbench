@@ -2424,7 +2424,11 @@ export async function listProviders(): Promise<Provider[]> {
       ...p,
       apiKey:
         p.apiKey === 'OPENAI_API_KEY' || p.apiKey === 'OPENROUTER_API_KEY' ? '' : (p.apiKey ?? ''),
-      providerType: normalizeProviderKind(p.providerType),
+      providerType: inferLegacyProviderKind(
+        p.providerType,
+        String(p.name ?? ''),
+        String(p.baseUrl ?? ''),
+      ),
       priority: p.priority ?? 0,
       timeoutSecs: p.timeoutSecs ?? 30,
       retryCount: p.retryCount ?? 1,
@@ -2587,7 +2591,11 @@ export async function importProviders(payload: string): Promise<number> {
     baseUrl: String(item.baseUrl ?? ''),
     apiKey: String(item.apiKey ?? ''),
     model: String(item.model ?? ''),
-    providerType: normalizeProviderKind(item.providerType),
+    providerType: inferLegacyProviderKind(
+      item.providerType,
+      String(item.name ?? ''),
+      String(item.baseUrl ?? ''),
+    ),
     priority: Math.max(0, Math.round(Number(item.priority ?? 0))),
     isActive: Boolean(item.isActive),
     apiKeyEncrypted: false,
@@ -3081,8 +3089,14 @@ export async function checkProviderHealth(providerId: string): Promise<ProviderH
     headers.Authorization = `Bearer ${provider.apiKey.trim()}`;
   }
   const started = performance.now();
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 6000);
   try {
-    const response = await fetch(endpoint, { headers });
+    const response = await fetch(endpoint, { headers, signal: controller.signal });
     const latencyMs = Math.max(1, Math.round(performance.now() - started));
     if (!response.ok) {
       return { ok: false, latencyMs, message: `Health HTTP ${response.status}` };
@@ -3091,9 +3105,15 @@ export async function checkProviderHealth(providerId: string): Promise<ProviderH
   } catch (err) {
     return {
       ok: false,
-      latencyMs: 0,
-      message: err instanceof Error ? err.message : String(err),
+      latencyMs: timedOut ? 6000 : 0,
+      message: timedOut
+        ? 'Request timeout: provider did not respond in time'
+        : err instanceof Error
+          ? err.message
+          : String(err),
     };
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -5061,14 +5081,19 @@ export function normalizeProviderKind(
   return value === 'ollama' || value === 'custom' ? value : fallback;
 }
 
-export function isOllamaProvider(
-  provider: Pick<Provider, 'name' | 'baseUrl' | 'providerType'>,
-): boolean {
-  return (
-    provider.providerType === 'ollama' ||
-    provider.name.toLowerCase().includes('ollama') ||
-    provider.baseUrl.toLowerCase().includes('11434')
-  );
+function inferLegacyProviderKind(value: unknown, name: string, baseUrl: string): ProviderKind {
+  if (value === 'ollama' || value === 'custom') return value;
+  if (value === 'openai-compatible') return 'openai-compatible';
+  if (value !== undefined && value !== null && value !== '') return 'openai-compatible';
+  const lowerName = name.toLowerCase();
+  const lowerBaseUrl = baseUrl.toLowerCase();
+  return lowerName.includes('ollama') || lowerBaseUrl.includes('11434')
+    ? 'ollama'
+    : 'openai-compatible';
+}
+
+export function isOllamaProvider(provider: Pick<Provider, 'providerType'>): boolean {
+  return provider.providerType === 'ollama';
 }
 
 function canRealStream(provider: Provider): boolean {
@@ -6473,16 +6498,19 @@ export async function runProviderStreamSmokeTest(providerId: string): Promise<St
     return invoke<StreamSmokeResult>('run_provider_stream_smoke_test', { providerId });
   }
   const provider = (await listProviders()).find((p) => p.id === providerId);
-  if (!provider || !canRealStream(provider)) {
-    return { ok: false, chunks: 0, message: 'Provider or model is not configured' };
+  if (!provider || !/^https?:\/\//i.test(provider.baseUrl)) {
+    return { ok: false, chunks: 0, message: 'Provider is not configured' };
   }
+  const smokeProvider = provider.model.trim()
+    ? provider
+    : { ...provider, model: isOllamaProvider(provider) ? 'qwen2.5:3b' : 'gpt-4o-mini' };
   const runId = `smoke-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let chunks = 0;
   try {
-    await streamProviderWithRetry(
-      provider,
+    await streamProviderLive(
+      smokeProvider,
       {
-        providerIds: [provider.id],
+        providerIds: [smokeProvider.id],
         messages: [{ role: 'user', content: 'Ping stream smoke test' }],
         moa: false,
         runId,

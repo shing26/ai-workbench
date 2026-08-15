@@ -34,6 +34,8 @@ export type ProviderDraft = {
   providerType: db.ProviderKind;
 };
 
+export type ProviderProfile = ProviderDraft;
+
 export type ProviderContext = {
   id: string;
   name: string;
@@ -76,13 +78,7 @@ export type ProviderControlAdapters = {
   updateProviderModel: (id: string, model: string) => Promise<void> | void;
   updateProviderProfile: (
     id: string,
-    profile: {
-      name: string;
-      baseUrl: string;
-      apiKey: string;
-      model: string;
-      providerType: db.ProviderKind;
-    },
+    profile: ProviderProfile,
   ) => Promise<db.Provider> | db.Provider;
   updateProviderStreamConfig: (
     id: string,
@@ -145,19 +141,23 @@ export function normalizeProviderDraft(input: ProviderDraft): {
   errors: string[];
   value: ProviderDraft;
 } {
-  const value: ProviderDraft = {
-    name: input.name.trim(),
-    baseUrl: input.baseUrl.trim(),
-    apiKey: input.apiKey.trim(),
-    model: input.model.trim(),
-    providerType: db.normalizeProviderKind(input.providerType),
-  };
+  const value = normalizeProviderProfile(input);
   const errors: string[] = [];
   if (!value.name) errors.push('Provider name is required');
   if (!/^https?:\/\//i.test(value.baseUrl)) {
     errors.push('Base URL must start with http:// or https://');
   }
   return { ok: errors.length === 0, errors, value };
+}
+
+export function normalizeProviderProfile(input: ProviderProfile): ProviderProfile {
+  return {
+    name: input.name.trim(),
+    baseUrl: input.baseUrl.trim(),
+    apiKey: input.apiKey.trim(),
+    model: input.model.trim(),
+    providerType: db.normalizeProviderKind(input.providerType),
+  };
 }
 
 export function providerContext(provider: db.Provider): ProviderContext {
@@ -168,6 +168,23 @@ export function providerContext(provider: db.Provider): ProviderContext {
     model: provider.model,
     providerType: provider.providerType,
   };
+}
+
+export function activeProviderFromSnapshot(
+  snapshot: Pick<ProviderControlSnapshot, 'providers' | 'selectedProvider'>,
+): db.Provider | null {
+  if (snapshot.selectedProvider?.isActive) return snapshot.selectedProvider;
+  return snapshot.providers.find((provider) => provider.isActive) ?? null;
+}
+
+function resolveSelectedProviderId(
+  providers: db.Provider[],
+  preferredId: string | null,
+): string | null {
+  if (preferredId && providers.some((provider) => provider.id === preferredId)) {
+    return preferredId;
+  }
+  return providers.find((provider) => provider.isActive)?.id ?? providers[0]?.id ?? null;
 }
 
 export function idleTestState(): ProviderTestState {
@@ -341,29 +358,8 @@ export class ProviderControlOrchestrator {
     }
   }
 
-  async updateProviderProfile(
-    id: string,
-    profile: {
-      name: string;
-      baseUrl: string;
-      apiKey: string;
-      model: string;
-      providerType: db.ProviderKind;
-    },
-  ): Promise<db.Provider | null> {
-    const value: {
-      name: string;
-      baseUrl: string;
-      apiKey: string;
-      model: string;
-      providerType: db.ProviderKind;
-    } = {
-      name: profile.name.trim(),
-      baseUrl: profile.baseUrl.trim(),
-      apiKey: profile.apiKey.trim(),
-      model: profile.model.trim(),
-      providerType: db.normalizeProviderKind(profile.providerType),
-    };
+  async updateProviderProfile(id: string, profile: ProviderProfile): Promise<db.Provider | null> {
+    const value = normalizeProviderProfile(profile);
     try {
       const provider = await Promise.resolve(this.adapters.updateProviderProfile(id, value));
       await this.refreshProviders();
@@ -458,10 +454,7 @@ export class ProviderControlOrchestrator {
     try {
       const providers = await Promise.resolve(this.adapters.listProviders());
       const stored = this.adapters.loadSelection();
-      const selectedProviderId =
-        stored && providers.some((provider) => provider.id === stored)
-          ? stored
-          : (providers.find((provider) => provider.isActive)?.id ?? providers[0]?.id ?? null);
+      const selectedProviderId = resolveSelectedProviderId(providers, stored);
       const models: Record<string, db.ProviderModel[]> = {};
       await Promise.all(
         providers.slice(0, 6).map(async (provider) => {
@@ -478,11 +471,7 @@ export class ProviderControlOrchestrator {
 
   private async refreshProviders(): Promise<void> {
     const providers = await Promise.resolve(this.adapters.listProviders());
-    const selectedProviderId =
-      this.state.selectedProviderId &&
-      providers.some((provider) => provider.id === this.state.selectedProviderId)
-        ? this.state.selectedProviderId
-        : (providers.find((provider) => provider.isActive)?.id ?? providers[0]?.id ?? null);
+    const selectedProviderId = resolveSelectedProviderId(providers, this.state.selectedProviderId);
     this.applyProviders(providers, selectedProviderId, this.state.modelsByProvider);
   }
 

@@ -48,7 +48,6 @@ type WorkbenchState = {
   tasks: db.Task[];
   projects: db.Project[];
   thoughts: db.Thought[];
-  providers: db.Provider[];
   sessions: db.Session[];
   clipboard: db.ClipboardItem[];
   logs: db.ErrorLog[];
@@ -89,34 +88,6 @@ type WorkbenchState = {
   updateThoughtContent: (id: string, content: string) => Promise<void>;
   updateThoughtType: (id: string, type: db.ThoughtType) => Promise<void>;
   deleteThought: (id: string, confirmed?: boolean) => Promise<void>;
-  addProvider: (
-    name: string,
-    baseUrl: string,
-    apiKey: string,
-    model?: string,
-    providerType?: db.ProviderKind,
-  ) => Promise<void>;
-  toggleProvider: (id: string, isActive: boolean) => Promise<void>;
-  setProviderModel: (id: string, model: string) => Promise<void>;
-  updateProviderProfile: (
-    id: string,
-    profile: {
-      name: string;
-      baseUrl: string;
-      apiKey: string;
-      model: string;
-      providerType: db.ProviderKind;
-    },
-  ) => Promise<void>;
-  setProviderPriority: (id: string, priority: number) => Promise<void>;
-  setProviderStreamConfig: (
-    id: string,
-    timeoutSecs: number,
-    retryCount: number,
-    retryDelaySecs: number,
-  ) => Promise<void>;
-  exportProviders: () => Promise<string>;
-  importProviders: (payload: string) => Promise<number>;
   refreshSystem: () => Promise<void>;
   reportError: (
     source: string,
@@ -142,7 +113,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   tasks: [],
   projects: [],
   thoughts: [],
-  providers: [],
   sessions: [],
   clipboard: [],
   logs: [],
@@ -154,11 +124,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   init: async () => {
     if (get().loaded) return;
     await db.initDb();
-    const [tasks, projects, thoughts, providers, sessions, clipboard, logs] = await Promise.all([
+    const [tasks, projects, thoughts, sessions, clipboard, logs] = await Promise.all([
       db.listTasks(),
       db.listProjects(),
       db.listThoughts(),
-      db.listProviders(),
       db.listSessions(),
       db.listClipboard(),
       db.listErrorLogs(),
@@ -167,7 +136,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       tasks,
       projects,
       thoughts,
-      providers,
       sessions,
       clipboard,
       logs,
@@ -185,7 +153,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
         tasks: summary.tasks,
         thoughts: summary.thoughts,
         sessions: summary.sessions,
-        providers: summary.providers,
         clipboard,
         logs,
         loaded: true,
@@ -263,36 +230,6 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   deleteThought: async (id, confirmed = false) => {
     await db.deleteThought(id, confirmed);
     set({ thoughts: await db.listThoughts() });
-  },
-  addProvider: async (name, baseUrl, apiKey, model = '', providerType = 'openai-compatible') => {
-    await db.createProvider(name, baseUrl, apiKey, model, providerType);
-    set({ providers: await db.listProviders() });
-  },
-  toggleProvider: async (id, isActive) => {
-    await db.setProviderActive(id, isActive);
-    set({ providers: await db.listProviders() });
-  },
-  setProviderModel: async (id, model) => {
-    await db.updateProviderModel(id, model);
-    set({ providers: await db.listProviders() });
-  },
-  updateProviderProfile: async (id, profile) => {
-    await db.updateProviderProfile(id, profile);
-    set({ providers: await db.listProviders() });
-  },
-  setProviderPriority: async (id, priority) => {
-    await db.setProviderPriority(id, priority);
-    set({ providers: await db.listProviders() });
-  },
-  setProviderStreamConfig: async (id, timeoutSecs, retryCount, retryDelaySecs) => {
-    await db.updateProviderStreamConfig(id, timeoutSecs, retryCount, retryDelaySecs);
-    set({ providers: await db.listProviders() });
-  },
-  exportProviders: () => db.exportProviders(),
-  importProviders: async (payload) => {
-    const count = await db.importProviders(payload);
-    set({ providers: await db.listProviders() });
-    return count;
   },
   refreshSystem: async () => {
     const [clipboard, logs] = await Promise.all([db.listClipboard(), db.listErrorLogs()]);

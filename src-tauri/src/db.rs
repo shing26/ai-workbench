@@ -1893,22 +1893,25 @@ fn migrate_provider_model(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_provider_type(conn: &Connection) -> Result<()> {
-    if !column_exists(conn, "providers", "provider_type")? {
+    let added = !column_exists(conn, "providers", "provider_type")?;
+    if added {
         conn.execute_batch(
             "ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai-compatible';",
         )?;
     }
     conn.execute(
-        "UPDATE providers SET provider_type = 'ollama'
-         WHERE provider_type = 'openai-compatible'
-           AND (LOWER(name) LIKE '%ollama%' OR base_url LIKE '%11434%')",
-        [],
-    )?;
-    conn.execute(
         "UPDATE providers SET provider_type = 'openai-compatible'
          WHERE provider_type IS NULL OR provider_type = ''",
         [],
     )?;
+    if added {
+        conn.execute(
+            "UPDATE providers SET provider_type = 'ollama'
+             WHERE provider_type = 'openai-compatible'
+               AND (LOWER(name) LIKE '%ollama%' OR base_url LIKE '%11434%')",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -8106,6 +8109,37 @@ mod tests {
 
         assert_eq!(ollama.provider_type, "ollama");
         assert_eq!(openai.provider_type, "openai-compatible");
+    }
+
+    #[test]
+    fn provider_type_migration_preserves_explicit_openai_compatible() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                model TEXT DEFAULT '',
+                priority INTEGER DEFAULT 0,
+                provider_type TEXT NOT NULL DEFAULT 'openai-compatible',
+                is_active INTEGER DEFAULT 1
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, name, base_url, api_key, provider_type, is_active)
+             VALUES ('p1', 'Ollama-shaped', 'http://localhost:11434', '', 'openai-compatible', 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate_provider_type(&conn).unwrap();
+        migrate_provider_stream_config(&conn).unwrap();
+        migrate_provider_api_key_encryption(&conn).unwrap();
+
+        let provider = get_provider(&conn, "p1").unwrap().unwrap();
+        assert_eq!(provider.provider_type, "openai-compatible");
     }
 
     #[test]

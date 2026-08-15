@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import { useWorkbenchStore, type ViewId } from '../../stores/workbenchStore';
 import { usePrismModals } from '../modals/prismModalsStore';
 import { useProviderControlSnapshot } from '../../hooks/useProviderControl';
+import { activeProviderFromSnapshot } from '../../lib/providerControl';
 import * as db from '../../lib/db';
 
 const CLI_LABELS: Record<string, string> = {
@@ -89,7 +90,7 @@ export default function AppHeader() {
         >
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
           <span className="hidden max-w-36 truncate lg:inline">
-            {provider.selectedProvider?.name || 'Provider'}
+            {activeProviderFromSnapshot(provider)?.name || 'Provider'}
           </span>
         </button>
         <button
